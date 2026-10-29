@@ -25,6 +25,7 @@ from kobo_api import destroy as destroy_module
 from kobo_api.clients import ClientError, Clients
 from kobo_api.destroy import (
     DESTROY_STEPS,
+    DIRECTORY_RETIRE_MISSED_NOTE,
     DestroyCtx,
     _destroy_access,
     _destroy_directory,
@@ -744,7 +745,7 @@ def test_destroy_directory_unreachable_is_done_with_note_not_failed(
 
     detail = _destroy_directory(ctx)
 
-    assert detail == "The directory entry stays until the switchboard returns."
+    assert detail == DIRECTORY_RETIRE_MISSED_NOTE
     session.close()
 
 
@@ -766,7 +767,7 @@ def test_destroy_directory_any_failure_reads_as_unreachable(session_factory, con
 
     detail = _destroy_directory(ctx)
 
-    assert detail == "The directory entry stays until the switchboard returns."
+    assert detail == DIRECTORY_RETIRE_MISSED_NOTE
     session.close()
 
 

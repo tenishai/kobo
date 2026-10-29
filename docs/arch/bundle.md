@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-bundle
-updated: 2026-10-18
-anchor: api/kobo_api/composer.py sha=d1dadd31ac3832b95f5ff4d2eb27526cf71b4359
+updated: 2026-10-29
+anchor: api/kobo_api/composer.py sha=8ae8f47a5cfc06d3af4960309f5d0234d7615c29
 anchor: api/kobo_api/vendor/bundle.schema.json sha=257c9575d4674177daf32d7bc0ad2b1145709552
 ---
 # bundle — the daedalus agent bundle kobo writes into each agent repo
@@ -29,3 +29,5 @@ INVARIANTS:
 - A write-capable tool must add its own approvals gate; nothing in `approvals` limits writes for it.
 CONSUMERS: api/kobo_api/steps.py (RepoStep `compose`/`validate_agent_yaml`, `_self_md`/`_colleagues_md` for roster refresh), api/kobo_api/colleague_mode.py (`update_agent_yaml_colleague_mode`), api/kobo_api/runtime.py + tooling.py + intake.py + slack_setup.py (`update_dockerfile_runtime_image`), api/kobo_api/skills.py (`refresh_agent_card`, `update_agent_yaml_skills_load`), api/kobo_api/metadata.py (`update_agent_card_metadata`, `fallback_capability`), api/kobo_api/colleagues.py (`CABAL_COLLEAGUE_TOKEN_ENV`), api/tests/test_composer.py (incl. optional real-daedalus load via `pytest.importorskip("daedalus")`). Cross-repo: daedalus runtime loads this bundle at /bundle; gojira builds and deploys the repo.
 GOTCHA: slack_setup.py `_update_agent_yaml_transports` round-trips agent.yaml through `yaml.safe_dump`, which rewrites the whole file in block style. After Slack is wired, the one-line shapes the `update_agent_yaml_*` regex editors need are gone. Those five editors have no production caller today (only tests/test_composer.py), so this is latent: don't reach for them on a Slack-wired agent without checking. `update_agent_yaml_colleague_mode` (the one with a production caller) parses the file and splices the whole tools section, so it handles the block-style file; tested on one.
+
+2026-10-29 (issue #274): colleagues.md no longer tells the agent the live `list_colleagues` read wins. Both variants open with the roster as the list that counts (default: "who you may talk to"; roster-only: "who is in the room with you") and say the live tool may list agents it cannot reach or that no longer exist. The digests in tests/test_colleague_mode.py were retaken for it.

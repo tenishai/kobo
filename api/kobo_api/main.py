@@ -105,7 +105,7 @@ from kobo_api.config import SHARED_GROUP, Config, vertex_location_for
 from kobo_api.connect_scan import NAME_TAKEN, Finding, ScanReport, scan_repo
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
-from kobo_api.directory import retire_directory, sync_directory
+from kobo_api.directory import retire_directory, sweep_directory, sync_directory
 from kobo_api.guide import find_section, load_guide
 from kobo_api.health import AgentHealth, health_sweep_loop
 from kobo_api.iap import HttpsOnlyMiddleware, IapMiddleware, IapVerifier
@@ -137,6 +137,7 @@ from kobo_api.knowledge import (
 from kobo_api.learnings import (
     clean_edited_statement,
     learning_concerns,
+    record_taught,
     system_task_status,
 )
 from kobo_api.learnings import nightly_loop as learnings_nightly_loop
@@ -3030,6 +3031,25 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
         )
 
 
+def _learning_dict(row: AgentLearning) -> dict:
+    """One learnings row as the panel reads it; shared by the list route and
+    the teach route (issue #269), so a hand-taught row looks exactly like
+    the row a reload would show."""
+    return {
+        "id": row.id,
+        "day": row.day,
+        "content": row.content,
+        "kind": row.kind,
+        "source": row.source,
+        "evidence": row.evidence,
+        "said_by": row.said_by,
+        "concerns": learning_concerns(row.content, row.said_by),
+        "status": row.status,
+        "decided_by": row.decided_by,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
 def _decide_learning(
     name: str,
     learning_id: int,
@@ -3707,6 +3727,68 @@ def create_app(
         if blocked is not None:
             return blocked
         return JSONResponse({"addons": addon_cards(app.state.config, app.state.clients)})
+
+    # --- Directory sweep (issue #274): the switchboard's directory against --
+    # the room's agents. GET is always a dry run (what WOULD be retired);
+    # POST retires. Both answer through `kobo_api.directory.sweep_directory`,
+    # which only ever retires an entry carrying the room's own registration
+    # marker AND no Deployment of that name in the cluster, so an agent
+    # graduated by hand is listed under `unknown` or `live` and left alone.
+    # Same gate as every pane route: 404 while the panel is off,
+    # 403 for a non-admin. 409 when the switchboard is not configured, the
+    # same body the sync-pairs route gives.
+
+    def _directory_sweep(request: Request, session: Session, *, dry_run: bool) -> JSONResponse:
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        cfg: Config = app.state.config
+        clients: Clients | None = app.state.clients
+        if not cabal_enabled(cfg) or clients is None or clients.cabal is None:
+            return JSONResponse(_SWITCHBOARD_NOT_CONFIGURED, status_code=409)
+        try:
+            result = sweep_directory(
+                clients.cabal, cfg, session, kubectl=clients.kubectl, dry_run=dry_run
+            )
+        except (CabalError, httpx.HTTPError):
+            log.warning("directory sweep could not read the switchboard", exc_info=True)
+            return JSONResponse(
+                {"error": "couldn't read the switchboard's directory. Try again."},
+                status_code=502,
+            )
+        if not dry_run:
+            actor = getattr(request.state, "iap_email", None) or "operator"
+            admin_store.record(
+                session, actor=actor, action="directory.sweep", object_type="directory",
+                object_id="switchboard", before=None,
+                after={
+                    "retired": result["retired"], "failed": result["failed"],
+                    "kept": len(result["kept"]), "live": result["live"],
+                    "unknown": result["unknown"], "note": result["note"],
+                },
+                landed=admin_store.LANDED_APPLIED if not result["failed"] else admin_store.LANDED_FAILED,
+                landed_detail=(
+                    None if not result["failed"]
+                    else "the switchboard refused to retire: " + ", ".join(result["failed"])
+                ),
+            )
+            session.commit()
+        return JSONResponse(result)
+
+    @app.get("/api/admin/directory/sweep")
+    def admin_directory_sweep_preview(
+        request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """What a sweep would retire, keep and leave alone. Never writes."""
+        return _directory_sweep(request, session, dry_run=True)
+
+    @app.post("/api/admin/directory/sweep")
+    def admin_directory_sweep(
+        request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Retire every directory entry the room registered for an agent it
+        no longer has; records an audit event with the names."""
+        return _directory_sweep(request, session, dry_run=False)
 
     @app.get("/api/admin/people")
     def admin_people(request: Request) -> JSONResponse:
@@ -7807,7 +7889,12 @@ def create_app(
                 background_tasks.add_task(
                     _archive_teach_note, app, agent.repo_full_name, filename, note
                 )
-                return JSONResponse({"filename": filename, "mode": "instant"})
+                taught = record_taught(
+                    session, agent.name, text, taught_by=taught_by, now=datetime.now(UTC)
+                )
+                return JSONResponse(
+                    {"filename": filename, "mode": "instant", "learning": _learning_dict(taught)}
+                )
 
         # This is the synchronous archive-lane fallback: it only runs when
         # the relay above missed entirely, which means the memory was
@@ -7833,7 +7920,20 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
-        return JSONResponse({"filename": filename, "mode": "archive", "sha": sha})
+        # The durable record behind the row the panel shows (issue #269):
+        # recorded only once the note has landed on one lane or the other,
+        # so the table never claims a memory the agent does not have.
+        taught = record_taught(
+            session, agent.name, text, taught_by=taught_by, now=datetime.now(UTC)
+        )
+        return JSONResponse(
+            {
+                "filename": filename,
+                "mode": "archive",
+                "sha": sha,
+                "learning": _learning_dict(taught),
+            }
+        )
 
     # --- Learnings (daily-learnings spec, Task 7): the decide surface over --
     # the nightly summarizer's candidate rows (kobo_api.learnings.
@@ -7914,24 +8014,7 @@ def create_app(
         return JSONResponse(
             {
                 "system_tasks": system_tasks,
-                "learnings": [
-                    {
-                        "id": row.id,
-                        "day": row.day,
-                        "content": row.content,
-                        "kind": row.kind,
-                        "source": row.source,
-                        "evidence": row.evidence,
-                        "said_by": row.said_by,
-                        "concerns": learning_concerns(row.content, row.said_by),
-                        "status": row.status,
-                        "decided_by": row.decided_by,
-                        "created_at": (
-                            row.created_at.isoformat() if row.created_at else None
-                        ),
-                    }
-                    for row in rows
-                ]
+                "learnings": [_learning_dict(row) for row in rows],
             }
         )
 

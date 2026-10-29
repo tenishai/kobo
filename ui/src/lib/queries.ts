@@ -156,6 +156,8 @@ import {
   fetchAccessRequests,
   fetchActivity,
   fetchAdminAddons,
+  previewDirectorySweep,
+  sweepDirectory,
   fetchAdminAudit,
   fetchAdminAwsSetup,
   fetchAdminConnections,
@@ -694,6 +696,28 @@ export function adminAddonsQuery() {
     queryFn: fetchAdminAddons,
     staleTime: 60_000,
   });
+}
+
+/** What a directory sweep would retire (issue #274). Read only while the
+ * confirm is open, never cached across openings: the answer is the
+ * switchboard's right now. */
+export function directorySweepPreviewQuery() {
+  return queryOptions({
+    queryKey: ["admin", "directory-sweep"] as const,
+    queryFn: previewDirectorySweep,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
+}
+
+export function sweepDirectoryMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: () => sweepDirectory(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin"] });
+    },
+  };
 }
 
 // Access through bab. Keys: ["agents", name, "access"] for the agent page,
