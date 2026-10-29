@@ -251,6 +251,7 @@ from kobo_api.sero import acting_email_refusal
 from kobo_api.skills import (
     SkillsError,
     add_catalog_skill,
+    add_catalog_skills,
     bust_repo_skills_cache,
     list_repo_skills,
     read_local_skill,
@@ -586,6 +587,23 @@ class CatalogSkillPayload(BaseModel):
     # Refresh an attached catalog skill to the version the catalog serves
     # now, in one commit (issue #182). Off, an attached name is a 409.
     refresh: bool = False
+
+
+class CatalogSkillRef(BaseModel):
+    """One pick inside a batch add: the same (name, team) pair as
+    CatalogSkillPayload, without `refresh` (a batch only adds)."""
+
+    name: str
+    team: str
+
+
+class CatalogSkillBatchPayload(BaseModel):
+    """POST .../skills/catalog/batch body (issue #266): several catalog
+    picks that land in ONE commit and one rebuild. The ceiling is the
+    picker's, not a repo limit: twenty is already more than a person
+    ticks in one sitting."""
+
+    skills: list[CatalogSkillRef] = Field(min_length=1, max_length=20)
 
 
 class IntakeUploadPayload(BaseModel):
@@ -7247,10 +7265,7 @@ def create_app(
             # matching on that prefix is the cleanest option available
             # without touching skills.py — same idiom as delete_knowledge's
             # own KnowledgeError prefix match below.
-            message = str(exc)
-            if message.startswith("skill no longer in the catalog:"):
-                return JSONResponse({"error": message}, status_code=404)
-            return JSONResponse({"error": message}, status_code=422)
+            return _skills_error_response(exc)
         except ClientError as exc:
             log.warning("skills route failed: %s", exc)
             return JSONResponse(
@@ -7278,6 +7293,98 @@ def create_app(
         # serves its own copy, so register the new one.
         directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
         return JSONResponse({"sha": commit_sha, "directory": directory})
+
+    def _skills_error_response(exc: SkillsError) -> JSONResponse:
+        """The single catalog-add route's SkillsError mapping (prefix match,
+        see its comment), shared with the batch route below."""
+        message = str(exc)
+        if message.startswith("skill no longer in the catalog:"):
+            return JSONResponse({"error": message}, status_code=404)
+        return JSONResponse({"error": message}, status_code=422)
+
+    @app.post("/api/agents/{name}/skills/catalog/batch")
+    def add_skills_from_catalog(
+        name: str,
+        payload: CatalogSkillBatchPayload,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Several catalog picks in one commit, one push, one rebuild
+        (issue #266). Same gates as the single route. A pick the agent
+        already carries, or one the catalog no longer serves, is refused
+        on its own and listed under `refused`; the rest still land. When
+        nothing can land the answer is the single route's for that
+        refusal: 409 already carried, 404 gone, 422 bad id."""
+        agent = _ready_agent_or_error(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+
+        carried_names = {entry["name"] for entry in agent.skills}
+        refused: list[dict] = []
+        picks: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for pick in payload.skills:
+            if pick.name in seen:
+                continue
+            seen.add(pick.name)
+            if pick.name in carried_names:
+                refused.append(
+                    {
+                        "name": pick.name,
+                        "reason": f"the agent already carries a skill named {pick.name!r}",
+                    }
+                )
+                continue
+            picks.append((pick.name, pick.team))
+        if not picks:
+            return _skill_conflict(refused[0]["name"])
+
+        try:
+            commit_sha, landed, skipped = add_catalog_skills(
+                app.state.clients.github,
+                app.state.clients.storage,
+                app.state.config,
+                agent.repo_full_name,
+                picks,
+            )
+        except SkillsError as exc:
+            if refused:
+                # Some picks were already carried and the rest could not
+                # land: the carried ones decide the status, as they would
+                # one at a time.
+                return _skill_conflict(refused[0]["name"])
+            return _skills_error_response(exc)
+        except ClientError as exc:
+            log.warning("skills route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
+            )
+        refused.extend({"name": skill_id, "reason": reason} for skill_id, reason in skipped)
+
+        # Same bust-then-write order as the single route above.
+        bust_repo_skills_cache(agent.repo_full_name)
+        teams = {skill_id: team for skill_id, team in picks}
+        agent.skills = [entry for entry in agent.skills if entry["name"] not in landed] + [
+            {"name": skill_id, "team": teams[skill_id], "sha": source_sha, "source": "catalog"}
+            for skill_id, source_sha in landed.items()
+        ]
+        session.commit()
+
+        directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
+        return JSONResponse(
+            {
+                "sha": commit_sha,
+                "directory": directory,
+                "added": list(landed),
+                "refused": refused,
+            }
+        )
 
     @app.delete("/api/agents/{name}/skills/{skill_id}")
     def delete_skill(

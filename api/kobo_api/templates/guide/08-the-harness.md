@@ -23,7 +23,7 @@ The persona the agent was built from, with its team, purpose tags and capability
 
 ## Skills
 
-Skills are abilities from your organization's skills catalog: a way of working, a checklist, a domain the agent should know. Add one from the catalog and the agent picks it up on its next build. On a current runtime the agent sees a short list of its skills in its instructions and loads one in full when a question needs it. The section also lists skills recommended for this agent's persona. Remove a skill the same way.
+Skills are abilities from your organization's skills catalog: a way of working, a checklist, a domain the agent should know. Open **Browse the catalog** or **Suggestions** (skills recommended for this agent's persona), tick the ones you want and press **Add N skills**. They land together as one change and the agent picks them up on its next build; one it already has says Added. The new rows appear in the table at once marked Delivering, and the chip beside the table says when the changes are in place. While that is happening the agent's badge reads Updating rather than Down. On a current runtime the agent sees a short list of its skills in its instructions and loads one in full when a question needs it. Remove a skill from its row.
 
 ## Tooling
 

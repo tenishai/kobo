@@ -102,6 +102,7 @@ import { queryOptions, type QueryClient } from "@tanstack/svelte-query";
 import {
   acceptInvite,
   addCatalogSkill,
+  addCatalogSkills,
   addGrant,
   addThreadParticipant,
   type AdminConnectIntegration,
@@ -1216,6 +1217,20 @@ export function addCatalogSkillMutation(queryClient: QueryClient, name: string) 
   return {
     mutationFn: ({ skillName, team }: { skillName: string; team: string }) =>
       addCatalogSkill(name, skillName, team),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "skills"] });
+    },
+  };
+}
+
+/**
+ * Picks several catalog skills for this agent in one change (issue #266);
+ * on success, invalidates that agent's skills query the same way the single
+ * pick does.
+ */
+export function addCatalogSkillsMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (picks: { name: string; team: string }[]) => addCatalogSkills(name, picks),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name, "skills"] });
     },
