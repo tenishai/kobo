@@ -1771,8 +1771,15 @@ class FakeCabal:
         conversation_error: str | None = None,
         stream_chunks: list[bytes] | None = None,
         put_dispatch_pairs_error: str | None = None,
+        agents_result: list[dict] | None = None,
+        agents_error: str | None = None,
     ):
         self._graduate_error = graduate_error
+        # `list_agents`'s canned bulletin board (default `[]`) and its
+        # failure knob -- the directory sweep's seam (issue #274).
+        self._agents_result = list(agents_result) if agents_result is not None else []
+        self._agents_error = agents_error
+        self.list_agents_calls = 0
         self._absorb_error = absorb_error
         self._relay_result = relay_result if relay_result is not None else {}
         self._relay_error = relay_error
@@ -1828,6 +1835,12 @@ class FakeCabal:
         self.absorb_calls.append(name)
         if self._absorb_error is not None:
             raise CabalError(f"absorb failed: {self._absorb_error}")
+
+    def list_agents(self) -> list[dict]:
+        self.list_agents_calls += 1
+        if self._agents_error is not None:
+            raise CabalError(f"list_agents failed: {self._agents_error}")
+        return list(self._agents_result)
 
     def relay(self, name: str, task_envelope: dict) -> dict:
         self.relay_calls.append({"name": name, "task_envelope": task_envelope})

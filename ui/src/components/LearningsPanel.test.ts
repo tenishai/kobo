@@ -58,10 +58,48 @@ async function openTeach(): Promise<void> {
   );
 }
 
+const WHOAMI = {
+  email: "kyle@example.test",
+  operator: false,
+  groups: [],
+  groups_unavailable: false,
+  admin_panel: false,
+  logout_url: null,
+};
+
 describe("LearningsPanel", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
-    stubFetch({ "/learnings": LEARNINGS });
+    stubFetch({ "/learnings": LEARNINGS, "/api/whoami": WHOAMI });
+  });
+
+  // Issue #269: a note taught by hand is an approved row with source
+  // "taught". It sits in the table, says who taught it ("you" for the
+  // signed-in person), and offers no verdict: it is already remembered.
+  it("shows a hand-taught row as remembered, attributed, with nothing to decide", async () => {
+    vi.unstubAllGlobals();
+    stubFetch({
+      "/learnings": {
+        learnings: [
+          {
+            ...LEARNINGS.learnings[2],
+            id: 9,
+            content: "always answer in one paragraph",
+            source: "taught",
+            said_by: "kyle@example.test",
+            status: "approved",
+          },
+        ],
+      },
+      "/api/whoami": WHOAMI,
+    });
+    renderWithClient(LearningsPanel, { agentName: "wren", canDecide: true, frozen: false });
+
+    expect(await screen.findByText("always answer in one paragraph")).not.toBeNull();
+    expect(await screen.findByText("you · taught by hand")).not.toBeNull();
+    expect(screen.getByText("Remembered")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Remember" })).toBeNull();
+    expect(screen.queryByText(/Nothing new/)).toBeNull();
   });
 
   it("keeps the teach box shut until it is asked for, and opens it on click", async () => {

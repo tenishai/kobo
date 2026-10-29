@@ -4542,6 +4542,28 @@ class CabalClient:
             )
             raise CabalError(f"absorb({name!r}) failed ({resp.status_code})")
 
+    def list_agents(self) -> list[dict]:
+        """Every row on the switchboard's bulletin board (`GET /admin/agents`,
+        operator token): `name`, `status` (`active`/`draining`/`retired`),
+        `kind` (`federated` for a graduated agent, `session` for a live
+        operator session), `endpoint`, and the rest of the row. The
+        directory sweep (`kobo_api.directory.sweep_directory`, issue #274)
+        reads this rather than the colleague-facing `GET /directory`, which
+        carries no endpoint and so nothing the room could recognise as its
+        own registration. Raises `CabalError` on non-2xx; the body is
+        logged truncated, never echoed.
+        """
+        resp = self._client.get(
+            f"{self._base_url}/admin/agents",
+            headers=self._headers(),
+        )
+        if not resp.is_success:
+            log.warning(
+                "cabal list_agents failed (%s): %s", resp.status_code, resp.text[:200]
+            )
+            raise CabalError(f"list_agents failed ({resp.status_code})")
+        return resp.json()["agents"]
+
     def relay(self, name: str, task_envelope: dict) -> dict:
         """Relay `task_envelope` (the same a2a task shape `_build_task_
         envelope` produces) to persona `name` through the switchboard;

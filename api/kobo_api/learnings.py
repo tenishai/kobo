@@ -391,6 +391,56 @@ def store_candidates(
     return stored
 
 
+# The `source` of a row a person taught by hand (issue #269): the teach
+# route records what it delivered as an approved row, so the Learnings table
+# shows it at once and after a reload, and the decide routes (pending only)
+# never offer it for Remember/Skip again.
+SOURCE_TAUGHT = "taught"
+
+
+def record_taught(
+    session: Session,
+    agent_name: str,
+    text: str,
+    *,
+    taught_by: str | None,
+    now: datetime,
+) -> AgentLearning:
+    """The durable record behind a hand-taught note (issue #269): an
+    APPROVED row, source `SOURCE_TAUGHT`, `said_by`/`decided_by` the
+    signed-in person when the room knows one. Its hash also stops the
+    nightly pass from re-proposing the same statement. Teaching the same
+    text again (the unique constraint on `(agent_name, content_hash)`)
+    refreshes the existing row to approved instead of inserting a twin:
+    the hand-taught verdict is the newest one, whatever the row held
+    before. Commits."""
+    content = text.strip()
+    digest = content_hash(content)
+    moment = _naive_utc(now)
+    row = (
+        session.query(AgentLearning)
+        .filter_by(agent_name=agent_name, content_hash=digest)
+        .first()
+    )
+    if row is None:
+        row = AgentLearning(
+            agent_name=agent_name,
+            day=now.date().isoformat(),
+            content=content,
+            kind="fact",
+            source=SOURCE_TAUGHT,
+            evidence="",
+            said_by=taught_by,
+            content_hash=digest,
+        )
+        session.add(row)
+    row.status = LEARNING_APPROVED
+    row.decided_by = taught_by
+    row.decided_at = moment
+    session.commit()
+    return row
+
+
 SYSTEM_TASK_LEARNINGS = "learnings"
 SYSTEM_TASK_ERROR_MAX_CHARS = 300
 
@@ -623,8 +673,37 @@ def run_nightly(app) -> None:
                 )
                 return
             _sweep(session, app.state.config, app.state.clients, now)
+            _directory_dry_run(session, app.state.config, app.state.clients)
     finally:
         session.close()
+
+
+def _directory_dry_run(session, config, clients) -> None:
+    """The nightly directory pass (issue #274): read the switchboard's
+    directory and log, at WARNING so it reaches pod logs, every entry the
+    room registered for an agent it no longer has. Dry run only, on
+    purpose: a room that shares a switchboard with another room whose
+    agents are shaped the same way would otherwise retire that room's
+    agents in the night. Retiring is an operator's click (Admin > Services
+    > Sweep directory) after seeing the list. Same deferred imports as
+    `_sweep`, for the same circular-import reason."""
+    from kobo_api.clients import cabal_enabled
+    from kobo_api.directory import sweep_directory
+
+    if not (cabal_enabled(config) and clients.cabal is not None):
+        return
+    try:
+        result = sweep_directory(clients.cabal, config, session, dry_run=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("directory: nightly dry run could not read the switchboard: %s", exc)
+        return
+    if result["retired"]:
+        log.warning(
+            "directory: the switchboard lists %d agent(s) this room no longer has: %s. "
+            "Sweep the directory from Admin to retire them.",
+            len(result["retired"]),
+            ", ".join(sorted(result["retired"])),
+        )
 
 
 def _sweep(session, config, clients, now: datetime) -> None:

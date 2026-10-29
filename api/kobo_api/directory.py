@@ -23,6 +23,7 @@ it once baked.
 from __future__ import annotations
 
 import json
+import logging
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -31,7 +32,18 @@ from kobo_api.clients import CabalClient, ClientError, GitHubClient
 from kobo_api.config import Config
 
 if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
     from kobo_api.models import Agent
+
+log = logging.getLogger(__name__)
+
+# What `graduate` registers: the switchboard files a graduated agent as a
+# federated row, and the room is the only thing that graduates with an
+# endpoint shaped by `agent_endpoint_template`. Together they are the marker
+# `sweep_directory` reads back to tell the room's own entries from ones
+# registered by hand (which it must never touch).
+ROOM_ENTRY_KIND = "federated"
 
 
 def sync_directory(github: GitHubClient, cabal: CabalClient, cfg: Config, agent: Agent) -> None:
@@ -97,3 +109,80 @@ def retire_directory(cabal: CabalClient, agent: Agent) -> None:
     directory concept, not `CabalClient`'s own method name.
     """
     cabal.absorb(agent.name)
+
+
+def room_registered(cfg: Config, entry: dict) -> bool:
+    """Whether the switchboard row `entry` is one this room registered: a
+    federated row whose endpoint is exactly what `register_card` would have
+    sent for that name. A bespoke agent graduated by hand has another
+    endpoint (or none) and reads False, so the sweep leaves it alone. A
+    malformed template makes every entry read as not the room's, which is
+    the safe answer."""
+    if entry.get("kind") != ROOM_ENTRY_KIND:
+        return False
+    name = entry.get("name")
+    if not isinstance(name, str) or not name:
+        return False
+    try:
+        expected = cfg.agent_endpoint_template.format(name=name)
+    except (KeyError, IndexError):
+        return False
+    return bool(expected) and entry.get("endpoint") == expected
+
+
+def sweep_directory(
+    cabal: CabalClient, cfg: Config, session: Session, *, dry_run: bool = True
+) -> dict:
+    """Reconcile the switchboard's directory with the room's agents (issue
+    #274): every active, non-session entry is `kept` when an agent row of
+    that name exists in any state (a row exists until the destroy ledger
+    forgets it, so destroying and failed agents count as existing, and so
+    do connected ones), `retired` when no row exists AND the entry carries
+    the room's own marker (`room_registered`), and `unknown` otherwise:
+    registered by hand or by another room, listed for the operator, never
+    touched. `dry_run` (the default, and what the nightly pass runs)
+    answers without calling `absorb`; a real run absorbs each entry it
+    would retire and reports the ones whose absorb failed under `failed`
+    rather than aborting the rest.
+
+    Raises `CabalError` when the switchboard cannot be read at all; the
+    caller decides what that means (the route answers 502, the nightly pass
+    logs and moves on). The model import is local because
+    `kobo_api.clients` imports `kobo_api.learnings`, which will import this
+    module; `kobo_api.models` must not be pulled in at import time here.
+    """
+    from kobo_api.models import Agent
+
+    entries = cabal.list_agents()
+    existing = {name for (name,) in session.query(Agent.name).all()}
+    retired: list[str] = []
+    kept: list[str] = []
+    unknown: list[str] = []
+    failed: list[str] = []
+    for entry in entries:
+        if entry.get("kind") == "session" or entry.get("status") != "active":
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        if name in existing:
+            kept.append(name)
+            continue
+        if not room_registered(cfg, entry):
+            unknown.append(name)
+            continue
+        if not dry_run:
+            try:
+                cabal.absorb(name)
+            except Exception:
+                log.warning("directory sweep: could not retire %s", name, exc_info=True)
+                failed.append(name)
+                continue
+        retired.append(name)
+    return {
+        "dry_run": dry_run,
+        "retired": retired,
+        "kept": kept,
+        "unknown": unknown,
+        "failed": failed,
+    }

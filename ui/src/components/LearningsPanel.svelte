@@ -18,10 +18,13 @@
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import ErrorState from "./ErrorState.svelte";
   import { errorMessage, teachAgent } from "../lib/api";
+  import type { LearningsList, TeachResult } from "../lib/api";
+  import { toast } from "../lib/toast.svelte";
   import {
     decideLearningMutation,
     decideLearningsBulkMutation,
     learningsQuery,
+    whoamiQuery,
   } from "../lib/queries";
   import type { Learning } from "../lib/queries";
 
@@ -39,6 +42,9 @@
   // lifetime.
   // svelte-ignore state_referenced_locally
   const learnings = createQuery(() => (learningsQuery(agentName)));
+  // Only to say "you" on a row the signed-in person taught by hand; the
+  // app-wide whoami query, cached for the session, so no extra request.
+  const whoami = createQuery(() => (whoamiQuery()));
   // svelte-ignore state_referenced_locally
   const decide = createMutation(() => (decideLearningMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
@@ -56,6 +62,11 @@
   let confirmId = $state<number | null>(null);   // flagged row asking for a second yes
   let teachText = $state("");
   let teachNote = $state("");
+  // Rows taught this session on the archive lane: the note is committed
+  // and arrives with the agent's next delivery, so the row says
+  // "Delivering" until a reload (by which time the row reads as what it
+  // durably is: remembered). Ids only; nothing is polled.
+  let delivering = $state<number[]>([]);
   let confirming = $state<"approve" | "deny" | null>(null);
 
   // The server's bulk route silently truncates at BULK_MAX ids -- decideAll
@@ -71,7 +82,13 @@
   );
   const pending = $derived(all.filter((l: Learning) => l.status === "pending"));
   const bulkIds = $derived(pending.slice(0, BULK_MAX).map((l: Learning) => l.id));
-  const history = $derived(all.filter((l: Learning) => l.status !== "pending"));
+  // Issue #269: a note someone taught by hand is a remembered row with
+  // source "taught". It sits in the table with the pending rows (marked,
+  // no verdict buttons), not in the history fold, so a teach is visible
+  // the moment it lands and after a reload.
+  const isTaught = (l: Learning): boolean => l.source === "taught" && l.status === "approved";
+  const taught = $derived(all.filter(isTaught));
+  const history = $derived(all.filter((l: Learning) => l.status !== "pending" && !isTaught(l)));
   const remembered = $derived(history.filter((l: Learning) => l.status === "approved").length);
   // Only a denied row is "Skipped" -- an expired one is counted and shown
   // separately, never folded into skipped just because it isn't remembered.
@@ -88,9 +105,26 @@
   // svelte-ignore state_referenced_locally
   const teach = createMutation(() => ({
     mutationFn: (text: string) => teachAgent(agentName, text),
-    onSuccess: () => {
+    onSuccess: (result: TeachResult) => {
       teachText = "";
       teachNote = `${agentName} will remember that.`;
+      toast.success(`${agentName} will remember that.`);
+      // The row shows at once from the response; the refetch below then
+      // confirms it from the server, the same as a reload would.
+      if (result.learning) {
+        const row = result.learning;
+        if (result.mode === "archive") delivering = [...delivering, row.id];
+        queryClient.setQueryData(
+          learningsQuery(agentName).queryKey,
+          (old: LearningsList | undefined): LearningsList | undefined =>
+            old === undefined
+              ? old
+              : {
+                  ...old,
+                  learnings: [row, ...old.learnings.filter((l: Learning) => l.id !== row.id)],
+                },
+        );
+      }
       queryClient.invalidateQueries({ queryKey: ["agents", agentName] });
     },
   }));
@@ -103,6 +137,12 @@
 
   function byline(l: Learning): string {
     return [l.said_by, l.source].filter(Boolean).join(" · ");
+  }
+
+  function taughtByline(l: Learning): string {
+    const me = whoami.data?.email;
+    const who = l.said_by && me && l.said_by.toLowerCase() === me.toLowerCase() ? "you" : l.said_by;
+    return [who, "taught by hand"].filter(Boolean).join(" · ");
   }
 
   // Issue #143: a row nobody can be traced to, or one about access, is
@@ -270,7 +310,7 @@
         </tr>
       </thead>
       <tbody>
-        {#if pending.length === 0}
+        {#if pending.length === 0 && taught.length === 0}
           <tr>
             <td class="panel__empty" colspan="3">
               Nothing new. When someone tells {agentName} something worth keeping, it shows up here.
@@ -333,6 +373,17 @@
               </td>
             </tr>
           {/if}
+        {/each}
+        {#each taught as l (l.id)}
+          <tr class="learning-row learning-row--taught">
+            <td><p class="learning-row__statement-text">{l.content}</p></td>
+            <td><span class="learning-row__byline">{taughtByline(l)}</span></td>
+            <td class="panel__cell--right">
+              <span class="learning-row__state">
+                {delivering.includes(l.id) ? "Delivering" : "Remembered"}
+              </span>
+            </td>
+          </tr>
         {/each}
       </tbody>
     </table>
@@ -443,6 +494,8 @@
   .learning-row__statement--open { display: block; overflow: visible; white-space: pre-wrap; }
   .learning-row__statement-text { margin: 0; color: var(--ink); line-height: 1.4; }
   .learning-row__byline { color: var(--muted); font-size: 0.8rem; }
+  .learning-row__state { color: var(--muted); font-size: 0.8rem; }
+  .learning-row--taught .learning-row__statement-text { font-size: 0.85rem; }
   .learning-row__concern {
     display: inline-block;
     margin-left: var(--space-2xs);
