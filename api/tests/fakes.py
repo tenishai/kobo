@@ -2475,19 +2475,43 @@ class FakeBab:
         return {"subject": "102000000000000000000", "email": "access@example.iam.gserviceaccount.com",
                 "audience": "sts.amazonaws.com", "issuer": "https://accounts.google.com"}
 
-    def probe_aws(self, role_arn, audience, actor):
+    def probe_aws(self, role_arn, audience, actor, hub_role_arn=None, external_id=None):
         self._guard()
-        self.probes.append((role_arn, audience))
+        self.probes.append((role_arn, audience) if hub_role_arn is None else (role_arn, audience, hub_role_arn, external_id))
         if "refuse" in role_arn:
             raise ClientError(f"the permission service refused the role {role_arn}: AWS refused {role_arn}: AccessDenied")
         return {"account": role_arn.split(":")[4], "assumed_arn": role_arn.replace(":role/", ":assumed-role/") + "/bab-probe"}
 
-    def put_integration(self, integration, vendor, spec, ceiling, actor):
+    def put_integration(self, integration, vendor, spec, ceiling, actor, parent=None):
         self._guard()
+        if parent and not any(i["integration"] == parent and i.get("kind") == "org" for i in self._integrations):
+            raise ClientError(f"the permission service refused connecting {integration}: {parent!r} is not a connected {vendor} organization")
+        kind = "account" if parent else ("org" if spec.get("hub_role_arn") else ("account" if spec.get("role_arn") else "connection"))
         self._integrations = [i for i in self._integrations if i["integration"] != integration]
-        self._integrations.append({"integration": integration, "vendor": vendor, "ceiling": list(ceiling),
+        self._integrations.append({"integration": integration, "vendor": vendor, "ceiling": list(ceiling), "kind": kind,
+                                   "parent": parent, "name": spec.get("name") or integration, "account_id": spec.get("account_id"),
+                                   "hub_role_arn": spec.get("hub_role_arn") if kind == "org" else None,
                                    "spec": dict(spec), "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"})
-        return {"integration": integration, "vendor": vendor, "ceiling": list(ceiling), "teams": []}
+        return {"integration": integration, "vendor": vendor, "ceiling": list(ceiling), "teams": [], "parent": parent, "kind": kind}
+
+    def org_accounts(self, integration, actor):
+        self._guard()
+        org = next((i for i in self._integrations if i["integration"] == integration), None)
+        if org is None or org.get("kind") != "org":
+            raise ClientError(f"the permission service refused the accounts of {integration}: not an organization")
+        children = {str(i.get("account_id")): i["integration"] for i in self._integrations if i.get("parent") == integration}
+        return [{"id": a, "name": n, "email": None, "status": "ACTIVE", "integration": children.get(a), "connected": a in children}
+                for a, n in (("111111111111", "acme-prod"), ("222222222222", "acme-data"))]
+
+    def org_hub_role_arn(self, integration, actor):
+        self._guard()
+        org = next((i for i in self._integrations if i["integration"] == integration), None)
+        if org is None:
+            raise ClientError(f"the permission service refused the organization {integration}: no integration")
+        return str((org.get("spec") or {}).get("hub_role_arn") or "")
+
+    def external_id_for(self, parent, account_id):
+        return f"ext-{parent}-{account_id}"
 
     def delete_integration(self, integration, actor):
         self._guard()

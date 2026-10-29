@@ -1,16 +1,19 @@
 <script lang="ts">
-  // What agents reach out to: one base credential per vendor, held once by
-  // the room and served through the gateway. A row is a vendor; the status
-  // says how far the credential and the gateway change have gone.
+  // What agents reach out to. With the permission service on, a cloud is an
+  // organization row (its hub role) with the accounts connected under it, and a
+  // service vendor is one connection; agents are granted permissions per account
+  // or connection under Permissions. Without it, a row is one credential served
+  // through the gateway with a lane per agent under Connections.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import Modal from "../Modal.svelte";
   import AwsConnect from "./AwsConnect.svelte";
-  import { errorMessage, type AdminIntegration } from "../../lib/api";
+  import { errorMessage, type AdminIntegration, type OrgAccount } from "../../lib/api";
   import { toast } from "../../lib/toast.svelte";
   import {
     adminIntegrationsQuery,
     connectAdminIntegrationMutation,
     disconnectAdminIntegrationMutation,
+    orgAccountsQuery,
   } from "../../lib/queries";
   import { CATALOG, OTHER, catalogEntry, type CatalogEntry } from "../../lib/admin/catalog";
 
@@ -22,15 +25,21 @@
   const disconnect = createMutation(() => (disconnectAdminIntegrationMutation(queryClient)));
 
   let search = $state("");
-  const rows = $derived(
-    (integrations.data ?? []).filter((i) => i.name.toLowerCase().includes(search.trim().toLowerCase())),
-  );
-  const connected = $derived(new Set((integrations.data ?? []).map((i) => i.vendor)));
-  const addable = $derived(CATALOG.filter((c) => !connected.has(c.id)));
+  const all = $derived(integrations.data ?? []);
+  const matches = $derived((i: AdminIntegration) => i.name.toLowerCase().includes(search.trim().toLowerCase()));
+  // Top-level rows: organizations, flat roles and service connections. Accounts sit under their organization.
+  const roots = $derived(all.filter((i) => i.spec.kind !== "account" && !i.spec.parent));
+  const childrenOf = $derived((org: AdminIntegration) => all.filter((i) => i.spec.parent === org.id));
+  const visibleRoots = $derived(roots.filter((r) => matches(r) || childrenOf(r).some(matches)));
+  const connected = $derived(new Set(all.map((i) => i.vendor)));
+  // A second AWS organization is a second row, so AWS stays addable.
+  const addable = $derived(CATALOG.filter((c) => c.id === "aws" || !connected.has(c.id)));
 
   let catalogOpen = $state(false);
   let form = $state<{
     entry: CatalogEntry;
+    mode: "role" | "org" | "account" | "other";
+    parent: AdminIntegration | null;
     vendor: string;
     name: string;
     address: string;
@@ -41,6 +50,13 @@
   let formError = $state<string | null>(null);
   let removing = $state<AdminIntegration | null>(null);
 
+  // The organization's accounts, through its hub, when an account is being added.
+  const orgAccounts = createQuery(() => ({
+    ...orgAccountsQuery(form?.parent?.id ?? ""),
+    enabled: form?.mode === "account" && Boolean(form?.parent),
+  }));
+  const pickable = $derived((orgAccounts.data ?? []).filter((a) => !a.connected));
+
   // A deep link `#/admin/integrations/<vendor>` opens that vendor's form.
   $effect(() => {
     if (item && !form) {
@@ -49,19 +65,39 @@
     }
   });
 
+  function slug(name: string): string {
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  }
+
   function openConnect(preset: CatalogEntry | null): void {
     catalogOpen = false;
     formError = null;
     const entry = preset ?? OTHER;
     form = {
       entry,
+      mode: entry.id === "aws" ? "org" : "other",
+      parent: null,
       vendor: entry.id,
-      name: entry.name,
+      name: entry.id === "aws" ? "" : entry.name,
       address: entry.address ?? "",
       base_access: "read",
       trust: "untrusted",
-      values: Object.fromEntries(entry.fields.map((f) => [f.key, ""])),
+      // The AWS sheet binds the pasted ARN to `role_arn` whatever the catalogue field is called.
+      values: entry.id === "aws" ? { role_arn: "" } : Object.fromEntries(entry.fields.map((f) => [f.key, ""])),
     };
+  }
+
+  function openAddAccount(org: AdminIntegration): void {
+    formError = null;
+    const entry = catalogEntry("aws") ?? OTHER;
+    form = { entry, mode: "account", parent: org, vendor: "aws", name: "", address: "", base_access: "read", trust: "untrusted",
+             values: { role_arn: "", account_id: "" } };
+  }
+
+  function pickAccount(a: OrgAccount | undefined): void {
+    if (!form) return;
+    form.values.account_id = a?.id ?? "";
+    if (a && !form.name) form.name = a.name ?? a.id;
   }
 
   function submitConnect(event: SubmitEvent): void {
@@ -70,19 +106,30 @@
     formError = null;
     const identity: Record<string, string> = {};
     const secrets: Record<string, string> = {};
-    for (const f of form.entry.fields) {
-      const v = (form.values[f.key] ?? "").trim();
-      if (!v) continue;
-      (f.secret ? secrets : identity)[f.key] = v;
+    let auth: string = form.entry.auth;
+    if (form.mode === "org") {
+      auth = "aws_hub";
+      identity.hub_role_arn = (form.values.role_arn ?? "").trim();
+    } else if (form.mode === "account") {
+      auth = "aws_spoke";
+      identity.parent = form.parent?.id ?? "";
+      identity.role_arn = (form.values.role_arn ?? "").trim();
+      identity.account_id = (form.values.account_id ?? "").trim();
+    } else {
+      for (const f of form.entry.fields) {
+        const v = (form.values[f.key] ?? "").trim();
+        if (!v) continue;
+        (f.secret ? secrets : identity)[f.key] = v;
+      }
     }
     connect.mutate(
       {
-        vendor: form.vendor || form.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+        vendor: form.vendor || slug(form.name),
         name: form.name,
         address: form.address,
         base_access: form.base_access,
         trust: form.trust,
-        auth: form.entry.auth,
+        auth: auth as never,
         identity,
         secrets,
       },
@@ -113,16 +160,24 @@
   };
 
   function when(iso: string): string {
-    return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return iso ? new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
   }
+  function kindLabel(i: AdminIntegration): string {
+    if (i.spec.kind === "org") return "organization";
+    if (i.spec.kind === "account" || i.spec.parent) return "account";
+    return i.vendor === "aws" ? "account" : "connection";
+  }
+  const formTitle = $derived(
+    !form ? "" : form.mode === "org" ? "Connect an AWS organization" : form.mode === "account" ? `Add an account under ${form.parent?.name ?? "the organization"}` : `Add ${form.name || "an integration"}`,
+  );
 </script>
 
 <section class="panel page" aria-labelledby="integrations-heading">
   <div>
     <h2 id="integrations-heading" class="page__title">Integrations</h2>
     <p class="page__lead">
-      The vendors agents can reach. The room holds one credential per vendor; each agent gets its
-      own lane to it under Connections.
+      The vendors agents can reach. A cloud is an organization with the accounts connected under it;
+      a service vendor is one connection. What each agent may do there is granted under Permissions.
     </p>
   </div>
   <div class="page__toolbar">
@@ -136,22 +191,22 @@
     <p class="page__foot">Could not read the integrations just now.</p>
   {:else}
     <div class="table-card">
-      {#if (integrations.data ?? []).length === 0}
-        <p class="panel__empty">Nothing connected yet. Add an integration to hold one vendor credential for the room.</p>
+      {#if all.length === 0}
+        <p class="panel__empty">Nothing connected yet. Add an integration: an AWS organization, or a vendor the room holds one connection to.</p>
       {:else}
         <table class="panel__table">
           <thead>
-            <tr><th>Name</th><th>Access</th><th>Status</th><th>Added</th><th class="panel__cell--right"></th></tr>
+            <tr><th>Name</th><th>Kind</th><th>Status</th><th>Added</th><th class="panel__cell--right"></th></tr>
           </thead>
           <tbody>
-            {#each rows as i (i.id)}
+            {#each visibleRoots as i (i.id)}
               <tr>
                 <td>
                   <span class="name">{i.name}</span>
                   {#if i.spec.address}<span class="quiet addr">{i.spec.address}</span>{/if}
-                  {#if i.spec.source === "access"}<span class="quiet addr">in the permission service{i.spec.ceiling?.length ? `, ${i.spec.ceiling.length} permission${i.spec.ceiling.length === 1 ? "" : "s"} agents may ask for` : ""}</span>{/if}
+                  {#if i.spec.source === "access" && i.spec.kind !== "org"}<span class="quiet addr">in the permission service{i.spec.ceiling?.length ? `, ${i.spec.ceiling.length} permission${i.spec.ceiling.length === 1 ? "" : "s"} agents may ask for` : ""}</span>{/if}
                 </td>
-                <td><span class="chip">{i.base_access === "write" ? "read and write" : "read-only"}</span></td>
+                <td><span class="chip">{kindLabel(i)}</span></td>
                 <td>
                   <span class="status status--{STATE[i.state]?.tone ?? "warn"}" title={i.state_detail ?? ""}>
                     <span class="status__dot" aria-hidden="true"></span>{STATE[i.state]?.label ?? i.state}
@@ -159,12 +214,35 @@
                 </td>
                 <td class="quiet">{when(i.created_at)}</td>
                 <td class="panel__cell--right">
+                  {#if i.spec.kind === "org"}
+                    <button type="button" class="btn btn--quiet" onclick={() => openAddAccount(i)}>Add account</button>
+                  {/if}
                   {#if i.spec.pull_request}
                     <a class="btn btn--quiet" href={i.spec.pull_request} target="_blank" rel="noreferrer">Pull request</a>
                   {/if}
                   <button type="button" class="btn btn--quiet" disabled={disconnect.isPending} onclick={() => (removing = i)}>Remove</button>
                 </td>
               </tr>
+              {#each childrenOf(i).filter((c) => !search.trim() || matches(c) || matches(i)) as c (c.id)}
+                <tr class="child">
+                  <td>
+                    <span class="child__tick" aria-hidden="true">└</span>
+                    <span class="name">{c.name}</span>
+                    {#if c.spec.account_id}<span class="quiet addr">{c.spec.account_id}</span>{/if}
+                    {#if c.spec.ceiling?.length}<span class="quiet addr">{c.spec.ceiling.length} permission{c.spec.ceiling.length === 1 ? "" : "s"} agents may ask for</span>{/if}
+                  </td>
+                  <td><span class="chip">account</span></td>
+                  <td>
+                    <span class="status status--{STATE[c.state]?.tone ?? "warn"}" title={c.state_detail ?? ""}>
+                      <span class="status__dot" aria-hidden="true"></span>{STATE[c.state]?.label ?? c.state}
+                    </span>
+                  </td>
+                  <td class="quiet">{when(c.created_at)}</td>
+                  <td class="panel__cell--right">
+                    <button type="button" class="btn btn--quiet" disabled={disconnect.isPending} onclick={() => (removing = c)}>Remove</button>
+                  </td>
+                </tr>
+              {/each}
             {:else}
               <tr><td colspan="5"><p class="panel__empty">No integration matches that.</p></td></tr>
             {/each}
@@ -196,10 +274,39 @@
   </div>
 </Modal>
 
-<Modal open={form !== null} title={form ? (form.entry.id === "aws" ? "Connect AWS" : `Add ${form.name || "an integration"}`) : ""} size={form?.entry.id === "aws" ? "wide" : "default"} onclose={() => (form = null)}>
-  {#if form && form.entry.id === "aws"}
+<Modal open={form !== null} title={formTitle} size={form?.vendor === "aws" ? "wide" : "default"} onclose={() => (form = null)}>
+  {#if form && form.mode === "org"}
     <form id="integration-form" class="form" onsubmit={submitConnect}>
-      <AwsConnect bind:roleArn={form.values.role_arn} />
+      <label class="field">
+        <span>Name for this organization</span>
+        <input id="integration-name" type="text" bind:value={form.name} placeholder="e.g. acme-aws" required autocomplete="off" />
+      </label>
+      <AwsConnect bind:roleArn={form.values.role_arn} mode="org" integration={slug(form.name) || "aws"} />
+      {#if formError}<p class="page__foot fail">{formError}</p>{/if}
+    </form>
+  {:else if form && form.mode === "account"}
+    <form id="integration-form" class="form" onsubmit={submitConnect}>
+      <label class="field">
+        <span>Account</span>
+        {#if orgAccounts.isPending}
+          <span class="quiet">Reading the organization's accounts through its hub…</span>
+        {:else if orgAccounts.isError}
+          <span class="quiet fail">{errorMessage(orgAccounts.error, "Could not list the accounts.")}</span>
+        {:else}
+          <select id="integration-account" value={form.values.account_id} onchange={(e) => pickAccount(pickable.find((a) => a.id === (e.currentTarget as HTMLSelectElement).value))} required>
+            <option value="" disabled>Pick an account</option>
+            {#each pickable as a (a.id)}
+              <option value={a.id}>{a.name ?? a.id} ({a.id})</option>
+            {/each}
+          </select>
+          {#if pickable.length === 0}<span class="quiet">Every account the hub can see is connected already.</span>{/if}
+        {/if}
+      </label>
+      <label class="field">
+        <span>Name</span>
+        <input id="integration-name" type="text" bind:value={form.name} placeholder="e.g. acme-prod" required autocomplete="off" />
+      </label>
+      <AwsConnect bind:roleArn={form.values.role_arn} mode="account" integration={slug(form.name) || "account"} parent={form.parent?.id ?? null} accountId={form.values.account_id || null} />
       {#if formError}<p class="page__foot fail">{formError}</p>{/if}
     </form>
   {:else if form}
@@ -239,14 +346,17 @@
   {/if}
   {#snippet footer()}
     <button type="button" class="btn" onclick={() => (form = null)}>Cancel</button>
-    <button type="submit" form="integration-form" class="btn btn--primary" disabled={connect.isPending}>{form?.entry.id === "aws" ? (connect.isPending ? "Checking with AWS…" : "Connect") : "Add"}</button>
+    <button type="submit" form="integration-form" class="btn btn--primary" disabled={connect.isPending}>{form?.vendor === "aws" ? (connect.isPending ? "Checking with AWS…" : "Connect") : "Add"}</button>
   {/snippet}
 </Modal>
 
 <Modal open={removing !== null} title={removing ? `Remove ${removing.name}?` : ""} size="narrow" onclose={() => (removing = null)}>
   <p class="page__lead">
-    The credential is deleted from the secrets service and the vendor is removed from the gateway.
-    Agents with a lane to it lose it.
+    {#if removing?.spec.kind === "org"}
+      The organization is removed from the permission service. Its accounts must be removed first.
+    {:else}
+      The connection is removed from the permission service and every grant on it is revoked; any credential is deleted from the secrets service and the vendor removed from the gateway.
+    {/if}
   </p>
   {#snippet footer()}
     <button type="button" class="btn" onclick={() => (removing = null)}>Cancel</button>
@@ -255,6 +365,8 @@
 </Modal>
 
 <style>
+  .child td:first-child { padding-left: 1.75rem; }
+  .child__tick { margin-right: 0.35rem; color: var(--muted); }
   .name { font-weight: 600; }
   .quiet { color: var(--muted); font-size: 0.85rem; }
   .fail { color: var(--fail); }

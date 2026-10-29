@@ -220,7 +220,7 @@ def test_the_setup_page_renders_the_role_three_ways_around_the_gateways_identity
     # No admin plane: the page still renders, and says what to fill in.
     client.app.state.clients.liminal_admin = None
     body = client.get("/api/admin/integrations/aws/setup", headers=headers).json()
-    assert body["identity"] is None and "by hand" in body["identity_note"] and "<gateway subject>" in body["trust_policy"]
+    assert body["identity"] is None and "by hand" in body["identity_note"] and "<room subject>" in body["trust_policy"]
 
 
 def test_a_malformed_aws_role_is_refused_in_one_sentence(tmp_path, fake_storage):
@@ -288,7 +288,7 @@ def test_with_access_on_an_aws_role_is_probed_by_bab_and_connected_there_not_on_
     assert "connected in the permission service" in row["state_detail"]
     (integ,) = bab.integrations("x")
     assert integ["integration"] == row["id"] and integ["vendor"] == "aws"
-    assert integ["spec"] == {"role_arn": AWS_ROLE, "audience": "sts.amazonaws.com"}
+    assert integ["spec"] == {"role_arn": AWS_ROLE, "audience": "sts.amazonaws.com", "name": "acme-audit"}
     # The ceiling is every read permission the catalogue offers for the vendor.
     assert integ["ceiling"] == ["aws_cloudtrail_lake_query", "aws_inventory_read"]
     assert not github._pushed_trees, "the gateway has nothing to learn: leases come from the permission service"
@@ -311,3 +311,64 @@ def test_connections_the_permission_service_holds_show_in_the_list_and_can_be_re
     assert "connected in the permission service" in row["state_detail"]
     out = client.delete("/api/admin/integrations/aws-prod", headers=headers).json()
     assert out["access"].startswith("removed") and bab.integrations("x") == []
+
+
+HUB = "arn:aws:iam::999999999999:role/KoboAccess-Hub"
+SPOKE = "arn:aws:iam::111111111111:role/KoboAccess-Role"
+
+
+def test_an_organization_then_an_account_under_it(tmp_path, fake_storage):
+    bab = FakeBab(integrations=[])
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
+    client, headers = _access_client(tmp_path, fake_storage, github=github, bab=bab)
+
+    # The organization's set-up page: the hub role, trusting the room's identity (oaud, not aud).
+    page = client.get("/api/admin/integrations/aws/setup?mode=org&integration=acme-aws", headers=headers).json()
+    assert page["mode"] == "org" and page["role_name"] == "KoboAccess-Hub"
+    assert 'room_service_account_unique_id = "102000000000000000000"' in page["terraform"]
+    assert '"accounts.google.com:oaud": "sts.amazonaws.com"' in page["trust_policy"]
+    assert "sts:AssumeRole" in page["permissions_policy"] and "organizations:ListAccounts" in page["permissions_policy"]
+
+    # Connect the organization: probed, then a bab row of kind org with no ceiling.
+    row = client.post("/api/admin/integrations", json={"vendor": "aws", "name": "acme-aws", "base_access": "read", "auth": "aws_hub",
+                                                        "identity": {"hub_role_arn": HUB}}, headers=headers).json()
+    assert row["id"] == "acme-aws" and row["state"] == "applied" and row["spec"]["kind"] == "org", row
+    assert bab.probes[-1] == (HUB, "sts.amazonaws.com")
+    (org,) = bab.integrations("x")
+    assert org["kind"] == "org" and org["ceiling"] == [] and org["hub_role_arn"] == HUB
+
+    # The organization's accounts, through the hub, none connected yet.
+    accts = client.get("/api/admin/integrations/acme-aws/accounts", headers=headers).json()["accounts"]
+    assert [(a["id"], a["connected"]) for a in accts] == [("111111111111", False), ("222222222222", False)]
+
+    # An account's set-up page: the spoke trusts the hub with this account's external id.
+    page = client.get("/api/admin/integrations/aws/setup?mode=account&integration=acme-prod&parent=acme-aws&account_id=111111111111", headers=headers).json()
+    assert page["mode"] == "account" and page["hub_role_arn"] == HUB and page["external_id"] == "ext-acme-aws-111111111111"
+    assert f'hub_role_arn   = "{HUB}"' in page["terraform"] and '"sts:ExternalId": "ext-acme-aws-111111111111"' in page["trust_policy"]
+    bad = client.get("/api/admin/integrations/aws/setup?mode=account&integration=x&parent=nope&account_id=111111111111", headers=headers)
+    assert bad.status_code == 409
+
+    # Connect the account under the organization: probed through the hub, then a bab row with the parent.
+    row = client.post("/api/admin/integrations", json={"vendor": "aws", "name": "acme-prod", "base_access": "read", "auth": "aws_spoke",
+                                                        "identity": {"parent": "acme-aws", "role_arn": SPOKE, "account_id": "111111111111"}},
+                      headers=headers).json()
+    assert row["id"] == "acme-prod" and row["state"] == "applied" and row["spec"]["parent"] == "acme-aws"
+    assert bab.probes[-1] == (SPOKE, "sts.amazonaws.com", HUB, "ext-acme-aws-111111111111")
+    acct = next(i for i in bab.integrations("x") if i["integration"] == "acme-prod")
+    assert acct["parent"] == "acme-aws" and acct["kind"] == "account" and acct["account_id"] == "111111111111"
+    assert acct["spec"]["spoke_role_arn"] == SPOKE and acct["spec"]["external_id"] == "ext-acme-aws-111111111111"
+    assert acct["ceiling"] == ["aws_cloudtrail_lake_query", "aws_inventory_read"]
+    assert not github._pushed_trees, "nothing goes to the gateway: leases come from the permission service"
+    # Now the organization lists it connected, and the panel shows both rows.
+    accts = {a["id"]: a for a in client.get("/api/admin/integrations/acme-aws/accounts", headers=headers).json()["accounts"]}
+    assert accts["111111111111"]["connected"] is True and accts["111111111111"]["integration"] == "acme-prod"
+    rows = {r["id"]: r for r in client.get("/api/admin/integrations", headers=headers).json()["integrations"]}
+    assert rows["acme-aws"]["spec"]["kind"] == "org" and rows["acme-prod"]["spec"]["parent"] == "acme-aws"
+
+    # The picker offers the connected account under its organization, and the other one as not connected.
+    picker = {v["id"]: v for v in client.get("/api/access/picker", headers=headers).json()["vendors"]}["aws"]
+    assert picker["organizations"] == [{"id": "acme-aws", "name": "acme-aws"}]
+    by_id = {a["id"]: a for a in picker["accounts"]}
+    assert by_id["acme-prod"]["connected"] is True and by_id["acme-prod"]["organization"] == "acme-aws"
+    assert by_id["acme-aws/222222222222"]["connected"] is False and by_id["acme-aws/222222222222"]["name"] == "acme-data"
+    assert "acme-aws" not in by_id, "an organization itself is never offered for a lease"

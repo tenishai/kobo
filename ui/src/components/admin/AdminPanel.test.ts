@@ -87,7 +87,7 @@ describe("AdminPanel", () => {
   };
 
   const AWS_SETUP = {
-    version: "v0.1.0 f8951a8", role_name: "KoboAccess-Role", audience: "sts.amazonaws.com",
+    version: "v0.1.0 f8951a8", mode: "org", principal: "access", role_name: "KoboAccess-Hub", audience: "sts.amazonaws.com",
     identity: { issuer: "https://accounts.google.com", subject: "1234567890", email: "gw@p.iam.gserviceaccount.com", audience: "sts.amazonaws.com" },
     identity_note: null,
     packs: [
@@ -95,9 +95,10 @@ describe("AdminPanel", () => {
       { id: "logs", purpose: "Read logs and metrics.", required: false, grants: ["12 Logs actions"] },
     ],
     chosen: ["inventory", "logs"],
-    terraform: 'module "kobo_access" {\n  source = "git::https://github.com/tenishai/cloud-access.git//aws/terraform?ref=v0.1.0"\n}',
-    cloudformation: { template: "{}", parameters: { IntegrationId: "aws", RoleName: "KoboAccess-Role" } },
+    terraform: 'module "kobo_access_hub" {\n  source = "git::https://github.com/tenishai/cloud-access.git//aws/hub?ref=v0.1.0"\n}',
+    cloudformation: { template: "", parameters: {} },
     trust_policy: '{"Statement": []}',
+    permissions_policy: '{"Statement": [{"Sid": "AssumeSpokes"}]}',
     checked: true,
   };
 
@@ -182,11 +183,14 @@ describe("AdminPanel", () => {
     expect(screen.queryByText("PagerDuty")).toBeNull();
     // AWS is its own sheet: what agents may read, the role three ways, paste the ARN. No key anywhere.
     await fireEvent.click(screen.getAllByRole("button", { name: "Add" })[3]);
-    expect(await screen.findByRole("heading", { name: "Connect AWS" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect an AWS organization" })).toBeTruthy();
     expect(await screen.findByText("1234567890")).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "CloudFormation" })).toBeTruthy();
-    expect(screen.getByText(/cloud-access.git\/\/aws\/terraform\?ref=v0.1.0/)).toBeTruthy();
-    expect(screen.getByLabelText("Role ARN")).toBeTruthy();
+    // An organization's hub has no CloudFormation shape; Terraform or by hand.
+    expect(screen.queryByRole("tab", { name: "CloudFormation" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "By hand" })).toBeTruthy();
+    expect(screen.getByText(/cloud-access.git\/\/aws\/hub\?ref=v0.1.0/)).toBeTruthy();
+    expect(screen.getByLabelText("Name for this organization")).toBeTruthy();
+    expect(screen.getByLabelText("Hub role ARN")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Connect" })).toBeTruthy();
     expect(screen.queryByLabelText(/token/i)).toBeNull();
     expect(document.querySelector("#integration-form input[type=password]")).toBeNull();

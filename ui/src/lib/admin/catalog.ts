@@ -4,7 +4,7 @@
 // or a service account to act as, Azure is a federated app registration,
 // Datadog and Wiz are service-account key pairs, the rest are API tokens.
 // A vendor not on this list is still connectable as "Other" with a token.
-export type AuthKind = "token" | "api_keys" | "aws_role" | "gcp_identity" | "azure_federated";
+export type AuthKind = "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "azure_federated";
 
 export type CatalogField = {
   key: string;
@@ -45,11 +45,11 @@ export const CATALOG: CatalogEntry[] = [
     note: "No key. The gateway uses workload identity; name a service account only to act as a narrower one.",
   },
   {
-    id: "aws", name: "AWS", summary: "Accounts and resources.", auth: "aws_role",
+    id: "aws", name: "AWS", summary: "An organization: its management account's hub role, then the accounts under it.", auth: "aws_hub",
     fields: [
-      { key: "role_arn", label: "Role ARN", secret: false, placeholder: "arn:aws:iam::123456789012:role/KoboAccess-Role" },
+      { key: "hub_role_arn", label: "Hub role ARN", secret: false, placeholder: "arn:aws:iam::123456789012:role/KoboAccess-Hub" },
     ],
-    note: "No access key. The page creates a read-only role that trusts the gateway's own identity; the room checks it with AWS before saving.",
+    note: "No access key. The hub role lives in the organization's management account and trusts the room's identity; each member account then gets its own role that the hub assumes.",
   },
   {
     id: "azure", name: "Azure", summary: "Subscriptions and resources.", auth: "azure_federated",

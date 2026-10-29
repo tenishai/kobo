@@ -20,9 +20,10 @@ const ACCESS = {
       kind: "cloud",
       label: "AWS",
       account_noun: "account",
+      organizations: [{ id: "acme-aws", name: "acme-aws" }],
       accounts: [
-        { id: "acme-audit", name: "acme-audit", connected: true, ceiling: ["aws_cloudtrail_read", "aws_iam_read"] },
-        { id: "acme-data", name: "acme-data", connected: false, ceiling: [] },
+        { id: "acme-audit", name: "acme-audit", connected: true, ceiling: ["aws_cloudtrail_read", "aws_iam_read"], organization: "acme-aws", account_id: "111111111111" },
+        { id: "acme-data", name: "acme-data", connected: false, ceiling: [], organization: "acme-aws", account_id: "222222222222" },
       ],
       groups: [
         { name: "Security", permissions: [
@@ -37,8 +38,8 @@ const ACCESS = {
       ],
       tiers: [],
     },
-    { id: "datadog", kind: "service", label: "Datadog", account_noun: null,
-      accounts: [{ id: "datadog", name: "datadog", connected: true, ceiling: ["datadog_monitors_read"] }],
+    { id: "datadog", kind: "service", label: "Datadog", account_noun: null, organizations: [],
+      accounts: [{ id: "datadog", name: "datadog", connected: true, ceiling: ["datadog_monitors_read"], organization: null, account_id: null }],
       groups: [{ name: "Monitors", permissions: [{ name: "datadog_monitors_read", tier: "read", description: "Monitors" }] }], tiers: [] },
   ],
 };
