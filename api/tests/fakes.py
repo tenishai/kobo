@@ -2353,10 +2353,11 @@ class FakeBab:
         self.error = error
         self.topologies: list[tuple[str, list[dict]]] = []
         self.revoked: list[tuple[int, str]] = []
+        self.probes: list[tuple[str, str]] = []
         self._requests: dict[int, dict] = {}
         self._grants: dict[int, dict] = {}
         self._leases: list[dict] = []
-        self._integrations = integrations or [
+        self._integrations = integrations if integrations is not None else [
             {"integration": "aws-prod", "vendor": "aws", "ceiling": ["aws_inventory_read", "aws_cloudtrail_lake_query"],
              "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"},
         ]
@@ -2464,3 +2465,36 @@ class FakeBab:
     def leases(self, agent, since, actor):
         self._guard()
         return [dict(lease) for lease in self._leases if lease["agent"] == agent]
+
+    def all_leases(self, since, actor):
+        self._guard()
+        return [dict(lease) for lease in self._leases]
+
+    def aws_identity(self, actor):
+        self._guard()
+        return {"subject": "102000000000000000000", "email": "access@example.iam.gserviceaccount.com",
+                "audience": "sts.amazonaws.com", "issuer": "https://accounts.google.com"}
+
+    def probe_aws(self, role_arn, audience, actor):
+        self._guard()
+        self.probes.append((role_arn, audience))
+        if "refuse" in role_arn:
+            raise ClientError(f"the permission service refused the role {role_arn}: AWS refused {role_arn}: AccessDenied")
+        return {"account": role_arn.split(":")[4], "assumed_arn": role_arn.replace(":role/", ":assumed-role/") + "/bab-probe"}
+
+    def put_integration(self, integration, vendor, spec, ceiling, actor):
+        self._guard()
+        self._integrations = [i for i in self._integrations if i["integration"] != integration]
+        self._integrations.append({"integration": integration, "vendor": vendor, "ceiling": list(ceiling),
+                                   "spec": dict(spec), "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"})
+        return {"integration": integration, "vendor": vendor, "ceiling": list(ceiling), "teams": []}
+
+    def delete_integration(self, integration, actor):
+        self._guard()
+        before = len(self._integrations)
+        self._integrations = [i for i in self._integrations if i["integration"] != integration]
+        if len(self._integrations) == before:
+            raise ClientError(f"the permission service refused disconnecting {integration}: no integration {integration!r}")
+        revoked = sum(1 for g in self._grants.values() if g["integration"] == integration)
+        self._grants = {k: g for k, g in self._grants.items() if g["integration"] != integration}
+        return {"removed": integration, "grants_revoked": revoked, "tuples_deleted": revoked + 1}

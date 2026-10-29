@@ -29,6 +29,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from . import admin_store, cloud_access
+from . import bab as bab_mod
 from .agent_env import require_our_branch
 from .clients import ClientError, Clients, GitHubClient
 from .config import Config
@@ -244,13 +245,26 @@ def probe_aws_role(clients: Clients | None, role_arn: str, audience: str) -> dic
         raise ConnectRefused(f"{exc}; fix the role\'s trust policy and connect again") from exc
 
 
-def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] | None) -> dict[str, Any]:
-    """Everything the Connect AWS page shows: who the gateway is, which packs
-    exist, and the three ways to create the role, each pre-filled."""
+def _bab(clients: Clients | None):
+    return getattr(clients, "bab", None) if clients is not None else None
+
+
+def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] | None, actor: str = "operator@room") -> dict[str, Any]:
+    """Everything the Connect AWS page shows: who the role must trust, which
+    packs exist, and the three ways to create the role, each pre-filled. With
+    the permission service on, the principal is bab (it mints the leases); the
+    gateway otherwise."""
+    bab = _bab(clients)
     admin = getattr(clients, "liminal_admin", None) if clients is not None else None
     identity: dict[str, str] | None = None
     identity_note: str | None = None
-    if admin is None:
+    principal = "access" if bab is not None else "gateway"
+    if bab is not None:
+        try:
+            identity = bab.aws_identity(actor)
+        except ClientError as exc:
+            identity_note = str(exc)
+    elif admin is None:
         identity_note = "the gateway\'s admin plane is not wired, so the room cannot read its identity; fill the subject in by hand"
     else:
         try:
@@ -263,6 +277,7 @@ def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
         "version": cloud_access.version(),
         "role_name": cloud_access.ROLE_NAME,
         "audience": cloud_access.AUDIENCE,
+        "principal": principal,
         "identity": identity,
         "identity_note": identity_note,
         "packs": cloud_access.aws_packs(),
@@ -273,7 +288,7 @@ def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
             "parameters": cloud_access.cloudformation_parameters(subject, integration_id, chosen),
         },
         "trust_policy": cloud_access.trust_policy(subject),
-        "checked": admin is not None,
+        "checked": bab is not None or admin is not None,
     }
 
 
@@ -302,10 +317,17 @@ def connect(
     if credential.strip() and SECRET_KEY not in secrets:
         secrets[SECRET_KEY] = credential.strip()
     check_auth(auth, identity, secrets)
+    bab = _bab(clients)
     probe: dict[str, str] | None = None
     if auth == "aws_role":
         identity.setdefault("audience", cloud_access.AUDIENCE)
-        probe = probe_aws_role(clients, identity["role_arn"], identity["audience"])
+        if bab is not None:
+            try:
+                probe = bab.probe_aws(identity["role_arn"], identity["audience"], actor)
+            except ClientError as exc:
+                raise ConnectRefused(f"{exc}; fix the role\'s trust policy and connect again") from exc
+        else:
+            probe = probe_aws_role(clients, identity["role_arn"], identity["audience"])
     if secrets and (sero is None or not config.sero_url):
         raise ConnectRefused("the Secrets add-on is off, so the room has nowhere to hold the credential; turn it on first")
     spec: dict[str, Any] = {
@@ -329,13 +351,29 @@ def connect(
     except ClientError as exc:
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"the secrets add-on refused: {exc}")
         return row
-    detail = "credential stored" if secrets else "no secret to store; the gateway uses its own identity"
+    detail = "credential stored" if secrets else "no secret to store; the connection uses the room\'s own identity"
+    minter = "the permission service" if bab is not None else "the gateway"
     if probe is not None:
-        detail = f"AWS agreed: the gateway assumed the role in account {probe['account']}"
+        detail = f"AWS agreed: {minter} assumed the role in account {probe['account']}"
     elif auth == "aws_role":
         detail = "not checked with AWS: the gateway\'s admin plane is not wired; the role is taken at its word"
     if secrets and not config.gateway_namespace:
         detail += "; no gateway namespace is set, so it is not synced to the gateway yet"
+    # The permission service holds the connection: what agents may be granted there (the
+    # ceiling is every read permission the catalogue offers for the vendor; the role's or
+    # token's own policy is the outer wall) and, for a cloud, what to assume.
+    if bab is not None:
+        spec_for_bab = {"role_arn": identity["role_arn"], "audience": identity["audience"]} if auth == "aws_role" else {}
+        try:
+            bab.put_integration(row.id, vendor, spec_for_bab, bab_mod.read_permissions(bab, vendor, actor), actor)
+            detail += "; connected in the permission service, agents may ask for its read permissions"
+        except ClientError as exc:
+            admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the permission service refused: {exc}")
+            return row
+    if bab is not None and auth == "aws_role":
+        # Leases come from the permission service; the gateway has nothing to learn.
+        admin_store.set_integration_state(session, row.id, state=admin_store.STATE_APPLIED, detail=detail)
+        return row
     try:
         pr = _gateway_pr(clients.github, config, row, remove=False, actor=actor)
     except (ClientError, OSError) as exc:
@@ -353,10 +391,25 @@ def connect(
 def disconnect(session: Session, clients: Clients | None, config: Config, *, integration_id: str, actor: str) -> dict[str, Any]:
     """Reverse the three steps. The row goes first (it is the truth); each
     projection\'s outcome is reported back as a sentence."""
+    bab = _bab(clients)
     row = session.get(AdminIntegration, integration_id)
     if row is None:
+        # Connected straight into the permission service (never through this panel): take it out of there.
+        if bab is not None:
+            try:
+                out = bab.delete_integration(integration_id, actor)
+            except ClientError as exc:
+                raise ConnectRefused(str(exc)) from exc
+            return {"id": integration_id, "secret": "none", "gateway": "none",
+                    "access": f"removed; {out.get('grants_revoked', 0)} grant(s) revoked"}
         raise ConnectRefused(f"no integration {integration_id!r}")
     outcome: dict[str, Any] = {"id": integration_id, "secret": "left", "gateway": "left"}
+    if bab is not None:
+        try:
+            out = bab.delete_integration(integration_id, actor)
+            outcome["access"] = f"removed; {out.get('grants_revoked', 0)} grant(s) revoked"
+        except ClientError as exc:
+            outcome["access"] = f"left: {exc}"
     sero = clients.sero if clients is not None else None
     if sero is not None and row.credential_ref:
         try:

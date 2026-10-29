@@ -94,6 +94,15 @@ def test_ask_review_hold_revoke_and_the_topology_push(tmp_path, fake_storage):
     assert bab.revoked == [(grant["id"], "ops@example.com")]
     assert c.get("/api/agents/ledger/leases", headers=h).json() == {"available": True, "leases": []}
 
+    # Borrowed now, room-wide: only leases whose hour has not run out.
+    bab._leases.extend([
+        {"id": 1, "agent": "ledger", "integration": "aws-prod", "permissions": ["aws_cloudtrail_lake_query"], "task": "audit",
+         "minter": "aws", "issued_at": "2099-01-01T00:00:00+00:00", "expires_at": "2099-01-01T01:00:00+00:00"},
+        {"id": 2, "agent": "ledger", "integration": "aws-prod", "permissions": ["aws_inventory_read"], "task": "old",
+         "minter": "aws", "issued_at": "2020-01-01T00:00:00+00:00", "expires_at": "2020-01-01T01:00:00+00:00"},
+    ])
+    assert [lease["id"] for lease in c.get("/api/admin/access/leases", headers=h).json()["leases"]] == [1]
+
     # The room tells bab which agents exist, with the pod identity that is each one.
     sync = c.post("/api/admin/access/sync", headers=h).json()
     assert sync["agents"] == 1

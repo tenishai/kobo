@@ -8,6 +8,10 @@ All notable changes to kobo are documented here. The format follows
 
 ### Changed
 
+- **The admin panel follows the permission service.** Connect AWS names the permission service's identity as what the role must trust, asks it to try the role before saving, and connects the account there (the ceiling is every read permission the catalogue offers for the vendor); other vendors connect there too. Disconnect takes the connection out of it, revoking the grants on it. Integrations lists connections the service holds that the panel never made. Connections is shown only while the service is off. Review opens with **Borrowed now**, the credentials out in the room at this moment (`GET /api/admin/access/leases`), and Overview counts them.
+
+### Changed
+
 - A base image, `ghcr.io/tenishai/kobo-base` (`docker/base/Dockerfile`, workflow `base-image.yml`), carries git, gh, kubectl and gcloud on its own cadence, and the product image builds on it by digest (`ARG BASE_IMAGE`), so a release does only the Python and UI layers.
 - **Faster release builds.** The UI build and the lockfile export run once on the build host instead of once per target architecture (under arm64 emulation they were most of a release's build time), and unchanged layers come from a registry cache (`ghcr.io/tenishai/kobo:buildcache`) instead of being rebuilt. The image's contents do not change.
 

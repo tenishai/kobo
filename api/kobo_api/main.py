@@ -72,6 +72,7 @@ from kobo_api.archetypes import (
 )
 from kobo_api.avatars import avatar_prompt, set_avatar
 from kobo_api.bab import ROOM_ACTOR as BAB_ROOM_ACTOR
+from kobo_api.bab import active_leases as bab_active_leases
 from kobo_api.bab import actor_for as bab_actor_for
 from kobo_api.bab import build_bab
 from kobo_api.bab import picker as bab_picker
@@ -3867,6 +3868,20 @@ def create_app(
             return _bab_refused(exc)
         return JSONResponse({"results": results})
 
+    @app.get("/api/admin/access/leases")
+    def admin_access_leases(request: Request) -> JSONResponse:
+        """Borrowed now: every credential out in the room whose hour has not run out."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        bab, off = _bab_or_404()
+        if off is not None:
+            return off
+        try:
+            return JSONResponse({"leases": bab_active_leases(bab, _bab_actor(request))})
+        except ClientError as exc:
+            return _bab_refused(exc)
+
     @app.post("/api/admin/access/sync")
     def admin_access_sync(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
         """Push the room's agents to bab now (also done at boot, create and destroy)."""
@@ -3890,7 +3905,8 @@ def create_app(
             return blocked
         wanted = [p.strip() for p in packs.split(",") if p.strip()]
         safe_id = re.sub(r"[^a-z0-9-]", "", integration.lower())[:64] or "aws"
-        return JSONResponse(admin_integrations_flow.aws_setup(app.state.clients, integration_id=safe_id, packs=wanted))
+        return JSONResponse(admin_integrations_flow.aws_setup(
+            app.state.clients, integration_id=safe_id, packs=wanted, actor=_bab_actor(request)))
 
     @app.get("/api/admin/integrations")
     def admin_integrations(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
@@ -3900,6 +3916,24 @@ def create_app(
         if blocked is not None:
             return blocked
         rows = [admin_store.integration_dict(r) for r in admin_store.list_integrations(session)]
+        # Connections the permission service holds that this panel never made (connected
+        # straight into it) show here too, read-only, so the list is the whole truth.
+        bab = getattr(app.state.clients, "bab", None) if app.state.clients is not None else None
+        if bab is not None:
+            known = {r["id"] for r in rows}
+            try:
+                for i in bab.integrations(_bab_actor(request)):
+                    if i["integration"] in known:
+                        continue
+                    rows.append({
+                        "id": i["integration"], "vendor": i["vendor"], "name": i["integration"], "base_access": "read",
+                        "state": "applied", "state_detail": "connected in the permission service; "
+                        f"{len(i.get('ceiling') or [])} permission(s) agents may ask for",
+                        "credential_ref": None, "spec": {"source": "access", "ceiling": i.get("ceiling") or []},
+                        "created_by": "", "created_at": i.get("created_at", ""), "updated_at": i.get("updated_at", ""),
+                    })
+            except ClientError as exc:
+                log.warning("bab integrations unavailable for the Integrations pane: %s", exc)
         return JSONResponse({"integrations": rows})
 
     @app.post("/api/admin/integrations", status_code=201)

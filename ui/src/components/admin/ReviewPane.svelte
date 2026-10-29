@@ -7,11 +7,13 @@
   import Modal from "../Modal.svelte";
   import { errorMessage, type AccessRequest } from "../../lib/api";
   import { toast } from "../../lib/toast.svelte";
-  import { accessRequestsQuery, decideAccessMutation, syncAccessMutation } from "../../lib/queries";
+  import { accessLeasesQuery, accessRequestsQuery, decideAccessMutation, syncAccessMutation } from "../../lib/queries";
 
   const queryClient = useQueryClient();
   let scope = $state<"pending" | "all">("pending");
   const requests = createQuery(() => (accessRequestsQuery(scope)));
+  // Credentials out in the room right now, refreshed often: an hour is short.
+  const leases = createQuery(() => ({ ...accessLeasesQuery(), refetchInterval: 30_000 }));
   const decide = createMutation(() => (decideAccessMutation(queryClient)));
   const sync = createMutation(() => (syncAccessMutation(queryClient)));
 
@@ -75,6 +77,10 @@
   function when(iso: string): string {
     return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   }
+  function left(iso: string): string {
+    const min = Math.max(0, Math.round((new Date(iso).getTime() - Date.now()) / 60_000));
+    return min >= 60 ? "about an hour" : `${min} min`;
+  }
 </script>
 
 <section class="panel page" aria-labelledby="review-heading">
@@ -82,6 +88,26 @@
     <h2 id="review-heading" class="page__title">Review</h2>
     <p class="page__lead">Permissions agents' owners asked for. Approve and the agent may borrow a credential for them; deny with a reason.</p>
   </div>
+
+  {#if leases.data && leases.data.length > 0}
+    <h3 class="panel__subheading">Borrowed now</h3>
+    <div class="table-card"><table class="panel__table">
+      <thead><tr><th>Agent</th><th>Account</th><th>Permissions</th><th>Task</th><th>Issued</th><th>Ends in</th></tr></thead>
+      <tbody>
+        {#each leases.data as l (l.id)}
+          <tr>
+            <td><span class="panel__name">{l.agent}</span></td>
+            <td>{l.integration}</td>
+            <td class="quiet">{l.permissions.join(", ")}</td>
+            <td class="quiet">{l.task ?? ""}</td>
+            <td class="quiet nowrap">{when(l.issued_at)}</td>
+            <td class="nowrap">{left(l.expires_at)}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table></div>
+    <h3 class="panel__subheading">Waiting for a decision</h3>
+  {/if}
 
   {#if requests.isPending}
     <p class="panel__note">Reading the requests…</p>
