@@ -539,7 +539,14 @@ def register_accounts(session: Session, clients: Clients | None, config: Config,
     bab = _bab(clients)
     if bab is None:
         raise ConnectRefused("checking an organization\'s accounts needs the permission service")
-    _org_or_refused(bab, org_id, actor)
+    org = _org_or_refused(bab, org_id, actor)
+    # An organization connected before external ids were per organization has none in
+    # the permission service; give it its id now (the same derivation the set-up page
+    # shows), so discover can probe its accounts. Its spoke rows keep their own ids.
+    if not (org.get("external_id") or (org.get("spec") or {}).get("external_id")):
+        bab.put_integration(org_id, "aws", {"hub_role_arn": org.get("hub_role_arn") or bab.org_hub_role_arn(org_id, actor),
+                                            "audience": cloud_access.AUDIENCE, "name": org.get("name") or org_id,
+                                            "external_id": bab.external_id_for_org(org_id)}, [], actor)
     found = bab.discover_accounts(org_id, actor, cloud_access.ROLE_NAME)
     taken = {r.id for r in admin_store.list_integrations(session)} | {i["integration"] for i in bab.integrations(actor)}
     ceiling: list[str] | None = None

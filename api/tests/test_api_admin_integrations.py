@@ -370,9 +370,18 @@ def test_an_organization_then_its_accounts_register_themselves(tmp_path, fake_st
     bad = client.post("/api/admin/integrations/acme-prod/accounts/check", headers=headers)
     assert bad.status_code == 409
 
+    # An organization connected before ids were per organization gets its id on the first check.
+    bab._integrations.append({"integration": "older-aws", "vendor": "aws", "ceiling": [], "kind": "org", "parent": None, "name": "older-aws",
+                              "account_id": None, "hub_role_arn": HUB, "spec": {"hub_role_arn": HUB, "name": "older-aws"},
+                              "created_at": "2026-10-28T12:00:00", "updated_at": "2026-10-28T12:00:00"})
+    found = client.post("/api/admin/integrations/older-aws/accounts/check", headers=headers).json()
+    older = next(i for i in bab.integrations("x") if i["integration"] == "older-aws")
+    assert older["spec"]["external_id"] == "ext-older-aws" and older["kind"] == "org"
+    assert [a["id"] for a in found["connected"]] == ["111111111111", "222222222222"]
+
     # The picker offers both accounts under their organization; the organization itself never.
     picker = {v["id"]: v for v in client.get("/api/access/picker", headers=headers).json()["vendors"]}["aws"]
-    assert picker["organizations"] == [{"id": "acme-aws", "name": "acme-aws"}]
+    assert {o["id"] for o in picker["organizations"]} == {"acme-aws", "older-aws"}
     by_id = {a["id"]: a for a in picker["accounts"]}
     assert by_id["acme-prod"]["connected"] is True and by_id["acme-prod"]["organization"] == "acme-aws"
     assert by_id["acme-data"]["connected"] is True
