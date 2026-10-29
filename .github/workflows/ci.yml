@@ -132,3 +132,16 @@ jobs:
             exit 1
           fi
           echo "no scaffold tests"
+
+  # The image is built only when a release is cut, so a Dockerfile mistake used to
+  # surface at release time (0.3.4 published no image over an ARG declared after the
+  # first FROM). BuildKit's --check lints both Dockerfiles without building anything.
+  dockerfile:
+    runs-on: ${{ fromJSON(vars.CI_BUILD_RUNS_ON || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Lint the product Dockerfile
+        run: docker buildx build --check .
+      - name: Lint the base Dockerfile
+        run: docker buildx build --check docker/base
