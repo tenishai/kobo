@@ -1,8 +1,10 @@
 <script lang="ts">
   // Connect AWS: the account owner creates one read-only role that trusts
-  // the gateway, the admin pastes its ARN, the room checks it with AWS
-  // before saving. What each agent may do inside that role is set per lane
-  // under Connections, so the role itself is the full read-only ceiling.
+  // the room's identity, the admin pastes its ARN, the room checks it with
+  // AWS before saving. With the permission service on, the identity is its
+  // (it mints the hour-long leases) and what each agent may do inside the
+  // role is what it is granted under Permissions; otherwise the identity is
+  // the gateway's and each agent gets a lane under Connections.
   import { createQuery } from "@tanstack/svelte-query";
   import { adminAwsSetupQuery } from "../../lib/queries";
 
@@ -31,7 +33,7 @@
 </script>
 
 {#if setup.isPending}
-  <p class="hint">Reading what the gateway is…</p>
+  <p class="hint">Reading the room's identity…</p>
 {:else if setup.isError || !setup.data}
   <p class="hint fail">Could not read the set-up details just now.</p>
 {:else}
@@ -40,8 +42,13 @@
     <li class="step">
       <h3 class="step__title">What the role allows</h3>
       <p class="step__text">
-        Read-only across the account: configuration, never data. Each agent gets its own narrower
-        profile inside it under Connections.
+        Read-only across the account: configuration, never data.
+        {#if s.principal === "access"}
+          Agents hold nothing by default; each is granted the services it needs under Permissions and
+          borrows an hour of access scoped to them.
+        {:else}
+          Each agent gets its own narrower profile inside it under Connections.
+        {/if}
       </p>
       <ul class="packs">
         {#each s.packs as p (p.id)}
@@ -55,7 +62,7 @@
       {#if s.identity}
         <dl class="facts">
           <div><dt>Trusts</dt><dd><code>{s.identity.subject}</code></dd></div>
-          {#if s.identity.email}<div><dt>Which is</dt><dd>{s.identity.email}</dd></div>{/if}
+          {#if s.identity.email}<div><dt>Which is</dt><dd>{s.identity.email}{s.principal === "access" ? ", the permission service that mints the leases" : ", the tool gateway"}</dd></div>{/if}
           <div><dt>Named</dt><dd>{s.role_name}</dd></div>
         </dl>
       {:else if s.identity_note}
@@ -93,7 +100,7 @@
         <span>Role ARN</span>
         <input id="integration-role_arn" type="text" bind:value={roleArn} autocomplete="off" spellcheck="false" placeholder="arn:aws:iam::123456789012:role/{s.role_name}" required />
       </label>
-      <p class="hint">{s.checked ? "Connect asks the gateway to assume the role once; nothing is saved until AWS agrees." : "The room cannot check the role with AWS from here; it is saved as given."}</p>
+      <p class="hint">{s.checked ? `Connect asks ${s.principal === "access" ? "the permission service" : "the gateway"} to assume the role once; nothing is saved until AWS agrees.` : "The room cannot check the role with AWS from here; it is saved as given."}</p>
     </li>
   </ol>
 {/if}

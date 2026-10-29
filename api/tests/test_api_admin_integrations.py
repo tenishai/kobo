@@ -14,6 +14,7 @@ from kobo_api.main import create_app
 from kobo_api.models import Base
 from tests.fakes import (
     FakeAgent,
+    FakeBab,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
@@ -255,3 +256,58 @@ def test_gcp_workload_identity_needs_nothing_and_a_service_account_must_be_an_em
     assert 'auth_method = "gcp_identity"' in github.pushed_file("targets.toml")
     bad = client.post("/api/admin/integrations", json={"vendor": "gcp2", "name": "GCP two", "base_access": "read", "auth": "gcp_identity", "identity": {"service_account": "nope"}}, headers=headers)
     assert bad.status_code == 409 and "email" in bad.json()["error"]
+
+
+# ---- with the permission service on (Access through bab, 2026-10-29) -----------------
+
+
+def _access_client(tmp_path, fake_storage, *, github=None, bab=None):
+    client, headers = _client(tmp_path, fake_storage, _config(tmp_path, bab_url="http://bab.bab.svc:8080"),
+                              github=github or FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True),
+                              sero=FakeSero())
+    client.app.state.clients.bab = bab or FakeBab(integrations=[])
+    return client, headers
+
+
+def test_with_access_on_the_setup_page_names_the_permission_service_as_the_principal(tmp_path, fake_storage):
+    client, headers = _access_client(tmp_path, fake_storage)
+    page = client.get("/api/admin/integrations/aws/setup", headers=headers).json()
+    assert page["principal"] == "access" and page["checked"] is True
+    assert page["identity"]["subject"] == "102000000000000000000"
+    assert "102000000000000000000" in page["terraform"] and "102000000000000000000" in page["trust_policy"]
+
+
+def test_with_access_on_an_aws_role_is_probed_by_bab_and_connected_there_not_on_the_gateway(tmp_path, fake_storage):
+    bab = FakeBab(integrations=[])
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
+    client, headers = _access_client(tmp_path, fake_storage, github=github, bab=bab)
+    body = {"vendor": "aws", "name": "acme-audit", "base_access": "read", "auth": "aws_role", "identity": {"role_arn": AWS_ROLE}}
+    row = client.post("/api/admin/integrations", json=body, headers=headers).json()
+    assert bab.probes == [(AWS_ROLE, "sts.amazonaws.com")]
+    assert row["state"] == "applied" and "the permission service assumed the role" in row["state_detail"]
+    assert "connected in the permission service" in row["state_detail"]
+    (integ,) = bab.integrations("x")
+    assert integ["integration"] == row["id"] and integ["vendor"] == "aws"
+    assert integ["spec"] == {"role_arn": AWS_ROLE, "audience": "sts.amazonaws.com"}
+    # The ceiling is every read permission the catalogue offers for the vendor.
+    assert integ["ceiling"] == ["aws_cloudtrail_lake_query", "aws_inventory_read"]
+    assert not github._pushed_trees, "the gateway has nothing to learn: leases come from the permission service"
+    # A refused role is saved nowhere.
+    r = client.post("/api/admin/integrations", json={**body, "name": "bad", "identity": {"role_arn": "arn:aws:iam::123456789012:role/refuse-me"}}, headers=headers)
+    assert r.status_code == 409 and "AccessDenied" in r.json()["error"]
+    assert len(bab.integrations("x")) == 1
+    # Disconnect takes it out of the permission service too.
+    out = client.delete(f"/api/admin/integrations/{row['id']}", headers=headers).json()
+    assert out["access"].startswith("removed")
+    assert bab.integrations("x") == []
+
+
+def test_connections_the_permission_service_holds_show_in_the_list_and_can_be_removed(tmp_path, fake_storage):
+    bab = FakeBab()  # its default integration, connected straight into bab, never through the panel
+    client, headers = _access_client(tmp_path, fake_storage, bab=bab)
+    rows = client.get("/api/admin/integrations", headers=headers).json()["integrations"]
+    (row,) = rows
+    assert row["id"] == "aws-prod" and row["spec"]["source"] == "access" and row["state"] == "applied"
+    assert "connected in the permission service" in row["state_detail"]
+    out = client.delete("/api/admin/integrations/aws-prod", headers=headers).json()
+    assert out["access"].startswith("removed") and bab.integrations("x") == []

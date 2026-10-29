@@ -49,6 +49,11 @@ class BabClient(Protocol):
     def grants(self, agent: str, actor: str) -> list[dict]: ...
     def revoke(self, grant_id: int, actor: str) -> dict: ...
     def leases(self, agent: str, since: datetime | None, actor: str) -> list[dict]: ...
+    def all_leases(self, since: datetime | None, actor: str) -> list[dict]: ...
+    def aws_identity(self, actor: str) -> dict: ...
+    def probe_aws(self, role_arn: str, audience: str, actor: str) -> dict: ...
+    def put_integration(self, integration: str, vendor: str, spec: dict, ceiling: list[str], actor: str) -> dict: ...
+    def delete_integration(self, integration: str, actor: str) -> dict: ...
 
 
 class HttpxBabClient:
@@ -123,6 +128,26 @@ class HttpxBabClient:
         if since is not None:
             params["since"] = since.isoformat()
         return self._call("GET", "/leases", actor, params=params, what=f"{agent}'s leases").get("leases", [])
+
+    def all_leases(self, since: datetime | None, actor: str) -> list[dict]:
+        params: dict[str, str] = {"limit": "500"}
+        if since is not None:
+            params["since"] = since.isoformat()
+        return self._call("GET", "/leases", actor, params=params, what="the leases").get("leases", [])
+
+    def aws_identity(self, actor: str) -> dict:
+        return self._call("GET", "/identity/aws", actor, what="its identity")
+
+    def probe_aws(self, role_arn: str, audience: str, actor: str) -> dict:
+        return self._call("POST", "/probe/aws", actor, json={"role_arn": role_arn, "audience": audience},
+                          what=f"the role {role_arn}")
+
+    def put_integration(self, integration: str, vendor: str, spec: dict, ceiling: list[str], actor: str) -> dict:
+        return self._call("PUT", f"/integrations/{integration}", actor,
+                          json={"vendor": vendor, "spec": spec, "ceiling": ceiling}, what=f"connecting {integration}")
+
+    def delete_integration(self, integration: str, actor: str) -> dict:
+        return self._call("DELETE", f"/integrations/{integration}", actor, what=f"disconnecting {integration}")
 
 
 def _detail(resp: httpx.Response) -> str:
@@ -233,6 +258,32 @@ def picker(bab: BabClient, actor: str, cloud_accounts=()) -> list[dict]:
                     "account_noun": meta.get("account") or ("account" if meta["kind"] == "cloud" else None),
                     "accounts": accounts, "groups": tree.get("groups", []), "tiers": tree.get("tiers", [])})
     return out
+
+
+def read_permissions(bab: BabClient, vendor: str, actor: str) -> list[str]:
+    """Every read-tier permission the catalogue offers for a vendor: the ceiling a
+    read-only connection gets (the connection's own policy is the outer wall)."""
+    try:
+        tree = bab.catalogue(vendor, actor)
+    except ClientError:
+        return []
+    return sorted(p["name"] for g in tree.get("groups", []) for p in g.get("permissions", []) if p.get("tier") == "read")
+
+
+def active_leases(bab: BabClient, actor: str, now: datetime | None = None) -> list[dict]:
+    """Leases whose hour has not run out, newest first."""
+    now = now or datetime.now(UTC)
+    out = []
+    for lease in bab.all_leases(now - timedelta(hours=13), actor):
+        try:
+            exp = datetime.fromisoformat(str(lease.get("expires_at", "")))
+        except ValueError:
+            continue
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=UTC)
+        if exp > now:
+            out.append(lease)
+    return sorted(out, key=lambda x: str(x.get("issued_at")), reverse=True)
 
 
 def since_days(days: int, now: datetime | None = None) -> datetime:

@@ -130,6 +130,7 @@ import {
   disconnectAdminIntegration,
   distillPersona,
   draftPersona,
+  fetchAccessLeases,
   fetchAccessRequests,
   fetchActivity,
   fetchAdminAddons,
@@ -715,6 +716,15 @@ export function accessRequestsQuery(status: "pending" | "all") {
   return queryOptions({
     queryKey: ["admin", "access", status] as const,
     queryFn: () => fetchAccessRequests(status),
+    staleTime: 15_000,
+    retry: shouldRetry,
+  });
+}
+
+export function accessLeasesQuery() {
+  return queryOptions({
+    queryKey: ["admin", "access", "leases"] as const,
+    queryFn: fetchAccessLeases,
     staleTime: 15_000,
     retry: shouldRetry,
   });

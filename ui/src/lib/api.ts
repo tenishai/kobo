@@ -1142,7 +1142,7 @@ export type AdminIntegration = {
   state: "pending" | "applied" | "failed";
   state_detail: string | null;
   credential_ref: string | null;
-  spec: { address?: string; trust?: string; pull_request?: string };
+  spec: { address?: string; trust?: string; pull_request?: string; source?: "access"; ceiling?: string[] };
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -1181,7 +1181,9 @@ export type AdminAwsSetup = {
   version: string;
   role_name: string;
   audience: string;
-  identity: { issuer: string; subject: string; email: string; audience: string } | null;
+  /** Who the role must trust: the permission service (`access`) when it is on, else the gateway. */
+  principal: "access" | "gateway";
+  identity: { issuer: string; subject: string; email: string | null; audience: string } | null;
   identity_note: string | null;
   packs: { id: string; purpose: string; required: boolean; grants: string[] }[];
   chosen: string[];
@@ -1478,6 +1480,12 @@ export async function decideAccessRequests(
   });
   const body = await parse<{ results: AccessDecision[] }>(res);
   return body.results;
+}
+
+export async function fetchAccessLeases(): Promise<AccessLease[]> {
+  const res = await fetch("/api/admin/access/leases");
+  const body = await parse<{ leases: AccessLease[] }>(res);
+  return body.leases;
 }
 
 export async function syncAccessTopology(): Promise<{ agents: number; removed: number }> {

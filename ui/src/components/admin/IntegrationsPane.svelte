@@ -149,6 +149,7 @@
                 <td>
                   <span class="name">{i.name}</span>
                   {#if i.spec.address}<span class="quiet addr">{i.spec.address}</span>{/if}
+                  {#if i.spec.source === "access"}<span class="quiet addr">in the permission service{i.spec.ceiling?.length ? `, ${i.spec.ceiling.length} permission${i.spec.ceiling.length === 1 ? "" : "s"} agents may ask for` : ""}</span>{/if}
                 </td>
                 <td><span class="chip">{i.base_access === "write" ? "read and write" : "read-only"}</span></td>
                 <td>

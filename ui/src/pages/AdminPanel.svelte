@@ -12,7 +12,7 @@
   import ReviewPane from "../components/admin/ReviewPane.svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import { formatHash, route } from "../lib/router.svelte";
-  import { adminRoomQuery, whoamiQuery } from "../lib/queries";
+  import { adminAddonsQuery, adminRoomQuery, whoamiQuery } from "../lib/queries";
 
   // The panel is for kobo admins, and only while the room has it on. The
   // server decides both (`/api/whoami`); this is the same answer, shown.
@@ -30,6 +30,12 @@
     { id: "people", label: "People" },
     { id: "audit", label: "Audit" },
   ];
+
+  // With the permission service on, agents hold permissions and borrow credentials; the
+  // gateway's lanes are the older model, so the Connections page steps aside for Review.
+  const addons = createQuery(() => ({ ...adminAddonsQuery(), enabled: allowed }));
+  const accessOn = $derived((addons.data ?? []).some((a) => a.id === "access" && a.state === "on"));
+  const panes = $derived(PANES.filter((p) => p.id !== "connections" || !accessOn));
 
   // "addons" and "platform" were earlier names of the Services page; old links still open it.
   const pane = $derived(
@@ -60,7 +66,7 @@
   <nav class="admin__nav" aria-label="Admin panel">
     <p class="admin__group">Admin</p>
     <ul class="admin__list">
-      {#each PANES as p (p.id)}
+      {#each panes as p (p.id)}
         <li>
           <a
             class="admin__link"
