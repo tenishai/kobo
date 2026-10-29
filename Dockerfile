@@ -6,19 +6,20 @@
 # repos are per-arch, so arm64 and amd64 each get their own). A bump is a line in a
 # PR with the reason next to it (agora issue 58).
 #
-# Multi-arch: buildx sets TARGETARCH; a plain build uses the host's arch. The UI stage
-# runs per target arch (its output is arch-independent, so pinning it to the build host
-# with --platform=$BUILDPLATFORM would be faster, but the legacy builder Cloud Build's
-# `--tag` path uses leaves BUILDPLATFORM empty and fails to parse it).
+# Multi-arch: buildx sets TARGETARCH; a plain build uses the host's arch. The UI build
+# and the lockfile export are arch-independent, so they run ONCE on the build host
+# (--platform=$BUILDPLATFORM) and both images copy their output; under emulation they
+# were most of a release's build time. BUILDPLATFORM needs BuildKit: buildx locally,
+# the release workflow, and the dev path's buildx Cloud Build config (not `--tag`).
 
-FROM node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS ui-build
+FROM --platform=$BUILDPLATFORM node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS ui-build
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci
 COPY ui/ ./
 RUN npm run build
 
-FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159 AS deps
+FROM --platform=$BUILDPLATFORM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159 AS deps
 ARG UV_VERSION=0.11.21
 WORKDIR /lock
 COPY api/pyproject.toml api/uv.lock ./
