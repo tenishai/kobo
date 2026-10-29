@@ -45,7 +45,7 @@ blanket `roles/viewer`, which the IAM recommender scores at 6199 of 6220 permiss
 That list is the GCP `inventory` pack (the first fourteen) and `logs` pack (the next four),
 with `secretmanager.viewer` moving to `security-audit`, and `roles/viewer` dropped: the
 specific viewers already cover what the agent uses, and the blanket role is what makes a
-cloud owner say no. The bucket grant on `fubo-agent-memory-replicas` is kobo's own memory
+cloud owner say no. The bucket grant on the room's memory-replica bucket is kobo's own memory
 replica, not a pack.
 
 Write packs come later and separately (`act:ecs-restart`, `act:tag`), each
@@ -65,7 +65,7 @@ about infrastructure, they do not read S3 objects).
   Azure a federated credential on an app registration). No long-lived key
   anywhere, and no external ID needed because the identity binding is
   stronger than a shared secret. External ID stays supported for the hub
-  pattern (a fubo AWS hub role assumes the per-account role).
+  pattern (an org-level AWS hub role assumes the per-account role).
 - The gateway assumes the role **once per agent lane**, with
   `sts:SourceIdentity = agent:<name>` and a **session policy** that narrows
   the role to the lane's access (`read` = the packs' read statements only;
