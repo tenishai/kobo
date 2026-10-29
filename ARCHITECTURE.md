@@ -39,7 +39,8 @@ SEAMS → card:
 - (uncarded) agent_env.py — per-agent Secrets & env panel: `<agent>-env` Secret, gojira.yaml `secrets_from`/env edits
 - (uncarded) destroy.py — teardown stages (gojira delete, directory absorb, pass revoke, GSA, secrets); destroy-secrets (first, whatever the secrets platform's state), destroy-platform and destroy-access refuse when the namespace named after the agent is older than its row or cannot be checked; destroy-secrets still revokes the colleague pass before failing (issue #193)
 - (uncarded) knowledge.py / teach.py / intake.py / learnings.py — memory lanes: fast teach over the switchboard + background `[skip ci]` archive to bundle/intake; nightly learnings sweep (Postgres advisory lock); each run per agent recorded in `agent_system_tasks` (`record_system_task`, flagged after `system_task_flag_after` failures); candidates screened by `is_identity_only` and `learning_concerns` (unattributed, access_change), flagged rows need `confirm`
-- (uncarded) search.py / catalog.py / marketplace.py / skills.py / tooling.py / personas.py — catalogs (FTS over GCS indexes), skills/tooling marketplaces, persona store
+- (uncarded) search.py / catalog.py / marketplace.py / skills.py / tooling.py / personas.py — catalogs (FTS over GCS indexes), skills/tooling marketplaces, persona store. skills.py also serves `POST .../skills/catalog/batch` (several picks, one commit, issue #266).
+- (uncarded) repo_lock.py — `repo_write_lock(repo)`: one writer at a time per agent repo, held from clone to push by the skills, tooling and intake writers (issue #268). Per process; replicas do not share it.
 - (uncarded) models.py + migrations/: the tables; the alembic chain is the schema of record on Postgres
 - (uncarded) mcp/ — OAuth 2.1 AS (Google OIDC + PKCE), own JWTs, refresh-token families, audit log, per-replica rate limit, tools in mcp/tools/{read,write}.py
 

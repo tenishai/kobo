@@ -37,6 +37,7 @@ from pathlib import Path
 
 from kobo_api.clients import GitHubClient, KubectlClient, image_tag
 from kobo_api.composer import repin_commit_note, update_dockerfile_runtime_image
+from kobo_api.repo_lock import repo_write_lock
 
 # 1-40 chars: a lowercase letter, then lowercase/digit/hyphen, then ".md" or
 # ".txt" — same no-path-separator, no-leading-dot/digit/hyphen shape as
@@ -142,7 +143,7 @@ def upload_intake_file(
     """
     _validate_filename(filename)
     _validate_content(content)
-    with tempfile.TemporaryDirectory() as tmp:
+    with repo_write_lock(repo), tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
         intake_dir = workdir / "bundle" / "intake"
@@ -182,7 +183,7 @@ def delete_intake_file(github: GitHubClient, repo: str, filename: str) -> str:
     error here, since there's no removal to push.
     """
     _validate_filename(filename)
-    with tempfile.TemporaryDirectory() as tmp:
+    with repo_write_lock(repo), tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
         target = workdir / "bundle" / "intake" / filename

@@ -68,6 +68,11 @@ GUARDED_ROUTES = [
         f"/api/agents/{AGENT_NAME}/skills/catalog",
         {"json": {"name": "word-games", "team": "shared"}},
     ),
+    (
+        "POST",
+        f"/api/agents/{AGENT_NAME}/skills/catalog/batch",
+        {"json": {"skills": [{"name": "word-games", "team": "shared"}]}},
+    ),
     ("DELETE", f"/api/agents/{AGENT_NAME}/skills/word-games", {}),
     (
         "PUT",
