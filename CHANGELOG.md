@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-10-29
+
 ## [0.3.4] - 2026-10-29
 
 ### Changed
