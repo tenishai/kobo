@@ -29,7 +29,7 @@ RUN pip install --no-cache-dir "uv==${UV_VERSION}" \
 # git, gh, kubectl and gcloud already installed, published by base-image.yml and pinned
 # here by digest. A release build therefore does only the Python and UI layers. The dev
 # path passes its own registry's copy of the same digest as BASE_IMAGE.
-ARG BASE_IMAGE=__KOBO_BASE_PIN__
+ARG BASE_IMAGE=ghcr.io/tenishai/kobo-base:20261029-dbbf463@sha256:d6dc96c8e7e241ee1b8472a1cd2e0c66b98ec6e4e6d7e25b3e10a2b903c8479e
 FROM ${BASE_IMAGE} AS runtime
 
 WORKDIR /app
