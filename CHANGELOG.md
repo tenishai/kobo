@@ -6,6 +6,10 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The vendored cloud-access release is 0.2.0: the `aws/hub` module the Integrations page points at for an organization's hub role, and the CloudFormation template's trust conditions on `oaud`.
+
 ## [0.3.6] - 2026-10-29
 
 ### Changed
