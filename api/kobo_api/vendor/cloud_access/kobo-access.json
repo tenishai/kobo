@@ -204,7 +204,7 @@
                       "accounts.google.com:sub": {
                         "Ref": "GatewayServiceAccountUniqueId"
                       },
-                      "accounts.google.com:aud": {
+                      "accounts.google.com:oaud": {
                         "Ref": "Audience"
                       }
                     }
