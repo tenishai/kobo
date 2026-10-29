@@ -726,7 +726,7 @@ class AdminConnectIntegration(BaseModel):
     # `secrets` (named values stored in the secrets service); see
     # kobo_api.admin_integrations.AUTH_KINDS.
     credential: str = Field(default="", max_length=20000)
-    auth: str = Field(default="token", pattern="^(token|api_keys|aws_role|gcp_identity|azure_federated)$")
+    auth: str = Field(default="token", pattern="^(token|api_keys|aws_role|aws_hub|aws_spoke|gcp_identity|azure_federated)$")
     identity: dict[str, str] = Field(default_factory=dict)
     secrets: dict[str, str] = Field(default_factory=dict)
     address: str = Field(default="", max_length=500)
@@ -3897,7 +3897,8 @@ def create_app(
         return JSONResponse(out)
 
     @app.get("/api/admin/integrations/aws/setup")
-    def admin_aws_setup(request: Request, packs: str = "", integration: str = "aws") -> JSONResponse:
+    def admin_aws_setup(request: Request, packs: str = "", integration: str = "aws", mode: str = "role",
+                        parent: str = "", account_id: str = "") -> JSONResponse:
         """The Connect AWS page: the gateway\'s identity, the packs, and the
         role rendered three ways from the vendored cloud-access release."""
         blocked = _admin_panel_gate(request)
@@ -3905,8 +3906,27 @@ def create_app(
             return blocked
         wanted = [p.strip() for p in packs.split(",") if p.strip()]
         safe_id = re.sub(r"[^a-z0-9-]", "", integration.lower())[:64] or "aws"
-        return JSONResponse(admin_integrations_flow.aws_setup(
-            app.state.clients, integration_id=safe_id, packs=wanted, actor=_bab_actor(request)))
+        try:
+            return JSONResponse(admin_integrations_flow.aws_setup(
+                app.state.clients, integration_id=safe_id, packs=wanted, actor=_bab_actor(request),
+                mode=mode if mode in ("role", "org", "account") else "role",
+                parent=parent.strip() or None, account_id=account_id.strip() or None))
+        except admin_integrations_flow.ConnectRefused as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+
+    @app.get("/api/admin/integrations/{integration_id}/accounts")
+    def admin_org_accounts(integration_id: str, request: Request) -> JSONResponse:
+        """An AWS organization's accounts as its hub sees them, each connected or not."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        bab, off = _bab_or_404()
+        if off is not None:
+            return off
+        try:
+            return JSONResponse({"accounts": bab.org_accounts(integration_id, _bab_actor(request))})
+        except ClientError as exc:
+            return _bab_refused(exc)
 
     @app.get("/api/admin/integrations")
     def admin_integrations(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008

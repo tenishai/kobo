@@ -67,7 +67,8 @@ def test_ask_review_hold_revoke_and_the_topology_push(tmp_path, fake_storage):
     # A cloud the org lists but bab has no catalogue for still shows its account, not connected.
     assert gcp["kind"] == "cloud" and [(a["id"], a["connected"]) for a in gcp["accounts"]] == [("acme-platform-prod", False)]
     # A service vendor is one connection; none connected yet shows a placeholder.
-    assert dd["kind"] == "service" and dd["accounts"] == [{"id": "datadog", "name": "Datadog", "connected": False, "ceiling": []}]
+    assert dd["kind"] == "service" and dd["accounts"] == [{"id": "datadog", "name": "Datadog", "connected": False, "ceiling": [],
+                                                           "organization": None, "account_id": None}]
 
     # The owner asks; the request is pending on the agent page and in Review, with the owner named.
     r = c.post("/api/agents/ledger/access/requests", headers=h,

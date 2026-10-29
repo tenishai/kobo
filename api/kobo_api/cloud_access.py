@@ -18,6 +18,8 @@ from typing import Any
 
 _DIR = Path(__file__).parent / "vendor" / "cloud_access"
 MODULE_SOURCE = "git::https://github.com/tenishai/cloud-access.git//aws/terraform"
+HUB_MODULE_SOURCE = "git::https://github.com/tenishai/cloud-access.git//aws/hub"
+HUB_ROLE_NAME = "KoboAccess-Hub"
 ROLE_NAME = "KoboAccess-Role"
 AUDIENCE = "sts.amazonaws.com"
 GOOGLE_ISSUER = "accounts.google.com"
@@ -75,18 +77,91 @@ def terraform_snippet(subject: str, integration_id: str, packs: list[str], audie
 
 
 def trust_policy(subject: str, audience: str = AUDIENCE) -> str:
-    """For an owner who creates the role by hand: the trust policy alone."""
+    """For an owner who creates the role by hand: the trust policy alone. The audience
+    condition is `oaud`: AWS maps a Google ID token's `aud` claim to `oaud` (and its `azp`
+    to `aud`), so a policy written on `aud` refuses the token a service account mints."""
     return json.dumps({
         "Version": "2012-10-17",
         "Statement": [{
-            "Sid": "GatewayOIDC",
+            "Sid": "RoomOIDC",
             "Effect": "Allow",
             "Principal": {"Federated": GOOGLE_ISSUER},
             "Action": ["sts:AssumeRoleWithWebIdentity", "sts:TagSession", "sts:SetSourceIdentity"],
             "Condition": {"StringEquals": {
-                f"{GOOGLE_ISSUER}:sub": subject or "<gateway subject>",
-                f"{GOOGLE_ISSUER}:aud": audience,
+                f"{GOOGLE_ISSUER}:sub": subject or "<room subject>",
+                f"{GOOGLE_ISSUER}:oaud": audience,
             }},
+        }],
+    }, indent=2)
+
+
+def hub_terraform_snippet(subject: str, integration_id: str, audience: str = AUDIENCE, billing: bool = True) -> str:
+    """The organization's hub role, in the management account: trusts the room's identity,
+    may assume the spoke role in every member account, reads the organization, and (if
+    asked) the consolidated bill. Nothing else lives in the management account."""
+    tag = version().split()[0]
+    who = subject or "<room subject>"
+    bill = "true" if billing else "false"
+    return (
+        'module "kobo_access_hub" {\n'
+        f'  source = "{HUB_MODULE_SOURCE}?ref={tag}"\n\n'
+        f'  integration_id                 = "{integration_id}"\n'
+        f'  room_service_account_unique_id = "{who}"\n'
+        f'  audience                       = "{audience}"\n'
+        f'  spoke_role_name                = "{ROLE_NAME}"\n'
+        f"  billing_reads                  = {bill}\n"
+        "}\n\n"
+        'output "kobo_hub_role_arn" {\n  value = module.kobo_access_hub.role_arn\n}\n'
+    )
+
+
+def hub_trust_policy(subject: str, audience: str = AUDIENCE) -> str:
+    return trust_policy(subject, audience)
+
+
+def hub_permissions_policy(spoke_role_name: str = ROLE_NAME, billing: bool = True) -> str:
+    """What the hub may do, for an owner creating it by hand: assume the spokes, read the
+    organization, read the bill."""
+    statements = [
+        {"Sid": "AssumeSpokes", "Effect": "Allow", "Action": "sts:AssumeRole",
+         "Resource": f"arn:aws:iam::*:role/{spoke_role_name}"},
+        {"Sid": "ReadOrganization", "Effect": "Allow",
+         "Action": ["organizations:ListAccounts", "organizations:DescribeAccount", "organizations:DescribeOrganization",
+                    "organizations:ListTagsForResource"], "Resource": "*"},
+    ]
+    if billing:
+        statements.append({"Sid": "ReadBill", "Effect": "Allow",
+                           "Action": ["ce:Get*", "ce:Describe*", "ce:List*", "budgets:ViewBudget", "budgets:Describe*", "cur:Describe*"],
+                           "Resource": "*"})
+    return json.dumps({"Version": "2012-10-17", "Statement": statements}, indent=2)
+
+
+def spoke_terraform_snippet(hub_role_arn: str, external_id: str, integration_id: str, packs: list[str]) -> str:
+    """A member account's role: trusts the organization's hub (with this account's external
+    id) instead of any OIDC identity, and carries the packs."""
+    tag = version().split()[0]
+    pack_list = ", ".join(f'"{p}"' for p in packs)
+    return (
+        'module "kobo_access" {\n'
+        f'  source = "{MODULE_SOURCE}?ref={tag}"\n\n'
+        f'  integration_id = "{integration_id}"\n'
+        f'  hub_role_arn   = "{hub_role_arn}"\n'
+        f'  external_id    = "{external_id}"\n'
+        f"  packs          = [{pack_list}]\n"
+        "}\n\n"
+        'output "kobo_role_arn" {\n  value = module.kobo_access.role_arn\n}\n'
+    )
+
+
+def spoke_trust_policy(hub_role_arn: str, external_id: str) -> str:
+    return json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Sid": "OrganizationHub",
+            "Effect": "Allow",
+            "Principal": {"AWS": hub_role_arn},
+            "Action": ["sts:AssumeRole", "sts:TagSession"],
+            "Condition": {"StringEquals": {"sts:ExternalId": external_id}},
         }],
     }, indent=2)
 

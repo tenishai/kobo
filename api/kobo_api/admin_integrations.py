@@ -55,10 +55,16 @@ SECRET_KEY = "TOKEN"
 AUTH_KINDS = {
     "token": "one bearer token",
     "api_keys": "one or more named keys",
-    "aws_role": "an IAM role the gateway assumes",
+    "aws_role": "an IAM role the room assumes directly",
+    # Hub and spoke (permission service on): one hub role per AWS organization, in its
+    # management account, that the room assumes; one spoke role per member account that
+    # the hub assumes with an external id. Never an assume across organizations.
+    "aws_hub": "an AWS organization: the hub role in its management account",
+    "aws_spoke": "an AWS account under a connected organization: the role its hub assumes",
     "gcp_identity": "workload identity, optionally impersonating a service account",
     "azure_federated": "an app registration federated to the gateway's identity",
 }
+_AWS_ACCOUNT_ID = re.compile(r"^\d{12}$")
 _AWS_ROLE_ARN = re.compile(r"^arn:aws:iam::\d{12}:role/[\w+=,.@/-]+$")
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _GUID = re.compile(r"^[0-9a-fA-F-]{32,36}$")
@@ -73,7 +79,16 @@ def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> 
     if auth == "api_keys" and not any(v.strip() for v in secrets.values()):
         raise ConnectRefused("this vendor needs at least one key")
     if auth == "aws_role" and not _AWS_ROLE_ARN.match(identity.get("role_arn", "").strip()):
-        raise ConnectRefused("AWS needs the ARN of a role the gateway may assume (arn:aws:iam::<account>:role/<name>)")
+        raise ConnectRefused("AWS needs the ARN of a role the room may assume (arn:aws:iam::<account>:role/<name>)")
+    if auth == "aws_hub" and not _AWS_ROLE_ARN.match(identity.get("hub_role_arn", "").strip()):
+        raise ConnectRefused("an AWS organization needs the ARN of its hub role, in the management account")
+    if auth == "aws_spoke":
+        if not identity.get("parent", "").strip():
+            raise ConnectRefused("an AWS account connects under one of the room's connected organizations")
+        if not _AWS_ROLE_ARN.match(identity.get("role_arn", "").strip()):
+            raise ConnectRefused("an AWS account needs the ARN of the role its organization's hub assumes")
+        if not _AWS_ACCOUNT_ID.match(identity.get("account_id", "").strip()):
+            raise ConnectRefused("an AWS account needs its 12-digit account id")
     if auth == "gcp_identity":
         sa = identity.get("service_account", "").strip()
         if sa and not _EMAIL.match(sa):
@@ -249,12 +264,56 @@ def _bab(clients: Clients | None):
     return getattr(clients, "bab", None) if clients is not None else None
 
 
-def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] | None, actor: str = "operator@room") -> dict[str, Any]:
+def _org_or_refused(bab, parent: str, actor: str) -> dict:
+    """The connected organization an account hangs under, with its hub role."""
+    for i in bab.integrations(actor):
+        if i["integration"] == parent and i.get("kind") == "org":
+            return i
+    raise ConnectRefused(f"{parent!r} is not one of the room's connected AWS organizations")
+
+
+def _org_hub(bab, parent: str, actor: str) -> str:
+    """The hub role ARN of a connected organization: bab keeps it in the row's spec, which
+    its listing does not return, so the console asks the probe-free way: the org row's
+    accounts call fails without it, and the setup page needs it for the spoke's trust."""
+    _org_or_refused(bab, parent, actor)
+    return str(bab.org_hub_role_arn(parent, actor))
+
+
+def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] | None, actor: str = "operator@room",
+              mode: str = "role", parent: str | None = None, account_id: str | None = None) -> dict[str, Any]:
     """Everything the Connect AWS page shows: who the role must trust, which
     packs exist, and the three ways to create the role, each pre-filled. With
     the permission service on, the principal is bab (it mints the leases); the
-    gateway otherwise."""
+    gateway otherwise.
+
+    Three modes. `role`: one flat role the room assumes (the gateway path, or
+    bab without an organization). `org`: the hub role in an organization's
+    management account, trusting the room's identity. `account`: a member
+    account's spoke role under a connected organization, trusting the hub
+    with this account's external id."""
     bab = _bab(clients)
+    if mode == "account":
+        if bab is None:
+            raise ConnectRefused("accounts under an organization need the permission service")
+        if not parent or not account_id or not _AWS_ACCOUNT_ID.match(account_id):
+            raise ConnectRefused("an account set-up needs the organization and the 12-digit account id")
+        hub = _org_hub(bab, parent, actor)
+        external_id = bab.external_id_for(parent, account_id)
+        chosen = cloud_access.chosen_packs(packs)
+        return {
+            "version": cloud_access.version(), "mode": "account", "principal": "access",
+            "role_name": cloud_access.ROLE_NAME, "audience": cloud_access.AUDIENCE,
+            "parent": parent, "account_id": account_id, "hub_role_arn": hub, "external_id": external_id,
+            "identity": None, "identity_note": None,
+            "packs": cloud_access.aws_packs(), "chosen": chosen,
+            "terraform": cloud_access.spoke_terraform_snippet(hub, external_id, integration_id, chosen),
+            "cloudformation": {"template": cloud_access.cloudformation_template(),
+                               "parameters": {**cloud_access.cloudformation_parameters("", integration_id, chosen),
+                                              "HubRoleArn": hub, "ExternalId": external_id}},
+            "trust_policy": cloud_access.spoke_trust_policy(hub, external_id),
+            "checked": True,
+        }
     admin = getattr(clients, "liminal_admin", None) if clients is not None else None
     identity: dict[str, str] | None = None
     identity_note: str | None = None
@@ -273,8 +332,23 @@ def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
             identity_note = str(exc)
     subject = (identity or {}).get("subject", "")
     chosen = cloud_access.chosen_packs(packs)
+    if mode == "org":
+        if bab is None:
+            raise ConnectRefused("organizations need the permission service")
+        return {
+            "version": cloud_access.version(), "mode": "org", "principal": "access",
+            "role_name": cloud_access.HUB_ROLE_NAME, "audience": cloud_access.AUDIENCE,
+            "identity": identity, "identity_note": identity_note,
+            "packs": [], "chosen": [],
+            "terraform": cloud_access.hub_terraform_snippet(subject, integration_id),
+            "cloudformation": {"template": "", "parameters": {}},
+            "trust_policy": cloud_access.hub_trust_policy(subject),
+            "permissions_policy": cloud_access.hub_permissions_policy(),
+            "checked": True,
+        }
     return {
         "version": cloud_access.version(),
+        "mode": "role",
         "role_name": cloud_access.ROLE_NAME,
         "audience": cloud_access.AUDIENCE,
         "principal": principal,
@@ -319,6 +393,9 @@ def connect(
     check_auth(auth, identity, secrets)
     bab = _bab(clients)
     probe: dict[str, str] | None = None
+    hub_role_arn: str | None = None
+    if auth in ("aws_hub", "aws_spoke") and bab is None:
+        raise ConnectRefused("AWS organizations and their accounts need the permission service; turn Access on first")
     if auth == "aws_role":
         identity.setdefault("audience", cloud_access.AUDIENCE)
         if bab is not None:
@@ -328,18 +405,41 @@ def connect(
                 raise ConnectRefused(f"{exc}; fix the role\'s trust policy and connect again") from exc
         else:
             probe = probe_aws_role(clients, identity["role_arn"], identity["audience"])
+    elif auth == "aws_hub":
+        identity.setdefault("audience", cloud_access.AUDIENCE)
+        try:
+            probe = bab.probe_aws(identity["hub_role_arn"], identity["audience"], actor)
+        except ClientError as exc:
+            raise ConnectRefused(f"{exc}; fix the hub role\'s trust policy and connect again") from exc
+    elif auth == "aws_spoke":
+        hub_role_arn = _org_hub(bab, identity["parent"], actor)
+        identity["external_id"] = bab.external_id_for(identity["parent"], identity["account_id"])
+        identity.setdefault("audience", cloud_access.AUDIENCE)
+        try:
+            probe = bab.probe_aws(identity["role_arn"], identity["audience"], actor,
+                                  hub_role_arn=hub_role_arn, external_id=identity["external_id"])
+        except ClientError as exc:
+            raise ConnectRefused(f"{exc}; the account\'s role must trust the organization\'s hub with this external id; "
+                                 "fix it and connect again") from exc
     if secrets and (sero is None or not config.sero_url):
         raise ConnectRefused("the Secrets add-on is off, so the room has nowhere to hold the credential; turn it on first")
     spec: dict[str, Any] = {
         "address": address.strip(),
         "trust": trust if trust in ("trusted", "untrusted") else "untrusted",
         "auth": auth,
-        "identity": identity,
+        "identity": {k: v for k, v in identity.items() if k != "external_id"},
         "secret_keys": sorted(secrets),
     }
+    if auth == "aws_hub":
+        spec["kind"] = "org"
+    elif auth == "aws_spoke":
+        spec["kind"], spec["parent"], spec["account_id"] = "account", identity["parent"], identity["account_id"]
+    # Organizations and their accounts are named by the person (acme-aws, acme-prod), so the
+    # row id is the name, not the vendor: a vendor may hold many of them.
+    wanted_id = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")[:64] if auth in ("aws_hub", "aws_spoke") else None
     row = admin_store.put_integration(
         session, vendor=vendor, name=name, base_access=base_access, spec=spec,
-        credential_ref=None, actor=actor,
+        credential_ref=None, actor=actor, integration_id=wanted_id,
     )
     path = credential_path(row.id)
     try:
@@ -363,14 +463,28 @@ def connect(
     # ceiling is every read permission the catalogue offers for the vendor; the role's or
     # token's own policy is the outer wall) and, for a cloud, what to assume.
     if bab is not None:
-        spec_for_bab = {"role_arn": identity["role_arn"], "audience": identity["audience"]} if auth == "aws_role" else {}
+        parent_id: str | None = None
+        if auth == "aws_role":
+            spec_for_bab: dict[str, Any] = {"role_arn": identity["role_arn"], "audience": identity["audience"], "name": name}
+            ceiling = bab_mod.read_permissions(bab, vendor, actor)
+        elif auth == "aws_hub":
+            spec_for_bab = {"hub_role_arn": identity["hub_role_arn"], "audience": identity["audience"], "name": name}
+            ceiling = []  # nothing is granted on an organization; its accounts carry the ceilings
+        elif auth == "aws_spoke":
+            parent_id = identity["parent"]
+            spec_for_bab = {"spoke_role_arn": identity["role_arn"], "external_id": identity["external_id"],
+                            "account_id": identity["account_id"], "audience": identity["audience"], "name": name}
+            ceiling = bab_mod.read_permissions(bab, vendor, actor)
+        else:
+            spec_for_bab, ceiling = {}, bab_mod.read_permissions(bab, vendor, actor)
         try:
-            bab.put_integration(row.id, vendor, spec_for_bab, bab_mod.read_permissions(bab, vendor, actor), actor)
-            detail += "; connected in the permission service, agents may ask for its read permissions"
+            bab.put_integration(row.id, vendor, spec_for_bab, ceiling, actor, parent=parent_id)
+            detail += ("; connected in the permission service as an organization; connect its accounts under it"
+                       if auth == "aws_hub" else "; connected in the permission service, agents may ask for its read permissions")
         except ClientError as exc:
             admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the permission service refused: {exc}")
             return row
-    if bab is not None and auth == "aws_role":
+    if bab is not None and auth in ("aws_role", "aws_hub", "aws_spoke"):
         # Leases come from the permission service; the gateway has nothing to learn.
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_APPLIED, detail=detail)
         return row

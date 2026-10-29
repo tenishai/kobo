@@ -1,17 +1,33 @@
 <script lang="ts">
-  // Connect AWS: the account owner creates one read-only role that trusts
-  // the room's identity, the admin pastes its ARN, the room checks it with
-  // AWS before saving. With the permission service on, the identity is its
-  // (it mints the hour-long leases) and what each agent may do inside the
-  // role is what it is granted under Permissions; otherwise the identity is
-  // the gateway's and each agent gets a lane under Connections.
+  // Connect AWS, three shapes. An organization: the hub role in its management
+  // account, trusting the room's identity (the permission service's, which mints
+  // the hour-long leases); nothing else lives in that account. An account under an
+  // organization: a role the hub assumes with this account's external id, carrying
+  // the read packs. A flat role: the pre-organization shape, kept for the gateway
+  // path. In every case the admin pastes the role's ARN and the room checks it with
+  // AWS before saving.
   import { createQuery } from "@tanstack/svelte-query";
   import { adminAwsSetupQuery } from "../../lib/queries";
 
-  let { roleArn = $bindable("") }: { roleArn?: string } = $props();
+  let {
+    roleArn = $bindable(""),
+    mode = "role",
+    integration = "aws",
+    parent = null,
+    accountId = null,
+  }: {
+    roleArn?: string;
+    mode?: "role" | "org" | "account";
+    integration?: string;
+    parent?: string | null;
+    accountId?: string | null;
+  } = $props();
 
   const ALL_PACKS = ["logs", "security-audit", "cost"];
-  const setup = createQuery(() => (adminAwsSetupQuery(ALL_PACKS)));
+  const setup = createQuery(() => ({
+    ...adminAwsSetupQuery({ packs: ALL_PACKS, mode, integration, parent: parent ?? undefined, account_id: accountId ?? undefined }),
+    enabled: mode !== "account" || Boolean(parent && accountId),
+  }));
 
   const TABS = ["Terraform", "CloudFormation", "By hand"] as const;
   let tab = $state<(typeof TABS)[number]>("Terraform");
@@ -30,9 +46,12 @@
   const params = $derived(
     Object.entries(setup.data?.cloudformation.parameters ?? {}).map(([k, v]) => `${k} = ${v}`).join("\n"),
   );
+  const tabs = $derived(mode === "org" ? (["Terraform", "By hand"] as const) : TABS);
 </script>
 
-{#if setup.isPending}
+{#if mode === "account" && !(parent && accountId)}
+  <p class="hint">Pick the account first.</p>
+{:else if setup.isPending}
   <p class="hint">Reading the room's identity…</p>
 {:else if setup.isError || !setup.data}
   <p class="hint fail">Could not read the set-up details just now.</p>
@@ -40,26 +59,54 @@
   {@const s = setup.data}
   <ol class="steps">
     <li class="step">
-      <h3 class="step__title">What the role allows</h3>
-      <p class="step__text">
-        Read-only across the account: configuration, never data.
-        {#if s.principal === "access"}
-          Agents hold nothing by default; each is granted the services it needs under Permissions and
-          borrows an hour of access scoped to them.
-        {:else}
-          Each agent gets its own narrower profile inside it under Connections.
-        {/if}
-      </p>
-      <ul class="packs">
-        {#each s.packs as p (p.id)}
-          <li class="pack"><span class="pack__name">{p.id}</span><span class="pack__what">{p.purpose}</span></li>
-        {/each}
-      </ul>
+      {#if s.mode === "org"}
+        <h3 class="step__title">What the hub does</h3>
+        <p class="step__text">
+          One role in the organization's management account. It may assume the <code>{s.role_name === "KoboAccess-Hub" ? "KoboAccess-Role" : s.role_name}</code>
+          role in each member account, read the organization's account list, and read the consolidated bill.
+          Nothing else: agents never run in the management account. A second organization is a second hub,
+          never an assume across organizations.
+        </p>
+      {:else if s.mode === "account"}
+        <h3 class="step__title">What the account's role allows</h3>
+        <p class="step__text">
+          Read-only in account <code>{s.account_id}</code>: configuration, never data. It trusts the organization's hub, with an
+          external id that is this account's alone. Agents hold nothing by default; each is granted the services it
+          needs under Permissions and borrows an hour of access scoped to them.
+        </p>
+        <ul class="packs">
+          {#each s.packs as p (p.id)}
+            <li class="pack"><span class="pack__name">{p.id}</span><span class="pack__what">{p.purpose}</span></li>
+          {/each}
+        </ul>
+      {:else}
+        <h3 class="step__title">What the role allows</h3>
+        <p class="step__text">
+          Read-only across the account: configuration, never data.
+          {#if s.principal === "access"}
+            Agents hold nothing by default; each is granted the services it needs under Permissions and
+            borrows an hour of access scoped to them.
+          {:else}
+            Each agent gets its own narrower profile inside it under Connections.
+          {/if}
+        </p>
+        <ul class="packs">
+          {#each s.packs as p (p.id)}
+            <li class="pack"><span class="pack__name">{p.id}</span><span class="pack__what">{p.purpose}</span></li>
+          {/each}
+        </ul>
+      {/if}
     </li>
 
     <li class="step">
-      <h3 class="step__title">Create the role in the account</h3>
-      {#if s.identity}
+      <h3 class="step__title">{s.mode === "org" ? "Create the hub role in the management account" : "Create the role in the account"}</h3>
+      {#if s.mode === "account"}
+        <dl class="facts">
+          <div><dt>Trusts</dt><dd><code>{s.hub_role_arn}</code></dd></div>
+          <div><dt>External id</dt><dd><code>{s.external_id}</code></dd></div>
+          <div><dt>Named</dt><dd>{s.role_name}</dd></div>
+        </dl>
+      {:else if s.identity}
         <dl class="facts">
           <div><dt>Trusts</dt><dd><code>{s.identity.subject}</code></dd></div>
           {#if s.identity.email}<div><dt>Which is</dt><dd>{s.identity.email}{s.principal === "access" ? ", the permission service that mints the leases" : ", the tool gateway"}</dd></div>{/if}
@@ -69,38 +116,54 @@
         <p class="hint fail">{s.identity_note}</p>
       {/if}
       <div class="tabs" role="tablist" aria-label="How to create the role">
-        {#each TABS as t (t)}
+        {#each tabs as t (t)}
           <button type="button" role="tab" class="tab" aria-selected={tab === t} onclick={() => (tab = t)}>{t}</button>
         {/each}
       </div>
-      {#if tab === "Terraform"}
+      {#if tab === "Terraform" || (s.mode === "org" && tab === "CloudFormation")}
         <div class="code">
           <pre>{s.terraform}</pre>
           <button type="button" class="code__copy" onclick={() => copy("tf", s.terraform)}>{copied === "tf" ? "Copied" : "Copy"}</button>
         </div>
-        <p class="step__text">Apply it from the account's own pipeline, then paste the <code>kobo_role_arn</code> output below.</p>
+        <p class="step__text">Apply it from the account's own pipeline, then paste the <code>{s.mode === "org" ? "kobo_hub_role_arn" : "kobo_role_arn"}</code> output below.</p>
       {:else if tab === "CloudFormation"}
         <div class="code">
           <pre>{params}</pre>
           <button type="button" class="code__copy" onclick={() => copy("cfn", s.cloudformation.template)}>{copied === "cfn" ? "Copied" : "Copy template"}</button>
         </div>
-        <p class="step__text">Create a stack from the copied template with these parameters, or a StackSet across the organisation, then paste the stack's <code>RoleArn</code> output below.</p>
+        <p class="step__text">Create a stack from the copied template with these parameters, then paste the stack's <code>RoleArn</code> output below.</p>
       {:else}
         <div class="code">
           <pre>{s.trust_policy}</pre>
           <button type="button" class="code__copy" onclick={() => copy("trust", s.trust_policy)}>{copied === "trust" ? "Copied" : "Copy"}</button>
         </div>
-        <p class="step__text">Create a role with this trust policy and attach <code>ViewOnlyAccess</code> and <code>SecurityAudit</code>; the cost and logs reads are the inline statements in the template.</p>
+        {#if s.mode === "org" && s.permissions_policy}
+          <p class="step__text">Create a role with this trust policy and this permissions policy:</p>
+          <div class="code">
+            <pre>{s.permissions_policy}</pre>
+            <button type="button" class="code__copy" onclick={() => copy("perm", s.permissions_policy ?? "")}>{copied === "perm" ? "Copied" : "Copy"}</button>
+          </div>
+        {:else}
+          <p class="step__text">Create a role with this trust policy and attach <code>ViewOnlyAccess</code> and <code>SecurityAudit</code>; the cost and logs reads are the inline statements in the template.</p>
+        {/if}
       {/if}
     </li>
 
     <li class="step">
       <h3 class="step__title">Paste the role</h3>
       <label class="field">
-        <span>Role ARN</span>
-        <input id="integration-role_arn" type="text" bind:value={roleArn} autocomplete="off" spellcheck="false" placeholder="arn:aws:iam::123456789012:role/{s.role_name}" required />
+        <span>{s.mode === "org" ? "Hub role ARN" : "Role ARN"}</span>
+        <input id="integration-role_arn" type="text" bind:value={roleArn} autocomplete="off" spellcheck="false" placeholder="arn:aws:iam::{s.mode === 'account' ? s.account_id : '123456789012'}:role/{s.role_name}" required />
       </label>
-      <p class="hint">{s.checked ? `Connect asks ${s.principal === "access" ? "the permission service" : "the gateway"} to assume the role once; nothing is saved until AWS agrees.` : "The room cannot check the role with AWS from here; it is saved as given."}</p>
+      <p class="hint">
+        {#if s.mode === "account"}
+          Connect asks the permission service to reach the role through the organization's hub once; nothing is saved until AWS agrees.
+        {:else if s.checked}
+          Connect asks {s.principal === "access" ? "the permission service" : "the gateway"} to assume the role once; nothing is saved until AWS agrees.
+        {:else}
+          The room cannot check the role with AWS from here; it is saved as given.
+        {/if}
+      </p>
     </li>
   </ol>
 {/if}

@@ -51,9 +51,14 @@ class BabClient(Protocol):
     def leases(self, agent: str, since: datetime | None, actor: str) -> list[dict]: ...
     def all_leases(self, since: datetime | None, actor: str) -> list[dict]: ...
     def aws_identity(self, actor: str) -> dict: ...
-    def probe_aws(self, role_arn: str, audience: str, actor: str) -> dict: ...
-    def put_integration(self, integration: str, vendor: str, spec: dict, ceiling: list[str], actor: str) -> dict: ...
+    def probe_aws(self, role_arn: str, audience: str, actor: str, hub_role_arn: str | None = None,
+                  external_id: str | None = None) -> dict: ...
+    def put_integration(self, integration: str, vendor: str, spec: dict, ceiling: list[str], actor: str,
+                        parent: str | None = None) -> dict: ...
     def delete_integration(self, integration: str, actor: str) -> dict: ...
+    def org_accounts(self, integration: str, actor: str) -> list[dict]: ...
+    def org_hub_role_arn(self, integration: str, actor: str) -> str: ...
+    def external_id_for(self, parent: str, account_id: str) -> str: ...
 
 
 class HttpxBabClient:
@@ -138,13 +143,35 @@ class HttpxBabClient:
     def aws_identity(self, actor: str) -> dict:
         return self._call("GET", "/identity/aws", actor, what="its identity")
 
-    def probe_aws(self, role_arn: str, audience: str, actor: str) -> dict:
-        return self._call("POST", "/probe/aws", actor, json={"role_arn": role_arn, "audience": audience},
-                          what=f"the role {role_arn}")
+    def probe_aws(self, role_arn: str, audience: str, actor: str, hub_role_arn: str | None = None,
+                  external_id: str | None = None) -> dict:
+        body = {"role_arn": role_arn, "audience": audience, "hub_role_arn": hub_role_arn, "external_id": external_id}
+        return self._call("POST", "/probe/aws", actor, json=body, what=f"the role {role_arn}")
 
-    def put_integration(self, integration: str, vendor: str, spec: dict, ceiling: list[str], actor: str) -> dict:
+    def put_integration(self, integration: str, vendor: str, spec: dict, ceiling: list[str], actor: str,
+                        parent: str | None = None) -> dict:
         return self._call("PUT", f"/integrations/{integration}", actor,
-                          json={"vendor": vendor, "spec": spec, "ceiling": ceiling}, what=f"connecting {integration}")
+                          json={"vendor": vendor, "spec": spec, "ceiling": ceiling, "parent": parent},
+                          what=f"connecting {integration}")
+
+    def org_accounts(self, integration: str, actor: str) -> list[dict]:
+        return self._call("GET", f"/integrations/{integration}/accounts", actor,
+                          what=f"the accounts of {integration}").get("accounts", [])
+
+    def org_hub_role_arn(self, integration: str, actor: str) -> str:
+        for i in self.integrations(actor):
+            if i["integration"] == integration:
+                return str(i.get("hub_role_arn") or "")
+        return ""
+
+    def external_id_for(self, parent: str, account_id: str) -> str:
+        """The external id an account's spoke role requires of the hub: derived from the
+        room's console token, so the set-up page and the connect agree without storing it
+        before the account is connected, and no two accounts share one."""
+        import hmac
+        from hashlib import sha256
+
+        return hmac.new(self._token.encode(), f"{parent}:{account_id}".encode(), sha256).hexdigest()[:32]
 
     def delete_integration(self, integration: str, actor: str) -> dict:
         return self._call("DELETE", f"/integrations/{integration}", actor, what=f"disconnecting {integration}")
@@ -208,15 +235,46 @@ CLOUD_LABELS = {"aws": "AWS", "gcp": "Google Cloud", "azure": "Azure"}
 ACCOUNT_NOUN = {"aws": "account", "gcp": "project", "azure": "subscription"}
 
 
+_DISCOVERY_TTL_S = 300.0
+_discovery_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+def _discovered(bab: BabClient, org: str, actor: str) -> list[dict]:
+    """An organization's accounts through its hub, remembered for a few minutes: the
+    picker is read often, the organization changes rarely."""
+    import time
+
+    hit = _discovery_cache.get(org)
+    if hit and time.monotonic() - hit[0] < _DISCOVERY_TTL_S:
+        return hit[1]
+    try:
+        accounts = bab.org_accounts(org, actor)
+    except ClientError as exc:
+        log.warning("bab could not list the accounts of %s: %s", org, exc)
+        accounts = hit[1] if hit else []
+    _discovery_cache[org] = (time.monotonic(), accounts)
+    return accounts
+
+
+def _add_account(accounts: list[dict], iid: str, name: str, row: dict | None, org: str | None,
+                 account_id: str | None = None) -> None:
+    if any(a["id"] == iid for a in accounts):
+        return
+    accounts.append({"id": iid, "name": name, "connected": row is not None,
+                     "ceiling": sorted(row.get("ceiling") or []) if row else [],
+                     "organization": org, "account_id": account_id or (row or {}).get("account_id")})
+
+
 def picker(bab: BabClient, actor: str, cloud_accounts=()) -> list[dict]:
-    """The tree the Permissions section walks: vendor, then (for a cloud) the
-    account, project or subscription, then the vendor's permissions grouped its
-    way with the tier as a column. Accounts come from two places: what is
-    connected in bab (connected, with its ceiling) and what the org config lists
-    (`cloud_accounts`; not connected until somebody connects it). A service
-    vendor has one "account": its connection, or a placeholder when none is
-    connected yet. Nothing above a connection's ceiling is hidden; the UI greys
-    it with the reason."""
+    """The tree the Permissions section walks: vendor, then (for a cloud) the account,
+    project or subscription, then the vendor's permissions grouped its way with the tier
+    as a column. Accounts come from three places: rows connected in bab (connected, with
+    their ceiling; under their organization when there is one), the organization's other
+    accounts as its hub lists them (not connected yet), and the org config's
+    `cloud_accounts` (not connected yet). An organization row itself is never offered: a
+    lease is for an account. A service vendor has one "account": its connection, or a
+    placeholder when none is connected yet. Nothing above a connection's ceiling is hidden;
+    the UI greys it with the reason."""
     integrations = bab.integrations(actor)
     known = {v["vendor"]: v for v in bab.vendors(actor)}
     names: list[str] = list(known)
@@ -235,27 +293,33 @@ def picker(bab: BabClient, actor: str, cloud_accounts=()) -> list[dict]:
         except ClientError as exc:
             log.warning("bab catalogue for %s unavailable: %s", vendor, exc)
             tree = {"groups": [], "tiers": []}
-        connected = {i["integration"]: i for i in integrations if i["vendor"] == vendor}
+        rows = [i for i in integrations if i["vendor"] == vendor]
+        orgs = [i for i in rows if i.get("kind") == "org"]
+        connected = {i["integration"]: i for i in rows if i.get("kind") != "org"}
         accounts: list[dict] = []
         if meta["kind"] == "cloud":
-            seen: set[str] = set()
-            for a in cloud_accounts:
-                if a.vendor != vendor:
-                    continue
-                row = connected.get(a.integration_id)
-                accounts.append({"id": a.integration_id, "name": a.name, "connected": row is not None,
-                                 "ceiling": sorted(row.get("ceiling") or []) if row else []})
-                seen.add(a.integration_id)
+            for org in orgs:
+                for i in rows:
+                    if i.get("parent") == org["integration"]:
+                        _add_account(accounts, i["integration"], i.get("name") or i["integration"], i, org["integration"])
+                for a in _discovered(bab, org["integration"], actor):
+                    if not a.get("connected"):
+                        _add_account(accounts, f"{org['integration']}/{a['id']}", a.get("name") or a["id"], None, org["integration"], a["id"])
             for iid, row in connected.items():
-                if iid not in seen:
-                    accounts.append({"id": iid, "name": iid, "connected": True, "ceiling": sorted(row.get("ceiling") or [])})
+                if not row.get("parent"):
+                    _add_account(accounts, iid, row.get("name") or iid, row, None)
+            for a in cloud_accounts:
+                if a.vendor == vendor:
+                    _add_account(accounts, a.integration_id, a.name, connected.get(a.integration_id), None)
         else:
             for iid, row in connected.items():
-                accounts.append({"id": iid, "name": iid, "connected": True, "ceiling": sorted(row.get("ceiling") or [])})
+                _add_account(accounts, iid, iid, row, None)
             if not accounts:
-                accounts.append({"id": vendor, "name": meta["label"], "connected": False, "ceiling": []})
+                accounts.append({"id": vendor, "name": meta["label"], "connected": False, "ceiling": [],
+                                 "organization": None, "account_id": None})
         out.append({"id": vendor, "kind": meta["kind"], "label": meta.get("label") or vendor,
                     "account_noun": meta.get("account") or ("account" if meta["kind"] == "cloud" else None),
+                    "organizations": [{"id": o["integration"], "name": o.get("name") or o["integration"]} for o in orgs],
                     "accounts": accounts, "groups": tree.get("groups", []), "tiers": tree.get("tiers", [])})
     return out
 

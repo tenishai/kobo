@@ -1142,7 +1142,7 @@ export type AdminIntegration = {
   state: "pending" | "applied" | "failed";
   state_detail: string | null;
   credential_ref: string | null;
-  spec: { address?: string; trust?: string; pull_request?: string; source?: "access"; ceiling?: string[] };
+  spec: { address?: string; trust?: string; pull_request?: string; source?: "access"; ceiling?: string[]; kind?: "org" | "account"; parent?: string; account_id?: string };
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -1151,7 +1151,7 @@ export type AdminIntegration = {
 export type AdminConnectIntegration = {
   vendor: string;
   name: string;
-  auth?: "token" | "api_keys" | "aws_role" | "gcp_identity" | "azure_federated";
+  auth?: "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "azure_federated";
   identity?: Record<string, string>;
   secrets?: Record<string, string>;
   base_access: "read" | "write";
@@ -1179,8 +1179,18 @@ export async function connectAdminIntegration(input: AdminConnectIntegration): P
  * rendered three ways from the cloud-access release the room ships. */
 export type AdminAwsSetup = {
   version: string;
+  /** `role`: one flat role the room assumes; `org`: an organization's hub role in its
+   * management account; `account`: a member account's role that the hub assumes. */
+  mode: "role" | "org" | "account";
   role_name: string;
   audience: string;
+  /** account mode: the organization and the hub the account's role must trust. */
+  parent?: string;
+  account_id?: string;
+  hub_role_arn?: string;
+  external_id?: string;
+  /** org mode: what the hub may do, for an owner creating it by hand. */
+  permissions_policy?: string;
   /** Who the role must trust: the permission service (`access`) when it is on, else the gateway. */
   principal: "access" | "gateway";
   identity: { issuer: string; subject: string; email: string | null; audience: string } | null;
@@ -1194,9 +1204,37 @@ export type AdminAwsSetup = {
   checked: boolean;
 };
 
-export async function fetchAdminAwsSetup(packs: string[]): Promise<AdminAwsSetup> {
-  const res = await fetch(`/api/admin/integrations/aws/setup?packs=${encodeURIComponent(packs.join(","))}`);
+export type AwsSetupRequest = {
+  packs: string[];
+  mode?: "role" | "org" | "account";
+  integration?: string;
+  parent?: string;
+  account_id?: string;
+};
+
+export async function fetchAdminAwsSetup(input: AwsSetupRequest): Promise<AdminAwsSetup> {
+  const q = new URLSearchParams({ packs: input.packs.join(","), mode: input.mode ?? "role" });
+  if (input.integration) q.set("integration", input.integration);
+  if (input.parent) q.set("parent", input.parent);
+  if (input.account_id) q.set("account_id", input.account_id);
+  const res = await fetch(`/api/admin/integrations/aws/setup?${q.toString()}`);
   return parse<AdminAwsSetup>(res);
+}
+
+/** One account of an AWS organization as its hub sees it, and whether it is connected. */
+export type OrgAccount = {
+  id: string;
+  name: string | null;
+  email: string | null;
+  status: string | null;
+  integration: string | null;
+  connected: boolean;
+};
+
+export async function fetchOrgAccounts(integrationId: string): Promise<OrgAccount[]> {
+  const res = await fetch(`/api/admin/integrations/${encodeURIComponent(integrationId)}/accounts`);
+  const body = await parse<{ accounts: OrgAccount[] }>(res);
+  return body.accounts;
 }
 
 export async function disconnectAdminIntegration(id: string): Promise<{ id: string; secret: string; gateway: string }> {
@@ -1361,6 +1399,9 @@ export type AccessAccount = {
   name: string;
   connected: boolean;
   ceiling: string[];
+  /** The organization row this account sits under, when it does. */
+  organization: string | null;
+  account_id: string | null;
 };
 
 /** One vendor in the picker: a cloud (accounts underneath) or a service (one
@@ -1370,6 +1411,7 @@ export type AccessVendor = {
   kind: "cloud" | "service" | string;
   label: string;
   account_noun: string | null;
+  organizations: { id: string; name: string }[];
   accounts: AccessAccount[];
   groups: { name: string; permissions: AccessPermission[] }[];
   tiers: { name: string; lease_seconds: number; validity_days: number | null }[];

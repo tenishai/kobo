@@ -212,7 +212,7 @@
       <div class="table-card picker">
         {#each vendor.accounts as a (a.id)}
           <button type="button" class="row-link" onclick={() => openAccount(a)} disabled={!a.connected} title={a.connected ? "" : "Not connected yet; a room admin connects it on Admin › Integrations"}>
-            <span class="row-link__name">{a.name}</span>
+            <span class="row-link__name">{a.name}{#if a.organization}<span class="quiet org"> · {vendor.organizations.find((o) => o.id === a.organization)?.name ?? a.organization}</span>{/if}</span>
             <span class="row-link__note">{a.connected ? `${heldAt(a.id)} held` : "not connected yet"}</span>
             <span class="row-link__chevron" aria-hidden="true">›</span>
           </button>
@@ -259,6 +259,7 @@
 <style>
   .perm { font-family: var(--font-mono); font-size: 0.85rem; font-weight: 600; }
   .quiet { color: var(--muted); font-size: 0.85rem; }
+  .org { font-weight: 400; }
   .tier { display: inline-block; padding: 0.05rem 0.45rem; border: 1px solid var(--border); border-radius: 999px; font-size: 0.75rem; }
   .tier--mutate { border-color: var(--warn); }
   .tier--destroy { border-color: var(--danger, var(--warn)); }
