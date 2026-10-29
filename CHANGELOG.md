@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-29
+
 ### Added
 
 - **Access through bab.** With `bab_url` in the org config and the console token in `KOBO_BAB_TOKEN`, the room is the console for its permission service: a **Permissions** section on the agent page (what the agent holds, with tier and expiry; the vendor's permission tree to ask for more, anything above the connection's ceiling greyed with the reason; Revoke now for admins), a **Review** pane under Admin (requests waiting, bulk Approve, Deny with a reason, Sync agents), borrowed credentials under Activity, and an **Access** row on Services. The room tells the service which agents exist (at boot, after every create and destroy, and from Review) with the pod identity that is each one, so a lease asked for by the pod lands under the agent's name. Routes: `GET /api/access/picker`, `GET /api/agents/{name}/access`, `POST /api/agents/{name}/access/requests`, `DELETE /api/agents/{name}/access/grants/{id}`, `GET /api/agents/{name}/leases`, `GET /api/admin/access/requests`, `POST /api/admin/access/decide`, `POST /api/admin/access/sync`. Everything is off, and the room runs as before, without `bab_url`.
