@@ -48,15 +48,25 @@
   // reads the Kubernetes Secret itself -- "is it set" never needs a
   // value, and the room does not ask for one.
   //
-  // The two secrets the ROOM sets (the colleague pass, the Slack values)
-  // are in the same table as locked rows with no remove button. The key
-  // rules have always refused those names; a list that refuses a name it
-  // does not show reads as broken.
+  // What the ROOM sets (the colleague pass and the Slack values as secrets;
+  // the model and how Slack wakes the agent as variables) is in the same
+  // table as locked rows with no field and no remove button, and NEVER in
+  // a save's payload. The key rules have always refused those names; a
+  // list that refuses a name it does not show reads as broken, and a list
+  // that re-sent one on every save had every save refused (issue #250).
   //
-  // RESTART. A saved secret reaches a running agent at its next boot and
-  // not before, which used to leave this panel saying "the next time it
-  // starts" and nothing anybody could do about it. There is a route now,
-  // so there is a button, and the sentence after a save names it.
+  // ONE NAME ONCE (issue #272). Both kinds arrive in the pod as one
+  // environment variable, so a name may appear in the table once across
+  // both: a second row with the same name is refused inline and Save waits.
+  // Rotating a stored secret is remove-then-add in one save, which is one
+  // row again.
+  //
+  // SAVE RESTARTS (issue #271). A saved secret reaches a running agent at
+  // its next boot and not before. The first cut left a separate Restart
+  // button and a sentence asking for it; owners expected Save to take
+  // effect, so now it does: when the agent is running and the save changed
+  // something it reads at start, Save asks for the restart itself and the
+  // line under the table says so. The restart route is unchanged.
   import { untrack } from "svelte";
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import ErrorState from "./ErrorState.svelte";
@@ -67,7 +77,7 @@
     type EnvWiring,
     type SecretSync,
   } from "../lib/api";
-  import { keyRefusal, MAX_KEYS, parseEnvPaste } from "../lib/dotenv";
+  import { keyRefusal, MAX_KEYS, parseEnvPaste, RESERVED_KEYS } from "../lib/dotenv";
   import {
     agentEnvQuery,
     agentSecretsQuery,
@@ -91,9 +101,10 @@
      * about an agent nobody was looking at and put a row in its audit
      * trail saying somebody did. */
     active?: boolean;
-    /** Whether the agent is running. The restart button rolls a
-     * Deployment, and an agent whose pipeline has not finished has none
-     * to roll -- the route says so, and the button does not offer it. */
+    /** Whether the agent is running. A save restarts a running agent so
+     * it picks the change up; an agent whose pipeline has not finished
+     * has nothing to restart, and the sentence after a save says it will
+     * read the change when it starts. */
     deployed?: boolean;
   } = $props();
 
@@ -102,9 +113,6 @@
   // enough that a tab left open all afternoon is not a poller.
   const POLL_EVERY_MS = 10_000;
   const POLL_FOR_MS = 120_000;
-  // How long the restart button says it is done before offering itself
-  // again.
-  const RESTARTED_FOR_MS = 5_000;
 
   /** The interval the secrets read is on, or false for the ordinary
    * state: nothing changes that list but a save from here. Declared
@@ -116,7 +124,6 @@
    * not what it means. */
   let pendingSync = $state(false);
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  let restartTimer: ReturnType<typeof setTimeout> | null = null;
 
   const queryClient = useQueryClient();
   // Read once, like every other panel here: AgentDetail remounts this
@@ -137,7 +144,7 @@
   const LEAD =
     "Secrets are stored in the secrets service and reach the agent as " +
     "environment variables. Variables are for values that are not " +
-    "sensitive. Restart the agent to pick up a change.";
+    "sensitive. Saving restarts a running agent so it picks up the change.";
 
   // --- The draft ------------------------------------------------------------
 
@@ -202,6 +209,30 @@
     ];
   }
 
+  /** The owner's rows out of an environment read: never a key the room
+   * sets. The server already keeps those out of `env` (issue #250); this
+   * is the panel's own wall, so a room-set key can never become an
+   * editable row that rides along in a save, whatever the server sent. */
+  function ownerEnv(values: Record<string, string>): Record<string, string> {
+    return Object.fromEntries(
+      Object.entries(values).filter(([key]) => !RESERVED_KEYS.includes(key)),
+    );
+  }
+
+  /** The variables the room set on this agent, by name and value: what
+   * the server says under `room`, plus any reserved key it left in `env`.
+   * Shown as locked rows the way the room's own secrets are. */
+  const roomEnv = $derived.by<Record<string, string>>(() => {
+    const data = env.data;
+    if (!data) {
+      return {};
+    }
+    const fromEnv = Object.entries(data.env ?? {}).filter(([key]) =>
+      RESERVED_KEYS.includes(key),
+    );
+    return { ...Object.fromEntries(fromEnv), ...(data.room ?? {}) };
+  });
+
   // Seed from the reads, and re-seed whenever the server's answer actually
   // changes -- but never over a draft. `hasPending` is read untracked: this
   // effect writes the very state it would otherwise depend on.
@@ -210,7 +241,7 @@
       return;
     }
     const keys = serverKeys(secrets.data);
-    const values = env.data.env ?? {};
+    const values = ownerEnv(env.data.env ?? {});
     const signature = JSON.stringify([keys, values]);
     untrack(() => {
       if (signature === baseSignature) {
@@ -271,6 +302,40 @@
   );
   const hasPending = $derived(secretsPending || envPending);
 
+  /** The rows whose name another row already carries, by id. One name
+   * once across both kinds, because both arrive in the pod as one
+   * environment variable (issue #272). The row that KEEPS the name is the
+   * one somebody did not just type: a stored secret first (its name is
+   * not editable, so a refusal on it could not be acted on), then the
+   * oldest stored row, then the oldest row of all; new rows go in at the
+   * top, so "oldest" is "last". Every other row with that name is
+   * refused. */
+  const duplicates = $derived.by(() => {
+    const byName = new Map<string, Row[]>();
+    for (const row of rows) {
+      if (row.name.length > 0) {
+        byName.set(row.name, [...(byName.get(row.name) ?? []), row]);
+      }
+    }
+    const flagged = new Set<number>();
+    for (const group of byName.values()) {
+      if (group.length < 2) {
+        continue;
+      }
+      const oldestFirst = [...group].reverse();
+      const keeper =
+        oldestFirst.find((row) => row.kind === "secret" && !row.fresh) ??
+        oldestFirst.find((row) => !row.fresh) ??
+        oldestFirst[0];
+      for (const row of group) {
+        if (row !== keeper) {
+          flagged.add(row.id);
+        }
+      }
+    }
+    return flagged;
+  });
+
   /** The key rule, inline, for the names somebody can actually type. A
    * stored secret's name came from the server and is not editable, so
    * there is nothing to refuse. */
@@ -278,7 +343,11 @@
     if (row.name.length === 0 || (row.kind === "secret" && !row.fresh)) {
       return null;
     }
-    return keyRefusal(row.name);
+    const refusal = keyRefusal(row.name);
+    if (refusal !== null) {
+      return refusal;
+    }
+    return duplicates.has(row.id) ? `${row.name} is already listed` : null;
   }
 
   /** A named secret with no value would store an empty credential, which is
@@ -306,13 +375,18 @@
     pullRequest?: string;
     pendingUnwire?: boolean;
     emptied?: boolean;
-    /** Whether this save is one a restart would deliver. Worked out where
-     * the save happens rather than read off `wiring`, because the two
-     * halves mean different things by "unchanged": a secrets save that
-     * reports it still STORED a new value (only the one wiring line was
-     * already there), while an environment save that reports it wrote
-     * nothing at all. */
+    /** Whether this save is one a restart delivers. Worked out where the
+     * save happens rather than read off `wiring`, because the two halves
+     * mean different things by "unchanged": a secrets save that reports
+     * it still STORED a new value (only the one wiring line was already
+     * there), while an environment save that reports it wrote nothing at
+     * all. */
     nudge?: boolean;
+    /** Where the restart the save asked for has got to, when it asked for
+     * one. `failed` keeps the save's own good news: the values are stored
+     * either way, and the sentence says both. */
+    restart?: "pending" | "done" | "failed";
+    restartProblem?: string;
   };
 
   let landing = $state<Landing | null>(null);
@@ -320,6 +394,15 @@
   const landingText = $derived.by(() => {
     if (landing === null) {
       return null;
+    }
+    if (landing.restart === "pending") {
+      return "Saved. Restarting the agent so it picks this up.";
+    }
+    if (landing.restart === "done") {
+      return "Saved. The agent is coming back up with the change.";
+    }
+    if (landing.restart === "failed") {
+      return `Saved, but the agent was not restarted: ${landing.restartProblem}. It picks this up the next time it starts.`;
     }
     if (landing.pendingUnwire) {
       // The one outcome where the save is NOT the whole story: the
@@ -334,20 +417,11 @@
     if (landing.wiring === "pull_request") {
       return "Saved. The agent's files belong to its team, so the change is waiting in a pull request.";
     }
-    if (landing.nudge && deployed) {
-      return "Saved. Restart the agent to pick up the change.";
-    }
     if (landing.wiring === "unchanged") {
       return "Saved. The agent's files already said this.";
     }
     return "Saved. The agent picks this up the next time it starts.";
   });
-
-  /** Whether the restart button is the thing to press right now. Drives
-   * nothing but its own emphasis: the button is there either way. */
-  const nudgingRestart = $derived(
-    landing?.nudge === true && deployed && !frozen && !restart.isPending,
-  );
 
   // --- The lock -------------------------------------------------------------
 
@@ -452,39 +526,39 @@
     if (pollTimer !== null) {
       clearTimeout(pollTimer);
     }
-    if (restartTimer !== null) {
-      clearTimeout(restartTimer);
-    }
   });
 
   // --- Restarting the agent -------------------------------------------------
 
-  let justRestarted = $state(false);
-  let restartError = $state<string | null>(null);
-
-  const restartLabel = $derived(
-    restart.isPending ? "Restarting" : justRestarted ? "Restarted" : "Restart agent",
-  );
-
-  async function handleRestart(): Promise<void> {
-    if (!deployed || frozen || restart.isPending) {
-      return;
-    }
-    restartError = null;
+  /** Ask for the restart a save earned, and keep the save's sentence
+   * honest about where it got to. The save has already landed by the time
+   * this runs, so a refusal here (the route counts restarts per caller,
+   * and a cluster can say no) is reported beside "Saved", never as a
+   * failure of the save. `landed` is the sentence this save owns; if
+   * somebody discards or saves again meanwhile (`saveSerial` moves), the
+   * newer sentence wins and this one is dropped. */
+  async function restartAfterSave(landed: Landing): Promise<void> {
+    const serial = saveSerial;
+    landing = { ...landed, restart: "pending" };
+    let next: Landing;
     try {
       await restart.mutateAsync();
+      next = { ...landed, restart: "done" };
     } catch (err: unknown) {
-      restartError = errorMessage(err, "Couldn't restart the agent. Try again.");
-      return;
+      next = {
+        ...landed,
+        restart: "failed",
+        restartProblem: errorMessage(err, "the room could not reach it"),
+      };
     }
-    // The save's own sentence has been acted on, so it stops asking.
-    landing = null;
-    justRestarted = true;
-    if (restartTimer !== null) {
-      clearTimeout(restartTimer);
+    if (serial === saveSerial) {
+      landing = next;
     }
-    restartTimer = setTimeout(() => (justRestarted = false), RESTARTED_FOR_MS);
   }
+
+  /** Bumped by every save and every discard, so a restart that returns
+   * after either does not overwrite the sentence they put up. */
+  let saveSerial = 0;
 
   // --- The controls ---------------------------------------------------------
 
@@ -512,6 +586,7 @@
     pasteOpen = false;
     saveError = null;
     landing = null;
+    saveSerial += 1;
   }
 
   async function handleSave(): Promise<void> {
@@ -520,7 +595,7 @@
     }
     saveError = null;
     landing = null;
-    restartError = null;
+    saveSerial += 1;
     // Read before the save empties the draft: the rows below are re-seeded
     // from the server's answer, and `secretsPending` is false by the time
     // the chase would start.
@@ -570,11 +645,10 @@
       return;
     }
     landing = landed;
-    justRestarted = false;
     baseKeys = keys;
-    baseEnv = values;
-    baseSignature = JSON.stringify([keys, values]);
-    rows = seedRows(keys, values);
+    baseEnv = ownerEnv(values);
+    baseSignature = JSON.stringify([keys, baseEnv]);
+    rows = seedRows(keys, baseEnv);
     paste = "";
     pasteProblems = [];
     pasteOpen = false;
@@ -582,6 +656,11 @@
       // Only the secrets half: an environment variable is a file the
       // room just wrote, with no delivery object to watch settle.
       startChasing();
+    }
+    if (landed?.nudge && deployed) {
+      // The agent reads these at start, and it is running: the save is
+      // not done until the agent has been asked to start again.
+      await restartAfterSave(landed);
     }
   }
 
@@ -788,13 +867,13 @@
         </tr>
       </thead>
       <tbody>
-        {#if rows.length === 0 && managed.length === 0}
+        {#if rows.length === 0 && managed.length === 0 && Object.keys(roomEnv).length === 0}
           <tr>
             <td class="secrets__empty" colspan="4">No secrets or variables yet.</td>
           </tr>
         {/if}
         {#each rows as row, index (row.id)}
-          <tr class="secrets__row">
+          <tr class="secrets__row" class:secrets__row--new={row.fresh}>
             <td class="secrets__cell">
               {#if row.kind === "secret" && !row.fresh}
                 <code class="secrets__name">{row.name}</code>
@@ -802,6 +881,7 @@
                 <input
                   class="secrets__input"
                   type="text"
+                  placeholder="NAME"
                   aria-label={`Name ${index + 1}`}
                   aria-invalid={refusals[index] !== null}
                   autocomplete="off"
@@ -824,6 +904,7 @@
                 <input
                   class="secrets__input"
                   type={row.kind === "secret" ? "password" : "text"}
+                  placeholder={row.kind === "secret" ? "secret value" : "value"}
                   aria-label={`Value ${index + 1}`}
                   autocomplete="off"
                   spellcheck="false"
@@ -869,6 +950,23 @@
             <td class="secrets__cell secrets__cell--remove"></td>
           </tr>
         {/each}
+        {#each Object.entries(roomEnv) as [name, value] (name)}
+          <tr class="secrets__row">
+            <td class="secrets__cell">
+              <code class="secrets__name">{name}</code>
+            </td>
+            <td class="secrets__cell">
+              <span class="secrets__kind">Set by the room</span>
+            </td>
+            <td class="secrets__cell">
+              <code class="secrets__name secrets__name--room">{value}</code>
+            </td>
+            <!-- The variables the room wrote: shown so the table says
+                 what the agent really gets, and never part of a save
+                 (issue #250). -->
+            <td class="secrets__cell secrets__cell--remove"></td>
+          </tr>
+        {/each}
       </tbody>
     </table>
 
@@ -879,8 +977,6 @@
     <div class="secrets__footer">
       {#if saveError}
         <p class="secrets__status secrets__fail" role="alert">{saveError}</p>
-      {:else if restartError}
-        <p class="secrets__status secrets__fail" role="alert">{restartError}</p>
       {:else if landingText}
         <p class="secrets__status">
           <span role="status">{landingText}</span>
@@ -905,17 +1001,6 @@
             onclick={discard}
           >
             Discard
-          </button>
-        {/if}
-        {#if deployed}
-          <button
-            type="button"
-            class="secrets__button"
-            class:secrets__button--emphasis={nudgingRestart}
-            disabled={frozen || restart.isPending}
-            onclick={handleRestart}
-          >
-            {restartLabel}
           </button>
         {/if}
         <button
@@ -1013,14 +1098,6 @@
     color: var(--muted);
   }
 
-  /* The restart button after a save that needs one. Not the primary
-     style: Save is still the primary control here, and two filled
-     buttons side by side say neither is the one to press. */
-  .secrets__button--emphasis {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
   .secrets__button--primary {
     border-color: var(--accent);
     background: var(--accent);
@@ -1103,6 +1180,27 @@
     height: 36px;
   }
 
+  /* A row somebody just added, lit for a moment so it is seen: it goes
+     in at the top of the table, where an empty input is easy to miss. */
+  .secrets__row--new {
+    animation: secrets-new 1.8s ease-out both;
+  }
+
+  @keyframes secrets-new {
+    from {
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+    }
+    to {
+      background: transparent;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .secrets__row--new {
+      animation: none;
+    }
+  }
+
   .secrets__cell {
     padding: 2px var(--space-xs);
     border-bottom: 1px solid var(--border);
@@ -1121,6 +1219,10 @@
     font-size: 0.8rem;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .secrets__name--room {
+    color: var(--muted);
   }
 
   .secrets__kind {
@@ -1177,6 +1279,11 @@
 
   .secrets__input[aria-invalid="true"] {
     border-color: var(--fail);
+  }
+
+  .secrets__input::placeholder {
+    color: var(--muted);
+    opacity: 0.8;
   }
 
   .secrets__remove {

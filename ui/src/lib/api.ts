@@ -2639,7 +2639,13 @@ export type AgentSecretsWrite = {
   pull_request?: string;
 };
 
-export type AgentEnv = { env: Record<string, string> };
+export type AgentEnv = {
+  /** The owner's own variables, editable. */
+  env: Record<string, string>;
+  /** The variables the room set itself (the model, how Slack wakes the
+   * agent), shown as locked rows and never sent back in a save. */
+  room?: Record<string, string>;
+};
 
 export type AgentEnvWriteResult = {
   env: Record<string, string>;

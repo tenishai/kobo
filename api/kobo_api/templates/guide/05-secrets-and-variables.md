@@ -1,5 +1,5 @@
 # Secrets and variables
-<!-- summary: Give the agent API keys and settings, know at a glance that a secret is really set, and restart to apply. -->
+<!-- summary: Give the agent API keys and settings, and know at a glance that a secret is really set. Save applies the change. -->
 
 Open the **Settings** tab. **Secrets and environment** is one table with two kinds of row.
 
@@ -7,6 +7,8 @@ Open the **Settings** tab. **Secrets and environment** is one table with two kin
 - **Variable.** A plain setting that is not sensitive, like a region or a feature flag. Press **+ Variable**. Variables stay readable.
 
 **Paste .env** takes a block of `KEY=value` lines and sorts them into the table for you. Rows are a draft until you press **Save**; **Discard** drops the draft.
+
+A name can appear in the table once. A second row with the same name, whether a secret or a variable, is marked **already listed** and Save waits until it is fixed. To change a stored secret's value, remove its row, add it again with the new value, and save once.
 
 ## Where secrets live
 
@@ -20,8 +22,8 @@ A stored secret's value cell shows a padlock and nothing else. The lock tells yo
 - **Secret, syncing.** Saved, on its way.
 - **Secret, not on the agent yet.** Saved, not delivered. Rest on it to read why.
 
-Secrets the room set itself, like the agent's colleague pass or its Slack tokens, show as **Set by the room** and cannot be removed here.
+Secrets and variables the room set itself, like the agent's colleague pass, its Slack tokens, its model or how Slack wakes it, show as **Set by the room** and cannot be edited or removed here.
 
-## Restart to apply
+## Save applies the change
 
-A secret or variable reaches a running agent when it next starts, not before. After you save, press **Restart agent**. The agent's pods go down and come back on the same image with the new values. Nothing is rebuilt. Anything the agent was doing at that moment is lost, so do not restart it mid task.
+A secret or variable reaches a running agent when it next starts, not before, so when the agent is running and the save changed something, Save restarts it for you: the agent's pods go down and come back on the same image with the new values, and the line under the table says so. Nothing is rebuilt. Anything the agent was doing at that moment is lost, so do not save a change mid task. A save that changed nothing, or a change waiting in a pull request, does not restart anything.

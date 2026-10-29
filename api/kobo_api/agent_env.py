@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -285,20 +285,28 @@ def key_refusal(key: str) -> str | None:
 
 
 def write_refusal(
-    values: dict[str, str], remove: list[str], existing: list[str]
+    values: dict[str, str],
+    remove: list[str],
+    existing: list[str],
+    *,
+    taken: Iterable[str] = (),
+    taken_as: str = "",
 ) -> str | None:
     """The plain sentence refusing one whole write, or None to go ahead.
 
     `values` is what the caller is setting, `remove` what they are taking
     away, and `existing` the key names already held -- names only, never
     values, which is all the caller of this ever has for the secrets list
-    anyway.
+    anyway. `taken` is the names held on the OTHER list (`taken_as` says
+    which: "secret" or "variable"), so one name cannot be both at once.
 
     Four refusals, in the order that answers a person best: a name that is
     not allowed (either side, so a remove is checked exactly as a set is),
     a key named on both sides at once (which of the two was meant is not
-    something to guess at), and a write that would leave more keys behind
-    than a list may hold.
+    something to guess at), a key the other list already holds (both
+    arrive in the pod as one environment variable, and which value wins
+    would be whichever was written last; issue #272), and a write that
+    would leave more keys behind than a list may hold.
     """
     for key in list(values) + list(remove):
         refusal = key_refusal(key)
@@ -308,6 +316,10 @@ def write_refusal(
     both = sorted(set(values) & set(remove))
     if both:
         return f"{both[0]} is in both the add list and the remove list"
+
+    crossed = sorted(set(values) & set(taken))
+    if crossed:
+        return f"{crossed[0]} is already a {taken_as} on this agent"
 
     left = merged_names(existing, values, remove)
     if len(left) > MAX_KEYS:
@@ -329,7 +341,13 @@ def merged_names(
 
 def read_env(data: dict) -> dict[str, str]:
     """The environment variables an OWNER set, out of a parsed
-    `gojira.yaml` -- never the two the room wires in itself.
+    `gojira.yaml` -- never one the room wires in itself.
+
+    Every `RESERVED_KEYS` name is left out, not only the two model ones.
+    Until issue #250 this dropped `MODEL_ENV_KEYS` alone, so an agent
+    with Slack wired handed `SLACK_WAKE_MODE` back as an owner row; the
+    panel re-sent it on every save and `write_refusal` refused the whole
+    write by that name. What the room sets is read by `read_room_env`.
 
     A non-mapping `env` reads as empty rather than raising: a file shaped
     that way could never have run on the deploy platform, so there is
@@ -339,14 +357,26 @@ def read_env(data: dict) -> dict[str, str]:
     `PORT: 8080` and a bool for `DEBUG: true`, and what the panel edits is
     a text field. `True` renders as `true`, the way the file spelled it.
     """
+    return _env_rows(data, lambda key: key not in RESERVED_KEYS)
+
+
+def read_room_env(data: dict) -> dict[str, str]:
+    """The environment variables the ROOM set on this agent, out of a
+    parsed `gojira.yaml`: the `RESERVED_KEYS` names the file carries.
+
+    The complement of `read_env`, so the panel can show them as locked
+    rows the way it shows the room's own secrets. Values ride along
+    because this list is the non-sensitive one and the file is readable
+    by anybody who can read the panel.
+    """
+    return _env_rows(data, lambda key: key in RESERVED_KEYS)
+
+
+def _env_rows(data: dict, keep: Callable[[str], bool]) -> dict[str, str]:
     env = data.get("env")
     if not isinstance(env, dict):
         return {}
-    return {
-        str(key): _as_text(value)
-        for key, value in env.items()
-        if str(key) not in MODEL_ENV_KEYS
-    }
+    return {str(key): _as_text(value) for key, value in env.items() if keep(str(key))}
 
 
 def apply_env(data: dict, values: dict[str, str], remove: list[str]) -> bool:
