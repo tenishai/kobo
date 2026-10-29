@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-29
+
 ### Changed
 
 - **The admin panel follows the permission service.** Connect AWS names the permission service's identity as what the role must trust, asks it to try the role before saving, and connects the account there (the ceiling is every read permission the catalogue offers for the vendor); other vendors connect there too. Disconnect takes the connection out of it, revoking the grants on it. Integrations lists connections the service holds that the panel never made. Connections is shown only while the service is off. Review opens with **Borrowed now**, the credentials out in the room at this moment (`GET /api/admin/access/leases`), and Overview counts them.
