@@ -11,6 +11,13 @@
 # were most of a release's build time. BUILDPLATFORM needs BuildKit: buildx locally,
 # the release workflow, and the dev path's buildx Cloud Build config (not `--tag`).
 
+# kobo-base (docker/base/Dockerfile): the Python base with git, gh, kubectl and gcloud
+# already installed, published by base-image.yml and pinned here by digest; the runtime
+# stage below builds on it, so a release does only the Python and UI layers. Declared
+# before the first FROM, as BuildKit requires of an ARG a FROM reads. The dev path passes
+# its own registry's copy of the same digest.
+ARG BASE_IMAGE=ghcr.io/tenishai/kobo-base:20261029-dbbf463@sha256:d6dc96c8e7e241ee1b8472a1cd2e0c66b98ec6e4e6d7e25b3e10a2b903c8479e
+
 FROM --platform=$BUILDPLATFORM node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS ui-build
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
@@ -25,11 +32,8 @@ COPY api/pyproject.toml api/uv.lock ./
 RUN pip install --no-cache-dir "uv==${UV_VERSION}" \
  && uv export --frozen --no-dev --no-emit-project -o requirements.txt
 
-# The runtime stage builds on kobo-base (docker/base/Dockerfile): the Python base with
-# git, gh, kubectl and gcloud already installed, published by base-image.yml and pinned
-# here by digest. A release build therefore does only the Python and UI layers. The dev
-# path passes its own registry's copy of the same digest as BASE_IMAGE.
-ARG BASE_IMAGE=ghcr.io/tenishai/kobo-base:20261029-dbbf463@sha256:d6dc96c8e7e241ee1b8472a1cd2e0c66b98ec6e4e6d7e25b3e10a2b903c8479e
+# The runtime stage builds on kobo-base (BASE_IMAGE, declared at the top of this file
+# because an ARG a FROM reads must come before the first FROM).
 FROM ${BASE_IMAGE} AS runtime
 
 WORKDIR /app
