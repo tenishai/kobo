@@ -6,6 +6,11 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- AWS organizations: one external id per organization, so one spoke template deploys the role to every member account (a StackSet). Connecting the hub checks every account through it and connects the ones that carry the role; **Check accounts** runs that again. No per-account Add account (#275).
+- Connect AWS sheet: pick Terraform, CloudFormation or by hand first; the sheet shows only that method, for the management account and for the member accounts (#276).
+
 ## [0.3.7] - 2026-10-29
 
 ### Changed

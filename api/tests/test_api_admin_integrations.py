@@ -317,58 +317,69 @@ HUB = "arn:aws:iam::999999999999:role/KoboAccess-Hub"
 SPOKE = "arn:aws:iam::111111111111:role/KoboAccess-Role"
 
 
-def test_an_organization_then_an_account_under_it(tmp_path, fake_storage):
+def test_an_organization_then_its_accounts_register_themselves(tmp_path, fake_storage):
     bab = FakeBab(integrations=[])
     github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
     client, headers = _access_client(tmp_path, fake_storage, github=github, bab=bab)
 
-    # The organization's set-up page: the hub role, trusting the room's identity (oaud, not aud).
+    # The organization's set-up page: the hub role, trusting the room's identity (oaud, not aud),
+    # and the one spoke template every member account gets, with the organization's external id.
     page = client.get("/api/admin/integrations/aws/setup?mode=org&integration=acme-aws", headers=headers).json()
-    assert page["mode"] == "org" and page["role_name"] == "KoboAccess-Hub"
+    assert page["mode"] == "org" and page["role_name"] == "KoboAccess-Hub" and page["spoke_role_name"] == "KoboAccess-Role"
     assert 'room_service_account_unique_id = "102000000000000000000"' in page["terraform"]
     assert '"accounts.google.com:oaud": "sts.amazonaws.com"' in page["trust_policy"]
     assert "sts:AssumeRole" in page["permissions_policy"] and "organizations:ListAccounts" in page["permissions_policy"]
+    assert page["external_id"] == "ext-acme-aws" and page["hub_role_arn"] is None
+    assert 'external_id    = "ext-acme-aws"' in page["spoke_terraform"]
+    assert "create-stack-set" in page["stackset"] and "ParameterKey=ExternalId,ParameterValue=ext-acme-aws" in page["stackset"]
+    assert page["cloudformation"]["parameters"]["ExternalId"] == "ext-acme-aws"
 
-    # Connect the organization: probed, then a bab row of kind org with no ceiling.
+    # Connect the organization: probed, a bab row of kind org with no ceiling and the external
+    # id, then its accounts checked through the hub: the one carrying the role is connected.
     row = client.post("/api/admin/integrations", json={"vendor": "aws", "name": "acme-aws", "base_access": "read", "auth": "aws_hub",
                                                         "identity": {"hub_role_arn": HUB}}, headers=headers).json()
     assert row["id"] == "acme-aws" and row["state"] == "applied" and row["spec"]["kind"] == "org", row
-    assert bab.probes[-1] == (HUB, "sts.amazonaws.com")
-    (org,) = bab.integrations("x")
-    assert org["kind"] == "org" and org["ceiling"] == [] and org["hub_role_arn"] == HUB
-
-    # The organization's accounts, through the hub, none connected yet.
-    accts = client.get("/api/admin/integrations/acme-aws/accounts", headers=headers).json()["accounts"]
-    assert [(a["id"], a["connected"]) for a in accts] == [("111111111111", False), ("222222222222", False)]
-
-    # An account's set-up page: the spoke trusts the hub with this account's external id.
-    page = client.get("/api/admin/integrations/aws/setup?mode=account&integration=acme-prod&parent=acme-aws&account_id=111111111111", headers=headers).json()
-    assert page["mode"] == "account" and page["hub_role_arn"] == HUB and page["external_id"] == "ext-acme-aws-111111111111"
-    assert f'hub_role_arn   = "{HUB}"' in page["terraform"] and '"sts:ExternalId": "ext-acme-aws-111111111111"' in page["trust_policy"]
-    bad = client.get("/api/admin/integrations/aws/setup?mode=account&integration=x&parent=nope&account_id=111111111111", headers=headers)
-    assert bad.status_code == 409
-
-    # Connect the account under the organization: probed through the hub, then a bab row with the parent.
-    row = client.post("/api/admin/integrations", json={"vendor": "aws", "name": "acme-prod", "base_access": "read", "auth": "aws_spoke",
-                                                        "identity": {"parent": "acme-aws", "role_arn": SPOKE, "account_id": "111111111111"}},
-                      headers=headers).json()
-    assert row["id"] == "acme-prod" and row["state"] == "applied" and row["spec"]["parent"] == "acme-aws"
-    assert bab.probes[-1] == (SPOKE, "sts.amazonaws.com", HUB, "ext-acme-aws-111111111111")
-    acct = next(i for i in bab.integrations("x") if i["integration"] == "acme-prod")
+    assert "1 account(s) carry the role and are connected, 1 do not yet" in row["state_detail"]
+    assert bab.probes[0] == (HUB, "sts.amazonaws.com") and bab.discoveries == [("acme-aws", "KoboAccess-Role")]
+    rows = {i["integration"]: i for i in bab.integrations("x")}
+    assert rows["acme-aws"]["kind"] == "org" and rows["acme-aws"]["ceiling"] == [] and rows["acme-aws"]["hub_role_arn"] == HUB
+    assert rows["acme-aws"]["spec"]["external_id"] == "ext-acme-aws"
+    acct = rows["acme-prod"]
     assert acct["parent"] == "acme-aws" and acct["kind"] == "account" and acct["account_id"] == "111111111111"
-    assert acct["spec"]["spoke_role_arn"] == SPOKE and acct["spec"]["external_id"] == "ext-acme-aws-111111111111"
+    assert acct["spec"]["spoke_role_arn"] == "arn:aws:iam::111111111111:role/KoboAccess-Role"
+    assert "external_id" not in acct["spec"], "a discovered account leases with the organization's external id"
     assert acct["ceiling"] == ["aws_cloudtrail_lake_query", "aws_inventory_read"]
     assert not github._pushed_trees, "nothing goes to the gateway: leases come from the permission service"
-    # Now the organization lists it connected, and the panel shows both rows.
+
+    # Now the page knows the hub, and the organization's accounts list one connected, one waiting.
+    page = client.get("/api/admin/integrations/aws/setup?mode=org&integration=acme-aws", headers=headers).json()
+    assert page["hub_role_arn"] == HUB and f'hub_role_arn   = "{HUB}"' in page["spoke_terraform"]
     accts = {a["id"]: a for a in client.get("/api/admin/integrations/acme-aws/accounts", headers=headers).json()["accounts"]}
     assert accts["111111111111"]["connected"] is True and accts["111111111111"]["integration"] == "acme-prod"
-    rows = {r["id"]: r for r in client.get("/api/admin/integrations", headers=headers).json()["integrations"]}
-    assert rows["acme-aws"]["spec"]["kind"] == "org" and rows["acme-prod"]["spec"]["parent"] == "acme-aws"
+    assert accts["222222222222"]["connected"] is False
+    panel = {r["id"]: r for r in client.get("/api/admin/integrations", headers=headers).json()["integrations"]}
+    assert panel["acme-aws"]["spec"]["kind"] == "org" and panel["acme-prod"]["spec"]["parent"] == "acme-aws"
+    assert panel["acme-prod"]["spec"]["account_id"] == "111111111111" and panel["acme-prod"]["state"] == "applied"
 
-    # The picker offers the connected account under its organization, and the other one as not connected.
+    # Check again later: the second account gained the role; it is connected, the first left alone.
+    bab.reachable_accounts = {"111111111111", "222222222222"}
+    found = client.post("/api/admin/integrations/acme-aws/accounts/check", headers=headers).json()
+    assert [a["id"] for a in found["already"]] == ["111111111111"]
+    assert [(a["id"], a["integration"]) for a in found["connected"]] == [("222222222222", "acme-data")]
+    assert found["without_role"] == []
+    bad = client.post("/api/admin/integrations/acme-prod/accounts/check", headers=headers)
+    assert bad.status_code == 409
+
+    # The picker offers both accounts under their organization; the organization itself never.
     picker = {v["id"]: v for v in client.get("/api/access/picker", headers=headers).json()["vendors"]}["aws"]
     assert picker["organizations"] == [{"id": "acme-aws", "name": "acme-aws"}]
     by_id = {a["id"]: a for a in picker["accounts"]}
     assert by_id["acme-prod"]["connected"] is True and by_id["acme-prod"]["organization"] == "acme-aws"
-    assert by_id["acme-aws/222222222222"]["connected"] is False and by_id["acme-aws/222222222222"]["name"] == "acme-data"
+    assert by_id["acme-data"]["connected"] is True
     assert "acme-aws" not in by_id, "an organization itself is never offered for a lease"
+
+    # An account's own set-up page still exists for a role made by hand: it names the organization's id.
+    page = client.get("/api/admin/integrations/aws/setup?mode=account&integration=acme-x&parent=acme-aws&account_id=333333333333", headers=headers).json()
+    assert page["external_id"] == "ext-acme-aws" and '"sts:ExternalId": "ext-acme-aws"' in page["trust_policy"]
+    bad = client.get("/api/admin/integrations/aws/setup?mode=account&integration=x&parent=nope&account_id=111111111111", headers=headers)
+    assert bad.status_code == 409

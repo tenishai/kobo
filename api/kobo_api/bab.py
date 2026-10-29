@@ -37,6 +37,13 @@ ROOM_ACTOR = "room@kobo"
 """The actor the room names when no person is behind a call (boot, destroy)."""
 
 
+def _external_id(token: str, subject: str) -> str:
+    import hmac
+    from hashlib import sha256
+
+    return hmac.new(token.encode(), subject.encode(), sha256).hexdigest()[:32]
+
+
 class BabClient(Protocol):
     def health(self) -> bool: ...
     def vendors(self, actor: str) -> list[dict]: ...
@@ -59,6 +66,8 @@ class BabClient(Protocol):
     def org_accounts(self, integration: str, actor: str) -> list[dict]: ...
     def org_hub_role_arn(self, integration: str, actor: str) -> str: ...
     def external_id_for(self, parent: str, account_id: str) -> str: ...
+    def external_id_for_org(self, parent: str) -> str: ...
+    def discover_accounts(self, integration: str, actor: str, role_name: str) -> dict: ...
 
 
 class HttpxBabClient:
@@ -165,13 +174,20 @@ class HttpxBabClient:
         return ""
 
     def external_id_for(self, parent: str, account_id: str) -> str:
-        """The external id an account's spoke role requires of the hub: derived from the
-        room's console token, so the set-up page and the connect agree without storing it
-        before the account is connected, and no two accounts share one."""
-        import hmac
-        from hashlib import sha256
+        """The per-account external id of the first hub-and-spoke shape, kept so an account
+        connected under it keeps leasing. New accounts use the organization's (#275)."""
+        return _external_id(self._token, f"{parent}:{account_id}")
 
-        return hmac.new(self._token.encode(), f"{parent}:{account_id}".encode(), sha256).hexdigest()[:32]
+    def external_id_for_org(self, parent: str) -> str:
+        """One external id per organization (#275): every member account's spoke role
+        trusts the hub with the same id, so one template deploys the role everywhere
+        and the hub finds the accounts that have it. Derived from the room's console
+        token, so the set-up page and the connect agree before anything is stored."""
+        return _external_id(self._token, parent)
+
+    def discover_accounts(self, integration: str, actor: str, role_name: str) -> dict:
+        return self._call("POST", f"/integrations/{integration}/discover", actor, json={"role_name": role_name},
+                          what=f"the accounts of {integration}")
 
     def delete_integration(self, integration: str, actor: str) -> dict:
         return self._call("DELETE", f"/integrations/{integration}", actor, what=f"disconnecting {integration}")

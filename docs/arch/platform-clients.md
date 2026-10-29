@@ -2,7 +2,7 @@
 card: arch-card:kobo-platform-clients
 updated: 2026-10-29
 anchor: api/kobo_api/clients.py sha=fe1a350d89beca612d0428765b91fbb92482b5ca
-anchor: api/tests/fakes.py sha=7ffccf22a967ae70c36177f99bd772deb89ba2b7
+anchor: api/tests/fakes.py sha=ddf1e456baf40b43031931017160b12d04109e69
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
@@ -35,4 +35,4 @@ API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provid
 - `KubectlClient.namespace_created_at` (2026-10-24, issue #193): a namespace's creation time as naive UTC, None when absent, `ClientError` when the cluster cannot be asked. Create and connect refuse a name whose namespace exists; destroy keeps the namespace, the stored secrets and the `agent-<name>` GSA of an agent whose namespace is older than its row. `FakeKubectl(namespaces={name: created_at}, namespace_error=...)` seeds it.
 
 `FakeCabal.relay` takes per-agent overrides (`relay_results`, `relay_errors`) since 2026-10-28, because a thread turn relays to several agents in one call and the tests need one to fail while another answers.
-- `Clients.bab` (object | None): the room's permission service, `kobo_api.bab.BabClient` (Protocol) / `HttpxBabClient` / `tests.fakes.FakeBab`; built in `main.build_default_app` by `build_bab(config)` from `bab_url` + env `KOBO_BAB_TOKEN`, like `liminal_admin`. Console token + `X-Bab-Actor` per call; `ClientError` carries bab's `detail` sentence, never the token. The room pushes its topology (`push_topology`) at boot, after create and destroy, and from Review › Sync agents (2026-10-29).
+- `Clients.bab` (object | None): the room's permission service, `kobo_api.bab.BabClient` (Protocol) / `HttpxBabClient` / `tests.fakes.FakeBab`; built in `main.build_default_app` by `build_bab(config)` from `bab_url` + env `KOBO_BAB_TOKEN`, like `liminal_admin`. Console token + `X-Bab-Actor` per call; `ClientError` carries bab's `detail` sentence, never the token. The room pushes its topology (`push_topology`) at boot, after create and destroy, and from Review › Sync agents (2026-10-29). AWS organizations (kobo #275): `external_id_for_org(org)` is one HMAC-derived external id per organization, and `discover_accounts(org, actor, role_name)` asks bab which member accounts carry the spoke role; `admin_integrations.register_accounts` connects those (a row here, an account under the org in bab) at hub connect time and from `POST /api/admin/integrations/{org}/accounts/check`. The fake's `reachable_accounts` says which accounts answer.

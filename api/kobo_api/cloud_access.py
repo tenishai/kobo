@@ -153,6 +153,24 @@ def spoke_terraform_snippet(hub_role_arn: str, external_id: str, integration_id:
     )
 
 
+def stackset_snippet(hub_role_arn: str, external_id: str, integration_id: str, packs: list[str],
+                     org_root_id: str = "<organization root id>") -> str:
+    """One StackSet from the management account puts the spoke role in every member
+    account: the same template, the same parameters, the organization's one external id."""
+    params = cloudformation_parameters("", integration_id, packs)
+    params.update({"HubRoleArn": hub_role_arn, "ExternalId": external_id})
+    plist = " ".join(f"ParameterKey={k},ParameterValue={v}" for k, v in params.items() if v != "")
+    return (
+        "# From the management account, with the template saved as kobo-access.json\n"
+        f"aws cloudformation create-stack-set --stack-set-name kobo-access-{integration_id} \\\n"
+        "  --template-body file://kobo-access.json --capabilities CAPABILITY_NAMED_IAM \\\n"
+        "  --permission-model SERVICE_MANAGED --auto-deployment Enabled=true,RetainStacksOnAccountRemoval=false \\\n"
+        f"  --parameters {plist}\n"
+        f"aws cloudformation create-stack-instances --stack-set-name kobo-access-{integration_id} \\\n"
+        f"  --deployment-targets OrganizationalUnitIds={org_root_id} --regions us-east-1\n"
+    )
+
+
 def spoke_trust_policy(hub_role_arn: str, external_id: str) -> str:
     return json.dumps({
         "Version": "2012-10-17",

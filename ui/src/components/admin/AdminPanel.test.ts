@@ -185,9 +185,9 @@ describe("AdminPanel", () => {
     await fireEvent.click(screen.getAllByRole("button", { name: "Add" })[3]);
     expect(await screen.findByRole("heading", { name: "Connect an AWS organization" })).toBeTruthy();
     expect(await screen.findByText("1234567890")).toBeTruthy();
-    // An organization's hub has no CloudFormation shape; Terraform or by hand.
-    expect(screen.queryByRole("tab", { name: "CloudFormation" })).toBeNull();
-    expect(screen.getByRole("tab", { name: "By hand" })).toBeTruthy();
+    // The method comes first and the sheet shows only that method's content (#276).
+    expect(screen.getByRole("radio", { name: /By hand/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /CloudFormation/ })).toBeTruthy();
     expect(screen.getByText(/cloud-access.git\/\/aws\/hub\?ref=v0.1.0/)).toBeTruthy();
     expect(screen.getByLabelText("Name for this organization")).toBeTruthy();
     expect(screen.getByLabelText("Hub role ARN")).toBeTruthy();
