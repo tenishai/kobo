@@ -5983,11 +5983,17 @@ def create_app(
         # wiring status regardless of whether an app has been created yet;
         # `app_id` alone stays None until create_slack_app runs.
         channels = decode_channels(agent.slack_channels)
+        # `available` (issue #262): whether this room can connect a Slack app
+        # at all -- the config-token store is optional deployment config, and
+        # the panel says so up front instead of refusing after the owner has
+        # already created the app at Slack.
+        slack_clients: Clients | None = app.state.clients
         slack = {
             "app_id": agent.slack_app_id,
             "channels": channels,
             "state": derive_state(channels, wired=agent.slack_wired),
             "wake": effective_wake(agent),
+            "available": slack_clients is not None and slack_clients.slack is not None,
         }
 
         return JSONResponse(
@@ -10701,6 +10707,16 @@ def create_app(
             .order_by(Agent.id)
             .all()
         )
+        # Agents that exist but cannot be asked yet (#273): named with their
+        # state, so an empty picker explains itself instead of reading as
+        # "there is nobody here". Same bare name+group as `requestable`.
+        not_ready = [
+            {"name": other.name, "group": other.group_name, "status": str(other.status)}
+            for other in session.query(Agent)
+            .filter(Agent.status != AgentStatus.READY, Agent.name != agent.name)
+            .order_by(Agent.id)
+            .all()
+        ]
 
         in_flight_status = {
             invite.to_agent: invite.status
@@ -10729,7 +10745,9 @@ def create_app(
                 }
             )
 
-        return JSONResponse({"requestable": requestable, "already": already})
+        return JSONResponse(
+            {"requestable": requestable, "already": already, "not_ready": not_ready}
+        )
 
     @app.post("/api/invites/{invite_id}/accept")
     def accept_invite(

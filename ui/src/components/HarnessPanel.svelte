@@ -209,10 +209,12 @@
 
   // Colleague mode (issue #131): the same select-then-Change shape and the
   // same gate as the model row.
+  // Labels read as a choice an owner can make, not as mode names (#264);
+  // the default says so, so a first look needs no change.
   const COLLEAGUE_MODE_LABELS: Record<ColleagueMode, string> = {
-    default: "Consult colleagues",
-    "roster-only": "Know the roster, ask a human",
-    none: "No colleagues",
+    default: "Asks them when a question is in their field (default)",
+    "roster-only": "Knows who they are, asks a person instead",
+    none: "Works alone",
   };
   // What each mode does, under the row (issue #133): roster-only also turns
   // off general knowledge, which the label alone doesn't say.
@@ -322,7 +324,7 @@
               <dt>Runtime</dt>
               <dd class="harness__ref">{runtimeImage ?? "Not reported."}</dd>
               {#if colleagueMode && !connected}
-                <dt>Colleagues</dt>
+                <dt>Works with colleagues</dt>
                 <dd>
                   {#if canChangeModel}
                     <span class="harness__model-change">

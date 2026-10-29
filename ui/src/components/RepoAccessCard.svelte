@@ -19,6 +19,7 @@
     listRepoAccess,
     requestRepoAccess,
   } from "../lib/api";
+  import { ApiError } from "../lib/api";
   import ErrorState from "./ErrorState.svelte";
   import Skeleton from "./Skeleton.svelte";
 
@@ -34,6 +35,13 @@
       return all.results.filter((row) => row.agent === agentName);
     },
   }));
+
+  // 503 from the list means the room has no pull request app configured
+  // (#270): a state of the room, not a failure of this page, so the card
+  // says so in one line and offers nothing to retry.
+  const brokerOff = $derived(
+    rows.isError && rows.error instanceof ApiError && rows.error.status === 503,
+  );
 
   let draft = $state("");
   let feedback = $state<string | null>(null);
@@ -85,18 +93,20 @@
 
   <!-- Usable while frozen: it opens a form, it changes nothing. The
        textarea and the submit inside it are the ones that go dead. -->
-  <div class="panel__toolbar">
-    <div class="panel__tools">
-      <button
-        type="button"
-        class="btn"
-        aria-expanded={requestOpen}
-        onclick={() => (requestOpen = !requestOpen)}
-      >
-        Request repositories
-      </button>
+  {#if !brokerOff}
+    <div class="panel__toolbar">
+      <div class="panel__tools">
+        <button
+          type="button"
+          class="btn"
+          aria-expanded={requestOpen}
+          onclick={() => (requestOpen = !requestOpen)}
+        >
+          Request repositories
+        </button>
+      </div>
     </div>
-  </div>
+  {/if}
 
   {#if requestOpen}
     <div class="panel__drawer repo-access__drawer">
@@ -129,6 +139,11 @@
 
   {#if rows.isPending}
     <Skeleton rows={2} />
+  {:else if brokerOff}
+    <p class="panel__note" role="status">
+      This room can't open pull requests yet. A room operator connects the room's GitHub app
+      first; until then there is nothing to request here.
+    </p>
   {:else if rows.isError}
     <ErrorState
       message={errorMessage(rows.error, "Repo access could not be loaded.")}

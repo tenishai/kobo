@@ -26,7 +26,7 @@ Create and shape an agent:
 - **set agent persona**, **set agent skills**, **add agent tool**: change what the agent is and does.
 - **create persona**, **move persona**, **archive persona**: the persona builder and the Manage row from chat.
 - **set agent model**: move a running agent onto another model from the room's list; it rebuilds and rolls.
-- **set colleague mode**: `default`, `roster-only` or `none`, the Harness tab's Colleagues choice.
+- **set colleague mode**: `default`, `roster-only` or `none`, the Harness tab's **Works with colleagues** choice.
 - **set agent skills** also refreshes an attached catalog skill to the version the catalog serves now, in one commit.
 - **create skill**, **create tool**: publish to your organization's catalogs.
 

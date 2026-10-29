@@ -3,11 +3,19 @@
 
 The **Slack** tab walks you through connecting the agent to your workspace. The first time, it shows three numbered steps. Once connected, it shows only the channel list, with the setup folded away under **Reconnect the Slack app**.
 
-## 1. Create the Slack app from this manifest
+If the room itself has no Slack set up yet, the tab says so in one line and shows no steps. A room operator adds the room's Slack config tokens first; nothing an agent owner does can stand in for that.
+
+## 1. Where it answers
+
+Add the ID of each channel the agent may answer in, then invite the agent to that channel in Slack with `/invite @agent-name`. Both are needed: the channel list is an allowlist the agent enforces, and the invite is Slack's own permission. Up to eight channels.
+
+Pick **Wakes on** here too, before the next step: the manifest the room writes carries the event list your choice decides.
+
+## 2. Create the Slack app from this manifest
 
 The room writes a Slack app manifest for this agent, with exactly the permissions it needs. Press **Copy the manifest**, open Slack's app management page from the link in the step, press **Create New App**, choose **From a manifest**, pick your workspace, and paste the manifest on the JSON tab. Slack creates the app.
 
-## 2. Paste the three values back
+## 3. Paste the three values back
 
 Slack shows you three values. Paste each into its field:
 
@@ -16,10 +24,6 @@ Slack shows you three values. Paste each into its field:
 - **App-level token**, which you generate on Basic Information with the `connections:write` scope. It starts with `xapp-`.
 
 Press **Connect**. The room delivers the tokens straight to the agent as secrets and keeps no copy. They are never shown again.
-
-## 3. Where it answers
-
-Add the ID of each channel the agent may answer in, then invite the agent to that channel in Slack with `/invite @agent-name`. Both are needed: the channel list is an allowlist the agent enforces, and the invite is Slack's own permission. Up to eight channels.
 
 ## How it wakes up
 
@@ -35,4 +39,4 @@ The choice saves as soon as you pick it. Moving between **Mentions only** and ei
 
 ## After it is connected
 
-The status chip reads **Connected**. Add or remove channels any time and press **Save**. The status line under the table tells you when the change is in place. To rotate tokens or move the app, open **Reconnect the Slack app** and repeat steps 1 and 2.
+The status chip reads **Connected**. Add or remove channels any time and press **Save**. The status line under the table tells you when the change is in place. To rotate tokens or move the app, open **Reconnect the Slack app** and repeat steps 2 and 3.

@@ -480,6 +480,7 @@ def test_connect_slack_wires_secret_transport_and_secrets_from_returns_sha(
     assert detail["slack"] == {
         "app_id": APP_ID, "channels": [CHANNEL], "state": "connected",
         "wake": "mention",
+        "available": True,
     }
 
 
@@ -1226,6 +1227,7 @@ def test_get_agent_slack_default_shape_before_any_setup(session_factory, config)
         "channels": [],
         "state": "idle",
         "wake": "mention",
+        "available": True,
     }
 
 
@@ -1246,6 +1248,7 @@ def test_get_agent_slack_carries_app_id_and_channels_after_connect(session_facto
     assert detail["slack"] == {
         "app_id": APP_ID, "channels": [CHANNEL], "state": "connected",
         "wake": "mention",
+        "available": True,
     }
 
 
