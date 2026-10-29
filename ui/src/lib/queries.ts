@@ -265,6 +265,8 @@ import {
   uploadIntake,
   uploadTooling,
   type Whoami,
+  checkOrgAccounts,
+  type OrgAccountsCheck,
 } from "./api";
 import { detailRefetchInterval, listRefetchInterval } from "./status";
 
@@ -555,6 +557,16 @@ export function adminAwsSetupQuery(input: AwsSetupRequest) {
     staleTime: 60_000,
     retry: shouldRetry,
   });
+}
+
+export function checkOrgAccountsMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: (integrationId: string) => checkOrgAccounts(integrationId),
+    onSuccess: (_out: OrgAccountsCheck, integrationId: string) => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "integrations"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "integrations", integrationId, "accounts"] });
+    },
+  };
 }
 
 export function orgAccountsQuery(integrationId: string) {

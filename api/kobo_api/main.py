@@ -4030,6 +4030,29 @@ def create_app(
         except ClientError as exc:
             return _bab_refused(exc)
 
+    @app.post("/api/admin/integrations/{integration_id}/accounts/check")
+    def admin_org_check_accounts(
+        integration_id: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Check an organization\'s accounts through its hub and connect the ones that
+        carry the spoke role (#275). Run at connect time and from the Integrations pane."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        actor = getattr(request.state, "iap_email", None) or "operator"
+        try:
+            found = admin_integrations_flow.register_accounts(
+                session, app.state.clients, app.state.config, org_id=integration_id, actor=actor
+            )
+        except (admin_integrations_flow.ConnectRefused, admin_store.AdminStoreError) as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except ClientError as exc:
+            session.rollback()
+            return _bab_refused(exc)
+        session.commit()
+        return JSONResponse(found)
+
     @app.get("/api/admin/integrations")
     def admin_integrations(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
         """The Integrations pane: one row per vendor the room holds a

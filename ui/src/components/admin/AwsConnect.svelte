@@ -1,11 +1,12 @@
 <script lang="ts">
-  // Connect AWS, three shapes. An organization: the hub role in its management
-  // account, trusting the room's identity (the permission service's, which mints
-  // the hour-long leases); nothing else lives in that account. An account under an
-  // organization: a role the hub assumes with this account's external id, carrying
-  // the read packs. A flat role: the pre-organization shape, kept for the gateway
-  // path. In every case the admin pastes the role's ARN and the room checks it with
-  // AWS before saving.
+  // Connect AWS. Pick how you create roles first; the sheet then shows only
+  // that method (#276). An organization is one hub role in its management
+  // account, trusting the room's identity (the permission service's, which
+  // mints the hour-long leases), plus one spoke template every member account
+  // gets with the organization's one external id; accounts that carry the
+  // role register themselves (#275). A flat role is the pre-organization
+  // shape, kept for the gateway path. The admin pastes the hub's ARN and the
+  // room checks it with AWS before saving.
   import { createQuery } from "@tanstack/svelte-query";
   import { adminAwsSetupQuery } from "../../lib/queries";
 
@@ -29,8 +30,13 @@
     enabled: mode !== "account" || Boolean(parent && accountId),
   }));
 
-  const TABS = ["Terraform", "CloudFormation", "By hand"] as const;
-  let tab = $state<(typeof TABS)[number]>("Terraform");
+  type Method = "Terraform" | "CloudFormation" | "By hand";
+  const METHODS: { id: Method; what: string }[] = [
+    { id: "Terraform", what: "A module from the account's own pipeline." },
+    { id: "CloudFormation", what: "A template, as a stack or a StackSet." },
+    { id: "By hand", what: "Trust and permissions policies to paste into the console." },
+  ];
+  let method = $state<Method>("Terraform");
   let copied = $state<string | null>(null);
 
   async function copy(label: string, text: string): Promise<void> {
@@ -46,8 +52,14 @@
   const params = $derived(
     Object.entries(setup.data?.cloudformation.parameters ?? {}).map(([k, v]) => `${k} = ${v}`).join("\n"),
   );
-  const tabs = $derived(mode === "org" ? (["Terraform", "By hand"] as const) : TABS);
 </script>
+
+{#snippet code(label: string, text: string, copyLabel = "Copy")}
+  <div class="code">
+    <pre>{text}</pre>
+    <button type="button" class="code__copy" onclick={() => copy(label, text)}>{copied === label ? "Copied" : copyLabel}</button>
+  </div>
+{/snippet}
 
 {#if mode === "account" && !(parent && accountId)}
   <p class="hint">Pick the account first.</p>
@@ -57,168 +69,140 @@
   <p class="hint fail">Could not read the set-up details just now.</p>
 {:else}
   {@const s = setup.data}
-  <ol class="steps">
-    <li class="step">
-      {#if s.mode === "org"}
-        <h3 class="step__title">What the hub does</h3>
-        <p class="step__text">
-          One role in the organization's management account. It may assume the <code>{s.role_name === "KoboAccess-Hub" ? "KoboAccess-Role" : s.role_name}</code>
-          role in each member account, read the organization's account list, and read the consolidated bill.
-          Nothing else: agents never run in the management account. A second organization is a second hub,
-          never an assume across organizations.
-        </p>
-      {:else if s.mode === "account"}
-        <h3 class="step__title">What the account's role allows</h3>
-        <p class="step__text">
-          Read-only in account <code>{s.account_id}</code>: configuration, never data. It trusts the organization's hub, with an
-          external id that is this account's alone. Agents hold nothing by default; each is granted the services it
-          needs under Permissions and borrows an hour of access scoped to them.
-        </p>
-        <ul class="packs">
-          {#each s.packs as p (p.id)}
-            <li class="pack"><span class="pack__name">{p.id}</span><span class="pack__what">{p.purpose}</span></li>
-          {/each}
-        </ul>
-      {:else}
-        <h3 class="step__title">What the role allows</h3>
-        <p class="step__text">
-          Read-only across the account: configuration, never data.
-          {#if s.principal === "access"}
-            Agents hold nothing by default; each is granted the services it needs under Permissions and
-            borrows an hour of access scoped to them.
-          {:else}
-            Each agent gets its own narrower profile inside it under Connections.
-          {/if}
-        </p>
-        <ul class="packs">
-          {#each s.packs as p (p.id)}
-            <li class="pack"><span class="pack__name">{p.id}</span><span class="pack__what">{p.purpose}</span></li>
-          {/each}
-        </ul>
-      {/if}
-    </li>
-
-    <li class="step">
-      <h3 class="step__title">{s.mode === "org" ? "Create the hub role in the management account" : "Create the role in the account"}</h3>
-      {#if s.mode === "account"}
-        <dl class="facts">
-          <div><dt>Trusts</dt><dd><code>{s.hub_role_arn}</code></dd></div>
-          <div><dt>External id</dt><dd><code>{s.external_id}</code></dd></div>
-          <div><dt>Named</dt><dd>{s.role_name}</dd></div>
-        </dl>
-      {:else if s.identity}
-        <dl class="facts">
-          <div><dt>Trusts</dt><dd><code>{s.identity.subject}</code></dd></div>
-          {#if s.identity.email}<div><dt>Which is</dt><dd>{s.identity.email}{s.principal === "access" ? ", the permission service that mints the leases" : ", the tool gateway"}</dd></div>{/if}
-          <div><dt>Named</dt><dd>{s.role_name}</dd></div>
-        </dl>
-      {:else if s.identity_note}
-        <p class="hint fail">{s.identity_note}</p>
-      {/if}
-      <div class="tabs" role="tablist" aria-label="How to create the role">
-        {#each tabs as t (t)}
-          <button type="button" role="tab" class="tab" aria-selected={tab === t} onclick={() => (tab = t)}>{t}</button>
-        {/each}
-      </div>
-      {#if tab === "Terraform" || (s.mode === "org" && tab === "CloudFormation")}
-        <div class="code">
-          <pre>{s.terraform}</pre>
-          <button type="button" class="code__copy" onclick={() => copy("tf", s.terraform)}>{copied === "tf" ? "Copied" : "Copy"}</button>
-        </div>
-        <p class="step__text">Apply it from the account's own pipeline, then paste the <code>{s.mode === "org" ? "kobo_hub_role_arn" : "kobo_role_arn"}</code> output below.</p>
-      {:else if tab === "CloudFormation"}
-        <div class="code">
-          <pre>{params}</pre>
-          <button type="button" class="code__copy" onclick={() => copy("cfn", s.cloudformation.template)}>{copied === "cfn" ? "Copied" : "Copy template"}</button>
-        </div>
-        <p class="step__text">Create a stack from the copied template with these parameters, then paste the stack's <code>RoleArn</code> output below.</p>
-      {:else}
-        <div class="code">
-          <pre>{s.trust_policy}</pre>
-          <button type="button" class="code__copy" onclick={() => copy("trust", s.trust_policy)}>{copied === "trust" ? "Copied" : "Copy"}</button>
-        </div>
-        {#if s.mode === "org" && s.permissions_policy}
-          <p class="step__text">Create a role with this trust policy and this permissions policy:</p>
-          <div class="code">
-            <pre>{s.permissions_policy}</pre>
-            <button type="button" class="code__copy" onclick={() => copy("perm", s.permissions_policy ?? "")}>{copied === "perm" ? "Copied" : "Copy"}</button>
-          </div>
-        {:else}
-          <p class="step__text">Create a role with this trust policy and attach <code>ViewOnlyAccess</code> and <code>SecurityAudit</code>; the cost and logs reads are the inline statements in the template.</p>
-        {/if}
-      {/if}
-    </li>
-
-    <li class="step">
-      <h3 class="step__title">Paste the role</h3>
-      <label class="field">
-        <span>{s.mode === "org" ? "Hub role ARN" : "Role ARN"}</span>
-        <input id="integration-role_arn" type="text" bind:value={roleArn} autocomplete="off" spellcheck="false" placeholder="arn:aws:iam::{s.mode === 'account' ? s.account_id : '123456789012'}:role/{s.role_name}" required />
-      </label>
-      <p class="hint">
-        {#if s.mode === "account"}
-          Connect asks the permission service to reach the role through the organization's hub once; nothing is saved until AWS agrees.
-        {:else if s.checked}
-          Connect asks {s.principal === "access" ? "the permission service" : "the gateway"} to assume the role once; nothing is saved until AWS agrees.
-        {:else}
-          The room cannot check the role with AWS from here; it is saved as given.
-        {/if}
+  <div class="sheet">
+    {#if s.mode === "org"}
+      <p class="step__text">
+        One hub role in the management account: it assumes <code>{s.spoke_role_name}</code> in each member account,
+        lists the accounts and reads the bill, nothing else. One spoke role in every member account, from one template
+        with the organization's one external id. Accounts that carry the role connect themselves.
       </p>
-    </li>
-  </ol>
+    {:else if s.mode === "account"}
+      <p class="step__text">
+        Read-only in account <code>{s.account_id}</code>: configuration, never data. The role trusts the organization's
+        hub with the organization's external id.
+      </p>
+    {:else}
+      <p class="step__text">
+        Read-only across the account: configuration, never data.
+        {#if s.principal === "access"}Agents are granted services under Permissions and borrow an hour of access.{/if}
+      </p>
+    {/if}
+
+    {#if s.identity}
+      <dl class="facts">
+        <div><dt>Trusts</dt><dd><code>{s.identity.subject}</code>{#if s.identity.email}<span class="quiet"> ({s.identity.email})</span>{/if}</dd></div>
+        {#if s.mode === "org"}<div><dt>External id</dt><dd><code>{s.external_id}</code></dd></div>{/if}
+      </dl>
+    {:else if s.mode === "account"}
+      <dl class="facts">
+        <div><dt>Trusts</dt><dd><code>{s.hub_role_arn}</code></dd></div>
+        <div><dt>External id</dt><dd><code>{s.external_id}</code></dd></div>
+      </dl>
+    {:else if s.identity_note}
+      <p class="hint fail">{s.identity_note}</p>
+    {/if}
+
+    <div class="methods" role="radiogroup" aria-label="How you create roles">
+      {#each METHODS as m (m.id)}
+        <button type="button" role="radio" class="method" aria-checked={method === m.id} onclick={() => (method = m.id)}>
+          <span class="method__name">{m.id}</span>
+          <span class="method__what">{m.what}</span>
+        </button>
+      {/each}
+    </div>
+
+    <section class="block">
+      <h3 class="step__title">{s.mode === "org" ? "In the management account" : "In the account"}</h3>
+      {#if method === "Terraform"}
+        {@render code("tf", s.terraform)}
+        <p class="hint">Apply, then paste the <code>{s.mode === "org" ? "kobo_hub_role_arn" : "kobo_role_arn"}</code> output below.</p>
+      {:else if method === "CloudFormation"}
+        {#if s.mode === "org"}
+          {@render code("perm", s.permissions_policy ?? "", "Copy permissions")}
+          <p class="hint">No template for the hub yet: create the role with the trust policy under By hand and this permissions policy.</p>
+        {:else}
+          {@render code("cfn", s.cloudformation.template, "Copy template")}
+          <pre class="params">{params}</pre>
+          <p class="hint">Create a stack from the template with these parameters, then paste its <code>RoleArn</code> output below.</p>
+        {/if}
+      {:else}
+        {@render code("trust", s.trust_policy)}
+        {#if s.mode === "org" && s.permissions_policy}
+          {@render code("perm", s.permissions_policy, "Copy permissions")}
+          <p class="hint">A role named <code>{s.role_name}</code> with this trust policy and this permissions policy.</p>
+        {:else}
+          <p class="hint">A role named <code>{s.role_name}</code> with this trust policy, <code>ViewOnlyAccess</code> and <code>SecurityAudit</code>.</p>
+        {/if}
+      {/if}
+    </section>
+
+    {#if s.mode === "org"}
+      <section class="block">
+        <h3 class="step__title">In every member account, once</h3>
+        {#if method === "Terraform"}
+          {@render code("spoke-tf", s.spoke_terraform ?? "")}
+          <p class="hint">The same module in each account's pipeline. {#if !s.hub_role_arn}The hub ARN fills in after you connect; Check accounts then finds the accounts that have the role.{/if}</p>
+        {:else if method === "CloudFormation"}
+          {@render code("stackset", s.stackset ?? "", "Copy commands")}
+          <p class="hint">One StackSet from the management account puts the role in every account. Template: the Copy template button above under the account method. {#if !s.hub_role_arn}The hub ARN fills in after you connect.{/if}</p>
+        {:else}
+          {@render code("spoke-trust", s.spoke_trust_policy ?? "")}
+          <p class="hint">A role named <code>{s.spoke_role_name}</code> in each account with this trust policy, <code>ViewOnlyAccess</code> and <code>SecurityAudit</code>.</p>
+        {/if}
+      </section>
+    {/if}
+
+    <label class="field">
+      <span>{s.mode === "org" ? "Hub role ARN" : "Role ARN"}</span>
+      <input id="integration-role_arn" type="text" bind:value={roleArn} autocomplete="off" spellcheck="false" placeholder="arn:aws:iam::{s.mode === 'account' ? s.account_id : '123456789012'}:role/{s.role_name}" required />
+    </label>
+    <p class="hint">
+      {#if s.mode === "account"}
+        Connect asks the permission service to reach the role through the organization's hub once; nothing is saved until AWS agrees.
+      {:else if s.checked}
+        Connect asks {s.principal === "access" ? "the permission service" : "the gateway"} to assume the role once; nothing is saved until AWS agrees.{#if s.mode === "org"} Then its accounts are checked for the spoke role.{/if}
+      {:else}
+        The room cannot check the role with AWS from here; it is saved as given.
+      {/if}
+    </p>
+  </div>
 {/if}
 
 <style>
-  .steps {
+  .sheet { display: flex; flex-direction: column; gap: var(--space-md); }
+  .block { display: flex; flex-direction: column; gap: var(--space-sm); }
+  .methods { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-sm); }
+  .method {
     display: flex;
     flex-direction: column;
-    gap: var(--space-lg);
+    gap: 2px;
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .method[aria-checked="true"] { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+  .method__name { font-weight: 600; }
+  .method__what { color: var(--muted); font-size: 0.85rem; }
+  .params {
     margin: 0;
-    padding: 0;
-    list-style: none;
-    counter-reset: step;
-  }
-  .step {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    padding-left: 2.25rem;
-    position: relative;
-    counter-increment: step;
-  }
-  .step::before {
-    content: counter(step);
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 1.5rem;
-    height: 1.5rem;
-    border-radius: 999px;
-    background: var(--accent);
-    color: var(--accent-ink);
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
     font-size: 0.8rem;
-    font-weight: 700;
-    line-height: 1.5rem;
-    text-align: center;
+    white-space: pre-wrap;
   }
+  .quiet { color: var(--muted); }
   .step__title { margin: 0; font-size: 1rem; line-height: 1.5rem; color: var(--ink); }
   .step__text { margin: 0; color: var(--ink); line-height: 1.5; }
   .hint { margin: 0; color: var(--muted); font-size: 0.9rem; }
   .fail { color: var(--fail); }
 
-  .packs {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: var(--space-2xs) var(--space-md);
-    margin: 0;
-    padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    list-style: none;
-  }
-  .pack { display: contents; }
-  .pack__name { font-family: var(--font-mono); font-size: 0.85rem; font-weight: 600; color: var(--ink); }
-  .pack__what { color: var(--muted); font-size: 0.9rem; }
 
   .facts { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2xs) var(--space-md); margin: 0; }
   .facts div { display: contents; }
@@ -226,20 +210,6 @@
   .facts dd { margin: 0; color: var(--ink); }
   .facts code { font-size: 0.9rem; }
 
-  .tabs { display: flex; gap: var(--space-md); border-bottom: 1px solid var(--border); }
-  .tab {
-    padding: var(--space-xs) 0;
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    background: none;
-    color: var(--muted);
-    font: inherit;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .tab:hover { color: var(--ink); }
-  .tab[aria-selected="true"] { border-bottom-color: var(--ink); color: var(--ink); }
 
   .code { position: relative; }
   .code pre {

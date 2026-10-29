@@ -7,13 +7,13 @@
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import Modal from "../Modal.svelte";
   import AwsConnect from "./AwsConnect.svelte";
-  import { errorMessage, type AdminIntegration, type OrgAccount } from "../../lib/api";
+  import { errorMessage, type AdminIntegration, type OrgAccountsCheck } from "../../lib/api";
   import { toast } from "../../lib/toast.svelte";
   import {
     adminIntegrationsQuery,
+    checkOrgAccountsMutation,
     connectAdminIntegrationMutation,
     disconnectAdminIntegrationMutation,
-    orgAccountsQuery,
   } from "../../lib/queries";
   import { CATALOG, OTHER, catalogEntry, type CatalogEntry } from "../../lib/admin/catalog";
 
@@ -23,6 +23,12 @@
   const integrations = createQuery(() => (adminIntegrationsQuery()));
   const connect = createMutation(() => (connectAdminIntegrationMutation(queryClient)));
   const disconnect = createMutation(() => (disconnectAdminIntegrationMutation(queryClient)));
+  // Check accounts (#275): the organization's accounts are probed through its hub and the
+  // ones carrying the spoke role connect themselves. The last answer per organization is
+  // kept so the accounts still waiting for the role show under it.
+  const check = createMutation(() => (checkOrgAccountsMutation(queryClient)));
+  let checked = $state<Record<string, OrgAccountsCheck>>({});
+  let checking = $state<string | null>(null);
 
   let search = $state("");
   const all = $derived(integrations.data ?? []);
@@ -38,7 +44,7 @@
   let catalogOpen = $state(false);
   let form = $state<{
     entry: CatalogEntry;
-    mode: "role" | "org" | "account" | "other";
+    mode: "role" | "org" | "other";
     parent: AdminIntegration | null;
     vendor: string;
     name: string;
@@ -49,13 +55,6 @@
   } | null>(null);
   let formError = $state<string | null>(null);
   let removing = $state<AdminIntegration | null>(null);
-
-  // The organization's accounts, through its hub, when an account is being added.
-  const orgAccounts = createQuery(() => ({
-    ...orgAccountsQuery(form?.parent?.id ?? ""),
-    enabled: form?.mode === "account" && Boolean(form?.parent),
-  }));
-  const pickable = $derived((orgAccounts.data ?? []).filter((a) => !a.connected));
 
   // A deep link `#/admin/integrations/<vendor>` opens that vendor's form.
   $effect(() => {
@@ -87,17 +86,22 @@
     };
   }
 
-  function openAddAccount(org: AdminIntegration): void {
-    formError = null;
-    const entry = catalogEntry("aws") ?? OTHER;
-    form = { entry, mode: "account", parent: org, vendor: "aws", name: "", address: "", base_access: "read", trust: "untrusted",
-             values: { role_arn: "", account_id: "" } };
-  }
-
-  function pickAccount(a: OrgAccount | undefined): void {
-    if (!form) return;
-    form.values.account_id = a?.id ?? "";
-    if (a && !form.name) form.name = a.name ?? a.id;
+  function handleCheck(org: AdminIntegration): void {
+    checking = org.id;
+    check.mutate(org.id, {
+      onSuccess: (out) => {
+        checked = { ...checked, [org.id]: out };
+        const n = out.connected.length;
+        toast.success(
+          n === 0 ? "No new accounts" : `${n} account${n === 1 ? "" : "s"} connected`,
+          out.without_role.length
+            ? `${out.without_role.length} still without the role. Deploy the template to them and check again.`
+            : "Every account the hub can see carries the role.",
+        );
+      },
+      onError: (err: unknown) => toast.error("Could not check the accounts", errorMessage(err, "Try again.")),
+      onSettled: () => (checking = null),
+    });
   }
 
   function submitConnect(event: SubmitEvent): void {
@@ -110,11 +114,6 @@
     if (form.mode === "org") {
       auth = "aws_hub";
       identity.hub_role_arn = (form.values.role_arn ?? "").trim();
-    } else if (form.mode === "account") {
-      auth = "aws_spoke";
-      identity.parent = form.parent?.id ?? "";
-      identity.role_arn = (form.values.role_arn ?? "").trim();
-      identity.account_id = (form.values.account_id ?? "").trim();
     } else {
       for (const f of form.entry.fields) {
         const v = (form.values[f.key] ?? "").trim();
@@ -168,7 +167,7 @@
     return i.vendor === "aws" ? "account" : "connection";
   }
   const formTitle = $derived(
-    !form ? "" : form.mode === "org" ? "Connect an AWS organization" : form.mode === "account" ? `Add an account under ${form.parent?.name ?? "the organization"}` : `Add ${form.name || "an integration"}`,
+    !form ? "" : form.mode === "org" ? "Connect an AWS organization" : `Add ${form.name || "an integration"}`,
   );
 </script>
 
@@ -215,7 +214,9 @@
                 <td class="quiet">{when(i.created_at)}</td>
                 <td class="panel__cell--right">
                   {#if i.spec.kind === "org"}
-                    <button type="button" class="btn btn--quiet" onclick={() => openAddAccount(i)}>Add account</button>
+                    <button type="button" class="btn btn--quiet" disabled={checking !== null} onclick={() => handleCheck(i)}>
+                      {checking === i.id ? "Checking…" : "Check accounts"}
+                    </button>
                   {/if}
                   {#if i.spec.pull_request}
                     <a class="btn btn--quiet" href={i.spec.pull_request} target="_blank" rel="noreferrer">Pull request</a>
@@ -241,6 +242,23 @@
                   <td class="panel__cell--right">
                     <button type="button" class="btn btn--quiet" disabled={disconnect.isPending} onclick={() => (removing = c)}>Remove</button>
                   </td>
+                </tr>
+              {/each}
+              {#each checked[i.id]?.without_role ?? [] as w (w.id)}
+                <tr class="child child--waiting">
+                  <td>
+                    <span class="child__tick" aria-hidden="true">└</span>
+                    <span class="name">{w.name}</span>
+                    <span class="quiet addr">{w.id}</span>
+                  </td>
+                  <td><span class="chip">account</span></td>
+                  <td>
+                    <span class="status status--warn" title={w.reason ?? ""}>
+                      <span class="status__dot" aria-hidden="true"></span>No role yet
+                    </span>
+                  </td>
+                  <td class="quiet"></td>
+                  <td class="panel__cell--right quiet">Deploy the template, then check again</td>
                 </tr>
               {/each}
             {:else}
@@ -282,31 +300,6 @@
         <input id="integration-name" type="text" bind:value={form.name} placeholder="e.g. acme-aws" required autocomplete="off" />
       </label>
       <AwsConnect bind:roleArn={form.values.role_arn} mode="org" integration={slug(form.name) || "aws"} />
-      {#if formError}<p class="page__foot fail">{formError}</p>{/if}
-    </form>
-  {:else if form && form.mode === "account"}
-    <form id="integration-form" class="form" onsubmit={submitConnect}>
-      <label class="field">
-        <span>Account</span>
-        {#if orgAccounts.isPending}
-          <span class="quiet">Reading the organization's accounts through its hub…</span>
-        {:else if orgAccounts.isError}
-          <span class="quiet fail">{errorMessage(orgAccounts.error, "Could not list the accounts.")}</span>
-        {:else}
-          <select id="integration-account" value={form.values.account_id} onchange={(e) => pickAccount(pickable.find((a) => a.id === (e.currentTarget as HTMLSelectElement).value))} required>
-            <option value="" disabled>Pick an account</option>
-            {#each pickable as a (a.id)}
-              <option value={a.id}>{a.name ?? a.id} ({a.id})</option>
-            {/each}
-          </select>
-          {#if pickable.length === 0}<span class="quiet">Every account the hub can see is connected already.</span>{/if}
-        {/if}
-      </label>
-      <label class="field">
-        <span>Name</span>
-        <input id="integration-name" type="text" bind:value={form.name} placeholder="e.g. acme-prod" required autocomplete="off" />
-      </label>
-      <AwsConnect bind:roleArn={form.values.role_arn} mode="account" integration={slug(form.name) || "account"} parent={form.parent?.id ?? null} accountId={form.values.account_id || null} />
       {#if formError}<p class="page__foot fail">{formError}</p>{/if}
     </form>
   {:else if form}
@@ -366,6 +359,7 @@
 
 <style>
   .child td:first-child { padding-left: 1.75rem; }
+  .child--waiting .name { color: var(--muted); font-weight: 500; }
   .child__tick { margin-right: 0.35rem; color: var(--muted); }
   .name { font-weight: 600; }
   .quiet { color: var(--muted); font-size: 0.85rem; }

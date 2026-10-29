@@ -299,7 +299,7 @@ def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
         if not parent or not account_id or not _AWS_ACCOUNT_ID.match(account_id):
             raise ConnectRefused("an account set-up needs the organization and the 12-digit account id")
         hub = _org_hub(bab, parent, actor)
-        external_id = bab.external_id_for(parent, account_id)
+        external_id = bab.external_id_for_org(parent)
         chosen = cloud_access.chosen_packs(packs)
         return {
             "version": cloud_access.version(), "mode": "account", "principal": "access",
@@ -335,15 +335,33 @@ def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
     if mode == "org":
         if bab is None:
             raise ConnectRefused("organizations need the permission service")
+        # The member accounts' half (#275): one external id for the whole organization and
+        # one spoke template, so the role is deployed once (a StackSet) and the hub then
+        # finds every account that has it. The hub ARN is known once the organization is
+        # connected; before that the snippets carry a placeholder the owner fills in.
+        external_id = bab.external_id_for_org(integration_id)
+        try:
+            hub = _org_hub(bab, integration_id, actor)
+        except (ConnectRefused, ClientError):
+            hub = ""
+        hub_shown = hub or f"arn:aws:iam::<management account>:role/{cloud_access.HUB_ROLE_NAME}"
         return {
             "version": cloud_access.version(), "mode": "org", "principal": "access",
             "role_name": cloud_access.HUB_ROLE_NAME, "audience": cloud_access.AUDIENCE,
             "identity": identity, "identity_note": identity_note,
-            "packs": [], "chosen": [],
+            "packs": cloud_access.aws_packs(), "chosen": chosen,
             "terraform": cloud_access.hub_terraform_snippet(subject, integration_id),
-            "cloudformation": {"template": "", "parameters": {}},
+            "cloudformation": {"template": cloud_access.cloudformation_template(),
+                               "parameters": {**cloud_access.cloudformation_parameters("", integration_id, chosen),
+                                              "HubRoleArn": hub_shown, "ExternalId": external_id}},
             "trust_policy": cloud_access.hub_trust_policy(subject),
             "permissions_policy": cloud_access.hub_permissions_policy(),
+            "external_id": external_id,
+            "hub_role_arn": hub or None,
+            "spoke_role_name": cloud_access.ROLE_NAME,
+            "spoke_terraform": cloud_access.spoke_terraform_snippet(hub_shown, external_id, integration_id, chosen),
+            "spoke_trust_policy": cloud_access.spoke_trust_policy(hub_shown, external_id),
+            "stackset": cloud_access.stackset_snippet(hub_shown, external_id, integration_id, chosen),
             "checked": True,
         }
     return {
@@ -413,7 +431,7 @@ def connect(
             raise ConnectRefused(f"{exc}; fix the hub role\'s trust policy and connect again") from exc
     elif auth == "aws_spoke":
         hub_role_arn = _org_hub(bab, identity["parent"], actor)
-        identity["external_id"] = bab.external_id_for(identity["parent"], identity["account_id"])
+        identity["external_id"] = bab.external_id_for_org(identity["parent"])
         identity.setdefault("audience", cloud_access.AUDIENCE)
         try:
             probe = bab.probe_aws(identity["role_arn"], identity["audience"], actor,
@@ -468,7 +486,8 @@ def connect(
             spec_for_bab: dict[str, Any] = {"role_arn": identity["role_arn"], "audience": identity["audience"], "name": name}
             ceiling = bab_mod.read_permissions(bab, vendor, actor)
         elif auth == "aws_hub":
-            spec_for_bab = {"hub_role_arn": identity["hub_role_arn"], "audience": identity["audience"], "name": name}
+            spec_for_bab = {"hub_role_arn": identity["hub_role_arn"], "audience": identity["audience"], "name": name,
+                            "external_id": bab.external_id_for_org(wanted_id or name)}
             ceiling = []  # nothing is granted on an organization; its accounts carry the ceilings
         elif auth == "aws_spoke":
             parent_id = identity["parent"]
@@ -479,11 +498,20 @@ def connect(
             spec_for_bab, ceiling = {}, bab_mod.read_permissions(bab, vendor, actor)
         try:
             bab.put_integration(row.id, vendor, spec_for_bab, ceiling, actor, parent=parent_id)
-            detail += ("; connected in the permission service as an organization; connect its accounts under it"
+            detail += ("; connected in the permission service as an organization"
                        if auth == "aws_hub" else "; connected in the permission service, agents may ask for its read permissions")
         except ClientError as exc:
             admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the permission service refused: {exc}")
             return row
+        if auth == "aws_hub":
+            # The accounts register themselves (#275): every one the hub can reach with the
+            # organization's external id is connected now; the rest wait for the role.
+            try:
+                found = register_accounts(session, clients, config, org_id=row.id, actor=actor)
+                detail += (f"; {len(found['connected'])} account(s) carry the role and are connected, "
+                           f"{len(found['without_role'])} do not yet")
+            except ClientError as exc:
+                detail += f"; its accounts could not be checked yet: {exc}"
     if bab is not None and auth in ("aws_role", "aws_hub", "aws_spoke"):
         # Leases come from the permission service; the gateway has nothing to learn.
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_APPLIED, detail=detail)
@@ -500,6 +528,58 @@ def connect(
         detail += "; no gateway config repository is set, so add the target by hand"
     admin_store.set_integration_state(session, row.id, state=admin_store.STATE_PENDING, detail=detail)
     return row
+
+
+def register_accounts(session: Session, clients: Clients | None, config: Config, *, org_id: str, actor: str) -> dict[str, Any]:
+    """Ask the permission service which of an organization's accounts carry the spoke
+    role (probed through the hub with the organization's one external id) and connect
+    the ones that do: a row here and an account under the organization there, with the
+    read ceiling. Accounts without the role are reported, not created. Safe to run again:
+    connected accounts are left alone."""
+    bab = _bab(clients)
+    if bab is None:
+        raise ConnectRefused("checking an organization\'s accounts needs the permission service")
+    org = _org_or_refused(bab, org_id, actor)
+    # An organization connected before external ids were per organization has none in
+    # the permission service; give it its id now (the same derivation the set-up page
+    # shows), so discover can probe its accounts. Its spoke rows keep their own ids.
+    if not (org.get("external_id") or (org.get("spec") or {}).get("external_id")):
+        bab.put_integration(org_id, "aws", {"hub_role_arn": org.get("hub_role_arn") or bab.org_hub_role_arn(org_id, actor),
+                                            "audience": cloud_access.AUDIENCE, "name": org.get("name") or org_id,
+                                            "external_id": bab.external_id_for_org(org_id)}, [], actor)
+    found = bab.discover_accounts(org_id, actor, cloud_access.ROLE_NAME)
+    taken = {r.id for r in admin_store.list_integrations(session)} | {i["integration"] for i in bab.integrations(actor)}
+    ceiling: list[str] | None = None
+    out: dict[str, Any] = {"organization": org_id, "connected": [], "without_role": [], "already": []}
+    for a in found.get("accounts", []):
+        entry = {"id": a["id"], "name": a.get("name") or a["id"], "integration": a.get("integration"), "reason": a.get("reason")}
+        if a.get("connected"):
+            out["already"].append(entry)
+            continue
+        if not a.get("reachable"):
+            out["without_role"].append(entry)
+            continue
+        base = re.sub(r"[^a-z0-9-]", "-", str(entry["name"]).lower()).strip("-")[:60] or a["id"]
+        row_id = base if base not in taken else f"{base}-{a['id'][-4:]}"
+        taken.add(row_id)
+        if ceiling is None:
+            ceiling = bab_mod.read_permissions(bab, "aws", actor)
+        spec_for_bab = {"spoke_role_arn": a["role_arn"], "account_id": a["id"], "audience": cloud_access.AUDIENCE, "name": entry["name"]}
+        bab.put_integration(row_id, "aws", spec_for_bab, ceiling, actor, parent=org_id)
+        row = admin_store.put_integration(
+            session, vendor="aws", name=str(entry["name"]), base_access="read",
+            spec={"address": "", "trust": "untrusted", "auth": "aws_spoke", "kind": "account", "parent": org_id,
+                  "account_id": a["id"], "identity": {"parent": org_id, "role_arn": a["role_arn"], "account_id": a["id"],
+                                                      "audience": cloud_access.AUDIENCE}, "secret_keys": []},
+            credential_ref=None, actor=actor, integration_id=row_id,
+        )
+        admin_store.set_integration_state(
+            session, row.id, state=admin_store.STATE_APPLIED,
+            detail="found through the organization\'s hub: the account carries the role; connected in the permission service, "
+                   "agents may ask for its read permissions")
+        entry["integration"] = row.id
+        out["connected"].append(entry)
+    return out
 
 
 def disconnect(session: Session, clients: Clients | None, config: Config, *, integration_id: str, actor: str) -> dict[str, Any]:

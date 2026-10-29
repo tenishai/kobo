@@ -1196,6 +1196,12 @@ export type AdminAwsSetup = {
   external_id?: string;
   /** org mode: what the hub may do, for an owner creating it by hand. */
   permissions_policy?: string;
+  /** org mode (#275): the member accounts' half. One external id for the whole
+   * organization, one spoke template, deployable everywhere at once. */
+  spoke_role_name?: string;
+  spoke_terraform?: string;
+  spoke_trust_policy?: string;
+  stackset?: string;
   /** Who the role must trust: the permission service (`access`) when it is on, else the gateway. */
   principal: "access" | "gateway";
   identity: { issuer: string; subject: string; email: string | null; audience: string } | null;
@@ -1235,6 +1241,21 @@ export type OrgAccount = {
   integration: string | null;
   connected: boolean;
 };
+
+/** The outcome of checking an organization's accounts through its hub (#275):
+ * the ones connected by this check, the ones already connected, and the ones
+ * without the spoke role yet. */
+export type OrgAccountsCheck = {
+  organization: string;
+  connected: { id: string; name: string; integration: string | null; reason: string | null }[];
+  already: { id: string; name: string; integration: string | null; reason: string | null }[];
+  without_role: { id: string; name: string; integration: string | null; reason: string | null }[];
+};
+
+export async function checkOrgAccounts(integrationId: string): Promise<OrgAccountsCheck> {
+  const res = await fetch(`/api/admin/integrations/${encodeURIComponent(integrationId)}/accounts/check`, { method: "POST" });
+  return parse<OrgAccountsCheck>(res);
+}
 
 export async function fetchOrgAccounts(integrationId: string): Promise<OrgAccount[]> {
   const res = await fetch(`/api/admin/integrations/${encodeURIComponent(integrationId)}/accounts`);

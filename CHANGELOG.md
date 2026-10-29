@@ -10,6 +10,8 @@ All notable changes to kobo are documented here. The format follows
 
 - **Skills are picked in one go.** The catalog and Suggestions lists share one picker: tick skills, press **Add N skills**, confirm once. One request (`POST /api/agents/{name}/skills/catalog/batch`, 1 to 20 picks) lands them in one change and one rebuild; a pick the agent already carries or the catalog no longer serves is refused on its own and the rest still land. The chosen rows show in the table at once as Delivering, the delivery chip sits beside the table, and errors show in both lists (#266).
 - **Writes to one agent queue instead of racing.** The skills, tooling and intake lanes hold a per-agent lock from clone to push, so two changes at once no longer fail as "couldn't reach your agent's files" or rotate the agent twice. While a change this page pushed is still rolling, the agent header reads Updating rather than Down (#268).
+- AWS organizations: one external id per organization, so one spoke template deploys the role to every member account (a StackSet). Connecting the hub checks every account through it and connects the ones that carry the role; **Check accounts** runs that again. No per-account Add account (#275).
+- Connect AWS sheet: pick Terraform, CloudFormation or by hand first; the sheet shows only that method, for the management account and for the member accounts (#276).
 
 ## [0.3.7] - 2026-10-29
 

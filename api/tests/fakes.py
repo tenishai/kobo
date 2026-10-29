@@ -2374,6 +2374,10 @@ class FakeBab:
     `error`, when set, makes every call raise `ClientError(error)`."""
 
     def __init__(self, *, integrations=None, catalogue=None, healthy=True, error=None):
+        # Which accounts carry the spoke role when discover probes them (#275): the first
+        # does, the second does not, unless a test says otherwise.
+        self.reachable_accounts = {"111111111111"}
+        self.discoveries: list[tuple[str, str]] = []
         self.healthy = healthy
         self.error = error
         self.topologies: list[tuple[str, list[dict]]] = []
@@ -2537,6 +2541,25 @@ class FakeBab:
 
     def external_id_for(self, parent, account_id):
         return f"ext-{parent}-{account_id}"
+
+    def external_id_for_org(self, parent):
+        return f"ext-{parent}"
+
+    def discover_accounts(self, integration, actor, role_name):
+        self._guard()
+        self.discoveries.append((integration, role_name))
+        org = next((i for i in self._integrations if i["integration"] == integration), None)
+        if org is None or org.get("kind") != "org":
+            raise ClientError(f"the permission service refused the accounts of {integration}: not an organization")
+        external_id = (org.get("spec") or {}).get("external_id")
+        if not external_id:
+            raise ClientError(f"the permission service refused the accounts of {integration}: no external id")
+        out = []
+        for a in self.org_accounts(integration, actor):
+            ok = a["id"] in self.reachable_accounts
+            out.append({**a, "role_arn": f"arn:aws:iam::{a['id']}:role/{role_name}", "reachable": ok,
+                        "reason": None if ok else f"AWS refused arn:aws:iam::{a['id']}:role/{role_name}: AccessDenied"})
+        return {"organization": integration, "external_id": external_id, "role_name": role_name, "accounts": out}
 
     def delete_integration(self, integration, actor):
         self._guard()
