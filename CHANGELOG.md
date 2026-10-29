@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-10-29
+
 ### Changed
 
 - **AWS connects as an organization with accounts under it.** Add integration › AWS creates the hub role in the organization's management account (trusting the room's identity; allowed only to assume each member account's role, list the accounts, read the bill). **Add account** on the organization lists its accounts through the hub; the account's role trusts the hub with an external id of its own; the room probes the two hops before saving. Integrations shows organizations with their accounts indented; the Permissions picker names each account's organization and offers the organization's other accounts as not connected yet. A second organization is a second row. The trust policies the page renders condition on `oaud`, which is where AWS puts a Google token's audience; the earlier `aud` condition refused the room's own token. Flat roles keep working. New: `GET /api/admin/integrations/{org}/accounts`; the setup page takes `mode=org|account`, `parent`, `account_id`.
