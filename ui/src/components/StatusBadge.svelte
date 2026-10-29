@@ -5,17 +5,26 @@
   import type { AgentHealth } from "../lib/api";
   import { agentTone } from "../lib/status";
 
-  let { status, health = null }: { status: string; health?: AgentHealth | null } = $props();
+  let {
+    status,
+    health = null,
+    updating = false,
+  }: { status: string; health?: AgentHealth | null; updating?: boolean } = $props();
 
   // Ready says the setup finished. If the cluster says the pod is not
   // running today, that is the fact a person needs, so it wears the badge
-  // instead: Down, in the fail tone, with the reason on the hover.
+  // instead: Down, in the fail tone, with the reason on the hover. When
+  // this page itself pushed a change that is still rolling (`updating`,
+  // from lib/delivery), the pod is down because of that, so the badge says
+  // Updating in the working tone instead (issue #268). Health itself is
+  // never altered: an agent that is up stays Ready either way.
   const down = $derived(status === "ready" && health?.state === "down");
-  const tone = $derived(down ? "fail" : agentTone(status));
-  const label = $derived(down ? "down" : status);
+  const rolling = $derived(down && updating);
+  const tone = $derived(rolling ? "warn" : down ? "fail" : agentTone(status));
+  const label = $derived(rolling ? "updating" : down ? "down" : status);
 </script>
 
-<span class="status-badge" title={down ? (health?.reason ?? undefined) : undefined}>
+<span class="status-badge" title={down && !rolling ? (health?.reason ?? undefined) : undefined}>
   <span class="status-badge__dot status-badge__dot--{tone}" class:pulse={tone === "warn"}></span>
   <span class="status-badge__label">{label}</span>
 </span>

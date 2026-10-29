@@ -17,6 +17,31 @@ const COST_REPORT_ENTRY = {
   tags: [],
 };
 
+const BATCH_OK = { sha: "abc123def456", directory: "off", added: ["cost-report"], refused: [] };
+
+/** Tick one row, press the sticky "Add 1 skill", confirm in the modal. */
+async function pickAndAdd(name: string): Promise<void> {
+  await fireEvent.click(screen.getByLabelText(`Add ${name}`));
+  const [bar] = screen.getAllByRole("button", { name: "Add 1 skill" });
+  await fireEvent.click(bar);
+  const buttons = await screen.findAllByRole("button", { name: "Add 1 skill" });
+  await fireEvent.click(buttons[buttons.length - 1]);
+}
+
+/** The body of the one batch POST the picker sends. */
+async function batchBody(): Promise<unknown> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const call = vi
+    .mocked(fetch)
+    .mock.calls.find(
+      ([url, init]) =>
+        String(url).includes("/api/agents/warden/skills/catalog/batch") &&
+        (init as RequestInit | undefined)?.method === "POST",
+    );
+  expect(call).toBeDefined();
+  return JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
+}
+
 /** Open the "Suggestions" disclosure. */
 async function openSuggestions(): Promise<void> {
   await fireEvent.click(await screen.findByRole("button", { name: "Suggestions" }));
@@ -92,7 +117,7 @@ describe("SkillsPanel", () => {
 
   it("shows recommended skills for the agent and adds one on click", async () => {
     stubFetch({
-      "/api/agents/warden/skills/catalog": { sha: "abc123def456" },
+      "/api/agents/warden/skills/catalog/batch": BATCH_OK,
       "/api/agents/warden/skills": EMPTY_SKILLS,
       "/api/catalog/teams": EMPTY_TEAMS,
       "/api/skills/recommended": { results: [COST_REPORT_ENTRY] },
@@ -113,20 +138,9 @@ describe("SkillsPanel", () => {
     const row = screen.getByText("cost-report").closest("li");
     expect(row).not.toBeNull();
 
-    const addButton = row?.querySelector(".catalog-row__add") as HTMLButtonElement;
-    expect(addButton).not.toBeUndefined();
-    await fireEvent.click(addButton);
+    await pickAndAdd("cost-report");
 
-    const call = vi
-      .mocked(fetch)
-      .mock.calls.find(
-        ([url, init]) =>
-          String(url).includes("/api/agents/warden/skills/catalog") &&
-          (init as RequestInit | undefined)?.method === "POST",
-      );
-    expect(call).toBeDefined();
-    const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
-    expect(body).toEqual({ name: "cost-report", team: "sre" });
+    expect(await batchBody()).toEqual({ skills: [{ name: "cost-report", team: "sre" }] });
   });
 
   it("searches the catalog from the combobox and adds a result", async () => {
@@ -145,8 +159,8 @@ describe("SkillsPanel", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
-        if (url.includes("/api/agents/warden/skills/catalog") && init?.method === "POST") {
-          return jsonResponse({ sha: "abc123def456" });
+        if (url.includes("/api/agents/warden/skills/catalog/batch") && init?.method === "POST") {
+          return jsonResponse(BATCH_OK);
         }
         if (url.includes("/api/agents/warden/skills")) {
           return jsonResponse(EMPTY_SKILLS);
@@ -185,21 +199,9 @@ describe("SkillsPanel", () => {
         .mock.calls.some(([url]) => String(url).includes("/api/skills/search?q=cost")),
     ).toBe(true);
 
-    const row = found.closest("li");
-    const addButton = row?.querySelector(".catalog-row__add") as HTMLButtonElement;
-    expect(addButton).not.toBeUndefined();
-    await fireEvent.click(addButton);
+    await pickAndAdd("cost-report");
 
-    const call = vi
-      .mocked(fetch)
-      .mock.calls.find(
-        ([url, init]) =>
-          String(url).includes("/api/agents/warden/skills/catalog") &&
-          (init as RequestInit | undefined)?.method === "POST",
-      );
-    expect(call).toBeDefined();
-    const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
-    expect(body).toEqual({ name: "cost-report", team: "sre" });
+    expect(await batchBody()).toEqual({ skills: [{ name: "cost-report", team: "sre" }] });
   });
 
   it("omits the recommended strip when the agent has no capability or tags", async () => {

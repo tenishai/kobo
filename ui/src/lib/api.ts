@@ -1801,6 +1801,31 @@ export async function addCatalogSkill(
   return parse<SkillChange>(res);
 }
 
+/** What a batch add answers with (issue #266): one pushed sha for every
+ * skill that landed (`added`), and the picks the room turned away one by
+ * one (`refused`, each with its reason) while the rest still landed. */
+export type SkillBatchChange = SkillChange & {
+  added: string[];
+  refused: { name: string; reason: string }[];
+};
+
+/** Picks several skills from the org catalog for this agent in one change
+ * (one push, one rebuild). 1 to 20 picks. */
+export async function addCatalogSkills(
+  name: string,
+  picks: { name: string; team: string }[],
+): Promise<SkillBatchChange> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/skills/catalog/batch`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ skills: picks }),
+    },
+  );
+  return parse<SkillBatchChange>(res);
+}
+
 /** Removes a skill — catalog pick or local guardrail alike, the server's
  * single unified delete path for both classes. */
 export async function deleteSkill(
