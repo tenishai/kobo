@@ -37,6 +37,10 @@ The notes you have taught the agent and the files you have uploaded for it to le
 
 What the agent proposes from its own conversations each day, waiting for your decision. The badge on the Harness tab is the count. Nothing is kept until you press Remember.
 
+## Permissions
+
+What the agent may do at each vendor the room has connected, when the room's permission service is on. The agent holds no standing credential: when a task needs one, it borrows an hour of access scoped to exactly the permissions it holds, and the vendor's own audit trail names the agent. **Held** lists what it has, with the tier and when it expires (read permissions stand until revoked; write permissions expire and are asked for again). **Ask for more** is the vendor's own permission tree: tick what the agent needs, add a line for the reviewer, press **Ask**. A permission the connection cannot honour is greyed with the reason. Requests go to the room's reviewers in Admin › Review; until they decide, the row says "waiting for review". Room admins see **Revoke now** on each held row.
+
 ## Activity
 
 Every call the agent made through the tool gateway, and every one it was refused, newest first: the tool, how it went, how long it took, and the arguments in brief with anything secret masked. Filter by tool to see what it does with one vendor, or pick a longer window. A refusal names what was missing, which is the moment to widen the agent's lane under Connections. Calls into a cloud account also appear in that account's own audit trail under the agent's name.

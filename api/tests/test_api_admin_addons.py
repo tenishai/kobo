@@ -57,7 +57,7 @@ def test_admin_gets_one_card_per_addon_with_derived_state(tmp_path):
     cards = {c["id"]: c for c in response.json()["addons"]}
     assert list(cards) == [
         "deployment", "secrets", "observability", "switchboard",
-        "tool-gateway", "memory", "model-gateway",
+        "tool-gateway", "access", "memory", "model-gateway",
     ]
     assert cards["secrets"]["state"] == "on"
     assert cards["secrets"]["keys"] == ["sero_url", "sero_audience", "sero_namespace"]

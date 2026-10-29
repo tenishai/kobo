@@ -9,6 +9,7 @@
   import PeoplePane from "../components/admin/PeoplePane.svelte";
   import ServicesPane from "../components/admin/ServicesPane.svelte";
   import RolesPane from "../components/admin/RolesPane.svelte";
+  import ReviewPane from "../components/admin/ReviewPane.svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import { formatHash, route } from "../lib/router.svelte";
   import { adminRoomQuery, whoamiQuery } from "../lib/queries";
@@ -24,6 +25,7 @@
     { id: "services", label: "Services" },
     { id: "integrations", label: "Integrations" },
     { id: "connections", label: "Connections" },
+    { id: "review", label: "Review" },
     { id: "roles", label: "Roles" },
     { id: "people", label: "People" },
     { id: "audit", label: "Audit" },
@@ -89,6 +91,8 @@
       <IntegrationsPane {item} />
     {:else if pane === "connections"}
       <ConnectionsPane {item} />
+    {:else if pane === "review"}
+      <ReviewPane />
     {:else if pane === "roles"}
       <RolesPane {item} />
     {:else if pane === "people"}

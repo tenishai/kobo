@@ -2339,3 +2339,114 @@ class FakeStorage:
             return False
         self._versioned.add(bucket)
         return True
+
+
+class FakeBab:
+    """The room's permission service, in memory (kobo_api.bab): one connected
+    integration with a ceiling, a small vendor catalogue, and requests that
+    become grants when approved. Records every topology push in
+    `.topologies` (list of (actor, agents)) and every revoke in `.revoked`.
+    `error`, when set, makes every call raise `ClientError(error)`."""
+
+    def __init__(self, *, integrations=None, catalogue=None, healthy=True, error=None):
+        self.healthy = healthy
+        self.error = error
+        self.topologies: list[tuple[str, list[dict]]] = []
+        self.revoked: list[tuple[int, str]] = []
+        self._requests: dict[int, dict] = {}
+        self._grants: dict[int, dict] = {}
+        self._leases: list[dict] = []
+        self._integrations = integrations or [
+            {"integration": "aws-prod", "vendor": "aws", "ceiling": ["aws_inventory_read", "aws_cloudtrail_lake_query"],
+             "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"},
+        ]
+        self._catalogue = catalogue or {
+            "aws": {
+                "vendor": "aws",
+                "groups": [
+                    {"name": "Inventory", "permissions": [
+                        {"name": "aws_inventory_read", "tier": "read", "description": "Describe and list resources"}]},
+                    {"name": "Security", "permissions": [
+                        {"name": "aws_cloudtrail_lake_query", "tier": "read", "description": "Run CloudTrail Lake queries"}]},
+                    {"name": "Compute", "permissions": [
+                        {"name": "aws_ecs_update_service", "tier": "mutate", "description": "Redeploy an ECS service"}]},
+                ],
+                "tiers": [{"name": "read", "lease_seconds": 3600, "validity_days": None},
+                          {"name": "mutate", "lease_seconds": 3600, "validity_days": 30}],
+            }
+        }
+
+    def _guard(self):
+        if self.error:
+            raise ClientError(self.error)
+
+    def health(self) -> bool:
+        return self.healthy and not self.error
+
+    def integrations(self, actor):
+        self._guard()
+        return [dict(i) for i in self._integrations]
+
+    def catalogue(self, vendor, actor):
+        self._guard()
+        return dict(self._catalogue[vendor])
+
+    def put_topology(self, agents, actor):
+        self._guard()
+        self.topologies.append((actor, list(agents)))
+        return {"agents": len(agents), "removed": 0, "tuples_written": len(agents), "tuples_deleted": 0}
+
+    def request(self, agent, integration, permissions, note, actor):
+        self._guard()
+        rid = len(self._requests) + 1
+        tiers: dict[str, int] = {}
+        for p in permissions:
+            tier = next((x["tier"] for g in self._catalogue["aws"]["groups"] for x in g["permissions"] if x["name"] == p), "read")
+            tiers[tier] = tiers.get(tier, 0) + 1
+        row = {"id": rid, "agent": agent, "integration": integration, "permissions": list(permissions), "tiers": tiers,
+               "kind": "standing", "status": "pending", "requested_by": actor, "note": note,
+               "created_at": "2026-10-29T12:00:00", "decided_at": None, "decided_by": None, "reason": None, "outcome": {}}
+        self._requests[rid] = row
+        return dict(row)
+
+    def requests(self, status, agent, actor):
+        self._guard()
+        rows = [dict(r) for r in self._requests.values() if status == "all" or r["status"] == status]
+        return [r for r in rows if not agent or r["agent"] == agent]
+
+    def decide(self, ids, verdict, reason, actor):
+        self._guard()
+        results = []
+        for rid in ids:
+            r = self._requests.get(rid)
+            if r is None or r["status"] != "pending":
+                results.append({"id": rid, "status": "skipped", "reason": "not pending"})
+                continue
+            r["decided_at"], r["decided_by"], r["reason"] = "2026-10-29T12:05:00", actor, reason
+            if verdict == "deny":
+                r["status"] = "denied"
+                results.append({"id": rid, "status": "denied", "reason": reason})
+                continue
+            for p in r["permissions"]:
+                gid = len(self._grants) + 1
+                self._grants[gid] = {"id": gid, "agent": r["agent"], "integration": r["integration"], "permission": p,
+                                     "tier": "read", "gated": False, "expires_at": None, "granted_by": actor,
+                                     "created_at": "2026-10-29T12:05:00", "request_id": rid, "state": "active"}
+                r["outcome"][p] = "granted"
+            r["status"] = "approved"
+            results.append({"id": rid, "status": "approved", "outcome": dict(r["outcome"])})
+        return results
+
+    def grants(self, agent, actor):
+        self._guard()
+        return [dict(g) for g in self._grants.values() if g["agent"] == agent]
+
+    def revoke(self, grant_id, actor):
+        self._guard()
+        self._grants.pop(grant_id, None)
+        self.revoked.append((grant_id, actor))
+        return {"revoked": grant_id}
+
+    def leases(self, agent, since, actor):
+        self._guard()
+        return [dict(lease) for lease in self._leases if lease["agent"] == agent]

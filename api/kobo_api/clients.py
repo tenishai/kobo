@@ -5209,6 +5209,11 @@ class Clients:
     # deliberately no fallback between the two, since an agent whose Secret
     # has two writers has two sources of truth. See kobo_api.sero.
     sero: SeroClient | None = None
+    # The room's permission service (kobo_api.bab), typed loosely for the
+    # same import-direction reason as liminal_admin above. None = Access is
+    # off for the room; built in main.build_default_app from `bab_url` and
+    # the KOBO_BAB_TOKEN environment variable.
+    bab: object | None = None
 
     @classmethod
     def real(cls, config: Config) -> Clients:

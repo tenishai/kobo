@@ -231,6 +231,7 @@ def test_org_keys_is_exactly_the_brief_set():
             "memory_replica_bucket",
         "broker_url",
         "liminal_url",
+        "bab_url",
         "noto_url",
         "noto_project",
         "reader_groups",

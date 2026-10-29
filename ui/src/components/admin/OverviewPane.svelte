@@ -5,6 +5,7 @@
   import { createQuery } from "@tanstack/svelte-query";
   import { formatHash } from "../../lib/router.svelte";
   import {
+    accessRequestsQuery,
     adminAddonsQuery,
     adminConnectionsQuery,
     adminIntegrationsQuery,
@@ -17,6 +18,8 @@
   const connections = createQuery(() => (adminConnectionsQuery()));
   const roles = createQuery(() => (adminRolesQuery()));
   const requests = createQuery(() => (groupRequestsQuery(true)));
+  // 404 when Access is off for the room; the row then says so instead of a number.
+  const access = createQuery(() => (accessRequestsQuery("pending")));
 
   function plural(n: number, one: string, many: string = one + "s"): string {
     return `${n} ${n === 1 ? one : many}`;
@@ -33,6 +36,7 @@
     const noLane = agents.filter((x) => x.lanes.length === 0).length;
     const r = roles.data?.roles ?? [];
     const pending = (requests.data ?? []).filter((x) => x.status === "pending").length;
+    const waiting = (access.data ?? []).length;
     return [
       {
         pane: "services",
@@ -50,6 +54,12 @@
         pane: "connections",
         name: "Connections",
         note: connections.isPending ? "…" : noLane ? `${plural(agents.length, "agent")}, ${noLane} without a lane` : `${plural(agents.length, "agent")}, all with a lane`,
+      },
+      {
+        pane: "review",
+        name: "Review",
+        note: access.isPending ? "…" : access.isError ? "access is off for this room" : waiting ? `${plural(waiting, "permission request")} waiting` : "nothing waiting",
+        warn: waiting > 0,
       },
       { pane: "roles", name: "Roles", note: roles.isPending ? "…" : plural(r.length, "role") },
       {
