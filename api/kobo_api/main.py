@@ -55,7 +55,9 @@ from kobo_api.agent_env import (
     merged_names,
     parse_gojira_yaml,
     read_default_gojira,
+    read_env,
     read_repo_env,
+    read_room_env,
     require_our_branch,
     secret_path,
     sync_state,
@@ -249,6 +251,7 @@ from kobo_api.sero import acting_email_refusal
 from kobo_api.skills import (
     SkillsError,
     add_catalog_skill,
+    add_catalog_skills,
     bust_repo_skills_cache,
     list_repo_skills,
     read_local_skill,
@@ -584,6 +587,23 @@ class CatalogSkillPayload(BaseModel):
     # Refresh an attached catalog skill to the version the catalog serves
     # now, in one commit (issue #182). Off, an attached name is a 409.
     refresh: bool = False
+
+
+class CatalogSkillRef(BaseModel):
+    """One pick inside a batch add: the same (name, team) pair as
+    CatalogSkillPayload, without `refresh` (a batch only adds)."""
+
+    name: str
+    team: str
+
+
+class CatalogSkillBatchPayload(BaseModel):
+    """POST .../skills/catalog/batch body (issue #266): several catalog
+    picks that land in ONE commit and one rebuild. The ceiling is the
+    picker's, not a repo limit: twenty is already more than a person
+    ticks in one sitting."""
+
+    skills: list[CatalogSkillRef] = Field(min_length=1, max_length=20)
 
 
 class IntakeUploadPayload(BaseModel):
@@ -6006,11 +6026,17 @@ def create_app(
         # wiring status regardless of whether an app has been created yet;
         # `app_id` alone stays None until create_slack_app runs.
         channels = decode_channels(agent.slack_channels)
+        # `available` (issue #262): whether this room can connect a Slack app
+        # at all -- the config-token store is optional deployment config, and
+        # the panel says so up front instead of refusing after the owner has
+        # already created the app at Slack.
+        slack_clients: Clients | None = app.state.clients
         slack = {
             "app_id": agent.slack_app_id,
             "channels": channels,
             "state": derive_state(channels, wired=agent.slack_wired),
             "wake": effective_wake(agent),
+            "available": slack_clients is not None and slack_clients.slack is not None,
         }
 
         return JSONResponse(
@@ -7262,10 +7288,7 @@ def create_app(
             # matching on that prefix is the cleanest option available
             # without touching skills.py — same idiom as delete_knowledge's
             # own KnowledgeError prefix match below.
-            message = str(exc)
-            if message.startswith("skill no longer in the catalog:"):
-                return JSONResponse({"error": message}, status_code=404)
-            return JSONResponse({"error": message}, status_code=422)
+            return _skills_error_response(exc)
         except ClientError as exc:
             log.warning("skills route failed: %s", exc)
             return JSONResponse(
@@ -7293,6 +7316,98 @@ def create_app(
         # serves its own copy, so register the new one.
         directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
         return JSONResponse({"sha": commit_sha, "directory": directory})
+
+    def _skills_error_response(exc: SkillsError) -> JSONResponse:
+        """The single catalog-add route's SkillsError mapping (prefix match,
+        see its comment), shared with the batch route below."""
+        message = str(exc)
+        if message.startswith("skill no longer in the catalog:"):
+            return JSONResponse({"error": message}, status_code=404)
+        return JSONResponse({"error": message}, status_code=422)
+
+    @app.post("/api/agents/{name}/skills/catalog/batch")
+    def add_skills_from_catalog(
+        name: str,
+        payload: CatalogSkillBatchPayload,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Several catalog picks in one commit, one push, one rebuild
+        (issue #266). Same gates as the single route. A pick the agent
+        already carries, or one the catalog no longer serves, is refused
+        on its own and listed under `refused`; the rest still land. When
+        nothing can land the answer is the single route's for that
+        refusal: 409 already carried, 404 gone, 422 bad id."""
+        agent = _ready_agent_or_error(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+
+        carried_names = {entry["name"] for entry in agent.skills}
+        refused: list[dict] = []
+        picks: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for pick in payload.skills:
+            if pick.name in seen:
+                continue
+            seen.add(pick.name)
+            if pick.name in carried_names:
+                refused.append(
+                    {
+                        "name": pick.name,
+                        "reason": f"the agent already carries a skill named {pick.name!r}",
+                    }
+                )
+                continue
+            picks.append((pick.name, pick.team))
+        if not picks:
+            return _skill_conflict(refused[0]["name"])
+
+        try:
+            commit_sha, landed, skipped = add_catalog_skills(
+                app.state.clients.github,
+                app.state.clients.storage,
+                app.state.config,
+                agent.repo_full_name,
+                picks,
+            )
+        except SkillsError as exc:
+            if refused:
+                # Some picks were already carried and the rest could not
+                # land: the carried ones decide the status, as they would
+                # one at a time.
+                return _skill_conflict(refused[0]["name"])
+            return _skills_error_response(exc)
+        except ClientError as exc:
+            log.warning("skills route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
+            )
+        refused.extend({"name": skill_id, "reason": reason} for skill_id, reason in skipped)
+
+        # Same bust-then-write order as the single route above.
+        bust_repo_skills_cache(agent.repo_full_name)
+        teams = {skill_id: team for skill_id, team in picks}
+        agent.skills = [entry for entry in agent.skills if entry["name"] not in landed] + [
+            {"name": skill_id, "team": teams[skill_id], "sha": source_sha, "source": "catalog"}
+            for skill_id, source_sha in landed.items()
+        ]
+        session.commit()
+
+        directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
+        return JSONResponse(
+            {
+                "sha": commit_sha,
+                "directory": directory,
+                "added": list(landed),
+                "refused": refused,
+            }
+        )
 
     @app.delete("/api/agents/{name}/skills/{skill_id}")
     def delete_skill(
@@ -8798,9 +8913,8 @@ def create_app(
             # the environment read uses: an unreadable repository must be
             # a refusal, never a quiet "not wired" that would have the
             # room propose a line already sitting on the default branch.
-            on_default = has_env_secret(
-                read_default_gojira(clients.github, agent.repo_full_name), agent.name
-            )
+            gojira_data = read_default_gojira(clients.github, agent.repo_full_name)
+            on_default = has_env_secret(gojira_data, agent.name)
         except RepoBusy as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
         except ClientError as exc:
@@ -8812,7 +8926,16 @@ def create_app(
         except ClientError as exc:
             return _lane_failed("read", agent, exc, SECRETS_PLATFORM_UNREACHABLE)
 
-        refusal = write_refusal(payload.set, payload.remove, held.keys)
+        # The same file, read once, answers the cross-list check too: a
+        # secret named like one of the owner's variables is refused
+        # (issue #272), since both land in the pod as one variable.
+        refusal = write_refusal(
+            payload.set,
+            payload.remove,
+            held.keys,
+            taken=read_env(gojira_data),
+            taken_as="variable",
+        )
         if refusal is not None:
             return JSONResponse({"error": refusal}, status_code=422)
 
@@ -9070,9 +9193,12 @@ def create_app(
 
         Read straight off the repository's `gojira.yaml` rather than from
         anything the room caches, because the file is where they live and a
-        team may have edited it themselves. The two model-access variables
-        the room writes are left out: they are not an owner's to change,
-        and showing them in an editable list would say otherwise.
+        team may have edited it themselves. The variables the room writes
+        itself (the model-access pair, the agent's model, how Slack wakes
+        it) come back under `room` rather than in `env`: they are not an
+        owner's to change, and a panel that showed them as editable rows
+        re-sent them on every save and had the whole write refused by the
+        room's own name (issue #250).
 
         A file the room cannot PARSE, and a repository the room cannot
         READ, are two different 409s with two different sentences. The
@@ -9088,13 +9214,36 @@ def create_app(
             return blocked
 
         try:
-            env = read_repo_env(app.state.clients.github, agent.repo_full_name)
+            gojira_data = read_default_gojira(app.state.clients.github, agent.repo_full_name)
         except RepoBusy as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
         except ClientError as exc:
             return _lane_failed("file read", agent, exc, AGENT_FILES_UNREACHABLE)
 
-        return JSONResponse({"env": env})
+        return JSONResponse({"env": read_env(gojira_data), "room": read_room_env(gojira_data)})
+
+    def _stored_secret_names(agent: Agent, request: Request) -> list[str]:
+        """The names this agent holds as SECRETS, for the variables route's
+        cross-list check (issue #272): a variable named like a stored
+        secret is refused, since both land in the pod as one variable.
+
+        Only where the room has a lane to ask with. A room with no secrets
+        platform has no secrets to clash with, and a platform that cannot
+        be asked right now is logged and skipped rather than failing the
+        variables half with it: the variables working without the platform
+        is the point of the two lists being two.
+        """
+        sero = app.state.clients.sero
+        email = _secrets_acting_email(agent, request)
+        if sero is None or not (email or "").strip():
+            return []
+        try:
+            return list(sero.list_keys(email, secret_path(agent.name)).keys)
+        except ClientError as exc:
+            log.warning(
+                "secrets read failed for agent %s (%s)", agent.name, type(exc).__name__
+            )
+            return []
 
     @app.put("/api/agents/{name}/env")
     def set_agent_env(
@@ -9128,7 +9277,13 @@ def create_app(
         except ClientError as exc:
             return _lane_failed("file read", agent, exc, AGENT_FILES_UNREACHABLE)
 
-        refusal = write_refusal(payload.set, payload.remove, sorted(current))
+        refusal = write_refusal(
+            payload.set,
+            payload.remove,
+            sorted(current),
+            taken=_stored_secret_names(agent, request),
+            taken_as="secret",
+        )
         if refusal is not None:
             return JSONResponse({"error": refusal}, status_code=422)
 
@@ -10724,6 +10879,16 @@ def create_app(
             .order_by(Agent.id)
             .all()
         )
+        # Agents that exist but cannot be asked yet (#273): named with their
+        # state, so an empty picker explains itself instead of reading as
+        # "there is nobody here". Same bare name+group as `requestable`.
+        not_ready = [
+            {"name": other.name, "group": other.group_name, "status": str(other.status)}
+            for other in session.query(Agent)
+            .filter(Agent.status != AgentStatus.READY, Agent.name != agent.name)
+            .order_by(Agent.id)
+            .all()
+        ]
 
         in_flight_status = {
             invite.to_agent: invite.status
@@ -10752,7 +10917,9 @@ def create_app(
                 }
             )
 
-        return JSONResponse({"requestable": requestable, "already": already})
+        return JSONResponse(
+            {"requestable": requestable, "already": already, "not_ready": not_ready}
+        )
 
     @app.post("/api/invites/{invite_id}/accept")
     def accept_invite(

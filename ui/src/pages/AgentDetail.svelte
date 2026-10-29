@@ -66,6 +66,7 @@
     uploadAvatarMutation,
   } from "../lib/queries";
   import { formatHash, navigate, route } from "../lib/router.svelte";
+  import { isUpdating } from "../lib/delivery.svelte";
   import { isDestroyComplete, isFrozen } from "../lib/status";
   import {
     DEFAULT_HARNESS_SECTION,
@@ -224,6 +225,14 @@
   const tabDisabled = $derived(
     agent.data ? agent.data.status !== "ready" && !isFrozen(agent.data.status) : true,
   );
+
+  // Is a change this page pushed still rolling out (lib/delivery)? Re-read
+  // whenever the detail poll brings a fresh health verdict, so a delivery
+  // that went quiet is forgotten on the room's own cadence (issue #268).
+  const updating = $derived.by((): boolean => {
+    void agent.data?.health?.checked_at;
+    return isUpdating(name);
+  });
 
   // The hash decides, when it names a tab this agent actually has; otherwise
   // the smart default does, exactly as before. Also re-picks when the
@@ -447,7 +456,7 @@
       <div class="agent-detail__heading">
         <div class="agent-detail__title">
           <h1 class="agent-detail__name">{data.name}</h1>
-          <StatusBadge status={data.status} health={data.health} />
+          <StatusBadge status={data.status} health={data.health} {updating} />
           <!-- The same marker the dashboard card carries, in the same
                words, so the two pages agree about what this agent is. -->
           {#if connected}
@@ -674,8 +683,14 @@
               </a>
             {/if}
           </dd>
-          <dt>Team</dt>
-          <dd>{data.team}</dd>
+          <dt>Persona team</dt>
+          <dd>
+            {data.team}
+            <span class="agent-detail__fact-help">
+              The team whose personas and skills this agent draws from. Who can see the
+              agent is decided by its group, shown beside the name.
+            </span>
+          </dd>
           <dt>Purpose</dt>
           <dd>{data.purpose_tags.length > 0 ? data.purpose_tags.join(", ") : "Not set."}</dd>
           <dt>Capability</dt>
@@ -735,6 +750,14 @@
         >
           {retry.isPending ? "Resuming…" : "Resume"}
         </button>
+      </div>
+    {:else if data.status === "ready" && data.health?.state === "down" && updating}
+      <!-- Not running because this page just changed it: the rebuild the
+           room started is still rolling (lib/delivery). -->
+      <div class="waiting-banner" role="status">
+        <p class="waiting-banner__message">
+          Updating: the changes you made are on their way. The agent comes back when they land.
+        </p>
       </div>
     {:else if data.status === "ready" && data.health?.state === "down"}
       <!-- Setup finished, pod is not running: the cluster's own verdict
@@ -1037,6 +1060,12 @@
     overflow-wrap: anywhere;
     color: var(--ink);
     font-size: 0.85rem;
+  }
+
+  .agent-detail__fact-help {
+    display: block;
+    color: var(--muted);
+    font-size: 0.8rem;
   }
 
   /* The one button in the header, and it is quiet on purpose: the header

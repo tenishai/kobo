@@ -273,7 +273,7 @@ def test_requestable_excludes_the_agent_itself(session_factory, client):
     response = c.get("/api/agents/a/requestable", headers=_headers(key, email=OWNER_A_EMAIL))
 
     assert response.status_code == 200
-    assert response.json() == {"requestable": [], "already": []}
+    assert response.json() == {"requestable": [], "already": [], "not_ready": []}
 
 
 def test_requestable_excludes_same_group_colleagues_already_auto_paired(session_factory, client):
@@ -322,7 +322,11 @@ def test_requestable_excludes_not_ready_agents(session_factory, client):
     response = c.get("/api/agents/a/requestable", headers=_headers(key, email=OWNER_A_EMAIL))
 
     assert response.status_code == 200
-    assert response.json() == {"requestable": [], "already": []}
+    assert response.json() == {
+        "requestable": [],
+        "already": [],
+        "not_ready": [{"name": "b", "group": "payments-eng", "status": "provisioning"}],
+    }
 
 
 def test_requestable_moves_pending_invite_target_to_already(session_factory, client):

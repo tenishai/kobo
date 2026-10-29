@@ -8,7 +8,9 @@ Every operation here clones the repo fresh into a `tempfile.TemporaryDirectory`
 and discards it before returning — there is no local working copy kept around
 between calls, mirroring `kobo_api.knowledge` (and, via `kobo_api.steps`, the
 rest of kobo_api's treatment of a repo clone as a disposable means to an end,
-never state of its own).
+never state of its own). Every write holds the agent's repo write lock
+(`kobo_api.repo_lock`) from clone to push, so two writes to one agent queue
+rather than race (issue #268); reads take no lock.
 
 `add_catalog_skill` reuses `kobo_api.steps._materialize_catalog_skill` — the
 exact same containment-checked bucket download `_stage_skills` runs at
@@ -37,6 +39,7 @@ from pathlib import Path
 from kobo_api.clients import ClientError, GitHubClient, StorageClient
 from kobo_api.composer import refresh_agent_card, update_agent_yaml_skills_load
 from kobo_api.config import Config
+from kobo_api.repo_lock import repo_write_lock
 from kobo_api.search import read_marketplace_catalog
 from kobo_api.steps import _materialize_catalog_skill
 
@@ -139,25 +142,97 @@ def add_catalog_skill(
     the sha a caller would record on the agent row as this pick's pin.
     """
     _validate_skill_id(skill_id)
-    with tempfile.TemporaryDirectory() as tmp:
+    with repo_write_lock(repo), tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
-        skill_dir = workdir / "bundle" / "skills" / skill_id
-        if replace and skill_dir.exists():
-            shutil.rmtree(skill_dir)
-        skill_dir.mkdir(parents=True, exist_ok=True)
         marketplace_catalog = read_marketplace_catalog(storage, config.skills_bucket)
-        try:
-            source_sha = _materialize_catalog_skill(
-                storage, config, team, skill_id, skill_dir, marketplace_catalog
-            )
-        except RuntimeError as exc:
-            raise SkillsError(str(exc)) from exc
+        source_sha = _write_catalog_skill(
+            workdir, storage, config, team, skill_id, marketplace_catalog, replace=replace
+        )
         _admit_skills_load(workdir, repo)
         refresh_agent_card(workdir / "bundle")
         verb = "refresh" if replace else "add"
         github.commit_push(workdir, f"kobo: {verb} skill {skill_id}")
         return github.local_head(workdir), source_sha
+
+
+def _write_catalog_skill(
+    workdir: Path,
+    storage: StorageClient,
+    config: Config,
+    team: str,
+    skill_id: str,
+    marketplace_catalog: dict[str, dict] | None,
+    *,
+    replace: bool,
+) -> str:
+    """Materialize one catalog skill into the clone at `workdir` and return
+    its current source-sha. The one download step `add_catalog_skill` and
+    `add_catalog_skills` share. A skill the catalog no longer serves leaves
+    no directory behind (so a batch commit never carries an empty
+    `bundle/skills/<id>/`) and raises `SkillsError`, message preserved."""
+    skill_dir = workdir / "bundle" / "skills" / skill_id
+    if replace and skill_dir.exists():
+        shutil.rmtree(skill_dir)
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        return _materialize_catalog_skill(
+            storage, config, team, skill_id, skill_dir, marketplace_catalog
+        )
+    except RuntimeError as exc:
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        raise SkillsError(str(exc)) from exc
+
+
+def add_catalog_skills(
+    github: GitHubClient,
+    storage: StorageClient,
+    config: Config,
+    repo: str,
+    picks: list[tuple[str, str]],
+) -> tuple[str, dict[str, str], list[tuple[str, str]]]:
+    """Materialize several catalog skills (`(skill_id, team)` pairs) into
+    `repo` in ONE clone, one commit and one push (issue #266: one rebuild
+    for the whole pick, not one per skill).
+
+    Each skill is validated and downloaded on its own; one that fails (a
+    bad id, or a skill the catalog no longer serves) is refused with its
+    `SkillsError` message and the rest still land. Returns
+    `(commit_sha, landed, refused)`: `landed` maps each skill id that was
+    written to its catalog source-sha (same pin `add_catalog_skill`
+    returns), `refused` lists `(skill_id, reason)` pairs in request order.
+    Raises `SkillsError` (the first refusal's message) when nothing could
+    land, so nothing is cloned or pushed for an all-bad request.
+    """
+    refused: list[tuple[str, str]] = []
+    valid: list[tuple[str, str]] = []
+    for skill_id, team in picks:
+        try:
+            _validate_skill_id(skill_id)
+        except SkillsError as exc:
+            refused.append((skill_id, str(exc)))
+            continue
+        valid.append((skill_id, team))
+    if not valid:
+        raise SkillsError(refused[0][1])
+    with repo_write_lock(repo), tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        github.clone(repo, workdir)
+        marketplace_catalog = read_marketplace_catalog(storage, config.skills_bucket)
+        landed: dict[str, str] = {}
+        for skill_id, team in valid:
+            try:
+                landed[skill_id] = _write_catalog_skill(
+                    workdir, storage, config, team, skill_id, marketplace_catalog, replace=False
+                )
+            except SkillsError as exc:
+                refused.append((skill_id, str(exc)))
+        if not landed:
+            raise SkillsError(refused[0][1])
+        _admit_skills_load(workdir, repo)
+        refresh_agent_card(workdir / "bundle")
+        github.commit_push(workdir, f"kobo: add skills {', '.join(landed)}")
+        return github.local_head(workdir), landed, refused
 
 
 def remove_skill(github: GitHubClient, repo: str, skill_id: str) -> str:
@@ -169,7 +244,7 @@ def remove_skill(github: GitHubClient, repo: str, skill_id: str) -> str:
     as `kobo_api.knowledge.delete_knowledge_file`'s missing-file case.
     """
     _validate_skill_id(skill_id)
-    with tempfile.TemporaryDirectory() as tmp:
+    with repo_write_lock(repo), tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
         skill_dir = workdir / "bundle" / "skills" / skill_id
@@ -278,7 +353,7 @@ def save_local_skill(github: GitHubClient, repo: str, skill_id: str, content: st
     _validate_skill_id(skill_id)
     _validate_content(content)
     _validate_frontmatter(content)
-    with tempfile.TemporaryDirectory() as tmp:
+    with repo_write_lock(repo), tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
         skill_dir = workdir / "bundle" / "skills" / skill_id

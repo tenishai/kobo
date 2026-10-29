@@ -8,10 +8,13 @@
   // "commit"/"deploy"/"repo"/"pipeline".
   //
   // Three affordances, three different shapes:
-  //   - "Add from catalog": an inline, toggleable search section (fresh
-  //     markup adapted from CreateModal's debounced skill search — CreateModal
-  //     itself is untouched) that Adds a pick immediately per row (single-select,
-  //     not a staged multi-pick + submit).
+  //   - One picker over two lists (issue #266): "Browse the catalog" (an
+  //     inline, toggleable debounced search adapted from CreateModal's old
+  //     skill search) and "Suggestions" each show a checkbox per row; the
+  //     ticks feed one sticky "Add N skills" bar and one confirm, which
+  //     sends ONE batch request (one change, one rebuild). The chosen rows
+  //     appear in the table at once, marked Delivering, until the delivery
+  //     for that push lands; errors show in both lists.
   //   - "New guardrail skill": opens the shared editor Modal (copied from
   //     MemoryPanel: filename + textarea, review-with-diff, then save).
   //   - Edit / Remove on an existing row: Edit re-opens that same Modal in
@@ -37,9 +40,13 @@
   import Skeleton from "./Skeleton.svelte";
   import { errorMessage, readLocalSkill, type AgentSkill, type CatalogEntry } from "../lib/api";
   import { debounced } from "../lib/debounce";
+  import {
+    beginDelivery as noteDeliveryBegan,
+    reportDelivery as noteDeliveryState,
+  } from "../lib/delivery.svelte";
   import { lineDiff, type DiffLine } from "../lib/diff";
   import {
-    addCatalogSkillMutation,
+    addCatalogSkillsMutation,
     agentSkillsQuery,
     deleteSkillMutation,
     deliveryQuery,
@@ -72,7 +79,7 @@
   // svelte-ignore state_referenced_locally
   const recommended = createQuery(() => (recommendedSkillsQuery(recommendWho, recommendWhat)));
   // svelte-ignore state_referenced_locally
-  const addCatalog = createMutation(() => (addCatalogSkillMutation(queryClient, agentName)));
+  const addPicked = createMutation(() => (addCatalogSkillsMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
   const saveMutation = createMutation(() => (saveLocalSkillMutation(queryClient, agentName)));
   // svelte-ignore state_referenced_locally
@@ -94,6 +101,9 @@
       clearTimer = undefined;
     }
     deliverySha = sha;
+    // The agent header reads this to say Updating, not Down, while the
+    // rebuild this push started is rolling (issue #268).
+    noteDeliveryBegan(agentName, sha);
   }
 
   $effect(() => {
@@ -110,6 +120,27 @@
         clearTimer = undefined;
       }
     };
+  });
+
+  // Every poll answer goes to the page-wide delivery record (for the
+  // header), and a terminal answer ends the table's Delivering marks.
+  $effect(() => {
+    if (deliverySha === null) {
+      delivering = {};
+      return;
+    }
+    if (delivery.isError) {
+      noteDeliveryState(agentName, deliverySha, "unknown");
+      return;
+    }
+    const state = delivery.data?.state;
+    if (state === undefined) {
+      return;
+    }
+    noteDeliveryState(agentName, deliverySha, state);
+    if (state === "delivered" || state === "failed") {
+      delivering = {};
+    }
   });
 
   type DeliveryView = { tone: "pending" | "ok" | "fail"; text: string };
@@ -143,9 +174,9 @@
     return { tone: "pending", text: "Delivering changes…" };
   });
 
-  // --- Add from catalog: debounced search, single-select, adds on click ---
-  // (fresh inline markup adapted from CreateModal's skill search — see its
-  // own doc comment for why the debounced term lives in a plain `writable`
+  // --- The picker: debounced catalog search + suggestions, ticks, one add --
+  // (search markup adapted from CreateModal's skill search — see its own
+  // doc comment for why the debounced term lives in a plain `writable`
   // rather than `$derived`; same @tanstack/svelte-query version constraint.)
 
   let catalogOpen = $state(false);
@@ -156,8 +187,16 @@
   // "" means "All teams" — a <select>'s DOM value is always a string;
   // converted to `null` only where the search params are committed, below.
   let catalogTeamFilter = $state("");
-  let catalogError = $state<string | null>(null);
-  let pendingCatalogAdd = $state<string | null>(null);
+  // One error for the whole picker, rendered in BOTH lists: a failed add
+  // from Suggestions used to show nothing at all (issue #266).
+  let pickerError = $state<string | null>(null);
+  // Ticked rows, by skill name, across both lists. Reassigned on every
+  // change so the derived count and the row checkboxes follow.
+  let picked = $state<Record<string, CatalogEntry>>({});
+  const pickedCount = $derived(Object.keys(picked).length);
+  // Skills the last add pushed, shown in the table at once as Delivering
+  // until the delivery for that push lands (the effect above clears it).
+  let delivering = $state<Record<string, CatalogEntry>>({});
 
   let catalogSearchParams = $state<{ q: string; team: string | null }>({
     q: "",
@@ -205,43 +244,104 @@
     if (catalogOpen) {
       catalogQ = "";
       catalogTeamFilter = "";
-      catalogError = null;
+      pickerError = null;
       catalogSearchParams = { q: "", team: null };
       catalogDropdownOpen = false;
     }
   }
 
+  /** Carried already, or on its way: either way the row says Added. */
   function alreadyCarried(skillName: string): boolean {
-    return skills.data?.some((s) => s.name === skillName) ?? false;
+    return (skills.data?.some((s) => s.name === skillName) ?? false) || skillName in delivering;
   }
 
-  function handleAddFromCatalog(entry: CatalogEntry): void {
-    if (alreadyCarried(entry.name) || pendingCatalogAdd !== null) {
+  function togglePick(entry: CatalogEntry): void {
+    if (alreadyCarried(entry.name)) {
       return;
     }
-    catalogError = null;
-    pendingCatalogAdd = entry.name;
-    addCatalog.mutate(
-      { skillName: entry.name, team: entry.team },
+    const next = { ...picked };
+    if (entry.name in next) {
+      delete next[entry.name];
+    } else {
+      next[entry.name] = entry;
+    }
+    picked = next;
+  }
+
+  function clearPicks(): void {
+    picked = {};
+  }
+
+  /** The table's rows: what the agent carries, then what is on its way
+   * and not yet listed (the optimistic rows), each shaped like a catalog
+   * pick with no pin yet. */
+  const tableRows = $derived.by((): AgentSkill[] => {
+    const carried = skills.data ?? [];
+    const names = new Set(carried.map((s) => s.name));
+    const pending = Object.values(delivering)
+      .filter((entry) => !names.has(entry.name))
+      .map(
+        (entry): AgentSkill => ({
+          name: entry.name,
+          team: entry.team,
+          source: "catalog",
+          sha: null,
+          editable: false,
+        }),
+      );
+    return [...carried, ...pending];
+  });
+
+  function addLabel(count: number): string {
+    return count === 1 ? "Add 1 skill" : `Add ${count} skills`;
+  }
+
+  function handleAddPicked(): void {
+    const entries = Object.values(picked);
+    if (entries.length === 0) {
+      return;
+    }
+    modalError = null;
+    pickerError = null;
+    addPicked.mutate(
+      entries.map((entry) => ({ name: entry.name, team: entry.team })),
       {
         onSuccess: (result) => {
-          pendingCatalogAdd = null;
+          const landed: Record<string, CatalogEntry> = {};
+          for (const name of result.added) {
+            const entry = picked[name];
+            if (entry !== undefined) {
+              landed[name] = entry;
+            }
+          }
+          delivering = landed;
           beginDelivery(result.sha);
+          if (result.refused.length > 0) {
+            pickerError =
+              "Not added: " +
+              result.refused.map((r) => `${r.name} (${r.reason})`).join("; ") +
+              ".";
+          }
+          picked = {};
+          closeModal();
         },
         onError: (err: unknown) => {
-          pendingCatalogAdd = null;
-          catalogError = errorMessage(err, "Couldn't add that skill. Try again.");
+          const message = errorMessage(err, "Couldn't add those skills. Try again.");
+          modalError = message;
+          pickerError = message;
         },
       },
     );
   }
 
-  // --- Modal: new/edit local skill, or delete (either class) --------------
+  // --- Modal: new/edit local skill, delete (either class), or confirm the
+  // picked batch ------------------------------------------------------------
 
   type Target =
     | { kind: "edit"; skill: AgentSkill }
     | { kind: "add" }
-    | { kind: "delete"; skill: AgentSkill };
+    | { kind: "delete"; skill: AgentSkill }
+    | { kind: "batch" };
 
   type EditLoad = { status: "loading" } | { status: "error"; message: string } | { status: "ready" };
 
@@ -337,6 +437,14 @@
     modalError = null;
   }
 
+  function openBatchConfirm(): void {
+    if (pickedCount === 0) {
+      return;
+    }
+    target = { kind: "batch" };
+    modalError = null;
+  }
+
   function closeModal(): void {
     target = null;
     content = "";
@@ -377,7 +485,7 @@
   });
 
   const canReview = $derived.by((): boolean => {
-    if (target === null || target.kind === "delete") {
+    if (target === null || target.kind === "delete" || target.kind === "batch") {
       return false;
     }
     if (target.kind === "edit" && editLoad.status !== "ready") {
@@ -413,11 +521,14 @@
     if (target.kind === "delete") {
       return `Remove ${target.skill.name}`;
     }
+    if (target.kind === "batch") {
+      return addLabel(pickedCount);
+    }
     return `Edit ${target.skill.name}`;
   });
 
   function handleSave(): void {
-    if (target === null || target.kind === "delete") {
+    if (target === null || target.kind === "delete" || target.kind === "batch") {
       return;
     }
     const skillId = target.kind === "edit" ? target.skill.name : filename;
@@ -486,37 +597,39 @@
     </div>
   </div>
 
+  {#snippet pickRow(entry: CatalogEntry)}
+    {@const already = alreadyCarried(entry.name)}
+    <li class="catalog-row">
+      <span class="catalog-row__body">
+        <span class="catalog-row__head">
+          <span class="catalog-row__name">{entry.name}</span>
+          <span class="skills-panel__badge">{entry.team}</span>
+        </span>
+        <span class="catalog-row__description">{entry.description}</span>
+      </span>
+      <label class="catalog-row__pick" class:catalog-row__pick--added={already}>
+        <input
+          type="checkbox"
+          checked={already || entry.name in picked}
+          disabled={frozen || already}
+          aria-label={`Add ${entry.name}`}
+          onchange={() => togglePick(entry)}
+        />
+        <span>{already ? "Added" : "Add"}</span>
+      </label>
+    </li>
+  {/snippet}
+
   {#if suggestionsOpen}
     <div class="panel__drawer skills-panel__catalog">
+      {#if pickerError}
+        <p class="panel__note panel__note--fail" role="alert">{pickerError}</p>
+      {/if}
       {#if recommended.data && recommended.data.length > 0}
         <p class="panel__note">Recommended for this agent</p>
         <ul class="skills-panel__catalog-list">
           {#each recommended.data as entry (entry.team + "/" + entry.name)}
-            {@const already = alreadyCarried(entry.name)}
-            {@const pending = pendingCatalogAdd === entry.name}
-            <li class="catalog-row">
-              <span class="catalog-row__body">
-                <span class="catalog-row__head">
-                  <span class="catalog-row__name">{entry.name}</span>
-                  <span class="skills-panel__badge">{entry.team}</span>
-                </span>
-                <span class="catalog-row__description">{entry.description}</span>
-              </span>
-              <button
-                type="button"
-                class="catalog-row__add"
-                disabled={frozen || already || pending}
-                onclick={() => handleAddFromCatalog(entry)}
-              >
-                {#if pending}
-                  Adding…
-                {:else if already}
-                  Added
-                {:else}
-                  Add
-                {/if}
-              </button>
-            </li>
+            {@render pickRow(entry)}
           {/each}
         </ul>
       {:else}
@@ -529,8 +642,8 @@
 
   {#if catalogOpen}
     <div class="panel__drawer skills-panel__catalog">
-      {#if catalogError}
-        <p class="panel__note panel__note--fail" role="alert">{catalogError}</p>
+      {#if pickerError}
+        <p class="panel__note panel__note--fail" role="alert">{pickerError}</p>
       {/if}
 
       <div
@@ -585,31 +698,7 @@
             {:else}
               <ul class="skills-panel__catalog-list">
                 {#each catalogResults.data as entry (entry.id)}
-                  {@const already = alreadyCarried(entry.name)}
-                  {@const pending = pendingCatalogAdd === entry.name}
-                  <li class="catalog-row">
-                    <span class="catalog-row__body">
-                      <span class="catalog-row__head">
-                        <span class="catalog-row__name">{entry.name}</span>
-                        <span class="skills-panel__badge">{entry.team}</span>
-                      </span>
-                      <span class="catalog-row__description">{entry.description}</span>
-                    </span>
-                    <button
-                      type="button"
-                      class="catalog-row__add"
-                      disabled={frozen || already || pending}
-                      onclick={() => handleAddFromCatalog(entry)}
-                    >
-                      {#if pending}
-                        Adding…
-                      {:else if already}
-                        Added
-                      {:else}
-                        Add
-                      {/if}
-                    </button>
-                  </li>
+                  {@render pickRow(entry)}
                 {/each}
               </ul>
             {/if}
@@ -618,6 +707,42 @@
       </div>
     </div>
   {/if}
+
+  {#if pickedCount > 0}
+    <!-- Sticks to the bottom of the view while the lists above are long,
+         so the add is always in reach. -->
+    <div class="skills-panel__pickbar" role="region" aria-label="Skills picked">
+      <span class="skills-panel__pickbar-count">
+        {pickedCount === 1 ? "1 skill picked" : `${pickedCount} skills picked`}
+      </span>
+      <span class="skills-panel__pickbar-actions">
+        <button type="button" class="btn btn--quiet" disabled={frozen} onclick={clearPicks}>
+          Clear
+        </button>
+        <button type="button" class="btn btn--primary" disabled={frozen} onclick={openBatchConfirm}>
+          {addLabel(pickedCount)}
+        </button>
+      </span>
+    </div>
+  {/if}
+
+  <!-- The delivery chip sits here, beside the table, so it is in view
+       without scrolling past a long list (issue #266). -->
+  <div class="skills-panel__table-head">
+    <h3 class="panel__subheading">What it carries</h3>
+    {#if deliverySha !== null}
+      <div
+        class="skills-panel__delivery skills-panel__delivery--{deliveryView.tone}"
+        role="status"
+        aria-live="polite"
+      >
+        {#if deliveryView.tone === "pending"}
+          <span class="skills-panel__delivery-dot pulse" aria-hidden="true"></span>
+        {/if}
+        <span>{deliveryView.text}</span>
+      </div>
+    {/if}
+  </div>
 
   {#if skills.isPending}
     <Skeleton rows={3} />
@@ -638,24 +763,33 @@
         </tr>
       </thead>
       <tbody>
-        {#if skills.data.length === 0}
+        {#if tableRows.length === 0}
           <tr>
             <td class="panel__empty" colspan="3">
               Nothing here yet. Add a skill from the catalog or write a guardrail.
             </td>
           </tr>
         {/if}
-        {#each skills.data as skill (skill.name)}
+        {#each tableRows as skill (skill.name)}
+          {@const onItsWay = skill.name in delivering}
           <tr class="skill-row">
             <td><code class="panel__name">{skill.name}</code></td>
-            <td><span class="skill-row__provenance">{provenanceLine(skill)}</span></td>
+            <td>
+              <span class="skill-row__provenance">{provenanceLine(skill)}</span>
+              {#if onItsWay}
+                <span class="skill-row__delivering">
+                  <span class="skills-panel__delivery-dot pulse" aria-hidden="true"></span>
+                  Delivering
+                </span>
+              {/if}
+            </td>
             <td class="panel__cell--right">
               <span class="skill-row__actions">
                 {#if skill.editable}
                   <button
                     type="button"
                     class="btn btn--quiet"
-                    disabled={frozen}
+                    disabled={frozen || onItsWay}
                     aria-label={`Edit ${skill.name}`}
                     onclick={() => openEdit(skill)}
                   >
@@ -665,7 +799,7 @@
                 <button
                   type="button"
                   class="btn btn--quiet btn--danger"
-                  disabled={frozen}
+                  disabled={frozen || onItsWay}
                   aria-label={`Remove ${skill.name}`}
                   onclick={() => openDelete(skill)}
                 >
@@ -677,19 +811,6 @@
         {/each}
       </tbody>
     </table>
-  {/if}
-
-  {#if deliverySha !== null}
-    <div
-      class="skills-panel__delivery skills-panel__delivery--{deliveryView.tone}"
-      role="status"
-      aria-live="polite"
-    >
-      {#if deliveryView.tone === "pending"}
-        <span class="skills-panel__delivery-dot pulse" aria-hidden="true"></span>
-      {/if}
-      <span>{deliveryView.text}</span>
-    </div>
   {/if}
 </section>
 
@@ -712,6 +833,30 @@
           onclick={handleDelete}
         >
           {deleteMutation.isPending ? "Removing…" : "Remove"}
+        </button>
+      </div>
+    {:else if t.kind === "batch"}
+      <p class="skills-modal__confirm-text">
+        {pickedCount === 1 ? "This skill lands" : "These skills land together"} as one change
+        to what {agentName} can do.
+      </p>
+      <ul class="skills-modal__picks">
+        {#each Object.values(picked) as entry (entry.name)}
+          <li><code class="panel__name">{entry.name}</code> <span class="skills-panel__badge">{entry.team}</span></li>
+        {/each}
+      </ul>
+      {#if modalError}
+        <p class="skills-modal__error" role="alert">{modalError}</p>
+      {/if}
+      <div class="skills-modal__actions">
+        <button type="button" class="skills-modal__cancel" disabled={frozen} onclick={closeModal}>Cancel</button>
+        <button
+          type="button"
+          class="skills-modal__primary"
+          disabled={frozen || addPicked.isPending}
+          onclick={handleAddPicked}
+        >
+          {addPicked.isPending ? "Adding…" : addLabel(pickedCount)}
         </button>
       </div>
     {:else if t.kind === "edit" && editLoad.status !== "ready"}
@@ -967,25 +1112,94 @@
     white-space: nowrap;
   }
 
-  .catalog-row__add {
+  .catalog-row__pick {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
     padding: var(--space-2xs) var(--space-sm);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--panel);
     color: var(--ink);
+    font-size: 0.85rem;
     font-weight: 600;
     cursor: pointer;
     white-space: nowrap;
   }
 
-  .catalog-row__add:hover:not(:disabled) {
+  .catalog-row__pick:hover:not(.catalog-row__pick--added) {
     border-color: var(--accent);
     color: var(--accent);
   }
 
-  .catalog-row__add:disabled {
+  .catalog-row__pick--added {
     opacity: 0.6;
     cursor: not-allowed;
+  }
+
+  .catalog-row__pick input {
+    margin: 0;
+    accent-color: var(--accent);
+  }
+
+  .skills-panel__pickbar {
+    position: sticky;
+    bottom: var(--space-sm);
+    z-index: 20;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  }
+
+  .skills-panel__pickbar-count {
+    color: var(--ink);
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+
+  .skills-panel__pickbar-actions {
+    display: flex;
+    gap: var(--space-xs);
+  }
+
+  .skills-panel__table-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-xs);
+    margin-top: var(--space-xs);
+  }
+
+  .skill-row__delivering {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    margin-left: var(--space-xs);
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .skills-modal__picks {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .skills-modal__picks li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
   }
 
   .skills-panel__delivery {

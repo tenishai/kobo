@@ -330,8 +330,11 @@
           message={errorMessage(requestable.error, "Couldn't load other agents.")}
           onretry={() => requestable.refetch()}
         />
-      {:else if (requestable.data?.requestable ?? []).length === 0 && (requestable.data?.already ?? []).length === 0}
-        <p class="panel__note">No other agents to request access from yet.</p>
+      {:else if (requestable.data?.requestable ?? []).length === 0 && (requestable.data?.already ?? []).length === 0 && (requestable.data?.not_ready ?? []).length === 0}
+        <p class="panel__note">
+          Nobody to ask: every other agent is already reachable (same group, listed under
+          Agents below), or there is no other agent yet.
+        </p>
       {:else}
         <ul class="access-panel__list">
           {#each requestable.data?.requestable ?? [] as candidate (candidate.name)}
@@ -360,7 +363,23 @@
               <span class="access-panel__chip access-panel__chip--state">{entry.status}</span>
             </li>
           {/each}
+          {#each requestable.data?.not_ready ?? [] as entry (entry.name)}
+            <li class="access-panel__candidate access-panel__candidate--muted">
+              <span class="access-panel__row-name">{entry.name}</span>
+              {#if entry.group}
+                <span class="access-panel__chip">{entry.group}</span>
+              {/if}
+              <span class="access-panel__chip access-panel__chip--state">
+                not ready ({entry.status})
+              </span>
+            </li>
+          {/each}
         </ul>
+        {#if (requestable.data?.requestable ?? []).length === 0}
+          <p class="panel__note">
+            Agents in the same group are already reachable and listed under Agents below.
+          </p>
+        {/if}
       {/if}
     </div>
   {/if}

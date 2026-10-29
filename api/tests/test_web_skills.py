@@ -574,6 +574,83 @@ def test_add_catalog_skill_client_error_returns_502(session_factory, config):
     assert response.json() == {"error": "couldn't reach your agent's files. Try again."}
 
 
+# --- POST /api/agents/{name}/skills/catalog/batch (issue #266) --------------
+
+
+def test_batch_add_lands_every_pick_in_one_push(session_factory, config):
+    """Data integrity: several picks are one commit and one push (one
+    rebuild of the agent), and the ledger pins each at the catalog's sha."""
+    storage = FakeStorage()
+    _seed_catalog_skill(storage, SAMPLE_TEAM, "alpha", source_sha="sha-a")
+    _seed_catalog_skill(storage, "growth", "beta", source_sha="sha-b")
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github, storage=storage)
+    _seed_agent(session_factory, config)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/skills/catalog/batch",
+        json={"skills": [{"name": "alpha", "team": SAMPLE_TEAM}, {"name": "beta", "team": "growth"}]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "sha": SHA,
+        "directory": "off",
+        "added": ["alpha", "beta"],
+        "refused": [],
+    }
+    assert len(github.cloned) == 1
+    assert [message for _, message in github.pushes] == ["kobo: add skills alpha, beta"]
+    assert {"alpha/SKILL.md", "beta/SKILL.md"} <= set(github.captured_skills)
+    assert _load_agent_skills(session_factory) == [
+        {"name": "alpha", "team": SAMPLE_TEAM, "sha": "sha-a", "source": "catalog"},
+        {"name": "beta", "team": "growth", "sha": "sha-b", "source": "catalog"},
+    ]
+
+
+def test_batch_add_refuses_per_pick_and_lands_the_rest(session_factory, config):
+    storage = FakeStorage()
+    _seed_catalog_skill(storage, SAMPLE_TEAM, "alpha")
+    github = _CapturingGitHub()
+    client = _make_client(session_factory, config, github=github, storage=storage)
+    _seed_agent(session_factory, config, skills=[{"name": "held", "source": "local"}])
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/skills/catalog/batch",
+        json={
+            "skills": [
+                {"name": "held", "team": SAMPLE_TEAM},
+                {"name": "gone", "team": SAMPLE_TEAM},
+                {"name": "alpha", "team": SAMPLE_TEAM},
+            ]
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["added"] == ["alpha"]
+    assert [r["name"] for r in body["refused"]] == ["held", "gone"]
+    assert len(github.pushes) == 1
+    # The refused pick left no empty directory behind in the commit.
+    assert not any(path.startswith("gone/") for path in github.captured_skills)
+    assert [e["name"] for e in _load_agent_skills(session_factory)] == ["held", "alpha"]
+
+
+def test_batch_add_with_nothing_to_land_is_refused_without_a_push(session_factory, config):
+    storage = FakeStorage()
+    github = FakeGitHub()
+    client = _make_client(session_factory, config, github=github, storage=storage)
+    _seed_agent(session_factory, config, skills=[{"name": "held", "source": "local"}])
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/skills/catalog/batch",
+        json={"skills": [{"name": "held", "team": SAMPLE_TEAM}]},
+    )
+
+    assert response.status_code == 409
+    assert github.pushes == []
+
+
 # --- DELETE /api/agents/{name}/skills/{skill_id} ----------------------------
 
 

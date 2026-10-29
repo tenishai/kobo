@@ -268,8 +268,29 @@
   let removeError = $state<string | null>(null);
   let removeTarget = $state<ToolingFile | null>(null);
 
-  // The "+ Tool" disclosure. Shut on arrival.
+  // The "+ Tool" disclosure. Shut on arrival. Opening it on an empty box
+  // fills in a working example (#267): the server's rules (a top-level
+  // pre_task or post_draft, standard library only) arrive as a file the
+  // owner edits, not as a refusal after the upload.
   let uploadOpen = $state(false);
+  const TOOL_TEMPLATE = `"""One tool, one job. Say what it checks.
+
+Rules the room enforces: a top-level pre_task or post_draft function,
+standard library imports only, no async.
+"""
+
+
+def pre_task(task: dict) -> dict | None:
+    """Runs before the agent starts on a task. Return None to let it
+    proceed, or {"refuse": "why"} to stop it."""
+    return None
+
+
+# def post_draft(draft: str, task: dict) -> str:
+#     """Runs on the agent's draft reply before it is sent. Return the
+#     text to send."""
+#     return draft
+`;
 
   function openRemove(file: ToolingFile): void {
     removeError = null;
@@ -333,7 +354,12 @@
         type="button"
         class="btn"
         aria-expanded={uploadOpen}
-        onclick={() => (uploadOpen = !uploadOpen)}
+        onclick={() => {
+          uploadOpen = !uploadOpen;
+          if (uploadOpen && uploadContent.trim().length === 0) {
+            uploadContent = TOOL_TEMPLATE;
+          }
+        }}
       >
         + Tool
       </button>
@@ -404,6 +430,11 @@
           </p>
         {:else if uploadContent.trim().length === 0}
           <p class="tooling-form__help">Add a bit of code before uploading.</p>
+        {:else}
+          <p class="tooling-form__help">
+            A tool is a Python or Go file with a top-level pre_task or post_draft function.
+            Standard library only.
+          </p>
         {/if}
       </div>
     </div>

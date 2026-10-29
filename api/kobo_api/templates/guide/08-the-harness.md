@@ -11,7 +11,7 @@ The room owns the `FROM` line in the agent's Dockerfile. If someone edits it by 
 
 To move an agent onto another model after it is deployed, pick one from the list beside **Model** and press **Change model**. The room writes the choice into the agent's deploy contract and the agent rebuilds and rolls on it. The same change is **set agent model** from your own assistant.
 
-Below them, **Colleagues** sets whether the agent may ask other agents: consult colleagues, know the roster and ask a human, or no colleagues. Pick one and press **Change**; the agent rebuilds with it. See "Agents talking to agents" for what each mode does.
+Below them, **Works with colleagues** sets whether the agent may ask other agents: asks them when a question is in their field (the default), knows who they are but asks a person instead, or works alone. Pick one and press **Change**; the agent rebuilds with it. See "Agents talking to agents" for what each mode does.
 
 ## Identity and access
 
@@ -23,7 +23,7 @@ The persona the agent was built from, with its team, purpose tags and capability
 
 ## Skills
 
-Skills are abilities from your organization's skills catalog: a way of working, a checklist, a domain the agent should know. Add one from the catalog and the agent picks it up on its next build. On a current runtime the agent sees a short list of its skills in its instructions and loads one in full when a question needs it. The section also lists skills recommended for this agent's persona. Remove a skill the same way.
+Skills are abilities from your organization's skills catalog: a way of working, a checklist, a domain the agent should know. Open **Browse the catalog** or **Suggestions** (skills recommended for this agent's persona), tick the ones you want and press **Add N skills**. They land together as one change and the agent picks them up on its next build; one it already has says Added. The new rows appear in the table at once marked Delivering, and the chip beside the table says when the changes are in place. While that is happening the agent's badge reads Updating rather than Down. On a current runtime the agent sees a short list of its skills in its instructions and loads one in full when a question needs it. Remove a skill from its row.
 
 ## Tooling
 

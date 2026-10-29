@@ -342,7 +342,7 @@
     }}
   >
     <div class="field">
-      <label class="field__label" for="metadata-team">Team</label>
+      <label class="field__label" for="metadata-team">Persona team</label>
       <select
         id="metadata-team"
         class="field__input"
@@ -356,6 +356,9 @@
         {/each}
         <option value={OTHER}>Other...</option>
       </select>
+      <p class="field__help">
+        Which team's personas and skills it draws from. Not who can see it: that is its group.
+      </p>
       {#if teamMode === "other"}
         <label class="field__sr" for="metadata-team-other">Team name</label>
         <input

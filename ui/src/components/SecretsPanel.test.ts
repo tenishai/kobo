@@ -45,9 +45,10 @@ function stubRoutes(routes: Routes) {
 
       if (init?.method === "POST" && url.includes("/restart")) {
         restarts.push(url);
-        return routes.onRestart
-          ? json(routes.onRestart())
-          : json({ restarted: true, deployment: AGENT });
+        const answer = routes.onRestart
+          ? routes.onRestart()
+          : { restarted: true, deployment: AGENT };
+        return answer instanceof Response ? answer : json(answer);
       }
       if (init?.method === "PUT") {
         const body = JSON.parse(String(init.body));
@@ -206,7 +207,7 @@ describe("SecretsPanel", () => {
     expect(puts[0].body).toEqual({ set: { API_KEY: VALUE }, remove: [] });
     await waitFor(() => {
       expect(
-        screen.getByText("Saved. Restart the agent to pick up the change."),
+        screen.getByText("Saved. The agent is coming back up with the change."),
       ).not.toBeNull();
     });
     // The pending row is gone, and with it the only field that ever held
@@ -368,6 +369,71 @@ describe("SecretsPanel", () => {
     expect(screen.getByText(/the room sets this one/)).not.toBeNull();
     expect(save().disabled).toBe(true);
     expect(puts).toHaveLength(0);
+  });
+
+  it("refuses a name that is already listed, whichever kind carries it", async () => {
+    // Both kinds land in the pod as one variable (issue #272). The newer
+    // row is the one refused; the stored one keeps its name.
+    stubRoutes({ secrets: { keys: ["TEST"] } });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByText("TEST")).not.toBeNull();
+    });
+    await fireEvent.click(addVariable());
+    await fireEvent.input(screen.getByLabelText("Name 1"), { target: { value: "TEST" } });
+
+    expect(screen.getByText("TEST is already listed")).not.toBeNull();
+    expect(save().disabled).toBe(true);
+
+    // Rotating a stored secret is still one save: remove it, add it back.
+    await fireEvent.input(screen.getByLabelText("Name 1"), { target: { value: "OTHER" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Remove TEST" }));
+    await fireEvent.click(addSecret());
+    await fireEvent.input(screen.getByLabelText("Name 1"), { target: { value: "TEST" } });
+    await fireEvent.input(screen.getByLabelText("Value 1"), { target: { value: VALUE } });
+
+    expect(screen.queryByText("TEST is already listed")).toBeNull();
+  });
+
+  it("shows a variable the room set as a locked row and never sends it", async () => {
+    // Issue #250: the room's own SLACK_WAKE_MODE came back as an owner row,
+    // rode along in every save and had every save refused by its name.
+    // Whether the server files it under `room` or leaves it in `env`, it
+    // is a locked row here and absent from the payload.
+    const puts = stubRoutes({
+      env: {
+        env: { SLACK_WAKE_MODE: "thread", API_BASE: "https://example.test" },
+        room: { AGENT_MODEL: "a-model" },
+      },
+      onEnvPut: () => ({
+        env: { API_BASE: "https://example.test", NEW_ONE: "1" },
+        wiring: "committed",
+      }),
+    });
+    const { container } = render({ deployed: false });
+
+    await waitFor(() => {
+      expect(screen.getByText("SLACK_WAKE_MODE")).not.toBeNull();
+    });
+    expect(screen.getByText("AGENT_MODEL")).not.toBeNull();
+    expect(screen.getAllByText("Set by the room")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Remove SLACK_WAKE_MODE" })).toBeNull();
+    // One editable row: the owner's own.
+    expect(container.querySelectorAll("input")).toHaveLength(2);
+
+    await fireEvent.click(addVariable());
+    await fireEvent.input(screen.getByLabelText("Name 1"), { target: { value: "NEW_ONE" } });
+    await fireEvent.input(screen.getByLabelText("Value 1"), { target: { value: "1" } });
+    await fireEvent.click(save());
+
+    await waitFor(() => {
+      expect(puts).toHaveLength(1);
+    });
+    expect(puts[0].body).toEqual({
+      set: { API_BASE: "https://example.test", NEW_ONE: "1" },
+      remove: [],
+    });
   });
 
   it("refuses a key that is not a name at all", async () => {
@@ -705,72 +771,79 @@ describe("SecretsPanel", () => {
     expect(screen.getByText("Secret \u00b7 syncing")).not.toBeNull();
   });
 
-  // --- Restarting the agent -------------------------------------------------
+  // --- Save restarts the agent ----------------------------------------------
+  //
+  // Issue #271: owners expected Save to take effect. It does, by asking
+  // the restart route itself once the values have landed.
 
-  it("restarts the agent and says it did", async () => {
-    const puts = stubRoutes({ secrets: { keys: ["API_KEY"] } });
-    render();
-    await loaded();
-
-    await fireEvent.click(screen.getByRole("button", { name: "Restart agent" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Restarted" })).not.toBeNull();
-    });
-    expect(puts.restarts).toHaveLength(1);
-    expect(puts.restarts[0]).toContain(`/api/agents/${AGENT}/restart`);
-  });
-
-  it("asks for a restart after a save, and stops once one happens", async () => {
-    stubRoutes({
-      onSecretsPut: () => ({
-        keys: ["API_KEY"],
-        platform: true,
-        secret_name: `${AGENT}-env`,
-        wiring: "committed",
-      }),
-    });
-    render();
-    await loaded();
-
+  async function saveOneSecret() {
     await fireEvent.click(addSecret());
     await fireEvent.input(screen.getByLabelText("Name 1"), { target: { value: "API_KEY" } });
     await fireEvent.input(screen.getByLabelText("Value 1"), { target: { value: VALUE } });
     await fireEvent.click(save());
+  }
+
+  const STORED = {
+    keys: ["API_KEY"],
+    platform: true,
+    secret_name: `${AGENT}-env`,
+    wiring: "committed",
+  };
+
+  it("restarts a running agent after a save that changed something", async () => {
+    const puts = stubRoutes({ onSecretsPut: () => STORED });
+    render();
+    await loaded();
+
+    await saveOneSecret();
 
     await waitFor(() => {
       expect(
-        screen.getByText("Saved. Restart the agent to pick up the change."),
+        screen.getByText("Saved. The agent is coming back up with the change."),
       ).not.toBeNull();
     });
-
-    await fireEvent.click(screen.getByRole("button", { name: "Restart agent" }));
-
-    await waitFor(() => {
-      expect(
-        screen.queryByText("Saved. Restart the agent to pick up the change."),
-      ).toBeNull();
-    });
+    expect(puts.restarts).toHaveLength(1);
+    expect(puts.restarts[0]).toContain(`/api/agents/${AGENT}/restart`);
+    expect(screen.queryByRole("button", { name: /restart/i })).toBeNull();
   });
 
-  it("offers no restart for an agent that is not running yet", async () => {
-    stubRoutes({ secrets: { keys: ["API_KEY"] } });
+  it("restarts nothing when the agent is not running yet", async () => {
+    const puts = stubRoutes({ onSecretsPut: () => STORED });
     render({ deployed: false });
     await loaded();
 
-    expect(screen.queryByRole("button", { name: "Restart agent" })).toBeNull();
-  });
-
-  it("disables the restart button while the agent is frozen", async () => {
-    stubRoutes({ secrets: { keys: ["API_KEY"] } });
-    renderWithClient(SecretsPanel, { agentName: AGENT, frozen: true });
+    await saveOneSecret();
 
     await waitFor(() => {
-      expect(screen.getByText("API_KEY")).not.toBeNull();
+      expect(
+        screen.getByText("Saved. The agent picks this up the next time it starts."),
+      ).not.toBeNull();
     });
-    expect(
-      (screen.getByRole("button", { name: "Restart agent" }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expect(puts.restarts).toHaveLength(0);
+  });
+
+  it("keeps the save's good news when the restart is refused", async () => {
+    // The route counts restarts per caller. A refusal there is reported
+    // beside "Saved", never as a failure of the save that already landed.
+    stubRoutes({
+      onSecretsPut: () => STORED,
+      onRestart: () =>
+        new Response(JSON.stringify({ error: "that is a lot of restarting. Wait a minute" }), {
+          status: 429,
+          headers: { "Content-Type": "application/json" },
+        }),
+    });
+    render();
+    await loaded();
+
+    await saveOneSecret();
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/^Saved, but the agent was not restarted: that is a lot of restarting/),
+      ).not.toBeNull();
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("asks nothing at all while another tab is the selected one", async () => {

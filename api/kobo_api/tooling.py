@@ -76,6 +76,7 @@ from kobo_api.clients import (
     image_tag,
 )
 from kobo_api.composer import repin_commit_note, update_dockerfile_runtime_image
+from kobo_api.repo_lock import repo_write_lock
 
 # 1-64 chars: a lowercase letter, then lowercase/digit/underscore/hyphen, then
 # ".py" or ".go" — same no-path-separator, no-leading-dot/digit/hyphen/
@@ -297,7 +298,7 @@ def upload_tooling_file(
     """
     _validate_filename(filename)
     _validate_content(filename, content.encode("utf-8"))
-    with tempfile.TemporaryDirectory() as tmp:
+    with repo_write_lock(repo), tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
         tools_dir = workdir / "bundle" / "tools"
@@ -327,7 +328,7 @@ def delete_tooling_file(github: GitHubClient, repo: str, filename: str) -> str:
     codebase.
     """
     _validate_filename(filename)
-    with tempfile.TemporaryDirectory() as tmp:
+    with repo_write_lock(repo), tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
         target = workdir / "bundle" / "tools" / filename
@@ -415,7 +416,7 @@ def import_tooling(
     if not passed:
         return {"sha": None, "imported": [], "rejected": rejected}
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with repo_write_lock(repo), tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
         tools_dir = workdir / "bundle" / "tools"

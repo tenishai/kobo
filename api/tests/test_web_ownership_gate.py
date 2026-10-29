@@ -467,6 +467,14 @@ def _add_skill_from_catalog(client, headers):
     )
 
 
+def _add_skills_from_catalog(client, headers):
+    return client.post(
+        f"/api/agents/{AGENT_NAME}/skills/catalog/batch",
+        json={"skills": [{"name": "word-games", "team": "shared"}]},
+        headers=headers,
+    )
+
+
 def _delete_skill(client, headers):
     return client.delete(f"/api/agents/{AGENT_NAME}/skills/word-games", headers=headers)
 
@@ -512,6 +520,7 @@ SMOKE_ROUTES = [
     ("tooling-import", _import_tooling),
     ("tooling-delete", _delete_tooling),
     ("skills-catalog", _add_skill_from_catalog),
+    ("skills-catalog-batch", _add_skills_from_catalog),
     ("skills-delete", _delete_skill),
     ("metadata-regenerate", _regenerate_metadata),
     ("intake-delete", _delete_intake),
