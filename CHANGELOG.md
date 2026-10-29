@@ -6,8 +6,14 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-10-29
+
 ### Changed
 
+- Owner QA pass of 2026-10-29. Slack: the tab says up front when the room has no Slack, and the first run picks channels and **Wakes on** before the manifest (#262). The Persona card and Edit details say **Persona team** and what it is (#263). The colleagues choice reads **Works with colleagues** with plain options (#264). A new guardrail skill starts from a template, and a plain body gets its frontmatter written for it (#265). **+ Tool** opens on a working example that states the rules (#267). The Repositories card treats a room with no pull request app as a state, not an error (#270). The Access picker lists agents that are not ready yet and says when same-group agents are already reachable (#273).
+- Secrets and environment: room-set variables are locked rows and never re-sent, one name may appear once across secrets and variables, the new row has placeholders, and **Save** restarts the agent itself (#250, #271, #272).
+- Teach something shows the taught line in the Learnings table at once, as a kept learning that survives reload (#269).
+- Admin > Services > **Sweep directory** retires switchboard entries the room created for agents that no longer exist and do not run in the cluster, after a preview you confirm; destroy says when the switchboard still lists the agent; the agent's roster no longer defers to the live directory (#274, room side).
 - **Skills are picked in one go.** The catalog and Suggestions lists share one picker: tick skills, press **Add N skills**, confirm once. One request (`POST /api/agents/{name}/skills/catalog/batch`, 1 to 20 picks) lands them in one change and one rebuild; a pick the agent already carries or the catalog no longer serves is refused on its own and the rest still land. The chosen rows show in the table at once as Delivering, the delivery chip sits beside the table, and errors show in both lists (#266).
 - **Writes to one agent queue instead of racing.** The skills, tooling and intake lanes hold a per-agent lock from clone to push, so two changes at once no longer fail as "couldn't reach your agent's files" or rotate the agent twice. While a change this page pushed is still rolling, the agent header reads Updating rather than Down (#268).
 - AWS organizations: one external id per organization, so one spoke template deploys the role to every member account (a StackSet). Connecting the hub checks every account through it and connects the ones that carry the role; **Check accounts** runs that again. No per-account Add account (#275).
