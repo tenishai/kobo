@@ -107,6 +107,9 @@ export type AgentSlack = {
   channels: string[];
   state: "idle" | "waiting" | "connected";
   wake: SlackWake;
+  /** False when the room has no Slack config-token store, so no app can
+   * be created or reconnected from here (issue #262). */
+  available: boolean;
 };
 
 export type AgentDetail = AgentSummary & {
@@ -330,6 +333,8 @@ export type AlreadyRequested = { name: string; status: string };
 export type RequestableResult = {
   requestable: RequestableAgent[];
   already: AlreadyRequested[];
+  /** Agents that exist but are not ready to be asked, with their state (#273). */
+  not_ready?: { name: string; group: string | null; status: string }[];
 };
 
 /** One directory match (`GET /api/people/search`, access-tab refinement

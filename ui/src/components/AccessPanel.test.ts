@@ -43,7 +43,7 @@ describe("AccessPanel", () => {
     expect(grant.getAttribute("aria-expanded")).toBe("false");
     expect(picker.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByLabelText("Add someone by email")).toBeNull();
-    expect(screen.queryByText("No other agents to request access from yet.")).toBeNull();
+    expect(screen.queryByText(/Nobody to ask/)).toBeNull();
   });
 
   it("opens each toolbar form on click", async () => {
@@ -67,7 +67,7 @@ describe("AccessPanel", () => {
         .getAttribute("aria-expanded"),
     ).toBe("true");
     expect(
-      await screen.findByText("No other agents to request access from yet."),
+      await screen.findByText(/Nobody to ask/),
     ).not.toBeNull();
   });
 

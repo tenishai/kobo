@@ -674,8 +674,14 @@
               </a>
             {/if}
           </dd>
-          <dt>Team</dt>
-          <dd>{data.team}</dd>
+          <dt>Persona team</dt>
+          <dd>
+            {data.team}
+            <span class="agent-detail__fact-help">
+              The team whose personas and skills this agent draws from. Who can see the
+              agent is decided by its group, shown beside the name.
+            </span>
+          </dd>
           <dt>Purpose</dt>
           <dd>{data.purpose_tags.length > 0 ? data.purpose_tags.join(", ") : "Not set."}</dd>
           <dt>Capability</dt>
@@ -1037,6 +1043,12 @@
     overflow-wrap: anywhere;
     color: var(--ink);
     font-size: 0.85rem;
+  }
+
+  .agent-detail__fact-help {
+    display: block;
+    color: var(--muted);
+    font-size: 0.8rem;
   }
 
   /* The one button in the header, and it is quiet on purpose: the header

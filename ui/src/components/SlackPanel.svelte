@@ -84,7 +84,7 @@
   // --- How it wakes up (2026-10-06) ------------------------------------------
   //
   // Saved the moment it is picked, not on the panel's Save: on the first run
-  // the manifest in step 1 has to carry whatever step 3 chose, and a choice
+  // the manifest in step 2 has to carry whatever step 1 chose, and a choice
   // that waits behind a button is a manifest copied with the wrong events.
   // The server says whether the Slack app's event list changed, which only
   // a re-applied manifest can carry out; the note under the choices says so.
@@ -142,6 +142,9 @@
    * line belong; a connect that fails comes straight back here with every
    * pasted value still in its field. */
   const firstRun = $derived(slack.state === "idle" && !connect.isPending);
+  // Only an explicit false hides the setup: a response from an older server
+  // carries no `available` at all, and that room could connect fine (#262).
+  const slackAvailable = $derived(slack.available !== false);
 
   // The state as a word, not a sentence. "Connecting" is client-side only:
   // `slack.state` itself has no such value.
@@ -759,23 +762,37 @@
     {/if}
   </div>
 
+  {#if !slackAvailable}
+    <p class="panel__note slack-panel__unavailable" role="status">
+      Slack isn't set up for this room yet. A room operator adds the Slack config tokens
+      before any agent can {firstRun ? "connect" : "reconnect"} an app.
+    </p>
+  {/if}
+
   {#if firstRun}
-    <ol class="slack-panel__steps">
-      {@render manifestStep()}
-      {@render valuesStep()}
-      <li class="slack-panel__step">
-        <h3 class="slack-panel__step-title">Where it answers</h3>
-        <div class="slack-panel__step-body">
-          {@render channels()}
-          {@render wakeChoice()}
-        </div>
-      </li>
-    </ol>
+    {#if slackAvailable}
+      <!-- "Where it answers" comes first: the manifest in the next step
+           carries the event list the Wakes on choice decides (#262). -->
+      <ol class="slack-panel__steps">
+        <li class="slack-panel__step">
+          <h3 class="slack-panel__step-title">Where it answers</h3>
+          <div class="slack-panel__step-body">
+            {@render channels()}
+            {@render wakeChoice()}
+          </div>
+        </li>
+        {@render manifestStep()}
+        {@render valuesStep()}
+      </ol>
+    {:else}
+      {@render channels()}
+      {@render wakeChoice()}
+    {/if}
   {:else}
     {@render channels()}
     {@render wakeChoice()}
 
-    <div class="slack-panel__reconnect">
+    <div class="slack-panel__reconnect" hidden={!slackAvailable}>
       <button
         type="button"
         class="btn btn--quiet"
