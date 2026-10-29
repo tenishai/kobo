@@ -90,6 +90,51 @@ def _validate_frontmatter(content: str) -> None:
             raise SkillsError(f"skill frontmatter needs a {field}: line")
 
 
+_DESCRIPTION_MAX = 160
+
+
+def _first_line(body: str) -> str:
+    """The first non-empty line of a body, without a leading heading mark,
+    trimmed to what a description line may hold."""
+    for line in body.splitlines():
+        text = line.strip().lstrip("#").strip()
+        if text:
+            return text[:_DESCRIPTION_MAX]
+    return ""
+
+
+def ensure_frontmatter(content: str, skill_id: str) -> str:
+    """Content with the frontmatter a skill file must carry (issue #265).
+
+    An owner who types a plain sentence into the new-skill box has written
+    the skill, not the file format. With no `---` block at the top, one is
+    written for them: `name:` is the skill id, `description:` the first
+    line of what they wrote. A block that is there but lacks one of the two
+    lines gets that line the same way. What they wrote is never changed,
+    only prefixed. The result still goes through `_validate_frontmatter`,
+    so a block this cannot complete (nothing to describe) is refused as
+    before.
+    """
+    match = _FRONTMATTER_RE.match(content)
+    if not match:
+        description = _first_line(content)
+        if not description:
+            return content
+        return f"---\nname: {skill_id}\ndescription: {description}\n---\n\n{content}"
+    block, body = match.group(1), content[match.end():]
+    lines = block.splitlines()
+    if not re.search(r"^name\s*:\s*\S", block, re.MULTILINE):
+        lines.insert(0, f"name: {skill_id}")
+    if not re.search(r"^description\s*:\s*\S", block, re.MULTILINE):
+        description = _first_line(body)
+        if description:
+            lines.append(f"description: {description}")
+    rebuilt = "\n".join(lines)
+    if rebuilt == block:
+        return content
+    return f"---\n{rebuilt}\n---\n{body}"
+
+
 def _admit_skills_load(workdir: Path, repo: str) -> None:
     """Add `skills.load` to the agent's allow list in the same commit as the
     skill (issue #137), so a skill added after birth is reachable on daedalus
@@ -352,6 +397,7 @@ def save_local_skill(github: GitHubClient, repo: str, skill_id: str, content: st
     """
     _validate_skill_id(skill_id)
     _validate_content(content)
+    content = ensure_frontmatter(content, skill_id)
     _validate_frontmatter(content)
     with repo_write_lock(repo), tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)

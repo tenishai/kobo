@@ -878,7 +878,8 @@ def test_put_local_skill_missing_frontmatter_returns_422(session_factory, config
 
     response = client.put(
         f"/api/agents/{AGENT_NAME}/skills/local/notes",
-        json={"content": "No frontmatter here.\n"},
+        # A bare body is wrapped for the owner (#265); a block nothing can complete is still refused.
+        json={"content": "---\nname: x\n---\n\n"},
     )
 
     assert response.status_code == 422

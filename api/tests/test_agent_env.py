@@ -265,7 +265,7 @@ def test_the_panels_reserved_list_is_the_servers():
     """Issue #250 was the two lists drifting: the panel's inline rule let a
     name through that the route refused. One list, checked here."""
     source = (Path(__file__).parents[2] / "ui" / "src" / "lib" / "dotenv.ts").read_text()
-    block = re.search(r"export const RESERVED_KEYS = \[(.*?)\];", source, re.S)
+    block = re.search(r"export const RESERVED_KEYS = \[(.*?)\];", source, re.DOTALL)
     assert block is not None
     assert set(re.findall(r'"([A-Z0-9_]+)"', block.group(1))) == RESERVED_KEYS
 
