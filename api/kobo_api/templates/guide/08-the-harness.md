@@ -23,7 +23,9 @@ The persona the agent was built from, with its team, purpose tags and capability
 
 ## Skills
 
-Skills are abilities from your organization's skills catalog: a way of working, a checklist, a domain the agent should know. Open **Browse the catalog** or **Suggestions** (skills recommended for this agent's persona), tick the ones you want and press **Add N skills**. They land together as one change and the agent picks them up on its next build; one it already has says Added. The new rows appear in the table at once marked Delivering, and the chip beside the table says when the changes are in place. While that is happening the agent's badge reads Updating rather than Down. On a current runtime the agent sees a short list of its skills in its instructions and loads one in full when a question needs it. Remove a skill from its row.
+Skills are abilities from your organization's skills catalog: a way of working, a checklist, a domain the agent should know. Open **Browse the catalog** or **Suggestions** (skills recommended for this agent's persona), tick the ones you want and press **Save N skills**. There is no second confirm: they land together as one change, and one the agent already has says Added. **New guardrail skill** writes one by hand; it ends in the same table.
+
+Each new row shows where its change is: **Pending** (saved, on its way), **Building** (the agent is being rebuilt with it), **Rolling** (the new agent is starting), **Active** (in place; the mark fades after a few seconds). **Failed** stays, with a sentence saying what to do, until you remove the row or change something and save again. While a change is building or rolling the page rests: every control that would change the agent is disabled, the banner at the top says Updating, and reading goes on as usual. The controls come back when the change lands or fails. On a current runtime the agent sees a short list of its skills in its instructions and loads one in full when a question needs it. Remove a skill from its row.
 
 ## Tooling
 

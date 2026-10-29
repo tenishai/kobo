@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, within } from "@testing-library/svelte";
+import { fireEvent, screen, waitFor, within } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AgentDetail from "./AgentDetail.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
+import { beginDelivery, reportDelivery } from "../lib/delivery.svelte";
 
 const READY_AGENT = {
   name: "warden",
@@ -359,6 +360,38 @@ describe("AgentDetail tabs", () => {
     await fireEvent.click(slackTab);
     expect(screen.getByRole("button", { name: "Show the manifest" })).not.toBeNull();
     expect(screen.getByLabelText("App ID")).not.toBeNull();
+  });
+
+  it("freezes every control while a change this page pushed is still on its way", async () => {
+    // Mutation gate (issue #290): a save that is building or rolling rests
+    // the controls the way destroy does, and the banner says why. Reading
+    // (the tabs) stays open.
+    beginDelivery("warden", "abc123def456");
+    try {
+      renderWithClient(AgentDetail);
+      await screen.findByText(/^Updating: the changes you made are on their way/);
+      // The chat box answers for the whole page: it rests on `frozen` alone.
+      expect(
+        (screen.getByPlaceholderText("Say something…") as HTMLTextAreaElement).disabled,
+      ).toBe(true);
+      expect(
+        (screen.getByRole("button", { name: "Start a shared thread" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+      expect((screen.getByRole("tab", { name: "Harness" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+      expect(screen.queryByText("This agent is being destroyed.")).toBeNull();
+    } finally {
+      // A failed delivery unfreezes the page (and leaves the next test a
+      // quiet record).
+      reportDelivery("warden", "abc123def456", "failed");
+    }
+    await waitFor(() => {
+      expect(
+        (screen.getByPlaceholderText("Say something…") as HTMLTextAreaElement).disabled,
+      ).toBe(false);
+    });
   });
 
   it("renders frozen panels and one notice while destroying", async () => {

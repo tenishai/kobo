@@ -19,13 +19,11 @@ const COST_REPORT_ENTRY = {
 
 const BATCH_OK = { sha: "abc123def456", directory: "off", added: ["cost-report"], refused: [] };
 
-/** Tick one row, press the sticky "Add 1 skill", confirm in the modal. */
+/** Tick one row and press the sticky "Save 1 skill": one press saves, no
+ * second confirm (issue #287). */
 async function pickAndAdd(name: string): Promise<void> {
   await fireEvent.click(screen.getByLabelText(`Add ${name}`));
-  const [bar] = screen.getAllByRole("button", { name: "Add 1 skill" });
-  await fireEvent.click(bar);
-  const buttons = await screen.findAllByRole("button", { name: "Add 1 skill" });
-  await fireEvent.click(buttons[buttons.length - 1]);
+  await fireEvent.click(screen.getByRole("button", { name: "Save 1 skill" }));
 }
 
 /** The body of the one batch POST the picker sends. */
@@ -141,6 +139,9 @@ describe("SkillsPanel", () => {
     await pickAndAdd("cost-report");
 
     expect(await batchBody()).toEqual({ skills: [{ name: "cost-report", team: "sre" }] });
+    // No confirm step: the picked row is in the table with its state already.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText("cost-report", { selector: "code" })).not.toBeNull();
   });
 
   it("searches the catalog from the combobox and adds a result", async () => {

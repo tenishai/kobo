@@ -430,6 +430,11 @@
     />
   {:else if agent.data}
     {@const data = agent.data}
+    <!-- Every control that would change the agent rests while it is being
+         destroyed, and while a change this page pushed is still building
+         or rolling (issue #290): the banner below says which. Reading stays
+         possible either way; `tabDisabled` is a different question. -->
+    {@const frozen = isFrozen(data.status) || updating}
     {@const connected = data.kind === KIND_CONNECTED}
     {@const personaMatch = personaSoul.data?.find((p) => p.id === data.persona) ?? null}
     {@const personaLine = personaMatch
@@ -480,7 +485,7 @@
                 <button
                   type="button"
                   class="agent-detail__menu-item"
-                  disabled={isFrozen(data.status) || generateAvatar.isPending}
+                  disabled={frozen || generateAvatar.isPending}
                   onclick={handleGenerateAvatar}
                 >
                   {#if generateAvatar.isPending}
@@ -495,7 +500,7 @@
 
                 <label
                   class="agent-detail__menu-item"
-                  class:agent-detail__menu-item--disabled={isFrozen(data.status) ||
+                  class:agent-detail__menu-item--disabled={frozen ||
                     uploadAvatar.isPending}
                 >
                   {uploadAvatar.isPending ? "Uploading…" : "Upload a portrait"}
@@ -503,7 +508,7 @@
                     class="composition__avatar-upload-input"
                     type="file"
                     accept=".png,image/png"
-                    disabled={isFrozen(data.status) || uploadAvatar.isPending}
+                    disabled={frozen || uploadAvatar.isPending}
                     onchange={handleAvatarFileSelect}
                   />
                 </label>
@@ -528,7 +533,7 @@
                   <button
                     type="button"
                     class="agent-detail__menu-item"
-                    disabled={isFrozen(data.status)}
+                    disabled={frozen}
                     onclick={() => {
                       menuOpen = false;
                       activeTab = "harness";
@@ -703,7 +708,7 @@
           team={data.team}
           purposeTags={data.purpose_tags}
           capability={data.capability}
-          frozen={isFrozen(data.status)}
+          frozen={frozen}
           showTrigger={false}
         />
       </section>
@@ -751,12 +756,13 @@
           {retry.isPending ? "Resuming…" : "Resume"}
         </button>
       </div>
-    {:else if data.status === "ready" && data.health?.state === "down" && updating}
-      <!-- Not running because this page just changed it: the rebuild the
-           room started is still rolling (lib/delivery). -->
+    {:else if data.status === "ready" && updating}
+      <!-- A change this page pushed is still building or rolling
+           (lib/delivery): the controls above and below rest until it
+           lands or fails, and this says why (issues #268, #290). -->
       <div class="waiting-banner" role="status">
         <p class="waiting-banner__message">
-          Updating: the changes you made are on their way. The agent comes back when they land.
+          Updating: the changes you made are on their way. Controls come back when it lands.
         </p>
       </div>
     {:else if data.status === "ready" && data.health?.state === "down"}
@@ -849,8 +855,8 @@
             {#if data.first_reply}
               <FirstReply reply={data.first_reply} />
             {/if}
-            <ChatPanel agentName={data.name} frozen={isFrozen(data.status)} />
-            <ThreadPanel agentName={data.name} frozen={isFrozen(data.status)} />
+            <ChatPanel agentName={data.name} frozen={frozen} />
+            <ThreadPanel agentName={data.name} frozen={frozen} />
             <ColleagueConversations agentName={data.name} />
           {:else if tab === "harness"}
             <!-- What runs the agent. The five panels that used to be tabs
@@ -859,7 +865,7 @@
             <HarnessPanel
               agentName={data.name}
               kind={data.kind}
-              frozen={isFrozen(data.status)}
+              frozen={frozen}
               model={data.model}
               modelLabel={data.model_label}
               runtimeImage={data.runtime_image}
@@ -885,7 +891,7 @@
                  and the platform's audit would say somebody did. -->
             <SecretsPanel
               agentName={data.name}
-              frozen={isFrozen(data.status)}
+              frozen={frozen}
               active={activeTab === "settings"}
               deployed={data.status === "ready"}
             />
@@ -895,6 +901,7 @@
               error={data.error}
               kind={data.kind}
               canConvert={!connected &&
+                !updating &&
                 data.destroy_visible &&
                 (data.status === "ready" || data.status === "failed")}
               canDestroy={data.destroy_visible && data.status !== "failed"}
@@ -903,15 +910,15 @@
             <SlackPanel
               agentName={data.name}
               slack={data.slack}
-              frozen={isFrozen(data.status)}
+              frozen={frozen}
             />
           {:else}
             <AccessPanel
               agentName={data.name}
               groupName={data.group_name}
-              frozen={isFrozen(data.status)}
+              frozen={frozen}
             />
-            <RepoAccessCard agentName={data.name} frozen={isFrozen(data.status)} />
+            <RepoAccessCard agentName={data.name} frozen={frozen} />
           {/if}
         </div>
       {/each}
