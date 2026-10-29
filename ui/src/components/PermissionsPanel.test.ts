@@ -21,8 +21,8 @@ const ACCESS = {
       label: "AWS",
       account_noun: "account",
       accounts: [
-        { id: "fubo-it", name: "fubo-it", connected: true, ceiling: ["aws_cloudtrail_read", "aws_iam_read"] },
-        { id: "fubo-rds", name: "fubo-rds", connected: false, ceiling: [] },
+        { id: "acme-audit", name: "acme-audit", connected: true, ceiling: ["aws_cloudtrail_read", "aws_iam_read"] },
+        { id: "acme-data", name: "acme-data", connected: false, ceiling: [] },
       ],
       groups: [
         { name: "Security", permissions: [
@@ -55,9 +55,9 @@ describe("PermissionsPanel", () => {
     await fireEvent.click(aws);
 
     // The unconnected account is shown but cannot be opened.
-    const rds = screen.getByRole("button", { name: /fubo-rds/ });
+    const rds = screen.getByRole("button", { name: /acme-data/ });
     expect((rds as HTMLButtonElement).disabled).toBe(true);
-    await fireEvent.click(screen.getByRole("button", { name: /fubo-it/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /acme-audit/ }));
 
     // Read permissions only; the write tier is not offered here.
     expect(screen.queryByText("Change an ECS service")).toBeNull();
