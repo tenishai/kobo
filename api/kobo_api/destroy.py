@@ -695,7 +695,7 @@ def _destroy_forget(ctx: DestroyCtx) -> str:
     # The permission service learns the agent is gone the same way it learned
     # it existed: the room pushes what remains. A failure is logged, never
     # fatal here; the next push carries the same fact.
-    bab = getattr(ctx.clients, "bab", None)
+    bab = getattr(getattr(ctx, "clients", None), "bab", None)
     if bab is not None:
         from kobo_api.bab import ROOM_ACTOR, push_topology
 
