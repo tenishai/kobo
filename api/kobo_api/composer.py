@@ -561,7 +561,10 @@ def _colleagues_md(spec: BundleSpec) -> str:
     question. Knowing who exists is not a tool call.
 
     Point-in-time: refreshed on delivery. list_colleagues stays the live
-    read, ask_colleague stays the action.
+    read, ask_colleague stays the action. Since issue #274 the roster, not
+    the live tool, is the one the agent is told to trust: the switchboard's
+    directory can carry agents the room has destroyed or never paired with
+    this one, and until it answers per caller the live read over-reports.
 
     The three closing paragraphs are the consult-first doctrine, its
     own-field/uncovered-subject boundary, and the attribution counterpart.
@@ -601,9 +604,11 @@ def _colleagues_md(spec: BundleSpec) -> str:
     others = [c for c in spec.colleagues if c["name"] != spec.name]
     lines = ["## Your colleagues", ""]
     lines.append(
-        "This roster is a snapshot from when you were assembled; colleagues "
-        "may have joined or left the room since. When it matters, confirm "
-        "with the list_colleagues tool, which always answers live."
+        "This roster is who you may talk to. It was written when you were "
+        "assembled and the room refreshes it when colleagues join or leave. "
+        "The list_colleagues tool reads the switchboard live and may list "
+        "agents you cannot reach or that no longer exist; this roster is "
+        "the list that counts."
     )
     lines.append("")
     if not others:
@@ -684,9 +689,11 @@ def _colleagues_md_roster_only(spec: BundleSpec) -> str:
     others = [c for c in spec.colleagues if c["name"] != spec.name]
     lines = ["## Your colleagues", ""]
     lines.append(
-        "This roster is a snapshot from when you were assembled; colleagues "
-        "may have joined or left the room since. When it matters, confirm "
-        "with the list_colleagues tool, which always answers live."
+        "This roster is who is in the room with you. It was written when "
+        "you were assembled and the room refreshes it when colleagues join "
+        "or leave. The list_colleagues tool reads the switchboard live and "
+        "may list agents that are not in your room or no longer exist; this "
+        "roster is the list that counts."
     )
     lines.append("")
     if not others:

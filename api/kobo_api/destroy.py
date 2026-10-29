@@ -613,6 +613,16 @@ def _destroy_repo(ctx: DestroyCtx) -> str:
     return f"archived as {target_repo}"
 
 
+# The note a destroy run carries when the retire call did not land (issue
+# #274): the step still completes, but the operator is told the switchboard
+# still lists the agent and where the fix lives, not that it will sort itself
+# out. The nightly directory pass logs the same leftovers; Admin > Services >
+# Sweep directory retires them.
+DIRECTORY_RETIRE_MISSED_NOTE = (
+    "The switchboard still lists this agent; sweep the directory from Admin."
+)
+
+
 def _destroy_directory(ctx: DestroyCtx) -> str:
     """Delist the agent from the switchboard's directory
     (`kobo_api.directory.retire_directory`, absorb, 404-tolerant).
@@ -628,8 +638,12 @@ def _destroy_directory(ctx: DestroyCtx) -> str:
     directory listing is a nice-to-have, and holding an otherwise-clean
     destroy run hostage to it would leave a fully-teardown-able agent
     permanently stuck for something the operator has no way to fix
-    mid-destroy. A later re-registration (`POST .../directory/sync`, or the
-    switchboard's own recovery) resolves it independently of this ledger.
+    mid-destroy. A retire that did not land completes with
+    `DIRECTORY_RETIRE_MISSED_NOTE`, which names the fix: the directory
+    sweep (`kobo_api.directory.sweep_directory`, Admin > Services), which
+    retires any entry the room registered for an agent it no longer has
+    (issue #274). An unconfigured switchboard keeps its plainer note: there
+    is nothing to sweep.
 
     A connected agent is the one case where "nothing to retire" IS knowable
     from the row (connected-agents design 2026-09-21), so the switchboard
@@ -659,7 +673,7 @@ def _destroy_directory(ctx: DestroyCtx) -> str:
             ctx.agent.name,
             exc_info=True,
         )
-        return "The directory entry stays until the switchboard returns."
+        return DIRECTORY_RETIRE_MISSED_NOTE
 
     return "removed from the directory"
 

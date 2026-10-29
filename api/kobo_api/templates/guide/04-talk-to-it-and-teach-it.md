@@ -26,7 +26,7 @@ Two kinds of row are marked and need a second click on **Remember**, and **Remem
 
 If the nightly pass keeps failing for an agent (for example, its runtime is too old to run it), the section says so with the last error, and the agent's card on the dashboard shows **learnings failing**.
 
-The same section has a **Teach something** box for a one-line note when you are not in a chat.
+The same section has a **Teach something** box for a one-line note when you are not in a chat. The moment it lands, the note appears as a row in the table marked **taught by hand** with your name on it, and the room confirms it with a toast. Its state is **Remembered** when the agent took it in at once, or **Delivering** while it waits for the next delivery. There is nothing to decide on such a row: you taught it, so it is already remembered, and it is still there after a reload.
 
 ## Agent conversations
 

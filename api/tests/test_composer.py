@@ -833,18 +833,20 @@ def test_compose_roster_omits_the_agent_itself(tmp_path):
     assert "kestrel" not in text.split("## Your colleagues")[1]
 
 
-def test_compose_roster_names_the_snapshot_staleness(tmp_path):
-    """The roster is written at assembly and (until the refresh lane
-    ships) never updated; the copy must say so, or an agent will
-    confidently suggest a colleague who has since been destroyed."""
+def test_compose_roster_is_the_list_that_counts_over_the_live_tool(tmp_path):
+    """Wire contract with the runtime's prompt (issue #274): the roster is
+    who the agent may talk to, and the live list_colleagues read may name
+    agents it cannot reach; the copy must never tell the agent the live
+    tool wins, or it will name destroyed or unpaired agents as colleagues."""
     dest = tmp_path / "out"
     spec = _make_spec(colleagues=[
         {"name": "ward", "team": "infra-engineering", "purpose_tags": [], "capability": "x"},
     ])
     compose(spec, dest)
     text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
-    assert "snapshot from when you were assembled" in text
-    assert "list_colleagues" in text
+    assert "who you may talk to" in text
+    assert "list_colleagues" in text and "may list agents you cannot reach" in text
+    assert "always answers live" not in text
 
 
 def test_compose_roster_handles_no_colleagues(tmp_path):

@@ -32,7 +32,8 @@ from kobo_api.config import Config
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.intake import INTAKE_MAX_BYTES
 from kobo_api.main import create_app
-from kobo_api.models import Agent, AgentStatus, Base
+from kobo_api.learnings import SOURCE_TAUGHT
+from kobo_api.models import LEARNING_APPROVED, Agent, AgentLearning, AgentStatus, Base
 from kobo_api.teach import format_note, note_filename
 from tests.fakes import (
     FAKE_LOCAL_HEAD_DEFAULT,
@@ -176,11 +177,37 @@ def test_teach_route_returns_filename_and_sha(session_factory, config):
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"filename", "sha", "mode"}
+    assert set(body.keys()) == {"filename", "sha", "mode", "learning"}
     assert body["mode"] == "archive"
     assert body["sha"] == SHA
     assert body["filename"].startswith("chat-")
     assert body["filename"].endswith(".md")
+
+
+def test_teach_records_one_approved_taught_row_even_when_taught_twice(
+    session_factory, config
+):
+    """Data integrity (issue #269): a hand-taught note leaves exactly one
+    AgentLearning row, approved and sourced `taught`, so the Learnings
+    table shows it after a reload and the decide routes (pending only)
+    never offer it for Remember/Skip; teaching the same text again
+    refreshes that row rather than inserting a twin."""
+    client = _make_client(session_factory, config, github=_CapturingGitHub())
+    _seed_agent(session_factory, config)
+
+    text = "always answer in one paragraph"
+    first = client.post(f"/api/agents/{AGENT_NAME}/teach", json={"text": text})
+    second = client.post(f"/api/agents/{AGENT_NAME}/teach", json={"text": text})
+
+    assert first.status_code == 200 and second.status_code == 200
+    assert first.json()["learning"]["content"] == text
+    assert first.json()["learning"]["status"] == LEARNING_APPROVED
+    session = session_factory()
+    rows = session.query(AgentLearning).filter_by(agent_name=AGENT_NAME).all()
+    session.close()
+    assert [(r.content, r.source, r.status) for r in rows] == [
+        (text, SOURCE_TAUGHT, LEARNING_APPROVED)
+    ]
 
 
 def test_teach_route_calls_intake_seam_with_formatted_artifacts_verbatim(
@@ -383,7 +410,7 @@ def test_teach_instant_lane_relays_and_archives_in_background(session_factory, c
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"filename", "mode"}
+    assert set(body.keys()) == {"filename", "mode", "learning"}
     assert body["mode"] == "instant"
     filename = body["filename"]
 
@@ -415,7 +442,7 @@ def test_teach_falls_back_to_archive_when_relay_fails(session_factory, config, m
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"filename", "sha", "mode"}
+    assert set(body.keys()) == {"filename", "sha", "mode", "learning"}
     assert body["mode"] == "archive"
     assert body["sha"] == SHA
     assert len(fake_cabal.relay_calls) == 1
@@ -439,7 +466,7 @@ def test_teach_falls_back_when_agent_reply_is_failed_task(session_factory, confi
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"filename", "sha", "mode"}
+    assert set(body.keys()) == {"filename", "sha", "mode", "learning"}
     assert body["mode"] == "archive"
     assert body["sha"] == SHA
     assert list(github.captured_intake.keys()) == [body["filename"]]
@@ -549,7 +576,7 @@ def test_teach_without_cabal_is_archive_mode(session_factory, config):
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body.keys()) == {"filename", "sha", "mode"}
+    assert set(body.keys()) == {"filename", "sha", "mode", "learning"}
     assert body["mode"] == "archive"
     assert body["sha"] == SHA
     assert list(github.captured_intake.keys()) == [body["filename"]]

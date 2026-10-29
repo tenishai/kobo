@@ -1387,6 +1387,34 @@ export async function fetchAdminAddons(): Promise<AdminAddon[]> {
   return body.addons;
 }
 
+/** The directory sweep (issue #274): the switchboard's directory against the
+ * room's agents. `retired` is what the room registered for agents it no
+ * longer has (would retire on a dry run, did retire otherwise); `kept` is
+ * every entry with an agent behind it; `live` has no agent row but runs in
+ * the cluster and is never touched; `unknown` was registered by hand or by
+ * another room and is never touched; `failed` is what the switchboard
+ * refused to retire. `note` says why nothing was retired when the cluster
+ * could not be asked. */
+export type DirectorySweep = {
+  dry_run: boolean;
+  retired: string[];
+  kept: string[];
+  live: string[];
+  unknown: string[];
+  failed: string[];
+  note: string | null;
+};
+
+export async function previewDirectorySweep(): Promise<DirectorySweep> {
+  const res = await fetch("/api/admin/directory/sweep");
+  return parse<DirectorySweep>(res);
+}
+
+export async function sweepDirectory(): Promise<DirectorySweep> {
+  const res = await fetch("/api/admin/directory/sweep", { method: "POST" });
+  return parse<DirectorySweep>(res);
+}
+
 /** Access through bab (design 2026-10-27). One permission in a vendor's tree;
  * the tier is a column. Whether an account's connection honours it is the
  * account's `ceiling`, so the same tree serves every account of the vendor. */
@@ -1569,16 +1597,23 @@ export async function chatWithAgent(
  * text, 409 when the agent isn't ready, both surfaced as an `ApiError`
  * through `parse`, same as every other mutation in this file.
  */
-export async function teachAgent(
-  name: string,
-  text: string,
-): Promise<{ filename: string; mode?: "instant" | "archive"; sha?: string }> {
+/** What a teach lands as. `learning` (issue #269) is the approved,
+ * `source: "taught"` row the room recorded behind the note, so the
+ * Learnings table can show it at once; an older room omits it. */
+export type TeachResult = {
+  filename: string;
+  mode?: "instant" | "archive";
+  sha?: string;
+  learning?: Learning;
+};
+
+export async function teachAgent(name: string, text: string): Promise<TeachResult> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/teach`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
   });
-  return parse<{ filename: string; mode?: "instant" | "archive"; sha?: string }>(res);
+  return parse<TeachResult>(res);
 }
 
 /** The terminal's one flattened, chronological feed (`GET /api/colleagues/

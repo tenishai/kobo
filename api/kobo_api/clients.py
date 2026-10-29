@@ -2214,6 +2214,17 @@ class KubectlClient(Protocol):
         (kobo_api.health)."""
         ...
 
+    def deployment_exists(self, namespace: str, deploy: str) -> bool:
+        """Whether a Deployment `deploy` exists in `namespace`: True, False,
+        or `ClientError` when the cluster cannot be asked (kubectl missing,
+        no credentials, unreachable). Three answers on purpose, unlike
+        `deployment_status_json`, whose failure folds "absent" and
+        "unreachable" together. The directory sweep (`kobo_api.directory.
+        sweep_directory`, issue #274) uses it to keep a hand-built agent
+        that runs as `<name>/<name>` without a room row out of the retire
+        list, and to retire nothing at all when the cluster is silent."""
+        ...
+
     def restart_deploy(self, namespace: str, deploy: str) -> None:
         """Ask kubectl to roll the Deployment's pods now (`kubectl rollout
         restart`).
@@ -2332,6 +2343,15 @@ class KubectlCLI:
     def pods_json(self, namespace: str) -> list[dict]:
         out = self._runner.run([self._kubectl, "-n", namespace, "get", "pods", "-o", "json"])
         return list((json.loads(out) or {}).get("items") or [])
+
+    def deployment_exists(self, namespace: str, deploy: str) -> bool:
+        # Same `--ignore-not-found` idiom as `namespace_created_at` below:
+        # absent is an empty success, and only a cluster the room cannot
+        # reach raises.
+        out = self._runner.run(
+            [self._kubectl, "-n", namespace, "get", "deploy", deploy, "--ignore-not-found", "-o", "name"]
+        )
+        return bool(out.strip())
 
     def restart_deploy(self, namespace: str, deploy: str) -> None:
         self._runner.run(
@@ -4541,6 +4561,28 @@ class CabalClient:
                 "cabal absorb(%s) failed (%s): %s", name, resp.status_code, resp.text[:200]
             )
             raise CabalError(f"absorb({name!r}) failed ({resp.status_code})")
+
+    def list_agents(self) -> list[dict]:
+        """Every row on the switchboard's bulletin board (`GET /admin/agents`,
+        operator token): `name`, `status` (`active`/`draining`/`retired`),
+        `kind` (`federated` for a graduated agent, `session` for a live
+        operator session), `endpoint`, and the rest of the row. The
+        directory sweep (`kobo_api.directory.sweep_directory`, issue #274)
+        reads this rather than the colleague-facing `GET /directory`, which
+        carries no endpoint and so nothing the room could recognise as its
+        own registration. Raises `CabalError` on non-2xx; the body is
+        logged truncated, never echoed.
+        """
+        resp = self._client.get(
+            f"{self._base_url}/admin/agents",
+            headers=self._headers(),
+        )
+        if not resp.is_success:
+            log.warning(
+                "cabal list_agents failed (%s): %s", resp.status_code, resp.text[:200]
+            )
+            raise CabalError(f"list_agents failed ({resp.status_code})")
+        return resp.json()["agents"]
 
     def relay(self, name: str, task_envelope: dict) -> dict:
         """Relay `task_envelope` (the same a2a task shape `_build_task_
