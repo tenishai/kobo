@@ -8,6 +8,7 @@ All notable changes to kobo are documented here. The format follows
 
 ### Changed
 
+- A base image, `ghcr.io/tenishai/kobo-base` (`docker/base/Dockerfile`, workflow `base-image.yml`), carries git, gh, kubectl and gcloud on its own cadence; the product image will build on it by digest so a release does only the Python and UI layers.
 - **Faster release builds.** The UI build and the lockfile export run once on the build host instead of once per target architecture (under arm64 emulation they were most of a release's build time), and unchanged layers come from a registry cache (`ghcr.io/tenishai/kobo:buildcache`) instead of being rebuilt. The image's contents do not change.
 
 ## [0.3.3] - 2026-10-29
