@@ -35,7 +35,9 @@ def _room(tmp_path, fake_storage, *, bab):
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     config = Config(workdir=tmp_path / "work", iap_audience=WHOAMI_AUDIENCE, operators=["ops@example.com"],
-                    admin_panel=True, bab_url="http://bab.bab.svc:8080" if bab is not None else "")
+                    admin_panel=True, bab_url="http://bab.bab.svc:8080" if bab is not None else "",
+                    cloud_accounts=[{"vendor": "aws", "name": "aws-prod"}, {"vendor": "aws", "name": "acme-data"},
+                                    {"vendor": "gcp", "name": "acme-platform-prod"}])
     private_key, jwk = _generate_jwk()
     clients = Clients(github=FakeGitHub(), gojira=FakeGojira(), cloud=FakeCloud(), agent=FakeAgent(),
                       kubectl=FakeKubectl(), storage=fake_storage)
@@ -53,13 +55,19 @@ def test_ask_review_hold_revoke_and_the_topology_push(tmp_path, fake_storage):
     bab = FakeBab()
     c, h = _room(tmp_path, fake_storage, bab=bab)
 
-    # The picker: every connected integration, grouped the vendor's way, the
-    # tier a column, anything above the ceiling marked rather than hidden.
-    (integ,) = c.get("/api/access/picker", headers=h).json()["integrations"]
-    assert integ["id"] == "aws-prod" and integ["vendor"] == "aws"
-    flat = {p["name"]: p for g in integ["groups"] for p in g["permissions"]}
-    assert flat["aws_cloudtrail_lake_query"]["above_ceiling"] is False
-    assert flat["aws_ecs_update_service"]["above_ceiling"] is True and flat["aws_ecs_update_service"]["tier"] == "mutate"
+    # The picker: vendor, then account (connected or listed but not yet), then
+    # the vendor's permissions grouped its way with the tier as a column.
+    vendors = {v["id"]: v for v in c.get("/api/access/picker", headers=h).json()["vendors"]}
+    aws, gcp, dd = vendors["aws"], vendors["gcp"], vendors["datadog"]
+    assert (aws["kind"], aws["label"], aws["account_noun"]) == ("cloud", "AWS", "account")
+    assert [(a["id"], a["connected"]) for a in aws["accounts"]] == [("aws-prod", True), ("acme-data", False)]
+    assert aws["accounts"][0]["ceiling"] == ["aws_cloudtrail_lake_query", "aws_inventory_read"]
+    flat = {p["name"]: p for g in aws["groups"] for p in g["permissions"]}
+    assert flat["aws_ecs_update_service"]["tier"] == "mutate"
+    # A cloud the org lists but bab has no catalogue for still shows its account, not connected.
+    assert gcp["kind"] == "cloud" and [(a["id"], a["connected"]) for a in gcp["accounts"]] == [("acme-platform-prod", False)]
+    # A service vendor is one connection; none connected yet shows a placeholder.
+    assert dd["kind"] == "service" and dd["accounts"] == [{"id": "datadog", "name": "Datadog", "connected": False, "ceiling": []}]
 
     # The owner asks; the request is pending on the agent page and in Review, with the owner named.
     r = c.post("/api/agents/ledger/access/requests", headers=h,

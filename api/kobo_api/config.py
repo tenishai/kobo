@@ -217,6 +217,22 @@ _log = logging.getLogger(__name__)
 RETIRED_CONFIG_KEYS = frozenset({"runtimes"})
 
 
+class CloudAccount(BaseModel):
+    """One unit a cloud vendor is connected by: an AWS account, a Google Cloud
+    project, an Azure subscription. `integration` is the id the permission
+    service knows it by (default: the name)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    vendor: str = Field(min_length=1, max_length=32)
+    name: str = Field(min_length=1, max_length=64)
+    integration: str = ""
+
+    @property
+    def integration_id(self) -> str:
+        return self.integration or self.name
+
+
 class Config(BaseModel):
     # Unknown keys are refused (issue #198). A typo used to be dropped on the
     # floor, and several security switches are off when their key is absent:
@@ -523,6 +539,13 @@ class Config(BaseModel):
     # it calls with comes from the environment (KOBO_BAB_TOKEN), never from
     # here; both must be present for the client to be wired (kobo_api.bab).
     bab_url: str = ""
+    # The accounts, projects and subscriptions the room's permission service
+    # can reach, one per vendor it names, so the picker can offer them before
+    # a person has connected each one (Access through bab, 2026-10-29). An
+    # entry whose `integration` (default: its name) is connected in bab shows
+    # as connected; the rest show as not connected yet. Org-settable; later
+    # this list is read from the gateway's own roles rather than written here.
+    cloud_accounts: list[CloudAccount] = []
     # The Jira read broker (AREQ lane, 2026-09-04) -- the PR broker's
     # custody model applied to tracker reads: the room holds ONE read-only
     # service-account API token (mounted as a file, the PR App key's own

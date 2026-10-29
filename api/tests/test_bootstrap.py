@@ -88,6 +88,7 @@ def test_render_org_yaml_golden_with_computed_defaults():
         "broker_url": "",
         "liminal_url": "",
         "bab_url": "",
+        "cloud_accounts": [],
         "noto_url": None,
         "noto_project": None,
         "reader_groups": [],

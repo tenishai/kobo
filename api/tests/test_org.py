@@ -232,6 +232,7 @@ def test_org_keys_is_exactly_the_brief_set():
         "broker_url",
         "liminal_url",
         "bab_url",
+        "cloud_accounts",
         "noto_url",
         "noto_project",
         "reader_groups",

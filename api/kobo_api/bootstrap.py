@@ -143,6 +143,7 @@ _ORG_YAML_TOKENS = {
     "broker_url": "__KOBO_BROKER_URL__",
     "liminal_url": "__KOBO_LIMINAL_URL__",
     "bab_url": "__KOBO_BAB_URL__",
+    "cloud_accounts": "__KOBO_CLOUD_ACCOUNTS__",
     "noto_url": "__KOBO_NOTO_URL__",
     "noto_project": "__KOBO_NOTO_PROJECT__",
     "reader_groups": "__KOBO_READER_GROUPS__",
@@ -171,6 +172,8 @@ def _org_yaml_context(config: Config) -> dict[str, object]:
         "broker_url": config.broker_url,
         "liminal_url": config.liminal_url,
         "bab_url": config.bab_url,
+        "cloud_accounts": [{"vendor": a.vendor, "name": a.name, **({"integration": a.integration} if a.integration else {})}
+                           for a in config.cloud_accounts],
         "noto_url": config.noto_url,
         "noto_project": config.noto_project,
         "reader_groups": config.reader_groups,

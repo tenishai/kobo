@@ -2373,7 +2373,13 @@ class FakeBab:
                 ],
                 "tiers": [{"name": "read", "lease_seconds": 3600, "validity_days": None},
                           {"name": "mutate", "lease_seconds": 3600, "validity_days": 30}],
-            }
+            },
+            "datadog": {
+                "vendor": "datadog",
+                "groups": [{"name": "Monitors", "permissions": [
+                    {"name": "datadog_monitors_read", "tier": "read", "description": "List and read monitors"}]}],
+                "tiers": [{"name": "read", "lease_seconds": 3600, "validity_days": None}],
+            },
         }
 
     def _guard(self):
@@ -2383,12 +2389,20 @@ class FakeBab:
     def health(self) -> bool:
         return self.healthy and not self.error
 
+    def vendors(self, actor):
+        self._guard()
+        return [{"vendor": v, "kind": "cloud" if v in ("aws", "gcp", "azure") else "service",
+                 "label": {"aws": "AWS", "datadog": "Datadog"}.get(v, v),
+                 "account": {"aws": "account"}.get(v), "permissions": {}} for v in self._catalogue]
+
     def integrations(self, actor):
         self._guard()
         return [dict(i) for i in self._integrations]
 
     def catalogue(self, vendor, actor):
         self._guard()
+        if vendor not in self._catalogue:
+            raise ClientError(f"the permission service refused the {vendor} catalogue: the catalogue has no permissions for {vendor!r}")
         return dict(self._catalogue[vendor])
 
     def put_topology(self, agents, actor):
