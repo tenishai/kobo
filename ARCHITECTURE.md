@@ -9,7 +9,7 @@ anchor: .github/workflows/ci.yml sha=fc16495b2a2d39a9fd5fffd5ce1575c52e1a148e
 # kobo — repo card
 
 WHAT: the agent assembly room. A web UI + API where a signed-in person composes an agent (persona, skills, group), clicks Create, and the room provisions a running daedalus agent on gojira; then chat/teach it, wire Slack, and govern who (people and other agents) may reach it.
-STATE: main; tenish-kobo (the API package) 0.3.6 and kobo-ui 0.3.6 (both move with each release); alpha, deployed, very active (in 0.3.6: AWS connects as an organization with accounts under it). Design record per arc in docs/superpowers/.
+STATE: main; tenish-kobo (the API package) 0.3.7 and kobo-ui 0.3.7 (both move with each release); alpha, deployed, very active (in 0.3.7: The vendored cloud-access release is 0.2.0 (the aws/hub module)). Design record per arc in docs/superpowers/.
 STACK: Python >=3.12, FastAPI + uvicorn, SQLAlchemy >=2,<2.1 (SQLite default, Postgres for multi-replica), alembic, pydantic v2, httpx, PyJWT, `mcp>=1.15,<2` (FastMCP 1.x surface), prometheus-client, OpenTelemetry (env-gated). UI: Svelte 5 + Vite + TanStack Query, hand-rolled router (ui/src/lib/router.svelte.ts), NOT SvelteKit. Shells out to `git`, `gh`, `kubectl`, `gcloud` (baked into the image, Dockerfile).
 ENTRY:
 - API app factory: api/kobo_api/main.py `build_default_app()` (real wiring: config → org.yaml merge → engine → `sweep_interrupted` → `Clients.real` → Slack-store probe → boot dispatch-pairs sync) and `create_app()` (all routes are closures inside this one function; tests call it with fakes)
