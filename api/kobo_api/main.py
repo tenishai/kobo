@@ -71,6 +71,12 @@ from kobo_api.archetypes import (
     team_guide_persona_id,
 )
 from kobo_api.avatars import avatar_prompt, set_avatar
+from kobo_api.bab import ROOM_ACTOR as BAB_ROOM_ACTOR
+from kobo_api.bab import actor_for as bab_actor_for
+from kobo_api.bab import build_bab
+from kobo_api.bab import picker as bab_picker
+from kobo_api.bab import push_topology as bab_push_topology
+from kobo_api.bab import since_days as bab_since_days
 from kobo_api.catalog import RESERVED_NAMES, validate_name
 from kobo_api.clients import (
     CabalError,
@@ -2846,6 +2852,9 @@ async def _room_lifespan(app: FastAPI):
             threading.Thread(
                 target=_seed_builtin_personas, args=(app,), daemon=True, name="persona-seed"
             ).start()
+            threading.Thread(
+                target=_bab_boot_push, args=(app,), daemon=True, name="bab-topology"
+            ).start()
         try:
             yield
         finally:
@@ -3154,6 +3163,34 @@ def _deny_words(detail: dict) -> str:
     if detail.get("reason"):
         return str(detail["reason"])
     return "refused"
+
+
+class AccessRequestBody(BaseModel):
+    """An owner asking bab for permissions on one integration (Access section)."""
+
+    integration: str = Field(min_length=1, max_length=64)
+    permissions: list[str] = Field(min_length=1, max_length=500)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class AccessDecideBody(BaseModel):
+    """A reviewer deciding requests in bulk (Review pane)."""
+
+    ids: list[int] = Field(min_length=1, max_length=500)
+    verdict: Literal["approve", "deny"]
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+def _bab_boot_push(app: FastAPI) -> None:
+    """Tell the permission service which agents exist, once per boot, on a
+    daemon thread (a blocking HTTP call). A failure is logged and the next
+    create or destroy pushes again."""
+    clients = app.state.clients
+    bab = getattr(clients, "bab", None) if clients is not None else None
+    if bab is None:
+        return
+    with app.state.session_factory() as session:
+        bab_push_topology(bab, session.query(Agent).all(), BAB_ROOM_ACTOR)
 
 
 def create_app(
@@ -3668,6 +3705,181 @@ def create_app(
                 "slack_operators": list(cfg.slack_operators),
             }
         )
+
+    # ---- Access through bab (design 2026-10-27; kobo_api.bab) ----------------
+
+    def _bab_or_404() -> tuple[object | None, JSONResponse | None]:
+        bab = getattr(app.state.clients, "bab", None) if app.state.clients is not None else None
+        if bab is None:
+            return None, JSONResponse({"error": "access is off for this room"}, status_code=404)
+        return bab, None
+
+    def _bab_actor(request: Request) -> str:
+        return bab_actor_for(getattr(request.state, "iap_email", None))
+
+    def _bab_push_quietly(session: Session, request: Request | None) -> None:
+        """After a create or a destroy: the room's agents, as bab should know them."""
+        bab = getattr(app.state.clients, "bab", None) if app.state.clients is not None else None
+        if bab is None:
+            return
+        actor = _bab_actor(request) if request is not None else BAB_ROOM_ACTOR
+        bab_push_topology(bab, session.query(Agent).all(), actor)
+
+    def _bab_refused(exc: ClientError) -> JSONResponse:
+        return JSONResponse({"error": str(exc)}, status_code=502)
+
+    @app.get("/api/access/picker")
+    def access_picker(request: Request) -> JSONResponse:
+        """Every connected integration with its permission tree, for the picker."""
+        bab, blocked = _bab_or_404()
+        if blocked is not None:
+            return blocked
+        try:
+            return JSONResponse({"integrations": bab_picker(bab, _bab_actor(request))})
+        except ClientError as exc:
+            return _bab_refused(exc)
+
+    @app.get("/api/agents/{name}/access")
+    def agent_access(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """The Access section: what the agent holds, what is waiting, and the
+        picker to ask for more. Visible to whoever may see the agent; the
+        decisions are bab's and the reviewer's."""
+        bab, blocked = _bab_or_404()
+        if blocked is not None:
+            return blocked
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        actor = _bab_actor(request)
+        try:
+            grants = bab.grants(agent.name, actor)
+            pending = [r for r in bab.requests("pending", agent.name, actor)]
+            integrations = bab_picker(bab, actor)
+        except ClientError as exc:
+            return _bab_refused(exc)
+        return JSONResponse({
+            "agent": agent.name,
+            "team": agent.team,
+            "grants": grants,
+            "pending": pending,
+            "integrations": integrations,
+            "can_request": _owner_or_operator_or_403(agent, request) is None,
+            "can_decide": _is_admin(request),
+        })
+
+    @app.post("/api/agents/{name}/access/requests", status_code=201)
+    def agent_access_request(
+        name: str, payload: AccessRequestBody, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """The owner asks: one bab request per integration, decided in Review."""
+        bab, blocked = _bab_or_404()
+        if blocked is not None:
+            return blocked
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        block = _owner_or_operator_or_403(agent, request)
+        if block is not None:
+            return block
+        try:
+            out = bab.request(agent.name, payload.integration, list(dict.fromkeys(payload.permissions)),
+                              payload.note, _bab_actor(request))
+        except ClientError as exc:
+            return _bab_refused(exc)
+        return JSONResponse(out, status_code=201)
+
+    @app.delete("/api/agents/{name}/access/grants/{grant_id}")
+    def agent_access_revoke(
+        name: str, grant_id: int, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Revoke now: a room admin takes a granted permission back; bab stops
+        the next lease (open sessions run out on their own within the hour)."""
+        bab, blocked = _bab_or_404()
+        if blocked is not None:
+            return blocked
+        if not _is_admin(request):
+            return JSONResponse({"error": "revoking a permission is for the room's admins"}, status_code=403)
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        try:
+            return JSONResponse(bab.revoke(grant_id, _bab_actor(request)))
+        except ClientError as exc:
+            return _bab_refused(exc)
+
+    @app.get("/api/agents/{name}/leases")
+    def agent_leases(
+        name: str, request: Request, days: int = 7, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Activity from bab: every credential the agent borrowed, with the task it named."""
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        bab, blocked = _bab_or_404()
+        if blocked is not None:
+            return JSONResponse({"available": False, "leases": [], "note": "access is off for this room"})
+        try:
+            leases = bab.leases(agent.name, bab_since_days(days), _bab_actor(request))
+        except ClientError as exc:
+            return JSONResponse({"available": False, "leases": [], "note": str(exc)})
+        return JSONResponse({"available": True, "leases": leases})
+
+    @app.get("/api/admin/access/requests")
+    def admin_access_requests(
+        request: Request, status: str = "pending", session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """The Review pane: what is waiting (or everything), each row with the
+        agent's owner and team from the room's own record."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        bab, off = _bab_or_404()
+        if off is not None:
+            return off
+        try:
+            rows = bab.requests("all" if status == "all" else "pending", None, _bab_actor(request))
+        except ClientError as exc:
+            return _bab_refused(exc)
+        agents = {a.name: a for a in session.query(Agent).all()}
+        for r in rows:
+            a = agents.get(r.get("agent"))
+            r["owner"] = a.created_by if a is not None else None
+            r["team"] = a.team if a is not None else None
+        return JSONResponse({"requests": rows})
+
+    @app.post("/api/admin/access/decide")
+    def admin_access_decide(payload: AccessDecideBody, request: Request) -> JSONResponse:
+        """Approve or deny in bulk. bab checks the reviewer's team and each
+        permission's tier; a deny needs a reason."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        bab, off = _bab_or_404()
+        if off is not None:
+            return off
+        if payload.verdict == "deny" and not (payload.reason or "").strip():
+            return JSONResponse({"error": "a denial needs a reason"}, status_code=422)
+        try:
+            results = bab.decide(payload.ids, payload.verdict, payload.reason, _bab_actor(request))
+        except ClientError as exc:
+            return _bab_refused(exc)
+        return JSONResponse({"results": results})
+
+    @app.post("/api/admin/access/sync")
+    def admin_access_sync(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        """Push the room's agents to bab now (also done at boot, create and destroy)."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        bab, off = _bab_or_404()
+        if off is not None:
+            return off
+        out = bab_push_topology(bab, session.query(Agent).all(), _bab_actor(request))
+        if out is None:
+            return JSONResponse({"error": "the permission service did not take the topology"}, status_code=502)
+        return JSONResponse(out)
 
     @app.get("/api/admin/integrations/aws/setup")
     def admin_aws_setup(request: Request, packs: str = "", integration: str = "aws") -> JSONResponse:
@@ -5122,6 +5334,7 @@ def create_app(
             # just enforced by the DB instead of a status column.
             session.rollback()
             return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
+        _bab_push_quietly(session, request)
 
         # Capture the just-inserted status into a local BEFORE starting the
         # pipeline thread and use only that in the response below. The
@@ -5425,6 +5638,7 @@ def create_app(
             # same way: the unique constraint is the real gate.
             session.rollback()
             return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
+        _bab_push_quietly(session, request)
 
         # WARNING rather than INFO because INFO does not reach the pod logs
         # here (`kobo_api.org`'s `_disclose_overrides` records the same
@@ -11159,6 +11373,7 @@ def build_default_app() -> FastAPI:
     # the switchboard (kobo_api.liminal_admin); None keeps grants as pull
     # requests only, and the Connections pane says so.
     clients.liminal_admin = build_liminal_admin(config, clients.cabal)
+    clients.bab = build_bab(config)
     # Boot-time write probe for the Slack token Secret: rotation is the one
     # write whose failure is unrecoverable, and it happens ~12h after boot
     # with nobody watching. One idempotent apply here says now, in the

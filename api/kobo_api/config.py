@@ -517,6 +517,12 @@ class Config(BaseModel):
     # SAFE TO SET FLEET-WIDE: a wired agent with no policy grant sees zero
     # tools -- the gateway denies by default; grants are the control point.
     liminal_url: str = ""
+    # The room's permission service (bab), as the room reaches it in the
+    # cluster. Org-settable. Empty = Access is off: no Permissions section,
+    # no Review pane, and the room runs as it does today. The console token
+    # it calls with comes from the environment (KOBO_BAB_TOKEN), never from
+    # here; both must be present for the client to be wired (kobo_api.bab).
+    bab_url: str = ""
     # The Jira read broker (AREQ lane, 2026-09-04) -- the PR broker's
     # custody model applied to tracker reads: the room holds ONE read-only
     # service-account API token (mounted as a file, the PR App key's own

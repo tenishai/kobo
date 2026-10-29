@@ -3,13 +3,21 @@
   // and every refusal, newest first, read live from the gateway. One row per
   // call; the tool, how it went, how long it took, the arguments in brief.
   import { createQuery } from "@tanstack/svelte-query";
-  import { activityQuery } from "../lib/queries";
+  import { activityQuery, agentLeasesQuery } from "../lib/queries";
 
   let { agentName }: { agentName: string } = $props();
 
   let days = $state(7);
   let handler = $state("all");
   const activity = createQuery(() => (activityQuery(agentName, days)));
+  // Credentials the agent borrowed from the room's permission service, when
+  // the room has one: one row per lease, with the task the agent named.
+  const leases = createQuery(() => (agentLeasesQuery(agentName, days)));
+
+  function whenIso(iso: string | null): string {
+    if (!iso) return "";
+    return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  }
 
   const handlers = $derived(Array.from(new Set((activity.data?.rows ?? []).map((r) => r.handler).filter(Boolean))).sort());
   const rows = $derived((activity.data?.rows ?? []).filter((r) => handler === "all" || r.handler === handler));
@@ -61,6 +69,32 @@
               </td>
               <td class="num quiet">{r.ms ?? ""}</td>
               <td><code class="args">{r.args}</code></td>
+            </tr>
+          {/each}
+        </tbody>
+      </table></div>
+    {/if}
+  {/if}
+
+  {#if leases.data?.available}
+    <h3 class="panel__subheading">Borrowed credentials</h3>
+    <p class="panel__note">
+      Each row is one hour of access the agent borrowed for a task, scoped to the permissions it
+      holds. The vendor's own audit trail names the agent in the session.
+    </p>
+    {#if (leases.data.leases ?? []).length === 0}
+      <p class="panel__empty">No credentials borrowed in this window.</p>
+    {:else}
+      <div class="table-card"><table class="panel__table">
+        <thead><tr><th>Issued</th><th>Account</th><th>Permissions</th><th>Task</th><th>Until</th></tr></thead>
+        <tbody>
+          {#each leases.data.leases as l (l.id)}
+            <tr>
+              <td class="quiet nowrap">{whenIso(l.issued_at)}</td>
+              <td><span class="tool">{l.integration}</span></td>
+              <td class="quiet">{l.permissions.join(", ")}</td>
+              <td class="quiet">{l.task ?? ""}</td>
+              <td class="quiet nowrap">{whenIso(l.expires_at)}</td>
             </tr>
           {/each}
         </tbody>

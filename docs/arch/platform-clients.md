@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-platform-clients
-updated: 2026-10-28
-anchor: api/kobo_api/clients.py sha=84f0d8eb45a5731f0974f335daf3bbcc121c328f
-anchor: api/tests/fakes.py sha=0ddafc40a5cabdf44babbf962ee84588e41be1e1
+updated: 2026-10-29
+anchor: api/kobo_api/clients.py sha=fe1a350d89beca612d0428765b91fbb92482b5ca
+anchor: api/tests/fakes.py sha=5dcf6243509f708d0f08732753b40cb09369b1ed
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
@@ -35,3 +35,4 @@ API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provid
 - `KubectlClient.namespace_created_at` (2026-10-24, issue #193): a namespace's creation time as naive UTC, None when absent, `ClientError` when the cluster cannot be asked. Create and connect refuse a name whose namespace exists; destroy keeps the namespace, the stored secrets and the `agent-<name>` GSA of an agent whose namespace is older than its row. `FakeKubectl(namespaces={name: created_at}, namespace_error=...)` seeds it.
 
 `FakeCabal.relay` takes per-agent overrides (`relay_results`, `relay_errors`) since 2026-10-28, because a thread turn relays to several agents in one call and the tests need one to fail while another answers.
+- `Clients.bab` (object | None): the room's permission service, `kobo_api.bab.BabClient` (Protocol) / `HttpxBabClient` / `tests.fakes.FakeBab`; built in `main.build_default_app` by `build_bab(config)` from `bab_url` + env `KOBO_BAB_TOKEN`, like `liminal_admin`. Console token + `X-Bab-Actor` per call; `ClientError` carries bab's `detail` sentence, never the token. The room pushes its topology (`push_topology`) at boot, after create and destroy, and from Review › Sync agents (2026-10-29).

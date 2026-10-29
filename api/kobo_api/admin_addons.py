@@ -146,6 +146,23 @@ def _model_gateway(config: Config) -> AddonCard:
     return AddonCard(state="on", detail=f"Models through {config.broker_url}.", **base)
 
 
+def _access(config: Config, clients: Clients | None) -> AddonCard:
+    base = {
+        "id": "access",
+        "name": "Access",
+        "summary": "Holds what each agent may do at each vendor and lends it a credential for an hour at a time.",
+        "keys": ["bab_url", "KOBO_BAB_TOKEN"],
+    }
+    if not config.bab_url:
+        return AddonCard(state="off", detail="Not configured; agents reach vendors through lanes only.", **base)
+    bab = getattr(clients, "bab", None) if clients is not None else None
+    if bab is None:
+        return AddonCard(state="error", detail="Configured, but the room holds no console token for it (KOBO_BAB_TOKEN).", **base)
+    if not bab.health():
+        return AddonCard(state="error", detail="Configured, but the permission service did not answer just now.", **base)
+    return AddonCard(state="on", detail=f"Permissions and leases through {config.bab_url}.", **base)
+
+
 def addon_cards(config: Config, clients: Clients | None) -> list[dict[str, Any]]:
     """Every add-on card, in the order the pane shows them. Never raises: a
     probe that fails is an `error` card, not a failed page."""
@@ -157,6 +174,7 @@ def addon_cards(config: Config, clients: Clients | None) -> list[dict[str, Any]]
             _observability(config),
             _switchboard(config),
             _tool_gateway(config),
+            _access(config, clients),
             _memory(config),
             _model_gateway(config),
         )

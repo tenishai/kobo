@@ -1342,6 +1342,136 @@ export async function fetchAdminAddons(): Promise<AdminAddon[]> {
   return body.addons;
 }
 
+/** Access through bab (design 2026-10-27). One permission in a vendor's tree:
+ * the tier is a column, and `above_ceiling` means the connection cannot
+ * honour it (shown greyed with the reason, never hidden). */
+export type AccessPermission = {
+  name: string;
+  tier: "read" | "mutate" | "destroy" | string;
+  description: string | null;
+  above_ceiling: boolean;
+};
+
+export type AccessIntegration = {
+  id: string;
+  vendor: string;
+  ceiling: string[];
+  groups: { name: string; permissions: AccessPermission[] }[];
+  tiers: { name: string; lease_seconds: number; validity_days: number | null }[];
+};
+
+export type AccessGrant = {
+  id: number;
+  agent: string;
+  integration: string;
+  permission: string;
+  tier: string | null;
+  gated: boolean;
+  /** RFC 3339, or null for a standing grant. */
+  expires_at: string | null;
+  granted_by: string;
+  created_at: string;
+  request_id: number | null;
+  state: "active" | "expired" | string;
+};
+
+export type AccessRequest = {
+  id: number;
+  agent: string;
+  integration: string;
+  permissions: string[];
+  tiers: Record<string, number>;
+  kind: "standing" | "lease" | string;
+  status: "pending" | "approved" | "refused" | "denied" | string;
+  requested_by: string;
+  note: string | null;
+  created_at: string;
+  decided_at: string | null;
+  decided_by: string | null;
+  reason: string | null;
+  outcome: Record<string, string>;
+  /** Added by the room on the Review pane: the agent's owner and team. */
+  owner?: string | null;
+  team?: string | null;
+};
+
+export type AgentAccess = {
+  agent: string;
+  team: string | null;
+  grants: AccessGrant[];
+  pending: AccessRequest[];
+  integrations: AccessIntegration[];
+  can_request: boolean;
+  can_decide: boolean;
+};
+
+export type AccessLease = {
+  id: number;
+  agent: string;
+  integration: string;
+  permissions: string[];
+  task: string | null;
+  minter: string;
+  issued_at: string;
+  expires_at: string;
+};
+
+export type AgentLeases = { available: boolean; leases: AccessLease[]; note?: string };
+
+export async function fetchAgentAccess(name: string): Promise<AgentAccess> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/access`);
+  return parse<AgentAccess>(res);
+}
+
+export async function requestAgentAccess(
+  name: string,
+  input: { integration: string; permissions: string[]; note?: string | null },
+): Promise<AccessRequest> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/access/requests`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return parse<AccessRequest>(res);
+}
+
+export async function revokeAgentAccess(name: string, grantId: number): Promise<{ revoked: number }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/access/grants/${grantId}`, { method: "DELETE" });
+  return parse<{ revoked: number }>(res);
+}
+
+export async function fetchAgentLeases(name: string, days: number): Promise<AgentLeases> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/leases?days=${days}`);
+  return parse<AgentLeases>(res);
+}
+
+export async function fetchAccessRequests(status: "pending" | "all"): Promise<AccessRequest[]> {
+  const res = await fetch(`/api/admin/access/requests?status=${status}`);
+  const body = await parse<{ requests: AccessRequest[] }>(res);
+  return body.requests;
+}
+
+export type AccessDecision = { id: number; status: string; outcome?: Record<string, string>; reason?: string | null };
+
+export async function decideAccessRequests(
+  ids: number[],
+  verdict: "approve" | "deny",
+  reason?: string | null,
+): Promise<AccessDecision[]> {
+  const res = await fetch("/api/admin/access/decide", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, verdict, reason: reason ?? null }),
+  });
+  const body = await parse<{ results: AccessDecision[] }>(res);
+  return body.results;
+}
+
+export async function syncAccessTopology(): Promise<{ agents: number; removed: number }> {
+  const res = await fetch("/api/admin/access/sync", { method: "POST" });
+  return parse<{ agents: number; removed: number }>(res);
+}
+
 export async function fetchWhoami(): Promise<Whoami> {
   const res = await fetch("/api/whoami");
   return parse<Whoami>(res);

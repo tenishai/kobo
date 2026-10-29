@@ -692,6 +692,14 @@ def _destroy_forget(ctx: DestroyCtx) -> str:
     session.query(AgentStep).filter_by(agent_id=agent.id).delete()
     session.delete(agent)
     session.commit()
+    # The permission service learns the agent is gone the same way it learned
+    # it existed: the room pushes what remains. A failure is logged, never
+    # fatal here; the next push carries the same fact.
+    bab = getattr(getattr(ctx, "clients", None), "bab", None)
+    if bab is not None:
+        from kobo_api.bab import ROOM_ACTOR, push_topology
+
+        push_topology(bab, session.query(Agent).all(), ctx.acting_email or ROOM_ACTOR)
     return "forgotten"
 
 
