@@ -27,7 +27,13 @@ export const ROOM_SETS_THIS_ONE = "the room sets this one";
 export const CONTAINER_SETS_THIS_ONE = "the container sets this one";
 
 /** Every key the room fills in on an agent's behalf: the colleague pass,
- * the three Slack values, and the two model-access variables. */
+ * the three Slack values, the two model-access variables, the model the
+ * room picked and how Slack wakes the agent.
+ *
+ * A mirror of `RESERVED_KEYS` in `api/kobo_api/agent_env.py`, and the
+ * server's test checks the two are equal: when this list lagged the
+ * server's (issue #250) a room-set row rendered as editable, rode along
+ * on every save and had the whole write refused by a name nobody typed. */
 export const RESERVED_KEYS = [
   "CABAL_COLLEAGUE_TOKEN",
   "SLACK_BOT_TOKEN",
@@ -35,6 +41,8 @@ export const RESERVED_KEYS = [
   "SLACK_SIGNING_SECRET",
   "VERTEXAI_PROJECT",
   "VERTEXAI_LOCATION",
+  "AGENT_MODEL",
+  "SLACK_WAKE_MODE",
 ];
 
 /** Names the runtime owns: how the container finds its binaries, its

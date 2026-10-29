@@ -10,6 +10,9 @@ Pure functions over plain dicts, plus the flow against `FakeGitHub`/
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -23,6 +26,7 @@ from kobo_api.agent_env import (
     MANAGED_PURPOSES,
     MAX_KEYS,
     PULL_REQUEST,
+    RESERVED_KEYS,
     ROOM_SETS_THIS_ONE,
     SECRETS_UNWIRE_PR_BODY,
     SECRETS_WIRING_BRANCH,
@@ -51,6 +55,7 @@ from kobo_api.agent_env import (
     merged_names,
     read_env,
     read_repo_env,
+    read_room_env,
     secret_path,
     sync_state,
     sync_unknown,
@@ -109,6 +114,8 @@ def test_a_name_longer_than_sixty_four_characters_is_refused():
         "SLACK_SIGNING_SECRET",
         "VERTEXAI_PROJECT",
         "VERTEXAI_LOCATION",
+        "AGENT_MODEL",
+        "SLACK_WAKE_MODE",
     ],
 )
 def test_a_name_the_room_manages_is_refused_with_the_rooms_own_sentence(key):
@@ -170,6 +177,17 @@ def test_a_key_on_both_sides_of_the_write_is_refused():
     assert "both" in refusal
 
 
+def test_a_name_the_other_list_already_holds_is_refused_naming_that_list():
+    """Data integrity (issue #272): a secret and a variable with one name
+    both land in the pod as one variable, and which value wins would be
+    whichever was written last. Removing is never a clash."""
+    assert (
+        write_refusal({"TEST": "v"}, [], [], taken=["TEST"], taken_as="secret")
+        == "TEST is already a secret on this agent"
+    )
+    assert write_refusal({}, ["TEST"], [], taken=["TEST"], taken_as="variable") is None
+
+
 def test_a_write_that_would_pass_the_key_cap_is_refused():
     existing = [f"K{i}" for i in range(MAX_KEYS)]
     refusal = write_refusal({"ONE_MORE": "v"}, [], existing)
@@ -223,15 +241,33 @@ def test_read_env_of_a_file_with_no_env_key_is_empty():
     assert read_env({}) == {}
 
 
-def test_read_env_drops_the_two_model_keys_the_room_sets_itself():
+def test_read_env_leaves_out_every_key_the_room_sets_and_read_room_env_has_them():
+    """Issue #250: dropping the two model keys alone handed SLACK_WAKE_MODE
+    back as an owner row, the panel re-sent it, and no variable could be
+    saved on an agent with Slack wired."""
     data = {
         "env": {
             "VERTEXAI_PROJECT": "a-project",
-            "VERTEXAI_LOCATION": "somewhere",
+            "SLACK_WAKE_MODE": "thread",
+            "AGENT_MODEL": "a-model",
             "OWN_KEY": "own value",
         }
     }
     assert read_env(data) == {"OWN_KEY": "own value"}
+    assert read_room_env(data) == {
+        "VERTEXAI_PROJECT": "a-project",
+        "SLACK_WAKE_MODE": "thread",
+        "AGENT_MODEL": "a-model",
+    }
+
+
+def test_the_panels_reserved_list_is_the_servers():
+    """Issue #250 was the two lists drifting: the panel's inline rule let a
+    name through that the route refused. One list, checked here."""
+    source = (Path(__file__).parents[2] / "ui" / "src" / "lib" / "dotenv.ts").read_text()
+    block = re.search(r"export const RESERVED_KEYS = \[(.*?)\];", source, re.S)
+    assert block is not None
+    assert set(re.findall(r'"([A-Z0-9_]+)"', block.group(1))) == RESERVED_KEYS
 
 
 def test_read_env_of_a_non_mapping_env_is_empty_rather_than_a_crash():

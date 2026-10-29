@@ -55,7 +55,9 @@ from kobo_api.agent_env import (
     merged_names,
     parse_gojira_yaml,
     read_default_gojira,
+    read_env,
     read_repo_env,
+    read_room_env,
     require_our_branch,
     secret_path,
     sync_state,
@@ -8775,9 +8777,8 @@ def create_app(
             # the environment read uses: an unreadable repository must be
             # a refusal, never a quiet "not wired" that would have the
             # room propose a line already sitting on the default branch.
-            on_default = has_env_secret(
-                read_default_gojira(clients.github, agent.repo_full_name), agent.name
-            )
+            gojira_data = read_default_gojira(clients.github, agent.repo_full_name)
+            on_default = has_env_secret(gojira_data, agent.name)
         except RepoBusy as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
         except ClientError as exc:
@@ -8789,7 +8790,16 @@ def create_app(
         except ClientError as exc:
             return _lane_failed("read", agent, exc, SECRETS_PLATFORM_UNREACHABLE)
 
-        refusal = write_refusal(payload.set, payload.remove, held.keys)
+        # The same file, read once, answers the cross-list check too: a
+        # secret named like one of the owner's variables is refused
+        # (issue #272), since both land in the pod as one variable.
+        refusal = write_refusal(
+            payload.set,
+            payload.remove,
+            held.keys,
+            taken=read_env(gojira_data),
+            taken_as="variable",
+        )
         if refusal is not None:
             return JSONResponse({"error": refusal}, status_code=422)
 
@@ -9047,9 +9057,12 @@ def create_app(
 
         Read straight off the repository's `gojira.yaml` rather than from
         anything the room caches, because the file is where they live and a
-        team may have edited it themselves. The two model-access variables
-        the room writes are left out: they are not an owner's to change,
-        and showing them in an editable list would say otherwise.
+        team may have edited it themselves. The variables the room writes
+        itself (the model-access pair, the agent's model, how Slack wakes
+        it) come back under `room` rather than in `env`: they are not an
+        owner's to change, and a panel that showed them as editable rows
+        re-sent them on every save and had the whole write refused by the
+        room's own name (issue #250).
 
         A file the room cannot PARSE, and a repository the room cannot
         READ, are two different 409s with two different sentences. The
@@ -9065,13 +9078,36 @@ def create_app(
             return blocked
 
         try:
-            env = read_repo_env(app.state.clients.github, agent.repo_full_name)
+            gojira_data = read_default_gojira(app.state.clients.github, agent.repo_full_name)
         except RepoBusy as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
         except ClientError as exc:
             return _lane_failed("file read", agent, exc, AGENT_FILES_UNREACHABLE)
 
-        return JSONResponse({"env": env})
+        return JSONResponse({"env": read_env(gojira_data), "room": read_room_env(gojira_data)})
+
+    def _stored_secret_names(agent: Agent, request: Request) -> list[str]:
+        """The names this agent holds as SECRETS, for the variables route's
+        cross-list check (issue #272): a variable named like a stored
+        secret is refused, since both land in the pod as one variable.
+
+        Only where the room has a lane to ask with. A room with no secrets
+        platform has no secrets to clash with, and a platform that cannot
+        be asked right now is logged and skipped rather than failing the
+        variables half with it: the variables working without the platform
+        is the point of the two lists being two.
+        """
+        sero = app.state.clients.sero
+        email = _secrets_acting_email(agent, request)
+        if sero is None or not (email or "").strip():
+            return []
+        try:
+            return list(sero.list_keys(email, secret_path(agent.name)).keys)
+        except ClientError as exc:
+            log.warning(
+                "secrets read failed for agent %s (%s)", agent.name, type(exc).__name__
+            )
+            return []
 
     @app.put("/api/agents/{name}/env")
     def set_agent_env(
@@ -9105,7 +9141,13 @@ def create_app(
         except ClientError as exc:
             return _lane_failed("file read", agent, exc, AGENT_FILES_UNREACHABLE)
 
-        refusal = write_refusal(payload.set, payload.remove, sorted(current))
+        refusal = write_refusal(
+            payload.set,
+            payload.remove,
+            sorted(current),
+            taken=_stored_secret_names(agent, request),
+            taken_as="secret",
+        )
         if refusal is not None:
             return JSONResponse({"error": refusal}, status_code=422)
 
