@@ -6,6 +6,10 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The Permissions picker walks vendor, account, service.** The first level is the vendor (AWS, Google Cloud, Azure, Datadog, Atlassian, ...); a cloud then lists its accounts, projects or subscriptions (connected, or listed in the new org key `cloud_accounts` and not connected yet); a service vendor opens straight on its permissions. The last level is a searchable list of services with read access and one **Confirm request**; write tiers are not offered there. Ticking a service no longer closes the list (the first version re-derived the accordion's open state on every click). `GET /api/access/picker` now returns `vendors` with `accounts` and the vendor's permission tree; the agent's Access payload carries the same `vendors`.
+
 ## [0.3.2] - 2026-10-29
 
 ### Added

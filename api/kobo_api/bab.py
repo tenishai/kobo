@@ -39,6 +39,7 @@ ROOM_ACTOR = "room@kobo"
 
 class BabClient(Protocol):
     def health(self) -> bool: ...
+    def vendors(self, actor: str) -> list[dict]: ...
     def integrations(self, actor: str) -> list[dict]: ...
     def catalogue(self, vendor: str, actor: str) -> dict: ...
     def put_topology(self, agents: list[dict], actor: str) -> dict: ...
@@ -77,6 +78,16 @@ class HttpxBabClient:
             return self._client.get(f"{self._base_url}/healthz").status_code == 200
         except httpx.HTTPError:
             return False
+
+    def vendors(self, actor: str) -> list[dict]:
+        """The catalogue's vendors with their kind. An older bab (before 0.3.1) has no
+        such route; the caller derives vendors from the integrations instead."""
+        try:
+            return self._call("GET", "/catalogue", actor, what="the vendors").get("vendors", [])
+        except ClientError as exc:
+            if "404" in str(exc) or "Not Found" in str(exc):
+                return []
+            raise
 
     def integrations(self, actor: str) -> list[dict]:
         return self._call("GET", "/integrations", actor, what="the integrations").get("integrations", [])
@@ -168,36 +179,59 @@ def push_topology(bab: BabClient, agents, actor: str) -> dict | None:
 
 # ---- the picker ------------------------------------------------------------
 
+CLOUD_LABELS = {"aws": "AWS", "gcp": "Google Cloud", "azure": "Azure"}
+ACCOUNT_NOUN = {"aws": "account", "gcp": "project", "azure": "subscription"}
 
-def picker(bab: BabClient, actor: str) -> list[dict]:
-    """Every connected integration with its vendor's permission tree, grouped
-    the vendor's way with the tier as a column, and each permission marked
-    `above_ceiling` when the connection cannot honour it (greyed, never
-    hidden)."""
+
+def picker(bab: BabClient, actor: str, cloud_accounts=()) -> list[dict]:
+    """The tree the Permissions section walks: vendor, then (for a cloud) the
+    account, project or subscription, then the vendor's permissions grouped its
+    way with the tier as a column. Accounts come from two places: what is
+    connected in bab (connected, with its ceiling) and what the org config lists
+    (`cloud_accounts`; not connected until somebody connects it). A service
+    vendor has one "account": its connection, or a placeholder when none is
+    connected yet. Nothing above a connection's ceiling is hidden; the UI greys
+    it with the reason."""
+    integrations = bab.integrations(actor)
+    known = {v["vendor"]: v for v in bab.vendors(actor)}
+    names: list[str] = list(known)
+    for i in integrations:
+        if i["vendor"] not in names:
+            names.append(i["vendor"])
+    for a in cloud_accounts:
+        if a.vendor not in names:
+            names.append(a.vendor)
     out = []
-    trees: dict[str, dict] = {}
-    for integ in bab.integrations(actor):
-        vendor = integ["vendor"]
-        if vendor not in trees:
-            try:
-                trees[vendor] = bab.catalogue(vendor, actor)
-            except ClientError as exc:
-                log.warning("bab catalogue for %s unavailable: %s", vendor, exc)
-                trees[vendor] = {"groups": [], "tiers": []}
-        tree = trees[vendor]
-        ceiling = set(integ.get("ceiling") or [])
-        groups = [
-            {
-                "name": g["name"],
-                "permissions": [
-                    {**p, "above_ceiling": p["name"] not in ceiling}
-                    for p in g.get("permissions", [])
-                ],
-            }
-            for g in tree.get("groups", [])
-        ]
-        out.append({"id": integ["integration"], "vendor": vendor, "ceiling": sorted(ceiling),
-                    "groups": groups, "tiers": tree.get("tiers", [])})
+    for vendor in names:
+        meta = known.get(vendor) or {"kind": "cloud" if vendor in CLOUD_LABELS else "service",
+                                      "label": CLOUD_LABELS.get(vendor, vendor), "account": ACCOUNT_NOUN.get(vendor)}
+        try:
+            tree = bab.catalogue(vendor, actor)
+        except ClientError as exc:
+            log.warning("bab catalogue for %s unavailable: %s", vendor, exc)
+            tree = {"groups": [], "tiers": []}
+        connected = {i["integration"]: i for i in integrations if i["vendor"] == vendor}
+        accounts: list[dict] = []
+        if meta["kind"] == "cloud":
+            seen: set[str] = set()
+            for a in cloud_accounts:
+                if a.vendor != vendor:
+                    continue
+                row = connected.get(a.integration_id)
+                accounts.append({"id": a.integration_id, "name": a.name, "connected": row is not None,
+                                 "ceiling": sorted(row.get("ceiling") or []) if row else []})
+                seen.add(a.integration_id)
+            for iid, row in connected.items():
+                if iid not in seen:
+                    accounts.append({"id": iid, "name": iid, "connected": True, "ceiling": sorted(row.get("ceiling") or [])})
+        else:
+            for iid, row in connected.items():
+                accounts.append({"id": iid, "name": iid, "connected": True, "ceiling": sorted(row.get("ceiling") or [])})
+            if not accounts:
+                accounts.append({"id": vendor, "name": meta["label"], "connected": False, "ceiling": []})
+        out.append({"id": vendor, "kind": meta["kind"], "label": meta.get("label") or vendor,
+                    "account_noun": meta.get("account") or ("account" if meta["kind"] == "cloud" else None),
+                    "accounts": accounts, "groups": tree.get("groups", []), "tiers": tree.get("tiers", [])})
     return out
 
 

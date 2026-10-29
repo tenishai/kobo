@@ -1342,20 +1342,33 @@ export async function fetchAdminAddons(): Promise<AdminAddon[]> {
   return body.addons;
 }
 
-/** Access through bab (design 2026-10-27). One permission in a vendor's tree:
- * the tier is a column, and `above_ceiling` means the connection cannot
- * honour it (shown greyed with the reason, never hidden). */
+/** Access through bab (design 2026-10-27). One permission in a vendor's tree;
+ * the tier is a column. Whether an account's connection honours it is the
+ * account's `ceiling`, so the same tree serves every account of the vendor. */
 export type AccessPermission = {
   name: string;
   tier: "read" | "mutate" | "destroy" | string;
   description: string | null;
-  above_ceiling: boolean;
 };
 
-export type AccessIntegration = {
+/** One account, project or subscription of a cloud vendor, or the single
+ * connection of a service vendor. `connected` is whether the permission
+ * service can mint for it yet; `ceiling` is the most any agent may hold there. */
+export type AccessAccount = {
   id: string;
-  vendor: string;
+  name: string;
+  connected: boolean;
   ceiling: string[];
+};
+
+/** One vendor in the picker: a cloud (accounts underneath) or a service (one
+ * connection), with its permissions grouped the vendor's way. */
+export type AccessVendor = {
+  id: string;
+  kind: "cloud" | "service" | string;
+  label: string;
+  account_noun: string | null;
+  accounts: AccessAccount[];
   groups: { name: string; permissions: AccessPermission[] }[];
   tiers: { name: string; lease_seconds: number; validity_days: number | null }[];
 };
@@ -1400,7 +1413,7 @@ export type AgentAccess = {
   team: string | null;
   grants: AccessGrant[];
   pending: AccessRequest[];
-  integrations: AccessIntegration[];
+  vendors: AccessVendor[];
   can_request: boolean;
   can_decide: boolean;
 };
