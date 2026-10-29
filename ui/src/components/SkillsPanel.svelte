@@ -391,15 +391,43 @@
     return `${team} · ${sha}`;
   }
 
+  // A new skill starts from a template (#265): the frontmatter the runtime
+  // requires, with name: following the skill name field while the template
+  // is untouched, and a body stub to replace. The template counts as
+  // "unchanged" so Review waits for the owner to write something.
+  function skillTemplate(name: string): string {
+    return (
+      `---\nname: ${name || "skill-name"}\n` +
+      "description: One line on when the agent should use this.\n" +
+      "---\n\n# What to do\n\nWrite the guardrail here: what to check, what to refuse, what to say.\n"
+    );
+  }
+  let templateName = $state("");
+
   function openAdd(): void {
     target = { kind: "add" };
-    content = "";
-    originalContent = "";
+    templateName = "";
+    content = skillTemplate("");
+    originalContent = content;
     filename = "";
     reviewing = false;
     modalError = null;
     editLoad = { status: "ready" };
   }
+
+  $effect(() => {
+    if (target?.kind !== "add") return;
+    const next = filename;
+    if (content === skillTemplate(templateName) && next !== templateName) {
+      content = skillTemplate(next);
+      originalContent = content;
+      templateName = next;
+    }
+  });
+
+  const missingFrontmatter = $derived(
+    target?.kind === "add" && content.trim().length > 0 && !content.startsWith("---"),
+  );
 
   /** Opens the editor on an existing local skill, fetching its current
    * content first (unlike MemoryPanel's knowledge files, `AgentSkill` from
@@ -944,9 +972,16 @@
             rows="10"
             disabled={frozen}
           ></textarea>
-          <p class="skills-form__help">
-            Guardrail skills need frontmatter with name: and description: lines.
-          </p>
+          {#if missingFrontmatter}
+            <p class="skills-form__help">
+              No --- block at the top: the room adds one, named after the skill, with your first
+              line as the description.
+            </p>
+          {:else}
+            <p class="skills-form__help">
+              Keep the name: and description: lines at the top; write the guardrail below them.
+            </p>
+          {/if}
           {#if content.trim().length === 0}
             <p class="skills-form__help">Add a bit of text before saving.</p>
           {/if}

@@ -12,7 +12,14 @@ from kobo_api.config import Config
 from kobo_api.directory import CLUSTER_SILENT_NOTE, sweep_directory
 from kobo_api.main import create_app
 from kobo_api.models import Agent, AgentStatus, Base
-from tests.fakes import FakeAgent, FakeCabal, FakeCloud, FakeGitHub, FakeGojira, FakeKubectl
+from tests.fakes import (
+    FakeAgent,
+    FakeCabal,
+    FakeCloud,
+    FakeGitHub,
+    FakeGojira,
+    FakeKubectl,
+)
 from tests.test_api_org_status import (
     ASSERTION_HEADER,
     WHOAMI_AUDIENCE,

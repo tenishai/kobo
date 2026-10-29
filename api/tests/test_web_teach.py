@@ -31,8 +31,8 @@ from kobo_api.clients import ClientError, Clients
 from kobo_api.config import Config
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.intake import INTAKE_MAX_BYTES
-from kobo_api.main import create_app
 from kobo_api.learnings import SOURCE_TAUGHT
+from kobo_api.main import create_app
 from kobo_api.models import LEARNING_APPROVED, Agent, AgentLearning, AgentStatus, Base
 from kobo_api.teach import format_note, note_filename
 from tests.fakes import (

@@ -271,27 +271,34 @@ def test_save_local_skill_rejects_oversize_content():
     assert github.pushes == []
 
 
-def test_save_local_skill_rejects_missing_frontmatter():
+def test_save_local_skill_writes_frontmatter_for_a_plain_body():
+    """Data integrity (issue #265): what the owner wrote is kept whole and
+    only prefixed; the written file carries the frontmatter the runtime
+    requires, named after the skill id."""
     github = _CapturingGitHub()
-    with pytest.raises(SkillsError, match="skill frontmatter"):
-        save_local_skill(github, REPO, "survey-field", "No frontmatter here.\n")
-    assert github.pushes == []
+    save_local_skill(github, REPO, "survey-field", "# Survey first\nAsk before acting.\n")
+    assert github.captured_skills["survey-field/SKILL.md"] == (
+        "---\nname: survey-field\ndescription: Survey first\n---\n\n# Survey first\nAsk before acting.\n"
+    )
 
 
-def test_save_local_skill_rejects_frontmatter_missing_description():
+def test_save_local_skill_completes_a_frontmatter_missing_description():
     github = _CapturingGitHub()
-    content = "---\nname: x\n---\nBody\n"
+    save_local_skill(github, REPO, "survey-field", "---\nname: x\n---\nBody\n")
+    assert github.captured_skills["survey-field/SKILL.md"] == "---\nname: x\ndescription: Body\n---\nBody\n"
+
+
+def test_save_local_skill_rejects_a_frontmatter_nothing_can_complete():
+    github = _CapturingGitHub()
     with pytest.raises(SkillsError, match="skill frontmatter needs a description"):
-        save_local_skill(github, REPO, "survey-field", content)
+        save_local_skill(github, REPO, "survey-field", "---\nname: x\n---\n\n")
     assert github.pushes == []
 
 
-def test_save_local_skill_rejects_frontmatter_missing_name():
+def test_save_local_skill_completes_a_frontmatter_missing_name():
     github = _CapturingGitHub()
-    content = "---\ndescription: d\n---\nBody\n"
-    with pytest.raises(SkillsError, match="skill frontmatter needs a name"):
-        save_local_skill(github, REPO, "survey-field", content)
-    assert github.pushes == []
+    save_local_skill(github, REPO, "survey-field", "---\ndescription: d\n---\nBody\n")
+    assert github.captured_skills["survey-field/SKILL.md"] == "---\nname: survey-field\ndescription: d\n---\nBody\n"
 
 
 def test_save_local_skill_happy_path_writes_commits_and_returns_head():
