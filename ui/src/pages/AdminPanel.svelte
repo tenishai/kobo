@@ -97,7 +97,7 @@
     {:else if pane === "services"}
       <ServicesPane />
     {:else if pane === "integrations"}
-      <IntegrationsPane {item} />
+      <IntegrationsPane {item} {accessOn} />
     {:else if pane === "connections"}
       <ConnectionsPane {item} />
     {:else if pane === "review"}

@@ -2450,6 +2450,27 @@ def test_disconnect_reverses_the_three_steps(tmp_path, fake_storage):
     assert client.delete("/api/admin/integrations/datadog", headers=headers).status_code == 404
 
 
+def test_disconnecting_datadog_removes_the_permission_services_secret_and_row(tmp_path, fake_storage):
+    """Destruction safety: disconnecting Datadog deletes the Secret the permission service
+    reads and the connection held there, so no key the room wrote is left behind (kobo#322)."""
+    bab = FakeBab(integrations=[])
+    client, headers = _client__api_admin_integrations(tmp_path, fake_storage, _config(tmp_path, bab_url="http://bab.bab.svc:8080"),
+                                                       github=FakeGitHub(existing_repos={GATEWAY_REPO}), sero=FakeSero())
+    client.app.state.clients.bab = bab
+    body = {"vendor": "datadog", "name": "Datadog", "base_access": "read", "auth": "datadog_service_account",
+            "identity": {"service_account_id": "11111111-2222-3333-4444-555555555555"},
+            "secrets": {"API_KEY": "dd-api", "MGMT_APP_KEY": "dd-mgmt"}}
+    assert client.post("/api/admin/integrations", json=body, headers=headers).status_code == 201
+
+    out = client.delete("/api/admin/integrations/datadog", headers=headers).json()
+
+    assert out["secret"] == "removed" and out["access"].startswith("removed")
+    kubectl = client.app.state.clients.kubectl
+    assert kubectl.secrets_deleted == [("bab", "bab-datadog")] and ("bab", "bab-datadog") not in kubectl.secrets
+    assert bab.integrations("x") == []
+    assert client.get("/api/admin/integrations", headers=headers).json() == {"integrations": []}
+
+
 # --- from test_web_secrets.py ---
 
 

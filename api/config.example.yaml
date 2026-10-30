@@ -177,6 +177,12 @@ slack_tokens_path: null
 # section says it has nowhere to store.
 # room_namespace: kobo
 
+# The namespace the permission service (bab) runs in. With Access on, connecting
+# Datadog writes the service account's keys to the Secret bab-datadog there
+# (keys DD_SITE, DD_API_KEY, DD_MGMT_APP_KEY, DD_SERVICE_ACCOUNT_ID), which the
+# service's Deployment must mount as env. Deployment config, not org.yaml.
+# bab_namespace: bab
+
 # The secrets platform this room writes an agent's own secrets through: its
 # base URL, the OIDC audience this room's workload identity mints an ID
 # token for, and the team namespace the room's secrets live in over there.

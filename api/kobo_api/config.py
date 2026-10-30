@@ -391,6 +391,13 @@ class Config(BaseModel):
     # says so. Deployment-local like slack_tokens_secret above and
     # deliberately absent from org.py's ORG_KEYS. See kobo_api.room_services.
     room_namespace: str = ""
+    # The Kubernetes namespace the permission service (bab) runs in: where the
+    # room writes the Secret a vendor's room-held credential lives in when the
+    # service, not the gateway, mints from it (`bab-datadog` for Datadog,
+    # kobo#322), which the service's Deployment mounts as env. Deployment-local
+    # like room_namespace above and deliberately absent from org.py's ORG_KEYS:
+    # it names an object in THIS cluster.
+    bab_namespace: str = "bab"
     # The secrets platform's machine lane (2026-09-22): the service's base
     # URL, the OIDC audience this room's own workload identity mints an ID
     # token for (the lane's only accepted credential), and the team

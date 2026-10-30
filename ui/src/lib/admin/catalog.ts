@@ -2,9 +2,12 @@
 // integration, each with the credential shape it really uses (Kyle,
 // 2026-10-25): AWS is a role the gateway assumes, GCP is workload identity
 // or a service account to act as, Azure is a federated app registration,
-// Datadog and Wiz are service-account key pairs, the rest are API tokens.
+// Wiz is a service-account key pair, the rest are API tokens. Datadog, with the
+// permission service on, is a service account the service mints a scoped
+// application key per agent from (kobo#322); with it off, a key pair served
+// through the gateway (`DATADOG_GATEWAY`).
 // A vendor not on this list is still connectable as "Other" with a token.
-export type AuthKind = "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "azure_federated";
+export type AuthKind = "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "azure_federated" | "datadog_service_account";
 
 export type CatalogField = {
   key: string;
@@ -32,12 +35,14 @@ const TOKEN: CatalogField[] = [{ key: "TOKEN", label: "API token", secret: true 
 export const CATALOG: CatalogEntry[] = [
   { id: "atlassian", name: "Atlassian", summary: "Jira issues and Confluence pages.", auth: "token", fields: TOKEN, address: "https://mcp.atlassian.com/v1/mcp" },
   {
-    id: "datadog", name: "Datadog", summary: "Monitors, dashboards and logs.", auth: "api_keys",
+    id: "datadog", name: "Datadog", summary: "Monitors, dashboards and logs.", auth: "datadog_service_account",
     fields: [
+      { key: "service_account_id", label: "Service account id", secret: false, placeholder: "00000000-0000-0000-0000-000000000000" },
       { key: "API_KEY", label: "API key", secret: true },
-      { key: "APP_KEY", label: "Application key, from a Datadog service account", secret: true },
+      { key: "MGMT_APP_KEY", label: "Management application key, scoped to service_account_write", secret: true },
+      { key: "site", label: "Site", secret: false, optional: true, placeholder: "datadoghq.com" },
     ],
-    note: "Make the application key under a service account, not a person, so it outlives them.",
+    note: "Make a service account for the room with a role that holds service_account_write and every Datadog read permission; the room mints a short-lived, scoped application key per agent from it.",
   },
   {
     id: "gcp", name: "Google Cloud", summary: "Projects, resources and IAM.", auth: "gcp_identity",
@@ -71,6 +76,21 @@ export const CATALOG: CatalogEntry[] = [
 ];
 
 export const OTHER: CatalogEntry = { id: "", name: "", summary: "A vendor not on this list.", auth: "token", fields: TOKEN };
+
+/** Datadog with the permission service off: one key pair served through the gateway. */
+export const DATADOG_GATEWAY: CatalogEntry = {
+  id: "datadog", name: "Datadog", summary: "Monitors, dashboards and logs.", auth: "api_keys",
+  fields: [
+    { key: "API_KEY", label: "API key", secret: true },
+    { key: "APP_KEY", label: "Application key, from a Datadog service account", secret: true },
+  ],
+  note: "Make the application key under a service account, not a person, so it outlives them.",
+};
+
+/** The catalog as this room offers it: Datadog's shape follows whether the permission service is on. */
+export function catalogFor(accessOn: boolean): CatalogEntry[] {
+  return accessOn ? CATALOG : CATALOG.map((c) => (c.id === "datadog" ? DATADOG_GATEWAY : c));
+}
 
 export function catalogEntry(id: string): CatalogEntry | undefined {
   return CATALOG.find((c) => c.id === id);

@@ -25,10 +25,13 @@
     removeRoomServiceMutation,
     roomServicesQuery,
   } from "../../lib/queries";
-  import { CATALOG, OTHER, catalogEntry, type CatalogEntry } from "../../lib/admin/catalog";
+  import { OTHER, catalogFor, type CatalogEntry } from "../../lib/admin/catalog";
   import { whenDay } from "../../lib/time";
 
-  let { item = null }: { item?: string | null } = $props();
+  // `accessOn`: the permission service is on, so Datadog connects as a service account
+  // the service mints scoped keys from (kobo#322) rather than a key pair for the gateway.
+  let { item = null, accessOn = false }: { item?: string | null; accessOn?: boolean } = $props();
+  const catalog = $derived(catalogFor(accessOn));
 
   const queryClient = useQueryClient();
   const integrations = createQuery(() => (adminIntegrationsQuery()));
@@ -134,7 +137,7 @@
   const visibleServices = $derived(ROOM_SERVICES.filter((s) => s.name.toLowerCase().includes(search.trim().toLowerCase())));
   const connected = $derived(new Set(all.map((i) => i.vendor)));
   // A second AWS organization is a second row, so AWS stays addable.
-  const addable = $derived(CATALOG.filter((c) => c.id === "aws" || !connected.has(c.id)));
+  const addable = $derived(catalog.filter((c) => c.id === "aws" || !connected.has(c.id)));
 
   let catalogOpen = $state(false);
   let form = $state<{
@@ -154,7 +157,7 @@
   // A deep link `#/admin/integrations/<vendor>` opens that vendor's form.
   $effect(() => {
     if (item && !form) {
-      const preset = catalogEntry(item);
+      const preset = catalog.find((c) => c.id === item);
       if (preset) openConnect(preset);
     }
   });
@@ -462,7 +465,9 @@
         <label><input type="radio" name="base_access" value="write" bind:group={form.base_access} /> read and write</label>
       </fieldset>
       {#if formError}<p class="page__foot fail">{formError}</p>{/if}
-      {#if form.entry.fields.some((f) => f.secret)}
+      {#if form.entry.auth === "datadog_service_account"}
+        <p class="page__foot">The keys are kept for the permission service alone and never shown again; it checks them with Datadog before anything is saved.</p>
+      {:else if form.entry.fields.some((f) => f.secret)}
         <p class="page__foot">Secret values are stored in the room's secrets service and never shown again.</p>
       {/if}
     </form>

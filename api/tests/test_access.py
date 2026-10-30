@@ -5785,6 +5785,26 @@ def test_an_organization_then_its_accounts_register_themselves(tmp_path, fake_st
     assert bad.status_code == 409
 
 
+def test_a_datadog_probe_the_permission_service_refuses_connects_nothing(tmp_path, fake_storage):
+    """Gate (integrity): a Datadog service account the permission service cannot mint from is
+    connected nowhere: the Secret written for the probe is taken back, no row here, none in
+    the service. A service not yet configured for Datadog keeps the Secret for its next
+    restart and the row waits, saying so (kobo#322)."""
+    bab = FakeBab(integrations=[])
+    client, headers = _access_client(tmp_path, fake_storage, bab=bab)
+    kubectl = client.app.state.clients.kubectl
+    body = {"vendor": "datadog", "name": "Datadog", "base_access": "read", "auth": "datadog_service_account",
+            "identity": {"service_account_id": "refuse-me"}, "secrets": {"API_KEY": "dd-api", "MGMT_APP_KEY": "dd-mgmt"}}
+    response = client.post("/api/admin/integrations", json=body, headers=headers)
+    assert response.status_code == 409 and "connect again" in response.json()["error"]
+    assert bab.integrations("x") == [] and client.get("/api/admin/integrations", headers=headers).json()["integrations"] == []
+    assert ("bab", "bab-datadog") not in kubectl.secrets
+    # Not configured yet: the Secret stays for the service's next restart and the row says so.
+    response = client.post("/api/admin/integrations", json={**body, "identity": {"service_account_id": "unconfigured-sa"}}, headers=headers)
+    assert response.status_code == 201 and response.json()["state"] == "pending"
+    assert "next restart" in response.json()["state_detail"] and ("bab", "bab-datadog") in kubectl.secrets
+
+
 # --- from test_composer.py ---
 
 
