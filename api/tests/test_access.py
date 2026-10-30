@@ -5850,6 +5850,14 @@ def test_datadog_through_the_permission_service_adds_its_mcp_server_to_the_gatew
     assert row["spec"]["address"] == "https://mcp.us5.datadoghq.com/v1"
 
 
+def test_removing_an_integration_twice_is_not_a_refusal(tmp_path, fake_storage):
+    """Gate (integrity): a second Remove while the first is still opening the gateway's pull
+    request finds nothing on either side; that is "already removed", not an error."""
+    client, headers = _access_client(tmp_path, fake_storage, bab=FakeBab(integrations=[]))
+    response = client.delete("/api/admin/integrations/datadog", headers=headers)
+    assert response.status_code == 200 and response.json()["access"] == "already removed", response.text
+
+
 def test_the_gateway_lane_follows_the_datadog_permission(tmp_path, fake_storage):
     """Gate (authorization): approving an agent's first Datadog permission opens its lane on the
     gateway (scope `datadog:read`, handlers `datadog` and `datadog-mcp`) beside what its grant

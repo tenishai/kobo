@@ -357,9 +357,15 @@
               </td>
               <td><span class="chip">{kindLabel(i)}</span></td>
               <td>
-                <span class="status status--{STATE[i.state]?.tone ?? "warn"}" title={i.state_detail ?? ""}>
-                  <span class="status__dot" aria-hidden="true"></span>{STATE[i.state]?.label ?? i.state}
-                </span>
+                {#if disconnect.isPending && disconnect.variables === i.id}
+                  <span class="status status--warn" title="Removing from the permission service, the secrets and the gateway; the gateway's pull request takes a moment.">
+                    <span class="status__dot" aria-hidden="true"></span>Removing…
+                  </span>
+                {:else}
+                  <span class="status status--{STATE[i.state]?.tone ?? "warn"}" title={i.state_detail ?? ""}>
+                    <span class="status__dot" aria-hidden="true"></span>{STATE[i.state]?.label ?? i.state}
+                  </span>
+                {/if}
               </td>
               <td class="quiet">{when(i.created_at)}</td>
               <td class="panel__cell--right">
