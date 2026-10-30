@@ -5870,9 +5870,12 @@ def test_datadog_through_the_permission_service_adds_its_mcp_server_to_the_gatew
     hand = ('[[target]]\nname = "other"\naddress = "https://o"\n\n# Datadog, by hand (two\n# comment lines).\n[[target]]\n'
             'name = "datadog-mcp"\naddress = "https://old"\n[target.credential_headers]\nDD_API_KEY = "DD_API_KEY"\n')
     assert _without_stanza(hand, "datadog-mcp") == '[[target]]\nname = "other"\naddress = "https://o"\n'
-    # The add pull request merges; the disconnect opens the one that removes the target whole,
-    # on its own branch.
+    # The add pull request merges: the next look at the pane finds out, the row is Connected
+    # and the link is gone (kobo#327); the disconnect then opens the one that removes the
+    # target whole, on its own branch.
     github.close_pr(GATEWAY_REPO, row["spec"]["pull_request"], "merged")
+    listed = next(r for r in client.get("/api/admin/integrations", headers=headers).json()["integrations"] if r["id"] == "datadog")
+    assert listed["state"] == "applied" and "pull_request" not in listed["spec"] and "merged" in listed["state_detail"], listed
     out = client.delete(f"/api/admin/integrations/{row['id']}", headers=headers).json()
     assert out["gateway"].startswith("pull request open") and out["secret"] == "removed"
     assert github.open_pr_calls[-1]["branch"] == "kobo/integration-datadog-remove"

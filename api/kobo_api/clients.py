@@ -466,6 +466,13 @@ class GitHubClient(Protocol):
         """
         ...
 
+    def pr_state(self, repo: str, pr_url: str) -> str:
+        """`"open"`, `"merged"`, `"closed"` (closed without merging) or
+        `"unknown"` (gone, or GitHub could not be asked) for the pull request
+        at `pr_url`. Read-only; never raises. The room reads this to let a row
+        that waits on a pull request it opened learn the outcome."""
+        ...
+
     def close_pr(self, repo: str, pr_url: str, comment: str) -> None:
         """Close the pull request at `pr_url`, leaving `comment` on it
         first so nobody finds a request of the room's closed with no word
@@ -855,6 +862,17 @@ class GhCLI:
             ],
             env=self._env(),
         )
+
+    def pr_state(self, repo: str, pr_url: str) -> str:
+        try:
+            out = self._runner.run(
+                [self._gh, "pr", "view", pr_url, "--repo", repo, "--json", "state", "--jq", ".state"],
+                env=self._env(),
+            )
+        except ClientError as exc:
+            log.info("pull request state for %s unavailable: %s", pr_url, exc)
+            return "unknown"
+        return {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}.get(out.strip().upper(), "unknown")
 
     def find_pr(self, repo: str, *, branch: str) -> str | None:
         out = self._runner.run(
