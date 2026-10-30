@@ -11,10 +11,11 @@
   //   - One picker over two lists (issue #266): "Browse the catalog" (an
   //     inline, toggleable debounced search adapted from CreateModal's old
   //     skill search) and "Suggestions" each show a checkbox per row; the
-  //     ticks feed one sticky "Add N skills" bar and one confirm, which
-  //     sends ONE batch request (one change, one rebuild). The chosen rows
-  //     appear in the table at once, marked Delivering, until the delivery
-  //     for that push lands; errors show in both lists.
+  //     ticks feed one sticky "Save N skills" bar that sends ONE batch
+  //     request at once, no second confirm (issue #287). The chosen rows
+  //     appear in the table the moment Save is pressed and wear a state
+  //     chip (Pending, Building, Rolling, Active, Failed) that follows the
+  //     delivery of the sha the save returned; errors show in both lists.
   //   - "New guardrail skill": opens the shared editor Modal (copied from
   //     MemoryPanel: filename + textarea, review-with-diff, then save).
   //   - Edit / Remove on an existing row: Edit re-opens that same Modal in
@@ -24,17 +25,14 @@
   //     ahead of the familiar review/diff/save flow); Remove opens a
   //     confirm step, same Modal again.
   //
-  // Delivery-chip reactivity: copied verbatim from MemoryPanel/SlackPanel —
-  // see MemoryPanel's doc comment for why `deliverySha` is a plain
-  // `writable`/`derived` pair rather than `$state`/`$derived` (the installed
-  // @tanstack/svelte-query adapter only re-derives a query's options from an
-  // actual Svelte store). `deliveryQuery` itself is shared as-is: it checks
+  // Delivery reactivity: `deliveryQuery` is shared with MemoryPanel/SlackPanel
+  // as-is (one poll per sha, stops on a terminal state). It checks
   // git ancestry vs. the live image for a given sha, a question that has
   // nothing knowledge-specific about it despite living under a
   // "knowledge/delivery" path — any sha this room pushes (a knowledge save,
   // a skill add/edit/remove) is delivered and checked the same way.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { derived, writable } from "svelte/store";
+  import { untrack } from "svelte";
   import ErrorState from "./ErrorState.svelte";
   import Modal from "./Modal.svelte";
   import Skeleton from "./Skeleton.svelte";
@@ -45,6 +43,7 @@
     reportDelivery as noteDeliveryState,
   } from "../lib/delivery.svelte";
   import { lineDiff, type DiffLine } from "../lib/diff";
+  import { toast } from "../lib/toast.svelte";
   import {
     addCatalogSkillsMutation,
     agentSkillsQuery,
@@ -85,32 +84,118 @@
   // svelte-ignore state_referenced_locally
   const deleteMutation = createMutation(() => (deleteSkillMutation(queryClient, agentName)));
 
-  // --- Delivery chip (copied pattern from MemoryPanel; see its doc comment
-  // and the module comment above for the full rationale) -------------------
+  // --- Delivery, per row (issues #266, #287) -------------------------------
+  //
+  // Every change this panel pushes comes back with a sha. The rows that sha
+  // carried (`carried`, by skill name) wear a chip that follows the delivery
+  // poll of that sha: Pending (saved, or still being saved), Building (the
+  // agent is being rebuilt), Rolling (the new agent is starting), Active
+  // (in place; the chip fades after a few seconds and the row is an ordinary
+  // row again), Failed (the server's sentence; the row stays until the owner
+  // removes it or saves again). One state per sha applies to every row it
+  // carried. Only the newest sha is polled: a later commit carries the
+  // earlier content too, so a new save re-points every row still on its way
+  // onto its own sha, and that one delivery answers for all of them. A row
+  // with no sha yet is a save whose request is still in flight.
 
   const DELIVERED_CLEAR_MS = 5000;
 
+  type Phase = "pending" | "building" | "rolling" | "delivered" | "failed" | "unknown";
+  type Carry = { sha: string | null; row: AgentSkill };
+  type ShaState = { state: string; detail: string | null };
+
+  let carried = $state<Record<string, Carry>>({});
+  /** What the poll has said so far about each sha this panel pushed. */
+  const shaStates = $state<Record<string, ShaState>>({});
   let deliverySha = $state<string | null>(null);
   const delivery = createQuery(() => (deliveryQuery(agentName, deliverySha)));
 
   let clearTimer: ReturnType<typeof setTimeout> | undefined;
 
-  function beginDelivery(sha: string): void {
+  function phaseOf(sha: string | null): Phase {
+    if (sha === null) {
+      return "pending";
+    }
+    const known = shaStates[sha];
+    if (known === undefined) {
+      return "pending";
+    }
+    switch (known.state) {
+      case "building":
+      case "rolling":
+      case "delivered":
+      case "failed":
+      case "unknown":
+        return known.state;
+      default:
+        // A state this code does not know yet is still on its way: never
+        // claim success or failure it cannot back up.
+        return "pending";
+    }
+  }
+
+  /** A save just returned `sha` for `names`. Rows still on their way (from
+   * an earlier save) ride this sha from now on; rows already Active are
+   * done and leave the record. */
+  function beginDelivery(sha: string, names: string[]): void {
     if (clearTimer !== undefined) {
       clearTimeout(clearTimer);
       clearTimer = undefined;
     }
+    const next: Record<string, Carry> = {};
+    for (const [name, carry] of Object.entries(carried)) {
+      if (names.includes(name)) {
+        next[name] = { ...carry, sha };
+      } else if (phaseOf(carry.sha) !== "delivered") {
+        next[name] = { ...carry, sha };
+      }
+    }
+    carried = next;
     deliverySha = sha;
-    // The agent header reads this to say Updating, not Down, while the
-    // rebuild this push started is rolling (issue #268).
+    // The page reads this to freeze its controls and say Updating while
+    // the rebuild this push started is on its way (issues #268, #290).
     noteDeliveryBegan(agentName, sha);
   }
 
+  // Every poll answer is recorded against its sha (the rows read it) and
+  // goes to the page-wide delivery record (the header and the freeze).
+  // The writes are untracked: both records are read by what this effect
+  // writes to, and an effect that depends on its own writes never settles.
   $effect(() => {
-    if (delivery.data?.state !== "delivered") {
+    const sha = deliverySha;
+    if (sha === null) {
+      return;
+    }
+    const answer: ShaState | null = delivery.isError
+      ? {
+          state: "unknown",
+          detail: errorMessage(delivery.error, "Couldn't check on your changes."),
+        }
+      : (delivery.data ?? null);
+    if (answer === null) {
+      return;
+    }
+    untrack(() => {
+      shaStates[sha] = answer;
+      noteDeliveryState(agentName, sha, answer.state);
+    });
+  });
+
+  // Active fades: a few seconds after the newest sha lands, the rows it
+  // carried are ordinary rows again (the skills query already lists them).
+  $effect(() => {
+    const sha = deliverySha;
+    if (sha === null || shaStates[sha]?.state !== "delivered") {
       return;
     }
     clearTimer = setTimeout(() => {
+      const next: Record<string, Carry> = {};
+      for (const [name, carry] of Object.entries(carried)) {
+        if (carry.sha !== sha) {
+          next[name] = carry;
+        }
+      }
+      carried = next;
       deliverySha = null;
       clearTimer = undefined;
     }, DELIVERED_CLEAR_MS);
@@ -122,59 +207,47 @@
     };
   });
 
-  // Every poll answer goes to the page-wide delivery record (for the
-  // header), and a terminal answer ends the table's Delivering marks.
-  $effect(() => {
-    if (deliverySha === null) {
-      delivering = {};
-      return;
+  type Chip = { tone: "pending" | "ok" | "fail" | "unknown"; label: string; text: string | null };
+
+  /** The chip a row (or the table head) wears for a phase. `detail` is the
+   * server's sentence, shown for Failed and for a poll that could not be
+   * made. */
+  function chipFor(phase: Phase, detail: string | null): Chip {
+    switch (phase) {
+      case "building":
+        return { tone: "pending", label: "Building", text: null };
+      case "rolling":
+        return { tone: "pending", label: "Rolling", text: null };
+      case "delivered":
+        return { tone: "ok", label: "Active", text: null };
+      case "failed":
+        return {
+          tone: "fail",
+          label: "Failed",
+          text: detail ?? "Something went wrong. Try saving again.",
+        };
+      case "unknown":
+        return { tone: "unknown", label: "Unknown", text: detail };
+      default:
+        return { tone: "pending", label: "Pending", text: null };
     }
-    if (delivery.isError) {
-      noteDeliveryState(agentName, deliverySha, "unknown");
-      return;
+  }
+
+  function chipOf(sha: string | null): Chip {
+    return chipFor(phaseOf(sha), sha === null ? null : (shaStates[sha]?.detail ?? null));
+  }
+
+  /** The table head wears the chip only when no row does: a removal has no
+   * row left to carry it. */
+  const headChip = $derived.by((): Chip | null => {
+    const sha = deliverySha;
+    if (sha === null || Object.values(carried).some((carry) => carry.sha === sha)) {
+      return null;
     }
-    const state = delivery.data?.state;
-    if (state === undefined) {
-      return;
-    }
-    noteDeliveryState(agentName, deliverySha, state);
-    if (state === "delivered" || state === "failed") {
-      delivering = {};
-    }
+    return chipOf(sha);
   });
 
-  type DeliveryView = { tone: "pending" | "ok" | "fail"; text: string };
-
-  const deliveryView = $derived.by((): DeliveryView => {
-    if (delivery.isError) {
-      return {
-        tone: "fail",
-        text: errorMessage(delivery.error, "Couldn't check on your changes."),
-      };
-    }
-    const data = delivery.data;
-    if (data === undefined) {
-      return { tone: "pending", text: "Delivering changes…" };
-    }
-    if (data.state === "delivered") {
-      return { tone: "ok", text: "Changes are in place" };
-    }
-    if (data.state === "failed") {
-      return {
-        tone: "fail",
-        text: errorMessage(
-          data.detail !== null ? new Error(data.detail) : undefined,
-          "Something went wrong. Try saving again.",
-        ),
-      };
-    }
-    // "building" | "rolling", or any state this code doesn't recognize yet —
-    // treated the same as still-in-progress, never claiming success or
-    // failure it can't back up.
-    return { tone: "pending", text: "Delivering changes…" };
-  });
-
-  // --- The picker: debounced catalog search + suggestions, ticks, one add --
+  // --- The picker: debounced catalog search + suggestions, ticks, one save -
   // (search markup adapted from CreateModal's skill search — see its own
   // doc comment for why the debounced term lives in a plain `writable`
   // rather than `$derived`; same @tanstack/svelte-query version constraint.)
@@ -194,10 +267,6 @@
   // change so the derived count and the row checkboxes follow.
   let picked = $state<Record<string, CatalogEntry>>({});
   const pickedCount = $derived(Object.keys(picked).length);
-  // Skills the last add pushed, shown in the table at once as Delivering
-  // until the delivery for that push lands (the effect above clears it).
-  let delivering = $state<Record<string, CatalogEntry>>({});
-
   let catalogSearchParams = $state<{ q: string; team: string | null }>({
     q: "",
     team: null,
@@ -252,7 +321,7 @@
 
   /** Carried already, or on its way: either way the row says Added. */
   function alreadyCarried(skillName: string): boolean {
-    return (skills.data?.some((s) => s.name === skillName) ?? false) || skillName in delivering;
+    return (skills.data?.some((s) => s.name === skillName) ?? false) || skillName in carried;
   }
 
   function togglePick(entry: CatalogEntry): void {
@@ -273,49 +342,54 @@
   }
 
   /** The table's rows: what the agent carries, then what is on its way
-   * and not yet listed (the optimistic rows), each shaped like a catalog
-   * pick with no pin yet. */
+   * and not yet listed (the rows a save put there), each shaped like a
+   * catalog pick with no pin yet. */
   const tableRows = $derived.by((): AgentSkill[] => {
-    const carried = skills.data ?? [];
-    const names = new Set(carried.map((s) => s.name));
-    const pending = Object.values(delivering)
-      .filter((entry) => !names.has(entry.name))
-      .map(
-        (entry): AgentSkill => ({
-          name: entry.name,
-          team: entry.team,
-          source: "catalog",
-          sha: null,
-          editable: false,
-        }),
-      );
-    return [...carried, ...pending];
+    const listed = skills.data ?? [];
+    const names = new Set(listed.map((s) => s.name));
+    const pending = Object.values(carried)
+      .map((carry) => carry.row)
+      .filter((row) => !names.has(row.name));
+    return [...listed, ...pending];
   });
 
-  function addLabel(count: number): string {
-    return count === 1 ? "Add 1 skill" : `Add ${count} skills`;
+  function saveLabel(count: number): string {
+    return count === 1 ? "Save 1 skill" : `Save ${count} skills`;
   }
 
-  function handleAddPicked(): void {
+  /** Save at once (issue #287): the picked rows join the table as Pending
+   * before the request answers; the sha it returns drives their chips from
+   * then on. A refused pick leaves the table and is named in the lists; a
+   * failed request takes every row back and keeps the ticks for a retry. */
+  function handleSavePicked(): void {
     const entries = Object.values(picked);
-    if (entries.length === 0) {
+    if (entries.length === 0 || addPicked.isPending) {
       return;
     }
-    modalError = null;
     pickerError = null;
+    const names = entries.map((entry) => entry.name);
+    const next = { ...carried };
+    for (const entry of entries) {
+      next[entry.name] = {
+        sha: null,
+        row: { name: entry.name, team: entry.team, source: "catalog", sha: null, editable: false },
+      };
+    }
+    carried = next;
     addPicked.mutate(
       entries.map((entry) => ({ name: entry.name, team: entry.team })),
       {
         onSuccess: (result) => {
-          const landed: Record<string, CatalogEntry> = {};
-          for (const name of result.added) {
-            const entry = picked[name];
-            if (entry !== undefined) {
-              landed[name] = entry;
+          const kept = { ...carried };
+          for (const name of names) {
+            if (!result.added.includes(name)) {
+              delete kept[name];
             }
           }
-          delivering = landed;
-          beginDelivery(result.sha);
+          carried = kept;
+          if (result.added.length > 0) {
+            beginDelivery(result.sha, result.added);
+          }
           if (result.refused.length > 0) {
             pickerError =
               "Not added: " +
@@ -323,25 +397,27 @@
               ".";
           }
           picked = {};
-          closeModal();
         },
         onError: (err: unknown) => {
-          const message = errorMessage(err, "Couldn't add those skills. Try again.");
-          modalError = message;
+          const kept = { ...carried };
+          for (const name of names) {
+            delete kept[name];
+          }
+          carried = kept;
+          const message = errorMessage(err, "Couldn't save those skills. Try again.");
           pickerError = message;
+          toast.error("Couldn't save the skills", message);
         },
       },
     );
   }
 
-  // --- Modal: new/edit local skill, delete (either class), or confirm the
-  // picked batch ------------------------------------------------------------
+  // --- Modal: new/edit local skill, or delete (either class) --------------
 
   type Target =
     | { kind: "edit"; skill: AgentSkill }
     | { kind: "add" }
-    | { kind: "delete"; skill: AgentSkill }
-    | { kind: "batch" };
+    | { kind: "delete"; skill: AgentSkill };
 
   type EditLoad = { status: "loading" } | { status: "error"; message: string } | { status: "ready" };
 
@@ -465,14 +541,6 @@
     modalError = null;
   }
 
-  function openBatchConfirm(): void {
-    if (pickedCount === 0) {
-      return;
-    }
-    target = { kind: "batch" };
-    modalError = null;
-  }
-
   function closeModal(): void {
     target = null;
     content = "";
@@ -513,7 +581,7 @@
   });
 
   const canReview = $derived.by((): boolean => {
-    if (target === null || target.kind === "delete" || target.kind === "batch") {
+    if (target === null || target.kind === "delete") {
       return false;
     }
     if (target.kind === "edit" && editLoad.status !== "ready") {
@@ -549,23 +617,28 @@
     if (target.kind === "delete") {
       return `Remove ${target.skill.name}`;
     }
-    if (target.kind === "batch") {
-      return addLabel(pickedCount);
-    }
     return `Edit ${target.skill.name}`;
   });
 
+  /** A guardrail skill saved from the editor ends in the same table with
+   * the same chips as a catalog pick (issue #287): the row is added (or,
+   * for an edit, marked) and rides the sha the save returned. */
   function handleSave(): void {
-    if (target === null || target.kind === "delete" || target.kind === "batch") {
+    if (target === null || target.kind === "delete") {
       return;
     }
     const skillId = target.kind === "edit" ? target.skill.name : filename;
+    const row: AgentSkill =
+      target.kind === "edit"
+        ? target.skill
+        : { name: skillId, team: null, source: "local", sha: null, editable: true };
     modalError = null;
     saveMutation.mutate(
       { skillId, content },
       {
         onSuccess: (result) => {
-          beginDelivery(result.sha);
+          carried = { ...carried, [skillId]: { sha: result.sha, row } };
+          beginDelivery(result.sha, [skillId]);
           closeModal();
         },
         onError: (err: unknown) => {
@@ -583,7 +656,10 @@
     modalError = null;
     deleteMutation.mutate(skillId, {
       onSuccess: (result) => {
-        beginDelivery(result.sha);
+        const kept = { ...carried };
+        delete kept[skillId];
+        carried = kept;
+        beginDelivery(result.sha, []);
         closeModal();
       },
       onError: (err: unknown) => {
@@ -738,7 +814,7 @@
 
   {#if pickedCount > 0}
     <!-- Sticks to the bottom of the view while the lists above are long,
-         so the add is always in reach. -->
+         so the save is always in reach. One press saves (issue #287). -->
     <div class="skills-panel__pickbar" role="region" aria-label="Skills picked">
       <span class="skills-panel__pickbar-count">
         {pickedCount === 1 ? "1 skill picked" : `${pickedCount} skills picked`}
@@ -747,27 +823,35 @@
         <button type="button" class="btn btn--quiet" disabled={frozen} onclick={clearPicks}>
           Clear
         </button>
-        <button type="button" class="btn btn--primary" disabled={frozen} onclick={openBatchConfirm}>
-          {addLabel(pickedCount)}
+        <button
+          type="button"
+          class="btn btn--primary"
+          disabled={frozen || addPicked.isPending}
+          onclick={handleSavePicked}
+        >
+          {addPicked.isPending ? "Saving…" : saveLabel(pickedCount)}
         </button>
       </span>
     </div>
   {/if}
 
-  <!-- The delivery chip sits here, beside the table, so it is in view
-       without scrolling past a long list (issue #266). -->
+  <!-- A change with no row to wear its chip (a removal) reports here,
+       beside the table, so it is in view without scrolling (issue #266). -->
   <div class="skills-panel__table-head">
     <h3 class="panel__subheading">What it carries</h3>
-    {#if deliverySha !== null}
+    {#if headChip !== null}
       <div
-        class="skills-panel__delivery skills-panel__delivery--{deliveryView.tone}"
+        class="skills-panel__delivery skills-panel__delivery--{headChip.tone}"
         role="status"
         aria-live="polite"
       >
-        {#if deliveryView.tone === "pending"}
+        {#if headChip.tone === "pending"}
           <span class="skills-panel__delivery-dot pulse" aria-hidden="true"></span>
         {/if}
-        <span>{deliveryView.text}</span>
+        <span>{headChip.label}</span>
+        {#if headChip.text !== null}
+          <span class="skills-panel__delivery-text">{headChip.text}</span>
+        {/if}
       </div>
     {/if}
   </div>
@@ -799,16 +883,26 @@
           </tr>
         {/if}
         {#each tableRows as skill (skill.name)}
-          {@const onItsWay = skill.name in delivering}
+          {@const carry = carried[skill.name]}
+          {@const chip = carry === undefined ? null : chipOf(carry.sha)}
+          <!-- Edit and Remove rest only while the row is on its way. A
+               Failed row keeps both: removing it or saving again is how
+               the owner moves on. -->
+          {@const onItsWay = chip !== null && chip.tone === "pending"}
           <tr class="skill-row">
             <td><code class="panel__name">{skill.name}</code></td>
             <td>
               <span class="skill-row__provenance">{provenanceLine(skill)}</span>
-              {#if onItsWay}
-                <span class="skill-row__delivering">
-                  <span class="skills-panel__delivery-dot pulse" aria-hidden="true"></span>
-                  Delivering
+              {#if chip !== null}
+                <span class="skill-row__state skill-row__state--{chip.tone}">
+                  {#if chip.tone === "pending"}
+                    <span class="skills-panel__delivery-dot pulse" aria-hidden="true"></span>
+                  {/if}
+                  {chip.label}
                 </span>
+                {#if chip.text !== null}
+                  <span class="skill-row__state-text">{chip.text}</span>
+                {/if}
               {/if}
             </td>
             <td class="panel__cell--right">
@@ -861,30 +955,6 @@
           onclick={handleDelete}
         >
           {deleteMutation.isPending ? "Removing…" : "Remove"}
-        </button>
-      </div>
-    {:else if t.kind === "batch"}
-      <p class="skills-modal__confirm-text">
-        {pickedCount === 1 ? "This skill lands" : "These skills land together"} as one change
-        to what {agentName} can do.
-      </p>
-      <ul class="skills-modal__picks">
-        {#each Object.values(picked) as entry (entry.name)}
-          <li><code class="panel__name">{entry.name}</code> <span class="skills-panel__badge">{entry.team}</span></li>
-        {/each}
-      </ul>
-      {#if modalError}
-        <p class="skills-modal__error" role="alert">{modalError}</p>
-      {/if}
-      <div class="skills-modal__actions">
-        <button type="button" class="skills-modal__cancel" disabled={frozen} onclick={closeModal}>Cancel</button>
-        <button
-          type="button"
-          class="skills-modal__primary"
-          disabled={frozen || addPicked.isPending}
-          onclick={handleAddPicked}
-        >
-          {addPicked.isPending ? "Adding…" : addLabel(pickedCount)}
         </button>
       </div>
     {:else if t.kind === "edit" && editLoad.status !== "ready"}
@@ -1213,28 +1283,40 @@
     margin-top: var(--space-xs);
   }
 
-  .skill-row__delivering {
+  /* The state chip a row wears while a save is on its way: amber and
+     pulsing until it lands, green for Active, red for Failed. */
+  .skill-row__state {
     display: inline-flex;
     align-items: center;
     gap: var(--space-2xs);
     margin-left: var(--space-xs);
+    padding: 0 var(--space-xs);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 0.75rem;
+    line-height: 1.5;
+  }
+
+  .skill-row__state--ok {
+    border-color: var(--ok);
+    color: var(--ok);
+  }
+
+  .skill-row__state--fail {
+    border-color: var(--fail);
+    color: var(--fail);
+  }
+
+  .skill-row__state-text {
+    display: block;
+    margin-top: var(--space-2xs);
     color: var(--muted);
     font-size: 0.8rem;
   }
 
-  .skills-modal__picks {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .skills-modal__picks li {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
+  .skills-panel__delivery-text {
+    color: var(--muted);
   }
 
   .skills-panel__delivery {
