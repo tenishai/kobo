@@ -620,6 +620,9 @@ def test_whoami_with_iap_operator_email_reports_email_and_operator_true(tmp_path
         "admin_panel": False,
         "logout_url": None,
         "access_on": False,
+        # No GitHub app from the room or the deployment config: the agent's
+        # Repositories card greys out on this flag (#304).
+        "github_available": False,
         # shared-group + group-requests wave: an admin's whoami also carries
         # the pending-queue badge count (kobo_api.main.whoami) -- zero here
         # since this test seeds no GroupRequest rows.

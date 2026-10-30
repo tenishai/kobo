@@ -20,6 +20,7 @@
     requestRepoAccess,
   } from "../lib/api";
   import { ApiError } from "../lib/api";
+  import { whoamiQuery } from "../lib/queries";
   import ErrorState from "./ErrorState.svelte";
   import Skeleton from "./Skeleton.svelte";
 
@@ -28,19 +29,30 @@
   const queryClient = useQueryClient();
   const REPO_SHAPE = /^[\w.-]+\/[\w.-]+$/;
 
+  // The room says up front whether it holds a GitHub app for pull requests
+  // (`whoami.github_available`, #304), so the card greys out before any
+  // request is made. Only an explicit false greys it: an older server
+  // carries no flag at all.
+  const who = createQuery(() => (whoamiQuery()));
+  const githubOff = $derived(who.data?.github_available === false);
+
   const rows = createQuery(() => ({
     queryKey: ["repo-access", agentName],
     queryFn: async () => {
       const all = await listRepoAccess();
       return all.results.filter((row) => row.agent === agentName);
     },
+    // Waits for whoami to settle (it is usually already cached by the shell),
+    // so a room without the app is never asked for rows; a whoami that
+    // failed does not hold the list back.
+    enabled: !who.isPending && !githubOff,
   }));
 
-  // 503 from the list means the room has no pull request app configured
-  // (#270): a state of the room, not a failure of this page, so the card
-  // says so in one line and offers nothing to retry.
+  // 503 from the list means the same thing from a room that answered the
+  // list before the flag (#270): a state of the room, not a failure of this
+  // page, so the card greys out and offers nothing to retry.
   const brokerOff = $derived(
-    rows.isError && rows.error instanceof ApiError && rows.error.status === 503,
+    githubOff || (rows.isError && rows.error instanceof ApiError && rows.error.status === 503),
   );
 
   let draft = $state("");
@@ -108,7 +120,7 @@
     </div>
   {/if}
 
-  {#if requestOpen}
+  {#if requestOpen && !brokerOff}
     <div class="panel__drawer repo-access__drawer">
       <label class="repo-access__label" for="repo-access-draft">
         One owner/name per line
@@ -137,13 +149,15 @@
     </div>
   {/if}
 
-  {#if rows.isPending}
+  {#if brokerOff}
+    <!-- The room has no GitHub integration (#304): the whole body is one
+         greyed box, no fields and no buttons, until an admin sets it up. -->
+    <div class="panel__locked" role="status">
+      <p class="panel__locked-text">Ask a kobo admin to add the GitHub integration.</p>
+      <p class="panel__locked-where">Admin &gt; Integrations &gt; GitHub.</p>
+    </div>
+  {:else if rows.isPending}
     <Skeleton rows={2} />
-  {:else if brokerOff}
-    <p class="panel__note" role="status">
-      This room has no GitHub app for pull requests, so agents can't open them. A room operator
-      adds it under <a href="#/admin/integrations">Admin &gt; Integrations</a>.
-    </p>
   {:else if rows.isError}
     <ErrorState
       message={errorMessage(rows.error, "Repo access could not be loaded.")}

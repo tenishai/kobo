@@ -763,36 +763,31 @@
   </div>
 
   {#if !slackAvailable}
-    <p class="panel__note slack-panel__unavailable" role="status">
-      Slack isn't set up for this room yet. A room operator adds the Slack config tokens under
-      <a href="#/admin/integrations">Admin &gt; Integrations</a> before any agent can {firstRun ? "connect" : "reconnect"} an app.
-    </p>
-  {/if}
-
-  {#if firstRun}
-    {#if slackAvailable}
-      <!-- "Where it answers" comes first: the manifest in the next step
-           carries the event list the Wakes on choice decides (#262). -->
-      <ol class="slack-panel__steps">
-        <li class="slack-panel__step">
-          <h3 class="slack-panel__step-title">Where it answers</h3>
-          <div class="slack-panel__step-body">
-            {@render channels()}
-            {@render wakeChoice()}
-          </div>
-        </li>
-        {@render manifestStep()}
-        {@render valuesStep()}
-      </ol>
-    {:else}
-      {@render channels()}
-      {@render wakeChoice()}
-    {/if}
+    <!-- The room has no Slack integration (#304): the whole body is one
+         greyed box, no fields and no buttons, until an admin sets it up. -->
+    <div class="panel__locked" role="status">
+      <p class="panel__locked-text">Ask a kobo admin to add the Slack integration.</p>
+      <p class="panel__locked-where">Admin &gt; Integrations &gt; Slack.</p>
+    </div>
+  {:else if firstRun}
+    <!-- "Where it answers" comes first: the manifest in the next step
+         carries the event list the Wakes on choice decides (#262). -->
+    <ol class="slack-panel__steps">
+      <li class="slack-panel__step">
+        <h3 class="slack-panel__step-title">Where it answers</h3>
+        <div class="slack-panel__step-body">
+          {@render channels()}
+          {@render wakeChoice()}
+        </div>
+      </li>
+      {@render manifestStep()}
+      {@render valuesStep()}
+    </ol>
   {:else}
     {@render channels()}
     {@render wakeChoice()}
 
-    <div class="slack-panel__reconnect" hidden={!slackAvailable}>
+    <div class="slack-panel__reconnect">
       <button
         type="button"
         class="btn btn--quiet"
@@ -811,62 +806,64 @@
     </div>
   {/if}
 
-  <div class="panel__footer">
-    {#if saveError}
-      <p class="panel__status panel__status--fail" role="alert">{saveError}</p>
-    {:else if deliverySha !== null}
-      <p
-        class="panel__status slack-panel__status--{deliveryView.tone}"
-        role="status"
-        aria-live="polite"
-      >
-        {#if deliveryView.tone === "pending"}
-          <span class="slack-panel__delivery-dot pulse" aria-hidden="true"></span>
-        {/if}
-        <span>{deliveryView.text}</span>
-      </p>
-    {/if}
-    <div class="panel__actions">
-      {#if firstRun}
-        <button
-          type="button"
-          class="btn btn--quiet"
-          disabled={frozen || saving || !hasPending}
-          onclick={discard}
+  {#if slackAvailable}
+    <div class="panel__footer">
+      {#if saveError}
+        <p class="panel__status panel__status--fail" role="alert">{saveError}</p>
+      {:else if deliverySha !== null}
+        <p
+          class="panel__status slack-panel__status--{deliveryView.tone}"
+          role="status"
+          aria-live="polite"
         >
-          Cancel
-        </button>
-        <button
-          type="button"
-          class="btn"
-          class:btn--primary={!copyIsPrimary}
-          disabled={!canConnect}
-          onclick={handleSave}
-        >
-          {primaryLabel}
-        </button>
-      {:else}
-        {#if hasPending}
+          {#if deliveryView.tone === "pending"}
+            <span class="slack-panel__delivery-dot pulse" aria-hidden="true"></span>
+          {/if}
+          <span>{deliveryView.text}</span>
+        </p>
+      {/if}
+      <div class="panel__actions">
+        {#if firstRun}
           <button
             type="button"
             class="btn btn--quiet"
-            disabled={frozen || saving}
+            disabled={frozen || saving || !hasPending}
             onclick={discard}
           >
-            Discard
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="btn"
+            class:btn--primary={!copyIsPrimary}
+            disabled={!canConnect}
+            onclick={handleSave}
+          >
+            {primaryLabel}
+          </button>
+        {:else}
+          {#if hasPending}
+            <button
+              type="button"
+              class="btn btn--quiet"
+              disabled={frozen || saving}
+              onclick={discard}
+            >
+              Discard
+            </button>
+          {/if}
+          <button
+            type="button"
+            class="btn btn--primary"
+            disabled={!canSave}
+            onclick={handleSave}
+          >
+            {primaryLabel}
           </button>
         {/if}
-        <button
-          type="button"
-          class="btn btn--primary"
-          disabled={!canSave}
-          onclick={handleSave}
-        >
-          {primaryLabel}
-        </button>
-      {/if}
+      </div>
     </div>
-  </div>
+  {/if}
 </section>
 
 <style>

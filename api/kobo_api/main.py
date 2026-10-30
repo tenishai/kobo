@@ -3436,6 +3436,10 @@ def create_app(
             # Identity and access section, since access is asked for under
             # Permissions (issue #292).
             "access_on": getattr(app.state.clients, "bab", None) is not None,
+            # Whether the room holds a GitHub app for pull requests, from the
+            # room or the deployment config: the agent's Repositories card
+            # greys out until an admin adds the GitHub integration (#304).
+            "github_available": _github_app() is not None,
         }
         if is_admin:
             result["pending_group_requests"] = (
@@ -6576,7 +6580,7 @@ def create_app(
 
     def _github_app() -> room_services_store.GitHubAppCredentials | None:
         """The GitHub app the pull request broker mints with: the one a room
-        operator pasted under Admin > Integrations > Room services first,
+        admin set up as the GitHub integration (Admin > Integrations) first,
         else the three pr_app_* config values (kobo_api.room_services,
         issue #284). Resolved per request, so a paste needs no restart."""
         clients = app.state.clients

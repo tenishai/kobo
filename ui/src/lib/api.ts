@@ -280,6 +280,9 @@ export type Whoami = {
   /** True when the permission service is on; the Harness then has no
    * Identity and access section (#292). */
   access_on?: boolean;
+  /** True when the room holds a GitHub app for pull requests, from the room
+   * or the deployment config; the Repositories card greys out on false (#304). */
+  github_available?: boolean;
   logout_url?: string | null;
 };
 

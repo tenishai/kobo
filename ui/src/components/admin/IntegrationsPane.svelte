@@ -41,9 +41,12 @@
   let checked = $state<Record<string, OrgAccountsCheck>>({});
   let checking = $state<string | null>(null);
 
-  // Room services (#284): the two things the room itself uses, Slack config
-  // tokens and the GitHub app for pull requests. Pasted once, read live; a
-  // value the deployment config carries shows as set by deployment.
+  // The room's own two services (#284, rows in this table since #304): the
+  // Slack config tokens it creates agents' Slack apps with and the GitHub app
+  // that opens their pull requests. Always listed, never "added"; pasted
+  // once, read live; a value the deployment config carries shows as set by
+  // deployment. Remove on these rows calls the room-services DELETE, never
+  // a vendor disconnect.
   const roomServices = createQuery(() => (roomServicesQuery()));
   const putService = createMutation(() => (putRoomServiceMutation(queryClient)));
   const removeService = createMutation(() => (removeRoomServiceMutation(queryClient)));
@@ -52,7 +55,7 @@
     {
       id: "slack",
       name: "Slack",
-      summary: "Lets the room create and remove Slack apps for agents.",
+      summary: "Lets the room create agents' Slack apps.",
       where: "Both values come from api.slack.com/apps, under Your App Configuration Tokens; generate a token for your workspace and paste the pair.",
       fields: [
         { key: "config_token", label: "App configuration token", secret: true, placeholder: "xoxe.xoxp-..." },
@@ -61,8 +64,8 @@
     },
     {
       id: "github",
-      name: "GitHub app for pull requests",
-      summary: "The app agents open pull requests through, scoped per agent to the repositories you approve.",
+      name: "GitHub",
+      summary: "Opens agents' pull requests, scoped to the repositories you approve.",
       where: "App ID and the private key come from the app's settings page on GitHub (Developer settings, GitHub Apps); the installation ID is the number at the end of the installation's URL under Install App.",
       fields: [
         { key: "app_id", label: "App ID", secret: false, placeholder: "123456" },
@@ -116,7 +119,6 @@
   }
 
   function whenBy(s: RoomServiceStatus): string {
-    if (s.source === "deployment") return "From the room's deployment config";
     if (s.source !== "room") return "";
     const at = whenDay(s.updated_at);
     return [at, s.updated_by ? `by ${s.updated_by}` : ""].filter(Boolean).join(" ");
@@ -129,6 +131,7 @@
   const roots = $derived(all.filter((i) => i.spec.kind !== "account" && !i.spec.parent));
   const childrenOf = $derived((org: AdminIntegration) => all.filter((i) => i.spec.parent === org.id));
   const visibleRoots = $derived(roots.filter((r) => matches(r) || childrenOf(r).some(matches)));
+  const visibleServices = $derived(ROOM_SERVICES.filter((s) => s.name.toLowerCase().includes(search.trim().toLowerCase())));
   const connected = $derived(new Set(all.map((i) => i.vendor)));
   // A second AWS organization is a second row, so AWS stays addable.
   const addable = $derived(CATALOG.filter((c) => c.id === "aws" || !connected.has(c.id)));
@@ -265,59 +268,10 @@
   <div>
     <h2 id="integrations-heading" class="page__title">Integrations</h2>
     <p class="page__lead">
-      The vendors agents can reach. A cloud is an organization with the accounts connected under it;
-      a service vendor is one connection. What each agent may do there is granted under Permissions.
+      The vendors agents can reach, and the two services the room itself uses: Slack and GitHub.
+      A cloud is an organization with the accounts connected under it; a service vendor is one connection.
+      What each agent may do there is granted under Permissions.
     </p>
-  </div>
-  <div class="room-services">
-    <h3 id="room-services-heading" class="room-services__title">Room services</h3>
-    <p class="page__lead">
-      What the room itself uses: the Slack config tokens it creates agents' Slack apps with, and the GitHub app that opens their pull requests.
-      Paste the values once and they are used at once; a value the room's deployment config carries shows as set by deployment.
-    </p>
-    {#if roomServices.isPending}
-      <p class="page__foot">Reading the room's services…</p>
-    {:else if roomServices.isError}
-      <p class="page__foot">Could not read the room's services just now.</p>
-    {:else if roomServices.data}
-      {@const data = roomServices.data}
-      <div class="table-card" aria-labelledby="room-services-heading">
-        {#if !data.can_store}
-          <p class="panel__empty">{data.note}</p>
-        {:else}
-          <table class="panel__table">
-            <thead>
-              <tr><th>Service</th><th>Status</th><th>Set</th><th class="panel__cell--right"></th></tr>
-            </thead>
-            <tbody>
-              {#each ROOM_SERVICES as svc (svc.id)}
-                {@const s = data.services[svc.id]}
-                <tr>
-                  <td>
-                    <span class="name">{svc.name}</span>
-                    <span class="quiet addr">{svc.summary}</span>
-                  </td>
-                  <td>
-                    <span class="status status--{SERVICE_STATE[s.source].tone}">
-                      <span class="status__dot" aria-hidden="true"></span>{SERVICE_STATE[s.source].label}
-                    </span>
-                  </td>
-                  <td class="quiet">{whenBy(s)}</td>
-                  <td class="panel__cell--right">
-                    <button type="button" class="btn btn--quiet" onclick={() => openService(svc.id)}>
-                      {s.source === "room" ? "Replace" : "Set up"}
-                    </button>
-                    {#if s.source === "room"}
-                      <button type="button" class="btn btn--quiet" disabled={removeService.isPending} onclick={() => (removingService = svc.id)}>Remove</button>
-                    {/if}
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {/if}
-      </div>
-    {/if}
   </div>
 
   <div class="page__toolbar">
@@ -331,83 +285,118 @@
     <p class="page__foot">Could not read the integrations just now.</p>
   {:else}
     <div class="table-card">
-      {#if all.length === 0}
-        <p class="panel__empty">Nothing connected yet. Add an integration: an AWS organization, or a vendor the room holds one connection to.</p>
-      {:else}
-        <table class="panel__table">
-          <thead>
-            <tr><th>Name</th><th>Kind</th><th>Status</th><th>Added</th><th class="panel__cell--right"></th></tr>
-          </thead>
-          <tbody>
-            {#each visibleRoots as i (i.id)}
-              <tr>
+      <table class="panel__table">
+        <thead>
+          <tr><th>Name</th><th>Kind</th><th>Status</th><th>Added</th><th class="panel__cell--right"></th></tr>
+        </thead>
+        <tbody>
+          {#each visibleServices as svc (svc.id)}
+            {@const s = serviceStatus(svc.id)}
+            <tr>
+              <td>
+                <span class="name">{svc.name}</span>
+                <span class="quiet addr">{svc.summary}</span>
+              </td>
+              <td><span class="chip">service</span></td>
+              <td>
+                {#if s}
+                  <span class="status status--{SERVICE_STATE[s.source].tone}">
+                    <span class="status__dot" aria-hidden="true"></span>{SERVICE_STATE[s.source].label}
+                  </span>
+                {:else if roomServices.isError}
+                  <span class="quiet">Could not read</span>
+                {:else}
+                  <span class="quiet">Reading…</span>
+                {/if}
+              </td>
+              <td class="quiet">{s ? whenBy(s) : ""}</td>
+              <td class="panel__cell--right">
+                {#if s?.source === "deployment"}
+                  <span class="quiet">from deployment config</span>
+                {:else if s && roomServices.data && !roomServices.data.can_store}
+                  <span class="quiet" title={roomServices.data.note ?? ""}>nowhere to store it on this room</span>
+                {:else if s?.source === "room"}
+                  <button type="button" class="btn btn--quiet" onclick={() => openService(svc.id)}>Replace</button>
+                  <button type="button" class="btn btn--quiet" disabled={removeService.isPending} onclick={() => (removingService = svc.id)}>Remove</button>
+                {:else if s}
+                  <button type="button" class="btn btn--quiet" onclick={() => openService(svc.id)}>Set up</button>
+                {/if}
+              </td>
+            </tr>
+          {/each}
+          {#if all.length === 0 && !search.trim()}
+            <tr><td colspan="5"><p class="panel__empty">Nothing connected yet. Add an integration: an AWS organization, or a vendor the room holds one connection to.</p></td></tr>
+          {/if}
+          {#each visibleRoots as i (i.id)}
+            <tr>
+              <td>
+                <span class="name">{i.name}</span>
+                {#if i.spec.address}<span class="quiet addr">{i.spec.address}</span>{/if}
+                {#if i.spec.source === "access" && i.spec.kind !== "org"}<span class="quiet addr">in the permission service{i.spec.ceiling?.length ? `, ${i.spec.ceiling.length} permission${i.spec.ceiling.length === 1 ? "" : "s"} agents may ask for` : ""}</span>{/if}
+              </td>
+              <td><span class="chip">{kindLabel(i)}</span></td>
+              <td>
+                <span class="status status--{STATE[i.state]?.tone ?? "warn"}" title={i.state_detail ?? ""}>
+                  <span class="status__dot" aria-hidden="true"></span>{STATE[i.state]?.label ?? i.state}
+                </span>
+              </td>
+              <td class="quiet">{when(i.created_at)}</td>
+              <td class="panel__cell--right">
+                {#if i.spec.kind === "org"}
+                  <button type="button" class="btn btn--quiet" disabled={checking !== null} onclick={() => handleCheck(i)}>
+                    {checking === i.id ? "Checking…" : "Check accounts"}
+                  </button>
+                {/if}
+                {#if i.spec.pull_request}
+                  <a class="btn btn--quiet" href={i.spec.pull_request} target="_blank" rel="noreferrer">Pull request</a>
+                {/if}
+                <button type="button" class="btn btn--quiet" disabled={disconnect.isPending} onclick={() => (removing = i)}>Remove</button>
+              </td>
+            </tr>
+            {#each childrenOf(i).filter((c) => !search.trim() || matches(c) || matches(i)) as c (c.id)}
+              <tr class="child">
                 <td>
-                  <span class="name">{i.name}</span>
-                  {#if i.spec.address}<span class="quiet addr">{i.spec.address}</span>{/if}
-                  {#if i.spec.source === "access" && i.spec.kind !== "org"}<span class="quiet addr">in the permission service{i.spec.ceiling?.length ? `, ${i.spec.ceiling.length} permission${i.spec.ceiling.length === 1 ? "" : "s"} agents may ask for` : ""}</span>{/if}
+                  <span class="child__tick" aria-hidden="true">└</span>
+                  <span class="name">{c.name}</span>
+                  {#if c.spec.account_id}<span class="quiet addr">{c.spec.account_id}</span>{/if}
+                  {#if c.spec.ceiling?.length}<span class="quiet addr">{c.spec.ceiling.length} permission{c.spec.ceiling.length === 1 ? "" : "s"} agents may ask for</span>{/if}
                 </td>
-                <td><span class="chip">{kindLabel(i)}</span></td>
+                <td><span class="chip">account</span></td>
                 <td>
-                  <span class="status status--{STATE[i.state]?.tone ?? "warn"}" title={i.state_detail ?? ""}>
-                    <span class="status__dot" aria-hidden="true"></span>{STATE[i.state]?.label ?? i.state}
+                  <span class="status status--{STATE[c.state]?.tone ?? "warn"}" title={c.state_detail ?? ""}>
+                    <span class="status__dot" aria-hidden="true"></span>{STATE[c.state]?.label ?? c.state}
                   </span>
                 </td>
-                <td class="quiet">{when(i.created_at)}</td>
+                <td class="quiet">{when(c.created_at)}</td>
                 <td class="panel__cell--right">
-                  {#if i.spec.kind === "org"}
-                    <button type="button" class="btn btn--quiet" disabled={checking !== null} onclick={() => handleCheck(i)}>
-                      {checking === i.id ? "Checking…" : "Check accounts"}
-                    </button>
-                  {/if}
-                  {#if i.spec.pull_request}
-                    <a class="btn btn--quiet" href={i.spec.pull_request} target="_blank" rel="noreferrer">Pull request</a>
-                  {/if}
-                  <button type="button" class="btn btn--quiet" disabled={disconnect.isPending} onclick={() => (removing = i)}>Remove</button>
+                  <button type="button" class="btn btn--quiet" disabled={disconnect.isPending} onclick={() => (removing = c)}>Remove</button>
                 </td>
               </tr>
-              {#each childrenOf(i).filter((c) => !search.trim() || matches(c) || matches(i)) as c (c.id)}
-                <tr class="child">
-                  <td>
-                    <span class="child__tick" aria-hidden="true">└</span>
-                    <span class="name">{c.name}</span>
-                    {#if c.spec.account_id}<span class="quiet addr">{c.spec.account_id}</span>{/if}
-                    {#if c.spec.ceiling?.length}<span class="quiet addr">{c.spec.ceiling.length} permission{c.spec.ceiling.length === 1 ? "" : "s"} agents may ask for</span>{/if}
-                  </td>
-                  <td><span class="chip">account</span></td>
-                  <td>
-                    <span class="status status--{STATE[c.state]?.tone ?? "warn"}" title={c.state_detail ?? ""}>
-                      <span class="status__dot" aria-hidden="true"></span>{STATE[c.state]?.label ?? c.state}
-                    </span>
-                  </td>
-                  <td class="quiet">{when(c.created_at)}</td>
-                  <td class="panel__cell--right">
-                    <button type="button" class="btn btn--quiet" disabled={disconnect.isPending} onclick={() => (removing = c)}>Remove</button>
-                  </td>
-                </tr>
-              {/each}
-              {#each checked[i.id]?.without_role ?? [] as w (w.id)}
-                <tr class="child child--waiting">
-                  <td>
-                    <span class="child__tick" aria-hidden="true">└</span>
-                    <span class="name">{w.name}</span>
-                    <span class="quiet addr">{w.id}</span>
-                  </td>
-                  <td><span class="chip">account</span></td>
-                  <td>
-                    <span class="status status--warn" title={w.reason ?? ""}>
-                      <span class="status__dot" aria-hidden="true"></span>No role yet
-                    </span>
-                  </td>
-                  <td class="quiet"></td>
-                  <td class="panel__cell--right quiet">Deploy the template, then check again</td>
-                </tr>
-              {/each}
-            {:else}
-              <tr><td colspan="5"><p class="panel__empty">No integration matches that.</p></td></tr>
             {/each}
-          </tbody>
-        </table>
-      {/if}
+            {#each checked[i.id]?.without_role ?? [] as w (w.id)}
+              <tr class="child child--waiting">
+                <td>
+                  <span class="child__tick" aria-hidden="true">└</span>
+                  <span class="name">{w.name}</span>
+                  <span class="quiet addr">{w.id}</span>
+                </td>
+                <td><span class="chip">account</span></td>
+                <td>
+                  <span class="status status--warn" title={w.reason ?? ""}>
+                    <span class="status__dot" aria-hidden="true"></span>No role yet
+                  </span>
+                </td>
+                <td class="quiet"></td>
+                <td class="panel__cell--right quiet">Deploy the template, then check again</td>
+              </tr>
+            {/each}
+          {:else}
+            {#if visibleServices.length === 0}
+              <tr><td colspan="5"><p class="panel__empty">No integration matches that.</p></td></tr>
+            {/if}
+          {/each}
+        </tbody>
+      </table>
     </div>
   {/if}
 </section>
@@ -512,9 +501,9 @@
 <Modal open={removingService !== null} title={removingService ? `Remove ${serviceDef(removingService).name}?` : ""} size="narrow" onclose={() => (removingService = null)}>
   <p class="page__lead">
     {#if removingService === "slack"}
-      The room forgets its Slack config tokens. Agents keep the Slack apps they already have, but no new app can be connected until a pair is set again, or the deployment config carries one.
+      The room forgets its Slack config tokens. Agents keep the Slack apps they already have, but no new app can be connected until a pair is set again, or the deployment config carries one; every agent's Slack tab greys out until then.
     {:else}
-      The room forgets the GitHub app. Agents can't open pull requests until an app is set again, or the deployment config carries one.
+      The room forgets the GitHub app. Agents can't open pull requests until an app is set again, or the deployment config carries one; every agent's Repositories card greys out until then.
     {/if}
   </p>
   {#snippet footer()}
@@ -538,8 +527,6 @@
 </Modal>
 
 <style>
-  .room-services { display: flex; flex-direction: column; gap: var(--space-sm); }
-  .room-services__title { margin: 0; font-size: 1rem; font-weight: 600; }
   .child td:first-child { padding-left: 1.75rem; }
   .child--waiting .name { color: var(--muted); font-weight: 500; }
   .child__tick { margin-right: 0.35rem; color: var(--muted); }

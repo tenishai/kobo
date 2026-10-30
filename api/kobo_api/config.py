@@ -381,8 +381,8 @@ class Config(BaseModel):
     # it names an object in THIS cluster, not anything the org hands out.
     slack_tokens_secret: str = ""
     # The Kubernetes namespace this room runs in: where it keeps the values
-    # an operator pastes under Admin > Integrations > Room services (issue
-    # #284), the Slack config-token pair and the GitHub app for pull
+    # an admin pastes under Admin > Integrations, the Slack and GitHub rows
+    # (issues #284, #304): the Slack config-token pair and the GitHub app for pull
     # requests, one Secret per service (`kobo-room-slack`,
     # `kobo-room-github-app`) read and written through the same kubectl
     # calls slack_tokens_secret uses. Empty (the default) means the room
