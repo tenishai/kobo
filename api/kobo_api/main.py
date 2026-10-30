@@ -75,6 +75,7 @@ from kobo_api.archetypes import (
 )
 from kobo_api.avatars import avatar_prompt, set_avatar
 from kobo_api.bab import A2A_ASK as BAB_A2A_ASK
+from kobo_api.bab import AGENTS_VENDOR as BAB_AGENTS_VENDOR
 from kobo_api.bab import ROOM_ACTOR as BAB_ROOM_ACTOR
 from kobo_api.bab import active_leases as bab_active_leases
 from kobo_api.bab import actor_for as bab_actor_for
@@ -4213,6 +4214,11 @@ def create_app(
             try:
                 for i in bab.integrations(_bab_actor(request)):
                     if i["integration"] in known:
+                        continue
+                    # An agent's `agents` entry is how the permission service grants
+                    # "may ask this agent" (kobo#310); it is plumbing behind Review and
+                    # the Access tab, not something an operator connects here.
+                    if i.get("vendor") == BAB_AGENTS_VENDOR:
                         continue
                     rows.append({
                         "id": i["integration"], "vendor": i["vendor"], "name": i["integration"], "base_access": "read",

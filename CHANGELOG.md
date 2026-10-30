@@ -6,6 +6,10 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Admin > Integrations no longer lists the permission service's per-agent `agents` entries; they are plumbing behind Review and the Access tab (#310).
+
 ## [0.3.12] - 2026-10-30
 
 ### Added
