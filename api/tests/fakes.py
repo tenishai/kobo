@@ -882,6 +882,13 @@ class FakeGitHub:
         self.open_pr_calls.append(
             {"workdir": workdir, "repo": repo, "branch": branch, "title": title, "body": body}
         )
+        # A pull request's branch is pushed content too: `pushed_file` reads it, while
+        # `push_count` stays what `commit_push` did (a push to the checked-out branch),
+        # so a test can assert a gateway edit went out as a branch and never as a
+        # default-branch push (kobo 0.3.17).
+        self._pushed_trees.append(
+            {p.relative_to(workdir).as_posix(): p.read_bytes() for p in workdir.rglob("*") if p.is_file()}
+        )
         self._snapshot_pushed_content(repo, workdir)
         self._open_prs[f"{repo}#{branch}"] = self._pr_url
         self._existing_branches.add(f"{repo}#{branch}")
