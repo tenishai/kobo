@@ -3553,6 +3553,17 @@ def test_asking_another_teams_agent_is_a_permission_request_on_the_target_not_an
     assert c.get("/api/agents/asker/requestable", headers=h).json()["already"] == [{"name": "oracle", "status": "accepted"}]
 
 
+def test_agents_entries_never_show_on_the_integrations_page(a2a_room):
+    """Wire shape (kobo#310): the permission service's `agents` rows are plumbing behind
+    Review and the Access tab; Admin > Integrations lists vendors only."""
+    c, h, _ = a2a_room.client, a2a_room.headers, a2a_room.bab
+    r = c.post("/api/agents/asker/access/requests", headers=h, json={"integration": "oracle", "permissions": ["a2a_ask"], "note": None})
+    assert r.status_code == 201, r.text
+    rows = c.get("/api/admin/integrations", headers=h).json()["integrations"]
+    assert [x for x in rows if x["vendor"] == "agents"] == []
+
+
+
 # --- the room's audit log (issue #316) ---
 
 
