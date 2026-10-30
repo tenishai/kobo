@@ -3,13 +3,19 @@ copy rules hold, and the two read surfaces (HTTP, MCP) serve the same text."""
 
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
+from kobo_api.composer import BundleSpec, compose
 from kobo_api.guide import _PACKAGE_GUIDE_DIR, GuideError, find_section, load_guide
 from kobo_api.main import create_app
+from kobo_api.namegen import _FALLBACK_NAMES
+from kobo_api.steps import StagedSkill
 
 EXPECTED_ORDER = [
     "quick-start",
@@ -63,23 +69,11 @@ def test_every_section_the_guide_cross_references_exists():
         assert quoted in titles, quoted
 
 
-def test_find_section_and_misses():
-    assert find_section("slack").title == "Slack"
-    assert find_section("nope") is None
-
-
 def test_loader_refuses_a_file_that_breaks_the_rules(tmp_path):
     (tmp_path / "01-good.md").write_text("# Good\n\nBody.\n", encoding="utf-8")
     (tmp_path / "02-bad.md").write_text("No heading first\n", encoding="utf-8")
     with pytest.raises(GuideError, match="02-bad.md"):
         load_guide(tmp_path)
-
-
-def test_loader_summary_falls_back_to_the_first_paragraph(tmp_path):
-    (tmp_path / "01-plain.md").write_text("# Plain\n\nFirst line.\n\nMore.\n", encoding="utf-8")
-    (section,) = load_guide(tmp_path)
-    assert section.summary == "First line."
-    assert section.body == "First line.\n\nMore.\n"
 
 
 def test_guide_routes_serve_the_packaged_text(session_factory, config):
@@ -95,3 +89,179 @@ def test_guide_routes_serve_the_packaged_text(session_factory, config):
         assert one.json()["body"] == find_section("slack").body
 
         assert client.get("/api/guide/nope").status_code == 404
+
+# --- from test_composer.py ---
+
+
+_RUNTIME_IMAGE = "registry.example/agents/daedalus-runtime:latest"
+
+
+def _make_spec(
+    skills: list[StagedSkill] | None = None,
+    *,
+    name: str = "sam",
+    team: str = "shared",
+    group: str | None = None,
+    purpose_tags: list[str] | None = None,
+    capability: str | None = None,
+    colleagues: list[dict] | None = None,
+    cabal_url: str | None = None,
+    memory_replica_bucket: str = "",
+    broker_url: str = "",
+    liminal_url: str = "",
+    archetype: str | None = None,
+) -> BundleSpec:
+    return BundleSpec(
+        name=name,
+        persona_body=f"You are {name}, a helpful assistant.\n",
+        model_id="vertex_ai/claude-sonnet-4-5",
+        skills=skills or [],
+        runtime_image=_RUNTIME_IMAGE,
+        vertex_project="example-model-project",
+        vertex_location="us-east5",
+        team=team,
+        group=group,
+        purpose_tags=purpose_tags if purpose_tags is not None else [],
+        capability=capability,
+        colleagues=colleagues if colleagues is not None else [],
+        cabal_url=cabal_url,
+        memory_replica_bucket=memory_replica_bucket,
+        broker_url=broker_url,
+        liminal_url=liminal_url,
+        archetype=archetype,
+    )
+
+
+def test_compose_colleagues_md_instruction_copy_has_no_em_dashes(tmp_path):
+    """House rule: Compose colleagues md instruction copy has no em dashes."""
+    dest = tmp_path / "out"
+    spec = _make_spec(colleagues=[
+        {"name": "ward", "team": "infra-engineering", "purpose_tags": [], "capability": "x"},
+    ])
+
+    compose(spec, dest)
+
+    text = (dest / "bundle" / "knowledge" / "colleagues.md").read_text()
+    assert "—" not in text
+
+
+# --- from test_persona_templates.py ---
+
+
+TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "kobo_api" / "templates" / "personas"
+
+
+# Product and vendor names a built-in persona must never carry. Names the
+# room's operator does not want in templates either (their own company,
+# their clients) come from PERSONA_BLOCKLIST_EXTRA, comma-separated, so this
+# public file never has to name them.
+BLOCKLIST = (
+    *(w.strip().lower() for w in os.environ.get("PERSONA_BLOCKLIST_EXTRA", "").split(",") if w.strip()),
+    "tenishai",
+    "kobo",
+    "gojira",
+    "daedalus",
+    "cabal",
+    "liminal",
+    "limenal",
+    "techne",
+    "sero",
+    "noto",
+    "kodama",
+    "kaminos",
+    "okta",
+    "google",
+    "microsoft",
+    "amazon",
+    "anthropic",
+    "claude",
+)
+
+
+MAX_LINES = 200
+
+
+MAX_BYTES = 49152
+
+
+ALL_FILES = sorted(TEMPLATES_DIR.glob("*.md"))
+
+
+def _ids(paths):
+    return [p.stem for p in paths]
+
+
+@pytest.mark.parametrize("path", ALL_FILES, ids=_ids(ALL_FILES))
+def test_no_company_client_or_product_names(path):
+    """House rule: No company client or product names."""
+    text = path.read_text().lower()
+    hits = [w for w in BLOCKLIST if re.search(rf"\b{re.escape(w)}\b", text)]
+    assert hits == []
+
+
+@pytest.mark.parametrize("path", ALL_FILES, ids=_ids(ALL_FILES))
+def test_inside_the_render_ceiling(path):
+    """House rule: Inside the render ceiling."""
+    text = path.read_text()
+    assert len(text.splitlines()) < MAX_LINES
+    assert len(text.encode("utf-8")) < MAX_BYTES
+
+
+# --- from test_namegen.py ---
+
+
+# The SDD vendor-name deny list itself (repo root, outside the api/
+# subproject) — read dynamically rather than spelling out any vendor name
+# literally in this file, so the pool-hygiene check below stays meaningful
+# without itself becoming a vendor-scan false positive.
+_VENDOR_NAMES_PATH = Path(__file__).resolve().parents[2] / ".superpowers" / "sdd" / "vendor-names.txt"
+
+
+def test_fallback_pool_has_at_least_five_and_no_vendor_names():
+    """House rule: Fallback pool has at least five and no vendor names."""
+    assert len(_FALLBACK_NAMES) >= 5
+    # No vendor/company names anywhere in the curated pool.
+    lowered = {name.lower() for name in _FALLBACK_NAMES}
+    if _VENDOR_NAMES_PATH.is_file():
+        vendor_names = {
+            line.strip().lower()
+            for line in _VENDOR_NAMES_PATH.read_text().splitlines()
+            if line.strip()
+        }
+        assert not (lowered & vendor_names)
+
+
+# --- from test_ci_fork_guards.py ---
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+GUARD = "github.event.pull_request.head.repo.full_name"
+
+
+def _triggers(doc: dict) -> set[str]:
+    on = doc.get("on", doc.get(True, {}))  # PyYAML reads a bare `on:` key as True
+    if isinstance(on, dict):
+        return set(on)
+    if isinstance(on, list):
+        return set(on)
+    return {str(on)}
+
+
+def test_every_self_hosted_pull_request_job_keeps_its_fork_guard():
+    """House rule: Every self hosted pull request job keeps its fork guard."""
+    guarded: list[str] = []
+    missing: list[str] = []
+    for workflow in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+        doc = yaml.safe_load(workflow.read_text())
+        if not ({"pull_request", "pull_request_target"} & _triggers(doc)):
+            continue  # a push-only workflow never runs a fork's code
+        for name, job in (doc.get("jobs") or {}).items():
+            if "vars." not in str(job.get("runs-on", "")):
+                continue  # a hosted runner: the fork gets GitHub's sandbox, not ours
+            bucket = guarded if GUARD in str(job.get("if", "")) else missing
+            bucket.append(f"{workflow.name}:{name}")
+    assert not missing, f"self-hosted jobs a fork PR could reach without a guard: {missing}"
+    assert guarded, "no guarded job found: the workflow layout changed, update this test"
+

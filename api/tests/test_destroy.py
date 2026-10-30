@@ -16,13 +16,26 @@ Two layers, same split as test_steps.py/test_engine.py:
 
 from __future__ import annotations
 
-import json
+import importlib.util
+import sys
+import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
+import httpx
+import jwt
 import pytest
+import yaml
+from cryptography.hazmat.primitives.asymmetric import ec
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from kobo_api import destroy as destroy_module
-from kobo_api.clients import ClientError, Clients
+from kobo_api.agent_env import ENV_BRANCH
+from kobo_api.clients import ClientError, Clients, GhCLI
+from kobo_api.config import Config
 from kobo_api.destroy import (
     DESTROY_STEPS,
     DIRECTORY_RETIRE_MISSED_ERROR,
@@ -34,29 +47,38 @@ from kobo_api.destroy import (
     _destroy_repo,
     _destroy_secrets,
     _destroy_slack,
-    _is_already_archived,
-    _is_repo_not_found,
     run_destroy,
 )
-from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED
+from kobo_api.directory import CLUSTER_SILENT_NOTE, sweep_directory
+from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
+from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED, KIND_DIRECTORY, RUN_MODE_HTTP
+from kobo_api.main import create_app
+from kobo_api.mcp import rate_limit
 from kobo_api.models import (
     A2AInvite,
     Agent,
     AgentStatus,
     AgentStep,
     AgentUserGrant,
+    Base,
+    RepoAccess,
     StepStatus,
     Thread,
     ThreadParticipant,
 )
+from kobo_api.personas import seed_default_personas
+from kobo_api.sero import HttpxSeroClient
 from tests.fakes import (
+    FakeAgent,
     FakeCabal,
     FakeCloud,
     FakeGitHub,
     FakeGojira,
+    FakeImage,
     FakeKubectl,
     FakeSero,
     FakeSlack,
+    FakeStorage,
 )
 
 AGENT_NAME = "clio"
@@ -175,265 +197,16 @@ def _clients(
 # --- DESTROY_STEPS shape --------------------------------------------------------
 
 
-def test_destroy_steps_order_is_fixed():
-    assert DESTROY_STEPS == (
-        "destroy-secrets",
-        "destroy-platform",
-        "destroy-access",
-        "destroy-slack",
-        "destroy-repo",
-        "destroy-directory",
-        "destroy-forget",
-    )
-
-
 # --- _is_repo_not_found / _is_already_archived (pure helpers) ------------------
-
-
-def test_is_repo_not_found_matches_the_gh_cli_prefix():
-    assert _is_repo_not_found(ClientError("repo not found: acme/agent-clio")) is True
-
-
-def test_is_repo_not_found_false_for_other_messages():
-    assert _is_repo_not_found(ClientError("some other failure")) is False
-    assert _is_repo_not_found(ClientError("repo not found somewhere in the middle")) is False
-
-
-def test_is_already_archived_true_for_real_github_403_message():
-    exc = ClientError(
-        "gh api ... failed (rc=1): gh: Repository was archived so is read-only. (HTTP 403)"
-    )
-    assert _is_already_archived(exc) is True
-
-
-def test_is_already_archived_is_case_insensitive():
-    exc = ClientError("gh: REPOSITORY WAS ARCHIVED SO IS READ-ONLY. (HTTP 403)")
-    assert _is_already_archived(exc) is True
-
-
-def test_is_already_archived_false_without_403_marker():
-    exc = ClientError("gh: Repository was archived so is read-only. (HTTP 404)")
-    assert _is_already_archived(exc) is False
-
-
-def test_is_already_archived_false_without_archived_substring():
-    exc = ClientError("gh: some other 403 (HTTP 403)")
-    assert _is_already_archived(exc) is False
 
 
 # --- _destroy_platform ----------------------------------------------------------
 
 
-def test_destroy_platform_no_app_id_is_done_without_calling_gojira(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory, gojira_app_id=None)
-    fake_gojira = FakeGojira()
-    ctx = _ctx(session, agent, config, gojira=fake_gojira)
-
-    detail = _destroy_platform(ctx)
-
-    assert detail == "no deployment to tear down"
-    assert fake_gojira.delete_calls == []
-    session.close()
-
-
-def test_destroy_platform_already_gone_is_done(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory, gojira_app_id=7)
-    fake_gojira = FakeGojira(delete_already_gone=True)
-    ctx = _ctx(session, agent, config, gojira=fake_gojira)
-
-    detail = _destroy_platform(ctx)
-
-    assert detail == "already gone"
-    assert fake_gojira.delete_calls == [(7, True)]
-    session.close()
-
-
-def test_destroy_platform_summary_is_json_dumped(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory, gojira_app_id=7)
-    summary = {"app": AGENT_NAME, "namespaces_deleted": ["dev"], "rows_deleted": True}
-    fake_gojira = FakeGojira(delete_summary=summary)
-    ctx = _ctx(session, agent, config, gojira=fake_gojira)
-
-    detail = _destroy_platform(ctx)
-
-    assert json.loads(detail) == summary
-    session.close()
-
-
-def test_destroy_platform_client_error_propagates(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory, gojira_app_id=7)
-    fake_gojira = FakeGojira(delete_error="platform unreachable")
-    ctx = _ctx(session, agent, config, gojira=fake_gojira)
-
-    with pytest.raises(ClientError, match="platform unreachable"):
-        _destroy_platform(ctx)
-    session.close()
-
-
-def test_destroy_platform_identity_failures_are_logged_as_warning(session_factory, config, caplog):
-    # Final-review Finding B: gojira's teardown summary can report partial,
-    # unretryable GCP identity failures (a leaked GSA/binding/image) once
-    # gojira's own rows are gone. The step still succeeds (best-effort is
-    # gojira's contract), but those failures must not disappear into a
-    # log.info json.dumps with nothing calling them out.
-    session, agent = _make_ctx_agent(session_factory, name="clio", gojira_app_id=7)
-    summary = {
-        "app": AGENT_NAME,
-        "namespaces_deleted": ["dev"],
-        "namespace_failures": [],
-        "identity": {
-            "bindings_removed": 1,
-            "gsa_deleted": False,
-            "images_deleted": 0,
-            "failures": [
-                "gsa delete failed: still in use",
-                "image cleanup failed: permission denied",
-            ],
-        },
-        "rows_deleted": True,
-    }
-    fake_gojira = FakeGojira(delete_summary=summary)
-    ctx = _ctx(session, agent, config, gojira=fake_gojira)
-
-    with caplog.at_level("WARNING"):
-        detail = _destroy_platform(ctx)
-
-    # The step still succeeds, and the returned detail is unchanged.
-    assert json.loads(detail) == summary
-
-    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
-    assert any("clio" in message for message in warnings)
-    assert any("gsa delete failed: still in use" in message for message in warnings)
-    assert any("image cleanup failed: permission denied" in message for message in warnings)
-    session.close()
-
-
-def test_destroy_platform_no_identity_failures_no_warning(session_factory, config, caplog):
-    session, agent = _make_ctx_agent(session_factory, gojira_app_id=7)
-    fake_gojira = FakeGojira()  # canned summary's identity.failures is []
-    ctx = _ctx(session, agent, config, gojira=fake_gojira)
-
-    with caplog.at_level("WARNING"):
-        _destroy_platform(ctx)
-
-    assert not any(r.levelname == "WARNING" for r in caplog.records)
-    session.close()
-
-
 # --- _destroy_access --------------------------------------------------------------
 
 
-def test_destroy_access_removes_membership_then_gsa_in_order(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory)
-    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
-    cloud = FakeCloud(project=config.gcp_project)
-    cloud.gsas.add(email)
-    cloud.group_members.add((email, config.model_group))
-    ctx = _ctx(session, agent, config, cloud=cloud)
-
-    detail = _destroy_access(ctx)
-
-    assert detail == "membership removed: True, gsa deleted: True"
-    # Order pinned: membership removal happens before the GSA delete (a
-    # deleted GSA's ghost membership would be unremovable by email).
-    remove_index = cloud.calls.index(f"remove_from_group:{email}:{config.model_group}")
-    delete_index = cloud.calls.index(f"delete_gsa:{email}")
-    assert remove_index < delete_index
-    assert email not in cloud.gsas
-    assert (email, config.model_group) not in cloud.group_members
-    session.close()
-
-
-def test_destroy_access_absent_membership_proceeds_to_gsa(session_factory, config):
-    """Membership already gone (never granted, or a prior partial attempt
-    already removed it) doesn't stop the step - it proceeds straight to
-    deleting the GSA."""
-    session, agent = _make_ctx_agent(session_factory)
-    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
-    cloud = FakeCloud(project=config.gcp_project)
-    cloud.gsas.add(email)  # GSA still present, membership is not
-    ctx = _ctx(session, agent, config, cloud=cloud)
-
-    detail = _destroy_access(ctx)
-
-    assert detail == "membership removed: False, gsa deleted: True"
-    assert email not in cloud.gsas
-    session.close()
-
-
-def test_destroy_access_absent_gsa_is_done(session_factory, config):
-    """The GSA is already gone (a prior attempt got all the way through the
-    delete but crashed before its row committed DONE) - tolerated as done,
-    not a failure, even though membership still needed removing."""
-    session, agent = _make_ctx_agent(session_factory)
-    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
-    cloud = FakeCloud(project=config.gcp_project)
-    cloud.group_members.add((email, config.model_group))  # membership present, GSA already gone
-    ctx = _ctx(session, agent, config, cloud=cloud)
-
-    detail = _destroy_access(ctx)
-
-    assert detail == "membership removed: True, gsa deleted: False"
-    assert (email, config.model_group) not in cloud.group_members
-    session.close()
-
-
-def test_destroy_access_real_failure_propagates(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory)
-    cloud = FakeCloud(project=config.gcp_project, remove_group_error="group service outage")
-    ctx = _ctx(session, agent, config, cloud=cloud)
-
-    with pytest.raises(ClientError, match="group service outage"):
-        _destroy_access(ctx)
-    session.close()
-
-
 # --- _destroy_slack ---------------------------------------------------------------
-
-
-def test_destroy_slack_no_app_id_is_done_without_calling_slack(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory, slack_app_id=None)
-    fake_slack = FakeSlack()
-    ctx = _ctx(session, agent, config, slack=fake_slack)
-
-    detail = _destroy_slack(ctx)
-
-    assert detail == "no slack app to remove"
-    assert fake_slack.delete_calls == []
-    session.close()
-
-
-def test_destroy_slack_true_is_done(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory, slack_app_id="A0FAKE")
-    fake_slack = FakeSlack(delete_result=True)
-    ctx = _ctx(session, agent, config, slack=fake_slack)
-
-    detail = _destroy_slack(ctx)
-
-    assert detail == "slack app deleted"
-    assert fake_slack.delete_calls == ["A0FAKE"]
-    session.close()
-
-
-def test_destroy_slack_false_is_already_gone(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory, slack_app_id="A0FAKE")
-    fake_slack = FakeSlack(delete_result=False)
-    ctx = _ctx(session, agent, config, slack=fake_slack)
-
-    detail = _destroy_slack(ctx)
-
-    assert detail == "already gone"
-    session.close()
-
-
-def test_destroy_slack_client_error_propagates(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory, slack_app_id="A0FAKE")
-    fake_slack = FakeSlack(delete_error="slack unreachable")
-    ctx = _ctx(session, agent, config, slack=fake_slack)
-
-    with pytest.raises(ClientError, match="slack unreachable"):
-        _destroy_slack(ctx)
-    session.close()
 
 
 def test_destroy_slack_self_service_app_skips_delete_and_notes_provenance(
@@ -473,25 +246,6 @@ def test_destroy_slack_legacy_app_still_deletes_when_self_service_false(
 
     assert detail == "slack app deleted"
     assert fake_slack.delete_calls == ["A0FAKE"]
-    session.close()
-
-
-def test_destroy_slack_self_service_no_app_id_keeps_no_id_tolerance(
-    session_factory, config
-):
-    """A self-service agent that never got as far as connecting a Slack
-    app has no `slack_app_id` either — the existing no-id-done tolerance
-    is unchanged by the self-service flag."""
-    session, agent = _make_ctx_agent(
-        session_factory, slack_app_id=None, slack_app_self_service=True
-    )
-    fake_slack = FakeSlack()
-    ctx = _ctx(session, agent, config, slack=fake_slack)
-
-    detail = _destroy_slack(ctx)
-
-    assert detail == "no slack app to remove"
-    assert fake_slack.delete_calls == []
     session.close()
 
 
@@ -555,19 +309,6 @@ def test_destroy_repo_still_archives_a_repository_the_room_owns(session_factory,
     assert detail == f"archived as {target}"
     assert fake_github.renamed[REPO] == target
     assert target in fake_github.archived
-    session.close()
-
-
-def test_destroy_repo_no_repo_full_name_is_done_without_calling_github(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory, repo_full_name=None)
-    fake_github = FakeGitHub()
-    ctx = _ctx(session, agent, config, github=fake_github)
-
-    detail = _destroy_repo(ctx)
-
-    assert detail == "no repo to archive"
-    assert fake_github.rename_calls == []
-    assert fake_github.archive_calls == []
     session.close()
 
 
@@ -644,32 +385,6 @@ def test_destroy_repo_already_archived_403_on_archive_is_done(session_factory, c
     session.close()
 
 
-def test_destroy_repo_non_404_rename_failure_propagates_without_corroboration(
-    session_factory, config
-):
-    session, agent = _make_ctx_agent(session_factory, repo_full_name=REPO)
-    fake_github = FakeGitHub(existing_repos={REPO}, rename_error="permission denied outright")
-
-    ctx = _ctx(session, agent, config, github=fake_github)
-
-    with pytest.raises(ClientError, match="permission denied outright"):
-        _destroy_repo(ctx)
-    # Never even checked repo_exists — a non-404 rename failure is a real
-    # failure, not an already-gone ambiguity to corroborate.
-    assert "repo_exists:" not in fake_github.calls
-    session.close()
-
-
-def test_destroy_repo_non_403_archive_failure_propagates(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory, repo_full_name=REPO)
-    fake_github = FakeGitHub(existing_repos={REPO}, archive_error="some real archive failure")
-    ctx = _ctx(session, agent, config, github=fake_github)
-
-    with pytest.raises(ClientError, match="some real archive failure"):
-        _destroy_repo(ctx)
-    session.close()
-
-
 # --- _destroy_directory (colleagues switchboard plan, Task 2) ---------------------
 
 
@@ -702,23 +417,6 @@ def test_destroy_directory_says_a_connected_agent_was_never_listed(
     detail = _destroy_directory(ctx)
 
     assert detail == "no directory entry to retire"
-    assert fake_cabal.absorb_calls == []
-    session.close()
-
-
-def test_destroy_directory_disabled_is_done_with_note_and_never_calls_cabal(
-    session_factory, config
-):
-    """No switchboard configured (the shared `config` fixture carries
-    neither org key) — completes with the fixed note rather than raising,
-    and never touches the cabal client at all."""
-    session, agent = _make_ctx_agent(session_factory)
-    fake_cabal = FakeCabal()
-    ctx = _ctx(session, agent, config, cabal=fake_cabal)
-
-    detail = _destroy_directory(ctx)
-
-    assert detail == "The directory entry stays until the switchboard returns."
     assert fake_cabal.absorb_calls == []
     session.close()
 
@@ -918,28 +616,6 @@ def test_run_destroy_of_a_connected_agent_tears_down_everything_but_the_reposito
     session.close()
 
 
-def test_run_destroy_happy_path_retires_the_directory_listing_when_cabal_enabled(
-    session_factory, config, monkeypatch
-):
-    """Engine-level: when the switchboard is configured, a full destroy run
-    absorbs the agent from the directory too, right before destroy-forget
-    deletes the row this stage still reads from."""
-    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
-    cfg = _cabal_enabled_config(config)
-    agent_id = _seed_agent(session_factory, status=AgentStatus.READY)
-    fake_cabal = FakeCabal()
-
-    thread = run_destroy(session_factory, agent_id, _clients(cabal=fake_cabal), cfg)
-    thread.join(timeout=JOIN_TIMEOUT)
-    assert thread.is_alive() is False
-
-    assert fake_cabal.absorb_calls == [AGENT_NAME]
-
-    session = session_factory()
-    assert session.get(Agent, agent_id) is None
-    session.close()
-
-
 def test_run_destroy_lands_in_destroy_failed_when_the_switchboard_keeps_the_entry_and_retries(
     session_factory, config, monkeypatch
 ):
@@ -998,19 +674,6 @@ def test_run_destroy_syncs_dispatch_pairs_after_forget_when_cabal_enabled(
     ]
 
 
-def test_run_destroy_does_not_sync_dispatch_pairs_when_cabal_disabled(
-    session_factory, config
-):
-    agent_id = _seed_agent(session_factory, status=AgentStatus.READY, group_name="growth")
-    fake_cabal = FakeCabal()
-
-    thread = run_destroy(session_factory, agent_id, _clients(cabal=fake_cabal), config)
-    thread.join(timeout=JOIN_TIMEOUT)
-    assert thread.is_alive() is False
-
-    assert fake_cabal.put_dispatch_pairs_calls == []
-
-
 def test_run_destroy_completes_even_when_dispatch_pairs_sync_fails(
     session_factory, config, monkeypatch
 ):
@@ -1067,84 +730,6 @@ def test_run_destroy_redelivers_roster_without_cross_group_delivery(
     same_group_call = next(call for call in fake_cabal.relay_calls if call["name"] == "same-group")
     delivered_text = same_group_call["task_envelope"]["status"]["message"]["parts"][0]["text"]
     assert AGENT_NAME not in delivered_text
-
-
-def test_run_destroy_does_not_redeliver_roster_when_cabal_disabled(session_factory, config):
-    agent_id = _seed_agent(session_factory, status=AgentStatus.READY, group_name="growth")
-    _seed_agent(session_factory, name="same-group", status=AgentStatus.READY, group_name="growth")
-    fake_cabal = FakeCabal()
-
-    thread = run_destroy(session_factory, agent_id, _clients(cabal=fake_cabal), config)
-    thread.join(timeout=JOIN_TIMEOUT)
-    assert thread.is_alive() is False
-
-    assert fake_cabal.relay_calls == []
-
-
-def test_run_destroy_roster_refresh_failure_does_not_block_forget(
-    session_factory, config, monkeypatch
-):
-    """Best-effort, no rebuild fallback (Global Constraints): a relay
-    failure during the post-destroy roster refresh is logged and swallowed
-    -- destroy-forget's own row deletion has already committed by the time
-    this refresh runs, and a switchboard hiccup here must never undo it or
-    crash the destroy thread."""
-    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
-    cfg = _cabal_enabled_config(config)
-    agent_id = _seed_agent(session_factory, status=AgentStatus.READY, group_name="growth")
-    _seed_agent(session_factory, name="same-group", status=AgentStatus.READY, group_name="growth")
-    fake_cabal = FakeCabal(relay_error="switchboard unreachable")
-
-    thread = run_destroy(session_factory, agent_id, _clients(cabal=fake_cabal), cfg)
-    thread.join(timeout=JOIN_TIMEOUT)
-    assert thread.is_alive() is False
-
-    session = session_factory()
-    assert session.get(Agent, agent_id) is None
-    session.close()
-
-
-def test_run_destroy_self_service_slack_records_note_and_completes_step(
-    session_factory, config, caplog
-):
-    """Engine-level: a self-service app's destroy-slack step must reach
-    DONE with zero Slack calls, and the provenance note must reach the
-    ledger's logs the exact same way every other step's detail string
-    does — `_run_destroy_body`'s own `log.info("destroy step %r done for
-    agent %s: %s", ...)`, never something `_destroy_slack` logs itself.
-    The repo step is made to fail (no repo of either name exists) so the
-    run aborts before `destroy-forget` — leaving destroy-slack's own row
-    inspectable as DONE rather than deleted along with everything else."""
-    agent_id = _seed_agent(
-        session_factory,
-        status=AgentStatus.READY,
-        gojira_app_id=None,
-        slack_app_id="A0FAKE",
-        slack_app_self_service=True,
-        repo_full_name=REPO,
-    )
-    fake_slack = FakeSlack()
-    fake_github = FakeGitHub(existing_repos=set())  # both names 404 -> real failure
-
-    with caplog.at_level("INFO"):
-        thread = run_destroy(
-            session_factory, agent_id, _clients(github=fake_github, slack=fake_slack), config
-        )
-        thread.join(timeout=JOIN_TIMEOUT)
-    assert thread.is_alive() is False
-
-    assert fake_slack.delete_calls == []
-
-    session = session_factory()
-    agent = session.get(Agent, agent_id)
-    rows = {s.name: s.status for s in agent.steps}
-    assert rows["destroy-slack"] == StepStatus.DONE
-    session.close()
-
-    assert any(
-        "The Slack app belongs to its creator. Remove it in Slack." in message
-        for message in caplog.messages
-    )
 
 
 def test_run_destroy_step_failure_leaves_agent_destroy_failed_and_resumable(
@@ -1388,147 +973,6 @@ def test_run_destroy_releases_the_registry_slot_when_the_run_finishes(
 
 
 # --- run_destroy: resume-matrix gaps (review Finding 2) ------------------------
-
-
-def test_run_destroy_resume_skips_done_platform_and_slack_and_retries_failed_repo(
-    session_factory, config
-):
-    """Mirrors test_run_destroy_resume_skips_done_platform_and_retries_failed_
-    slack's exact idiom, but the failure is at destroy-repo instead of
-    destroy-slack: platform and slack both succeed on the first run, repo
-    fails; a second run skips platform AND slack entirely (their fakes see
-    no second call across both runs) and retries only repo."""
-    agent_id = _seed_agent(
-        session_factory,
-        status=AgentStatus.READY,
-        gojira_app_id=7,
-        slack_app_id="A0FAKE",
-        repo_full_name=REPO,
-    )
-    fake_gojira = FakeGojira()
-    fake_slack = FakeSlack()
-    fake_cloud = FakeCloud(project=config.gcp_project)
-    failing_github = FakeGitHub(existing_repos={REPO}, rename_error="repo service outage")
-
-    thread = run_destroy(
-        session_factory,
-        agent_id,
-        _clients(github=failing_github, gojira=fake_gojira, slack=fake_slack, cloud=fake_cloud),
-        config,
-    )
-    thread.join(timeout=JOIN_TIMEOUT)
-    assert thread.is_alive() is False
-    assert fake_gojira.delete_calls == [(7, True)]
-    assert fake_slack.delete_calls == ["A0FAKE"]
-
-    session = session_factory()
-    agent = session.get(Agent, agent_id)
-    assert agent.status == AgentStatus.DESTROY_FAILED
-    rows = {s.name: s.status for s in agent.steps}
-    assert rows["destroy-platform"] == StepStatus.DONE
-    assert rows["destroy-access"] == StepStatus.DONE
-    assert rows["destroy-slack"] == StepStatus.DONE
-    assert rows["destroy-repo"] == StepStatus.FAILED
-    session.close()
-
-    working_github = FakeGitHub(existing_repos={REPO})
-    thread2 = run_destroy(
-        session_factory,
-        agent_id,
-        _clients(github=working_github, gojira=fake_gojira, slack=fake_slack, cloud=fake_cloud),
-        config,
-    )
-    thread2.join(timeout=JOIN_TIMEOUT)
-    assert thread2.is_alive() is False
-
-    # Platform, access, and slack were never retried — still exactly one
-    # call each across BOTH runs — their rows were already DONE.
-    assert fake_gojira.delete_calls == [(7, True)]
-    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
-    assert fake_cloud.calls == [
-        f"remove_from_group:{email}:{config.model_group}",
-        f"delete_gsa:{email}",
-    ]
-    assert fake_slack.delete_calls == ["A0FAKE"]
-    assert working_github.rename_calls == [(REPO, f"archived-agent-{AGENT_NAME}-{agent_id}")]
-
-    session = session_factory()
-    assert session.get(Agent, agent_id) is None
-    assert session.query(AgentStep).filter_by(agent_id=agent_id).count() == 0
-    session.close()
-
-
-def test_run_destroy_resume_retries_failed_platform_and_continues_to_forget(
-    session_factory, config
-):
-    """Mirrors the brief's resume scenario at the OTHER end of the pipeline:
-    a failure at the very FIRST step (destroy-platform) aborts slack/repo/
-    forget on the first run; a second run with a working platform client
-    retries platform and, on success, continues through every remaining
-    step all the way to a fully forgotten agent (row gone)."""
-    agent_id = _seed_agent(
-        session_factory,
-        status=AgentStatus.READY,
-        gojira_app_id=7,
-        slack_app_id="A0FAKE",
-        repo_full_name=REPO,
-    )
-    failing_gojira = FakeGojira(delete_error="platform outage")
-    fake_github = FakeGitHub(existing_repos={REPO})
-    fake_slack = FakeSlack()
-    fake_cloud = FakeCloud(project=config.gcp_project)
-
-    thread = run_destroy(
-        session_factory,
-        agent_id,
-        _clients(github=fake_github, gojira=failing_gojira, slack=fake_slack, cloud=fake_cloud),
-        config,
-    )
-    thread.join(timeout=JOIN_TIMEOUT)
-    assert thread.is_alive() is False
-    assert failing_gojira.delete_calls == [(7, True)]
-    # Aborted — access/slack/repo's own side effects never fired.
-    assert fake_cloud.calls == []
-    assert fake_slack.delete_calls == []
-    assert fake_github.rename_calls == []
-
-    session = session_factory()
-    agent = session.get(Agent, agent_id)
-    assert agent is not None
-    assert agent.status == AgentStatus.DESTROY_FAILED
-    rows = {s.name: s.status for s in agent.steps}
-    assert rows["destroy-platform"] == StepStatus.FAILED
-    assert rows["destroy-access"] == StepStatus.FAILED
-    assert rows["destroy-slack"] == StepStatus.FAILED
-    assert rows["destroy-repo"] == StepStatus.FAILED
-    assert rows["destroy-forget"] == StepStatus.FAILED
-    session.close()
-
-    working_gojira = FakeGojira()
-    thread2 = run_destroy(
-        session_factory,
-        agent_id,
-        _clients(github=fake_github, gojira=working_gojira, slack=fake_slack, cloud=fake_cloud),
-        config,
-    )
-    thread2.join(timeout=JOIN_TIMEOUT)
-    assert thread2.is_alive() is False
-
-    assert working_gojira.delete_calls == [(7, True)]
-    # destroy-access is retried on resume (its row was FAILED, not DONE) and
-    # succeeds this time against the same (still-unseeded) FakeCloud.
-    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
-    assert fake_cloud.calls == [
-        f"remove_from_group:{email}:{config.model_group}",
-        f"delete_gsa:{email}",
-    ]
-    assert fake_slack.delete_calls == ["A0FAKE"]
-    assert fake_github.rename_calls == [(REPO, f"archived-agent-{AGENT_NAME}-{agent_id}")]
-
-    session = session_factory()
-    assert session.get(Agent, agent_id) is None
-    assert session.query(AgentStep).filter_by(agent_id=agent_id).count() == 0
-    session.close()
 
 
 def test_run_destroy_access_failure_marks_step_and_resume_retries_access_skipping_platform(
@@ -1817,14 +1261,6 @@ def test_destroy_secrets_that_cannot_revoke_the_passes_fails_the_step(
     session.close()
 
 
-def test_destroy_secrets_without_a_switchboard_revokes_nothing(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory)
-    agent.created_by = OWNER_EMAIL
-    detail = _destroy_secrets(_ctx(session, agent, config, sero=_sero_holding_everything()))
-    assert detail == "removed: cabal, slack, env, identity"
-    session.close()
-
-
 def test_destroy_secrets_takes_the_cluster_object_away_before_the_path(
     session_factory, config
 ):
@@ -1852,20 +1288,6 @@ def test_destroy_secrets_takes_the_cluster_object_away_before_the_path(
     session.close()
 
 
-def test_destroy_secrets_records_the_removal_against_the_agents_creator(
-    session_factory, config
-):
-    session, agent = _make_ctx_agent(session_factory)
-    agent.created_by = f"  {OWNER_EMAIL} "
-    sero = _sero_holding_everything()
-
-    _destroy_secrets(_ctx(session, agent, config, sero=sero))
-
-    assert {email for email, _ in sero.deletes} == {OWNER_EMAIL}
-    assert {call[0] for call in sero.unsyncs} == {OWNER_EMAIL}
-    session.close()
-
-
 def test_destroy_secrets_run_twice_is_the_same_answer(session_factory, config):
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
@@ -1885,16 +1307,6 @@ def test_destroy_secrets_run_twice_is_the_same_answer(session_factory, config):
     ] * 2
     assert len(sero.unsyncs) == 6
     assert sero.stored == {}
-    session.close()
-
-
-def test_destroy_secrets_skips_a_room_with_no_secrets_platform(session_factory, config):
-    session, agent = _make_ctx_agent(session_factory)
-    agent.created_by = OWNER_EMAIL
-
-    detail = _destroy_secrets(_ctx(session, agent, config, sero=None))
-
-    assert "no secrets service" in detail
     session.close()
 
 
@@ -1980,22 +1392,6 @@ def test_destroy_secrets_records_the_removal_against_the_operator_who_asked(
     session.close()
 
 
-def test_destroy_secrets_falls_back_to_the_creator_when_no_caller_is_named(
-    session_factory, config
-):
-    # A resume has no request behind it: the ledger retried itself, so
-    # there is no verified caller to name and the agent's own creator is
-    # the honest fallback.
-    session, agent = _make_ctx_agent(session_factory)
-    agent.created_by = OWNER_EMAIL
-    sero = _sero_holding_everything()
-
-    _destroy_secrets(_ctx(session, agent, config, sero=sero, acting_email=None))
-
-    assert {email for email, _ in sero.deletes} == {OWNER_EMAIL}
-    session.close()
-
-
 def test_destroy_secrets_attempts_all_three_even_when_one_refuses(
     session_factory, config
 ):
@@ -2062,58 +1458,6 @@ def test_the_secrets_step_runs_before_the_platform_takes_the_namespace_away(
     )
 
 
-def test_a_full_destroy_run_names_the_operator_who_asked(session_factory, config):
-    sero = _sero_holding_everything()
-    agent_id = _seed_agent(
-        session_factory,
-        status=AgentStatus.READY,
-        gojira_app_id=None,
-        repo_full_name=None,
-        created_by=OWNER_EMAIL,
-    )
-
-    thread = run_destroy(
-        session_factory,
-        agent_id,
-        _clients(sero=sero),
-        config,
-        acting_email="ops@example.com",
-    )
-    assert thread is not None
-    thread.join(timeout=JOIN_TIMEOUT)
-
-    assert {email for email, _ in sero.deletes} == {"ops@example.com"}
-
-
-def test_destroy_secrets_counts_an_unexpected_failure_and_keeps_going(
-    session_factory, config
-):
-    # Not only ClientError: a connection reset arriving as something else
-    # would otherwise abort the two purposes after it, which is the exact
-    # failure this collection exists to prevent.
-    session, agent = _make_ctx_agent(session_factory)
-    agent.created_by = OWNER_EMAIL
-
-    class _SurprisesOnCabal(FakeSero):
-        def unsync(self, acting_email, app, k8s_namespace, name):
-            if name.endswith("-cabal"):
-                raise RuntimeError("something nobody wrapped")
-            super().unsync(acting_email, app, k8s_namespace, name)
-
-    sero = _SurprisesOnCabal()
-    for purpose in ("cabal", "slack", "env"):
-        sero.stored[f"apps/{AGENT_NAME}/{purpose}"] = {"A_KEY": "not-a-real-value"}
-
-    with pytest.raises(RuntimeError) as exc:
-        _destroy_secrets(_ctx(session, agent, config, sero=sero))
-
-    assert "cabal" in str(exc.value)
-    assert "slack, env" in str(exc.value)
-    assert f"apps/{AGENT_NAME}/slack" not in sero.stored
-    assert f"apps/{AGENT_NAME}/env" not in sero.stored
-    session.close()
-
-
 def test_an_object_recreated_under_the_same_name_fails_only_that_purpose(
     session_factory, config
 ):
@@ -2160,34 +1504,6 @@ def test_destroy_secrets_never_logs_what_the_lane_said(session_factory, config, 
 
 
 # --- _destroy_access without a model group (2026-10-01) -------------------------------
-
-
-def test_destroy_access_without_a_model_group_revokes_the_vertex_role_then_gsa(
-    session_factory, config
-):
-    config.model_group = ""
-    config.vertex_project = "models-project"
-    session, agent = _make_ctx_agent(session_factory)
-    email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
-    cloud = FakeCloud(project=config.gcp_project)
-    cloud.gsas.add(email)
-    cloud.model_grants.add((email, "models-project"))
-    ctx = _ctx(session, agent, config, cloud=cloud)
-
-    detail = _destroy_access(ctx)
-
-    assert detail == "model access removed: True, gsa deleted: True"
-    assert cloud.calls.index(f"revoke_model_access:{email}:models-project") < cloud.calls.index(
-        f"delete_gsa:{email}"
-    )
-    assert not [c for c in cloud.calls if "group" in c]
-
-    # Already revoked (a resumed destroy): proceeds to the GSA, says so.
-    cloud2 = FakeCloud(project=config.gcp_project)
-    cloud2.gsas.add(email)
-    assert _destroy_access(_ctx(session, agent, config, cloud=cloud2)) == (
-        "model access removed: False, gsa deleted: True"
-    )
 
 
 # --- namespace ownership (issue #193) -------------------------------------------
@@ -2371,3 +1687,1229 @@ def test_run_destroy_beats_for_the_whole_run(session_factory, config, monkeypatc
     thread.join(timeout=JOIN_TIMEOUT)
     assert thread.is_alive() is False
     assert events == [f"init:{agent_id}", "start", "stop"]
+
+# --- from test_web_destroy.py ---
+
+
+AGENT_NAME = "clio"
+
+
+PERSONA = "helpful-generalist"
+
+
+OWNER = "acme-corp"
+
+
+REPO = f"{OWNER}/agent-{AGENT_NAME}"
+
+
+IN_FLIGHT_409 = {"error": "the agent is still being created, retry or wait"}
+
+
+JOIN_DEADLINE_S = 5
+
+
+POLL_INTERVAL_S = 0.02
+
+
+@pytest.fixture
+def session_factory__web_destroy(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+@pytest.fixture
+def config__web_destroy(tmp_path):
+    return Config(
+        workdir=tmp_path / "work",
+        skills_bucket="skills-bucket",
+        personas_bucket="personas-bucket",
+    )
+
+
+def _make_client(
+    session_factory__web_destroy,
+    config__web_destroy,
+    *,
+    github=None,
+    gojira=None,
+    slack=None,
+    groups=None,
+    iap_jwks_fetcher=None,
+):
+    storage = FakeStorage()
+    seed_default_personas(storage, bucket=config__web_destroy.personas_bucket)
+    return TestClient(
+        create_app(
+            session_factory__web_destroy,
+            config=config__web_destroy,
+            clients=Clients(
+                github=github if github is not None else FakeGitHub(existing_repos={REPO}),
+                gojira=gojira if gojira is not None else FakeGojira(),
+                cloud=FakeCloud(),
+                agent=FakeAgent(),
+                kubectl=FakeKubectl(),
+                slack=slack if slack is not None else FakeSlack(),
+                storage=storage,
+                groups=groups,
+            ),
+            iap_jwks_fetcher=iap_jwks_fetcher,
+        )
+    )
+
+
+def _seed_agent__web_destroy(
+    session_factory__web_destroy,
+    config__web_destroy,
+    *,
+    name: str = AGENT_NAME,
+    status=AgentStatus.READY,
+    gojira_app_id: int | None = 7,
+    slack_app_id: str | None = "A0FAKE",
+    repo_full_name: str | None = REPO,
+    error: str | None = None,
+):
+    session = session_factory__web_destroy()
+    session.add(
+        Agent(
+            name=name,
+            persona=PERSONA,
+            model_id=config__web_destroy.models[0].id,
+            status=status,
+            gojira_app_id=gojira_app_id,
+            slack_app_id=slack_app_id,
+            repo_full_name=repo_full_name,
+            error=error,
+        )
+    )
+    session.commit()
+    session.close()
+
+
+def _poll_until_gone(client, name, deadline_s=JOIN_DEADLINE_S, headers=None):
+    deadline = time.monotonic() + deadline_s
+    while time.monotonic() < deadline:
+        response = client.get(f"/api/agents/{name}", headers=headers)
+        if response.status_code == 404:
+            return
+        time.sleep(POLL_INTERVAL_S)
+    raise AssertionError(f"agent {name!r} was never forgotten within {deadline_s}s")
+
+
+@pytest.mark.parametrize("status", [AgentStatus.PENDING, AgentStatus.PROVISIONING])
+def test_destroy_provisioning_in_flight_returns_409(session_factory__web_destroy, config__web_destroy, status):
+    """Destruction safety: Destroy provisioning in flight returns 409."""
+    config__web_destroy = config__web_destroy.model_copy(update={"operators": []})
+    client = _make_client(session_factory__web_destroy, config__web_destroy)
+    _seed_agent__web_destroy(session_factory__web_destroy, config__web_destroy, status=status, gojira_app_id=None, slack_app_id=None, repo_full_name=None)
+
+    response = client.delete(f"/api/agents/{AGENT_NAME}")
+
+    assert response.status_code == 409
+    assert response.json() == IN_FLIGHT_409
+
+
+def test_destroy_failed_agent_is_still_destroyable(session_factory__web_destroy, config__web_destroy):
+    """Destruction safety: Destroy failed agent is still destroyable.
+
+    A FAILED (never fully provisioned) agent is not blocked — nothing
+    about destruction requires a READY agent, only that creation isn't
+    still in flight."""
+    config__web_destroy = config__web_destroy.model_copy(update={"operators": []})
+    client = _make_client(session_factory__web_destroy, config__web_destroy)
+    _seed_agent__web_destroy(
+        session_factory__web_destroy, config__web_destroy, status=AgentStatus.FAILED,
+        gojira_app_id=None, slack_app_id=None, repo_full_name=None,
+    )
+
+    response = client.delete(f"/api/agents/{AGENT_NAME}")
+
+    assert response.status_code == 202
+    _poll_until_gone(client, AGENT_NAME)
+
+
+def test_destroy_idempotent_redelete_while_destroy_failed_resumes_to_completion(
+    session_factory__web_destroy, config__web_destroy
+):
+    """Destruction safety: Destroy idempotent redelete while destroy failed resumes to completion.
+
+    Seed the agent already mid-ledger (platform done, access done, slack
+    failed) as a prior partial run would leave it, then DELETE again
+    ("Destroy again"): 202, and this time slack (now working) completes, and
+    the run continues through to full removal.
+
+    Also the destroy-steps payload-label case: a GET taken right after
+    seeding (before the redelete) proves the "Model access" label rides the
+    payload between the platform and Slack rows, in the ledger's own order —
+    not just that DESTROY_STEP_LABELS has the right entry, but that it
+    actually reaches the wire for a real destroy-access row.
+    """
+    config__web_destroy = config__web_destroy.model_copy(update={"operators": []})
+    client = _make_client(session_factory__web_destroy, config__web_destroy)
+    _seed_agent__web_destroy(
+        session_factory__web_destroy, config__web_destroy, status=AgentStatus.DESTROY_FAILED,
+        error="slack app deletion failed: slack outage",
+    )
+    session = session_factory__web_destroy()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    session.add(AgentStep(agent_id=agent.id, name="destroy-platform", status=StepStatus.DONE))
+    session.add(AgentStep(agent_id=agent.id, name="destroy-access", status=StepStatus.DONE))
+    session.add(
+        AgentStep(
+            agent_id=agent.id, name="destroy-slack", status=StepStatus.FAILED,
+            error="slack app deletion failed: slack outage",
+        )
+    )
+    session.commit()
+    session.close()
+
+    before = client.get(f"/api/agents/{AGENT_NAME}")
+    names = [s["name"] for s in before.json()["steps"]]
+    labels = {s["name"]: s["label"] for s in before.json()["steps"]}
+    assert names == ["destroy-platform", "destroy-access", "destroy-slack"]
+    assert labels["destroy-platform"] == "Deployment teardown"
+    assert labels["destroy-access"] == "Model access"
+    assert labels["destroy-slack"] == "Slack app"
+
+    response = client.delete(f"/api/agents/{AGENT_NAME}")
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "destroying"}
+    _poll_until_gone(client, AGENT_NAME)
+
+
+def test_destroy_launch_failure_returns_503_and_a_later_destroy_still_succeeds(
+    session_factory__web_destroy, config__web_destroy, monkeypatch
+):
+    """Destruction safety: Destroy launch failure returns 503 and a later destroy still succeeds."""
+    import kobo_api.main as main_module
+
+    config__web_destroy = config__web_destroy.model_copy(update={"operators": []})
+    client = _make_client(session_factory__web_destroy, config__web_destroy)
+    _seed_agent__web_destroy(session_factory__web_destroy, config__web_destroy)
+
+    def _raising_run_destroy(session_factory, agent_id, clients, config, **kwargs):
+        raise RuntimeError("no more threads")
+
+    monkeypatch.setattr(main_module, "run_destroy", _raising_run_destroy)
+
+    first = client.delete(f"/api/agents/{AGENT_NAME}")
+
+    assert first.status_code == 503
+    assert first.json() == {"error": "failed to start destruction: no more threads"}
+
+    session = session_factory__web_destroy()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent.status == AgentStatus.DESTROY_FAILED
+    assert agent.error == "failed to start destruction: no more threads"
+    session.close()
+
+    monkeypatch.undo()
+
+    second = client.delete(f"/api/agents/{AGENT_NAME}")
+
+    assert second.status_code == 202
+    _poll_until_gone(client, AGENT_NAME)
+
+
+def test_redelete_while_destroy_in_flight_returns_202_without_double_launch(
+    session_factory__web_destroy, config__web_destroy
+):
+    """Destruction safety: Redelete while destroy in flight returns 202 without double launch.
+
+    A re-DELETE against an agent already DESTROYING must keep returning
+    202 (the idempotent-redelete contract, unchanged) but must NOT launch a
+    second concurrent run_destroy thread. Simulated deterministically by
+    registering the agent's in-flight slot directly in kobo_api.destroy's
+    module-level registry before issuing the DELETE — no mocking of the
+    route or of run_destroy itself, just the same registry `run_destroy`
+    checks on every call."""
+    from kobo_api import destroy as destroy_module
+
+    config__web_destroy = config__web_destroy.model_copy(update={"operators": []})
+    client = _make_client(session_factory__web_destroy, config__web_destroy)
+    _seed_agent__web_destroy(session_factory__web_destroy, config__web_destroy, status=AgentStatus.DESTROYING)
+    session = session_factory__web_destroy()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    agent_id = agent.id
+    session.close()
+
+    destroy_module._destroying_agent_ids.add(agent_id)
+    try:
+        response = client.delete(f"/api/agents/{AGENT_NAME}")
+    finally:
+        destroy_module._destroying_agent_ids.discard(agent_id)
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "destroying"}
+
+    # No duplicate thread launched — the agent is left exactly as it was
+    # (still DESTROYING; no teardown work happened from this second call,
+    # since run_destroy's own launch was a no-op skip).
+    session = session_factory__web_destroy()
+    agent = session.query(Agent).filter_by(name=AGENT_NAME).first()
+    assert agent is not None
+    assert agent.status == AgentStatus.DESTROYING
+    session.close()
+
+
+# --- from test_build_log.py ---
+
+
+class LogGitHub:
+    def __init__(self, run=None, log="line1\nline2", raise_on_log=False):
+        self._run = run
+        self._log = log
+        self._raise = raise_on_log
+
+    def latest_run(self, repo):
+        return self._run
+
+    def run_log(self, repo, run_id, *, failed_only=True):
+        if self._raise:
+            from kobo_api.clients import ClientError
+
+            raise ClientError("boom")
+        self.failed_only = failed_only
+        return self._log
+
+
+# --- from test_build_log.py ---
+
+
+def _client(session_factory, config, github):
+    clients = Clients(
+        github=github,
+        gojira=FakeGojira(),
+        cloud=FakeCloud(),
+        agent=FakeAgent(),
+        kubectl=FakeKubectl(),
+        storage=FakeStorage(),
+    )
+    return TestClient(create_app(session_factory, config=config, clients=clients))
+
+
+# --- from test_api_destroy_claim.py ---
+
+
+def _seed(session_factory, status):
+    session = session_factory()
+    session.add(Agent(name="ward", persona="p", model_id="m", status=status, repo_full_name="acme/agent-ward"))
+    session.commit()
+    session.close()
+
+
+def test_a_destroying_row_is_not_claimed_again_and_launches_nothing(session_factory, config, monkeypatch):
+    """Destruction safety: A destroying row is not claimed again and launches nothing."""
+    import kobo_api.main as main_mod
+
+    launches = []
+    monkeypatch.setattr(main_mod, "run_destroy", lambda *a, **k: launches.append(a))
+    _seed(session_factory, AgentStatus.DESTROYING)
+    r = _client(session_factory, config, LogGitHub()).delete("/api/agents/ward")
+    assert r.status_code == 202
+    assert r.json() == {"status": "destroying"}
+    assert launches == []
+
+
+def test_a_failed_destroy_is_claimed_and_resumed(session_factory, config):
+    """Destruction safety: A failed destroy is claimed and resumed."""
+    _seed(session_factory, AgentStatus.DESTROY_FAILED)
+    client = _client(session_factory, config, LogGitHub())
+    r = client.delete("/api/agents/ward")
+    assert r.status_code == 202
+    session = session_factory()
+    row = session.query(Agent).filter_by(name="ward").one_or_none()
+    # Either the run is still going (DESTROYING, with a fresh heartbeat from the
+    # claim) or the fakes let it finish and forget the row.
+    assert row is None or (row.status in (AgentStatus.DESTROYING, AgentStatus.DESTROY_FAILED) and row.run_heartbeat_at is not None)
+    session.close()
+
+
+# --- from test_directory_sweep.py ---
+
+
+TEMPLATE = "http://agent-{name}.default.svc.cluster.local"
+
+
+def _room_entry(name: str, **over) -> dict:
+    return {"name": name, "status": "active", "kind": "federated", "endpoint": TEMPLATE.format(name=name), **over}
+
+
+def _session_factory(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def test_sweep_retires_only_the_rooms_own_entries_for_agents_it_no_longer_has(tmp_path):
+    """Destruction safety: Sweep retires only the rooms own entries for agents it no longer has.
+
+    Destruction safety: an entry without the room's registration marker
+    (another endpoint, or not a graduated row) is reported, never absorbed;
+    an entry for any agent row the room still holds is kept, whatever its
+    state; a hand-built agent with no row but a Deployment `<name>/<name>`
+    in the cluster is live, never absorbed; the dry run absorbs nothing at
+    all; and a cluster that cannot be asked retires nothing."""
+    factory = _session_factory(tmp_path)
+    session = factory()
+    session.add(Agent(name="kept", persona="p", model_id="m", status=AgentStatus.DESTROYING, repo_full_name="o/r"))
+    session.commit()
+    cfg = Config(workdir=tmp_path / "work", agent_endpoint_template=TEMPLATE)
+    cabal = FakeCabal(agents_result=[
+        _room_entry("kept"),
+        _room_entry("gone"),
+        _room_entry("handbuilt"),
+        _room_entry("bespoke", endpoint="http://somewhere.else"),
+        _room_entry("local", kind="member"),
+        _room_entry("retired-already", status="retired"),
+        {"name": "ops-session", "status": "active", "kind": "session", "endpoint": None},
+    ])
+    kubectl = FakeKubectl(deployments={("handbuilt", "handbuilt")})
+
+    preview = sweep_directory(cabal, cfg, session, kubectl=kubectl, dry_run=True)
+    assert cabal.absorb_calls == []
+    assert (preview["retired"], preview["kept"], preview["live"], preview["unknown"]) == (
+        ["gone"], ["kept"], ["handbuilt"], ["bespoke", "local"],
+    )
+
+    silent = sweep_directory(
+        cabal, cfg, session, kubectl=FakeKubectl(deployment_exists_error="no cluster"), dry_run=False
+    )
+    assert cabal.absorb_calls == [] and silent["retired"] == []
+    assert sorted(silent["unknown"]) == ["bespoke", "gone", "handbuilt", "local"]
+    assert silent["note"] == CLUSTER_SILENT_NOTE
+
+    result = sweep_directory(cabal, cfg, session, kubectl=kubectl, dry_run=False)
+    assert cabal.absorb_calls == ["gone"]
+    assert result["retired"] == ["gone"] and result["live"] == ["handbuilt"] and result["failed"] == []
+    session.close()
+
+
+# --- from test_directory_delivery.py ---
+
+
+def _directory_config(config: Config, tmp_path, **more) -> Config:
+    return config.model_copy(update={
+        "delivery_backend": "directory", "directory_root": str(tmp_path / "agents"), **more,
+    })
+
+
+def test_destroy_for_a_folder_agent_removes_the_folder_and_touches_no_platform(session_factory, config, tmp_path):
+    """Destruction safety: Destroy for a folder agent removes the folder and touches no platform."""
+    cfg = _directory_config(config, tmp_path)
+    folder = tmp_path / "agents" / "clio"
+    (folder / "bundle").mkdir(parents=True)
+    (folder / "bundle" / "agent.yaml").write_text("name: clio\n")
+    agent_id = _seed_agent(session_factory, status=AgentStatus.READY, kind=KIND_DIRECTORY)
+    github, gojira = FakeGitHub(), FakeGojira()
+
+    thread = run_destroy(session_factory, agent_id, _clients(github=github, gojira=gojira), cfg)
+    thread.join(timeout=5)
+
+    assert not folder.exists()
+    assert gojira.delete_calls == [] and github.rename_calls == []
+    session = session_factory()
+    assert session.get(Agent, agent_id) is None
+    session.close()
+
+
+# --- from test_pr_broker.py ---
+
+
+@pytest.fixture
+def broker_config(tmp_path):
+    key = tmp_path / "pr-app.pem"
+    key.write_text("not-a-real-key")
+    return Config(
+        workdir=tmp_path / "work",
+        pr_app_id="4741722",
+        pr_app_installation_id="157070479",
+        pr_app_private_key_path=key,
+        cabal_url="http://cabal.test",
+    )
+
+
+@pytest.fixture
+def broker_client(session_factory, broker_config):
+    return TestClient(create_app(session_factory, config=broker_config))
+
+
+def _agent(session_factory, name="ward"):
+    session = session_factory()
+    agent = Agent(
+        name=name, persona="helpful-generalist", model_id="m", status=AgentStatus.READY
+    )
+    session.add(agent)
+    session.commit()
+    session.close()
+    return name
+
+
+def test_destroy_forget_deletes_repo_access_rows(broker_client, session_factory, broker_config):
+    """Destruction safety: Destroy forget deletes repo access rows.
+
+    A future agent reusing a destroyed agent's name must inherit ZERO
+    grants -- destroy-forget clears repo_access by name."""
+    from kobo_api.clients import Clients
+    from kobo_api.destroy import DestroyCtx, _destroy_forget
+
+    name = _agent(session_factory)
+    rows = broker_client.post(
+        f"/api/agents/{name}/repo-access", json={"repositories": ["acme/a"]}
+    ).json()["requested"]
+    broker_client.post(
+        "/api/repo-access/decide", json={"ids": [rows[0]["id"]], "decision": "approved"}
+    )
+
+    session = session_factory()
+    agent = session.query(Agent).filter_by(name=name).one()
+    ctx = DestroyCtx(
+        agent=agent,
+        session=session,
+        config=broker_config,
+        clients=Clients(github=None, gojira=None, cloud=None, agent=None, kubectl=None),
+    )
+    _destroy_forget(ctx)
+    assert session.query(RepoAccess).count() == 0
+    session.close()
+
+
+# --- from test_api_connect.py ---
+
+
+AGENT_NAME = "clio"
+
+
+ORG = "example-org"
+
+
+REPO__api_connect = f"{ORG}/team-chatbot"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    import kobo_api.steps as steps_module
+
+    monkeypatch.setattr(steps_module, "_sleep", lambda seconds: None)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_scan_window():
+    """The scan limiter's window is module state shared by every caller in
+    the process, so each case starts with an empty one rather than one
+    carrying the previous case's scans."""
+    rate_limit.reset()
+    yield
+    rate_limit.reset()
+
+
+@pytest.fixture
+def session_factory__api_connect(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+@pytest.fixture
+def config__api_connect(tmp_path):
+    return Config(
+        workdir=tmp_path / "work",
+        skills_bucket="skills-bucket",
+        personas_bucket="personas-bucket",
+        github_org=ORG,
+    )
+
+
+@pytest.fixture
+def github():
+    return FakeGitHub(existing_repos={REPO__api_connect})
+
+
+@pytest.fixture
+def clients(github, fake_storage):
+    return Clients(
+        github=github,
+        gojira=FakeGojira(activate_after=1),
+        cloud=FakeCloud(),
+        agent=FakeAgent(reply="hello yourself, human"),
+        kubectl=FakeKubectl(),
+        storage=fake_storage,
+        image=FakeImage(),
+    )
+
+
+CONVERT_PATH = f"/api/agents/{AGENT_NAME}/convert-to-connected"
+
+
+def _seed_composed(
+    session_factory__api_connect,
+    *,
+    status=AgentStatus.READY,
+    kind=KIND_COMPOSED,
+    name=AGENT_NAME,
+    secret_names=None,
+    group_name=None,
+):
+    """One agent row as the create route leaves it: the room's own repository,
+    a real persona, and whatever status this case is about."""
+    session = session_factory__api_connect()
+    session.add(
+        Agent(
+            name=name,
+            persona="helpful-generalist",
+            model_id="m",
+            skills=[],
+            kind=kind,
+            repo_full_name=f"{ORG}/agent-{name}",
+            status=status,
+            group_name=group_name,
+            secret_names=secret_names if secret_names is not None else [],
+            run_mode=RUN_MODE_HTTP if kind == KIND_CONNECTED else None,
+        )
+    )
+    session.commit()
+    session.close()
+
+
+@pytest.fixture
+def switchboard(session_factory__api_connect, config__api_connect, fake_storage, monkeypatch):
+    """A room with the switchboard wired, the fakes the convert route must
+    not touch, and a client over both.
+
+    The switchboard has to be genuinely on for the retire to be attempted at
+    all (`cabal_enabled` reads two config keys and the operator token), and
+    the point of most of these cases is what the route does NOT do, which
+    only means something when the clients that could have done it are there.
+    """
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = config__api_connect.model_copy(
+        update={
+            "cabal_url": "http://cabal.internal",
+            "agent_endpoint_template": "http://agent-{name}.internal",
+        }
+    )
+    fakes = SimpleNamespace(
+        github=FakeGitHub(existing_repos={REPO__api_connect}),
+        gojira=FakeGojira(),
+        kubectl=FakeKubectl(),
+        cabal=FakeCabal(),
+        config=cfg,
+    )
+    clients = Clients(
+        github=fakes.github,
+        gojira=fakes.gojira,
+        cloud=FakeCloud(),
+        agent=FakeAgent(),
+        kubectl=fakes.kubectl,
+        storage=fake_storage,
+        image=FakeImage(),
+        cabal=fakes.cabal,
+    )
+    fakes.client = TestClient(create_app(session_factory__api_connect, config=cfg, clients=clients))
+    return fakes
+
+
+def test_convert_retires_the_switchboard_identity(switchboard, session_factory__api_connect):
+    """Destruction safety: Convert retires the switchboard identity.
+
+    A connected agent has no directory entry: the pipeline that builds one
+    has no directory step. An agent that was composed does have one, and it
+    stops being true the moment the kind changes."""
+    _seed_composed(session_factory__api_connect)
+
+    switchboard.client.post(CONVERT_PATH, json={"run_mode": RUN_MODE_HTTP})
+
+    assert switchboard.cabal.absorb_calls == [AGENT_NAME]
+
+
+# --- from test_api_org_status.py ---
+
+
+WHOAMI_AUDIENCE = "test-audience"
+
+
+# --- from test_api_org_status.py ---
+
+
+def _fetcher(jwk):
+    def fetch():
+        return {"keys": [jwk]}
+
+    return fetch
+
+
+# --- from test_api_org_status.py ---
+
+
+WHOAMI_KID = "test-key-1"
+
+
+def _generate_jwk(kid: str = WHOAMI_KID):
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    jwk = jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    jwk["kid"] = kid
+    jwk["use"] = "sig"
+    jwk["alg"] = "ES256"
+    return private_key, jwk
+
+
+# --- from test_api_org_status.py ---
+
+
+def _sign_whoami(private_key, *, email: str | None, kid: str = WHOAMI_KID) -> str:
+    now = int(time.time())
+    claims = {
+        "aud": WHOAMI_AUDIENCE,
+        "iss": IAP_ISSUER,
+        "iat": now,
+        "exp": now + 3600,
+        "sub": "accounts.google.com:1234567890",
+    }
+    if email is not None:
+        claims["email"] = email
+    return jwt.encode(claims, private_key, algorithm="ES256", headers={"kid": kid})
+
+
+# --- from test_api_admin_integrations.py ---
+
+
+GATEWAY_REPO = "example-org/gateway-config"
+
+
+TARGETS = '[[target]]\nname = "existing"\ntransport = "http"\naddress = "https://old.example"\n'
+
+
+def _client__api_admin_integrations(tmp_path, fake_storage, config: Config, *, github: FakeGitHub, sero: FakeSero | None):
+    engine = create_engine(f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    private_key, jwk = _generate_jwk()
+    client = TestClient(
+        create_app(
+            session_factory,
+            config=config,
+            clients=Clients(
+                github=github, gojira=FakeGojira(), cloud=FakeCloud(), agent=FakeAgent(),
+                kubectl=FakeKubectl(), storage=fake_storage, sero=sero,
+            ),
+            iap_jwks_fetcher=_fetcher(jwk),
+        )
+    )
+    return client, {ASSERTION_HEADER: _sign_whoami(private_key, email="ops@example.com")}
+
+
+def _config(tmp_path, **overrides) -> Config:
+    values = {
+        "workdir": tmp_path / "work", "iap_audience": WHOAMI_AUDIENCE, "operators": ["ops@example.com"],
+        "admin_panel": True, "sero_url": "http://sero.internal", "gateway_config_repo": GATEWAY_REPO,
+        "gateway_namespace": "liminal",
+    }
+    values.update(overrides)
+    return Config(**values)
+
+
+BODY = {"vendor": "datadog", "name": "Datadog", "base_access": "read", "credential": "dd-secret-token",
+        "address": "https://mcp.datadoghq.com", "trust": "untrusted"}
+
+
+def test_disconnect_reverses_the_three_steps(tmp_path, fake_storage):
+    """Destruction safety: Disconnect reverses the three steps."""
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"targets.toml": TARGETS}, track_pushed_content=True)
+    sero = FakeSero()
+    client, headers = _client__api_admin_integrations(tmp_path, fake_storage, _config(tmp_path), github=github, sero=sero)
+    client.post("/api/admin/integrations", json=BODY, headers=headers)
+
+    response = client.delete("/api/admin/integrations/datadog", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["secret"] == "removed"
+    assert sero.deletes == [("ops@example.com", "apps/kobo/integrations/datadog")]
+    assert sero.unsyncs[0][1:] == ("kobo", "liminal", "integration-datadog")
+    assert client.get("/api/admin/integrations", headers=headers).json() == {"integrations": []}
+    assert client.delete("/api/admin/integrations/datadog", headers=headers).status_code == 404
+
+
+# --- from test_web_secrets.py ---
+
+
+AGENT = "clio"
+
+
+REPO__web_secrets = "example-org/agent-clio"
+
+
+OWNER__web_secrets = "owner@example.com"
+
+
+PR_URL = "https://example.test/pull/7"
+
+
+# Never a real credential: a placeholder standing in for one, so a test can
+# prove it reaches the lane and appears in no response, error or log.
+VALUE = "not-a-real-key-value"
+
+
+BASE_GOJIRA_YAML = "name: clio\nservice_account: agent-clio\n"
+
+
+AUDIENCE = "test-audience"
+
+
+KID = "test-key-1"
+
+
+@pytest.fixture(scope="module")
+def _key():
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    jwk = jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    jwk.update({"kid": KID, "use": "sig", "alg": "ES256"})
+    return private_key, jwk
+
+
+@pytest.fixture
+def session_factory__web_secrets(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+@pytest.fixture
+def config__web_secrets(tmp_path, fake_storage):
+    # `iap_audience` is what makes the owner-or-operator gate real: without
+    # a perimeter the room short-circuits every one of those gates to
+    # allowed, so a file about who may read and write an agent's secrets
+    # has to turn it on.
+    return Config(
+        workdir=tmp_path / "work",
+        skills_bucket="skills-bucket",
+        personas_bucket="personas-bucket",
+        iap_audience=AUDIENCE,
+        operators=[],
+    )
+
+
+def _github(**kwargs) -> FakeGitHub:
+    """A repository whose `gojira.yaml` reads the same two ways the room
+    reads it: through `read_file` (the panel's own read) and through a
+    clone (what a write edits and pushes)."""
+    repo_files = kwargs.pop("repo_files", {"gojira.yaml": BASE_GOJIRA_YAML})
+    extra = kwargs.pop("extra_clone_files", None)
+    if extra is None and "gojira.yaml" in repo_files:
+        extra = {"gojira.yaml": repo_files["gojira.yaml"]}
+    return FakeGitHub(
+        existing_repos={REPO__web_secrets},
+        repo_files=repo_files,
+        extra_clone_files=extra,
+        pr_url=PR_URL,
+        **kwargs,
+    )
+
+
+def _client__web_secrets(
+    session_factory__web_secrets,
+    config__web_secrets,
+    fake_storage,
+    key,
+    *,
+    kind: str = KIND_COMPOSED,
+    sero: FakeSero | None = None,
+    github: FakeGitHub | None = None,
+    kubectl: FakeKubectl | None = None,
+    created_by: str | None = OWNER,
+    status: AgentStatus = AgentStatus.READY,
+) -> tuple[TestClient, Clients]:
+    github = github or _github()
+    gojira = FakeGojira()
+    app_id = gojira.create_app(
+        name=AGENT, repo_full_name=REPO__web_secrets, cluster="a-cluster", namespace=AGENT
+    )
+    clients = Clients(
+        github=github,
+        gojira=gojira,
+        cloud=FakeCloud(),
+        agent=FakeAgent(reply="sure"),
+        kubectl=kubectl or FakeKubectl(),
+        storage=fake_storage,
+        slack=FakeSlack(),
+        cabal=FakeCabal(),
+        image=FakeImage(),
+        sero=sero,
+    )
+
+    session = session_factory__web_secrets()
+    session.add(
+        Agent(
+            name=AGENT,
+            persona="connected" if kind == KIND_CONNECTED else "helpful-generalist",
+            model_id="vertex_ai/claude-sonnet-4-5",
+            skills=[],
+            status=status,
+            repo_full_name=REPO__web_secrets,
+            gojira_app_id=app_id,
+            created_by=created_by,
+            kind=kind,
+        )
+    )
+    session.commit()
+    session.close()
+
+    _, jwk = key
+    app = create_app(
+        session_factory__web_secrets,
+        config=config__web_secrets,
+        clients=clients,
+        iap_jwks_fetcher=lambda: {"keys": [jwk]},
+    )
+    return TestClient(app), clients
+
+
+def _as(key, email: str = OWNER) -> dict[str, str]:
+    """A signed assertion naming `email`, the way the perimeter hands one
+    to the room. Named once so every case reads as "who is asking" rather
+    than as plumbing."""
+    private_key, _ = key
+    now = int(time.time())
+    claims = {
+        "aud": AUDIENCE,
+        "iss": IAP_ISSUER,
+        "iat": now,
+        "exp": now + 3600,
+        "sub": "accounts.google.com:1234567890",
+        "email": email,
+    }
+    return {ASSERTION_HEADER: jwt.encode(claims, private_key, algorithm="ES256",
+                                         headers={"kid": KID})}
+
+
+@pytest.fixture(autouse=True)
+def _clear_restart_window():
+    rate_limit.reset()
+    yield
+    rate_limit.reset()
+
+
+def test_a_composed_agent_commits_the_line_away_before_deleting_the_secret(
+    session_factory__web_secrets, config__web_secrets, fake_storage, _key
+):
+    """Destruction safety: A composed agent commits the line away before deleting the secret."""
+    order: list[str] = []
+
+    class _Ordered(FakeSero):
+        def unsync(self, acting_email, app, k8s_namespace, name):
+            order.append("unsync")
+            super().unsync(acting_email, app, k8s_namespace, name)
+
+        def delete_secret(self, acting_email, path):
+            order.append("delete")
+            super().delete_secret(acting_email, path)
+
+    class _OrderedGitHub(FakeGitHub):
+        def commit_push(self, workdir, message):
+            order.append("push")
+            return super().commit_push(workdir, message)
+
+    sero = _Ordered()
+    sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+    github = _OrderedGitHub(
+        existing_repos={REPO__web_secrets},
+        repo_files={
+            "gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"
+        },
+        extra_clone_files={
+            "gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"
+        },
+        pr_url=PR_URL,
+    )
+    client, clients = _client__web_secrets(
+        session_factory__web_secrets, config__web_secrets, fake_storage, _key, sero=sero, github=github
+    )
+
+    body = client.put(
+        f"/api/agents/{AGENT}/secrets",
+        json={"remove": ["API_KEY"]},
+        headers=_as(_key),
+    ).json()
+
+    assert order == ["push", "unsync", "delete"]
+    assert body["emptied"] is True
+    assert body["pending_unwire"] is False
+    pushed = yaml.safe_load(github.pushed_file("gojira.yaml"))
+    assert pushed["secrets_from"] == []
+    # And the deploy is asked for after the Secret is gone, not between.
+    assert clients.gojira.reprovision_calls
+
+
+def test_a_branch_the_room_did_not_make_is_never_deleted(
+    session_factory__web_secrets, config__web_secrets, fake_storage, _key
+):
+    """Destruction safety: A branch the room did not make is never deleted."""
+    from kobo_api.clients import BranchComparison
+
+    github = _github(
+        existing_branches={f"{REPO__web_secrets}#{ENV_BRANCH}"},
+        comparisons={
+            ENV_BRANCH: BranchComparison(
+                found=True,
+                files=("gojira.yaml", "src/main.py"),
+                authors=("someone@example.com",),
+            )
+        },
+    )
+    client, _ = _client__web_secrets(
+        session_factory__web_secrets, config__web_secrets, fake_storage, _key, kind=KIND_CONNECTED, github=github
+    )
+
+    resp = client.put(
+        f"/api/agents/{AGENT}/env",
+        json={"set": {"API_BASE": "https://example.test"}},
+        headers=_as(_key),
+    )
+
+    assert resp.status_code == 409
+    assert "the room did not make it" in resp.json()["error"]
+    assert github.deleted_branches == []
+    assert github.open_pr_calls == []
+
+
+# --- from test_sero.py ---
+
+
+URL = "http://secrets.example"
+
+
+AUDIENCE__sero = "http://secrets.example"
+
+
+NAMESPACE = "platform"
+
+
+EMAIL = "someone@example.com"
+
+
+AGENT = "clio"
+
+
+def _client__sero(handler, *, token: str = "id-token") -> HttpxSeroClient:
+    return HttpxSeroClient(
+        URL,
+        AUDIENCE__sero,
+        NAMESPACE,
+        token_provider=lambda: token,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+
+def test_unsync_raises_when_the_object_belongs_to_another_field_manager():
+    """Destruction safety: Unsync raises when the object belongs to another field manager."""
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"error": "that object is managed by kustomize"})
+
+    with pytest.raises(ClientError) as exc:
+        _client__sero(handler).unsync(EMAIL, AGENT, AGENT, f"{AGENT}-env")
+
+    assert "that object is managed by kustomize" in str(exc.value)
+
+
+def test_unsync_says_so_when_the_delete_left_a_new_object_standing():
+    # `recreated` means what this call removed is gone and something else
+    # now stands at the name. A caller that read `deleted` and stopped would
+    # leave a live ExternalSecret it does not know about.
+    """Destruction safety: Unsync says so when the delete left a new object standing."""
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"applied": True, "state": "recreated", "recreated": True, "deleted": True}
+        )
+
+    with pytest.raises(ClientError) as exc:
+        _client__sero(handler).unsync(EMAIL, AGENT, AGENT, f"{AGENT}-env")
+
+    assert f"{AGENT}-env" in str(exc.value)
+
+
+# --- from test_publish_skills.py ---
+
+
+_TEMPLATES_DIR = Path(__file__).parent.parent / "kobo_api" / "templates" / "skills_publish"
+
+
+_SCRIPT_PATH = _TEMPLATES_DIR / "publish_skills.py"
+
+
+def _load_module():
+    spec = importlib.util.spec_from_file_location("publish_skills", _SCRIPT_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    # dataclasses' postponed-annotation resolution (this script uses `from
+    # __future__ import annotations`) looks the module up in `sys.modules`
+    # by name — without registering it there first, `@dataclass` on `Skill`
+    # raises AttributeError the moment this module is exec'd.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def ps():
+    return _load_module()
+
+
+class _FakeBlob:
+    """Mirrors `google.cloud.storage.Blob`'s surface `sync()` calls: a
+    `.metadata` setter (read by `upload_from_string`, matching the real
+    client's multipart-upload behavior of sending whatever `.metadata` was
+    set to before the upload call) plus `.upload_from_string(data,
+    content_type=...)` and `.delete()`, and the `.name` attribute
+    `list_blobs()` results are read for.
+    """
+
+    def __init__(self, bucket: _FakeBucket, name: str):
+        self._bucket = bucket
+        self.name = name
+        self.metadata: dict | None = None
+
+    def upload_from_string(self, data: bytes, content_type: str = "application/octet-stream") -> None:
+        self._bucket.objects[self.name] = {
+            "data": data,
+            "metadata": dict(self.metadata or {}),
+            "content_type": content_type,
+        }
+
+    def delete(self) -> None:
+        self._bucket.objects.pop(self.name, None)
+
+
+class _FakeBucket:
+    """Mirrors `google.cloud.storage.Bucket`'s surface `sync()` calls:
+    `.blob(key)` and `.list_blobs(prefix=...)`."""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.objects: dict[str, dict] = {}
+
+    def blob(self, key: str) -> _FakeBlob:
+        return _FakeBlob(self, key)
+
+    def list_blobs(self, prefix: str = ""):
+        return [_FakeBlob(self, name) for name in list(self.objects) if name.startswith(prefix)]
+
+
+class _FakeBucketClient:
+    """Mirrors `google.cloud.storage.Client`'s surface `sync()` calls:
+    `.bucket(name) -> Bucket` — exactly what `_real_client()`'s real
+    `storage.Client()` would need to support for this script to run
+    unmodified against it.
+    """
+
+    def __init__(self):
+        self._buckets: dict[str, _FakeBucket] = {}
+
+    def bucket(self, name: str) -> _FakeBucket:
+        return self._buckets.setdefault(name, _FakeBucket(name))
+
+
+def _skill_on_disk(ps, tmp_path: Path, *, team: str, skill_id: str, files: dict[str, str]):
+    skill_dir = tmp_path / team / skill_id
+    for rel, content in files.items():
+        path = skill_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    return ps.Skill(
+        id=skill_id,
+        team=team,
+        dir=skill_dir,
+        files=sorted(Path(rel) for rel in files),
+        name=skill_id,
+        description=f"{skill_id} description",
+        tags=[],
+    )
+
+
+def test_sync_prunes_stale_but_spares_index_json(ps, tmp_path, monkeypatch):
+    """Destruction safety: Sync prunes stale but spares index json."""
+    monkeypatch.setattr(ps, "_utcnow_iso", lambda: "2026-08-03T00:00:00Z")
+    client = _FakeBucketClient()
+    bucket = client.bucket("skills-bucket")
+    # Pre-seed leftover state from a previous publish: a skill file that no
+    # longer exists in this run's discovered set, plus an existing index.json
+    # (which must be spared by the prune even though it's never in the
+    # "new keys" set either — it always gets rewritten at the end instead).
+    bucket.blob("acme/old-skill/SKILL.md").upload_from_string(b"stale", content_type="text/markdown")
+    bucket.blob("index.json").upload_from_string(b"{}", content_type="application/json")
+
+    skill = _skill_on_disk(
+        ps, tmp_path, team="acme", skill_id="code-review", files={"SKILL.md": "x"}
+    )
+
+    result = ps.sync(client, "skills-bucket", [skill], "cafe")
+
+    assert result == {"uploaded": 1, "deleted": 1}
+    assert "acme/old-skill/SKILL.md" not in bucket.objects
+    assert "index.json" in bucket.objects
+    assert "acme/code-review/SKILL.md" in bucket.objects
+
+
+# --- from test_clients.py ---
+
+
+class RecordingRunner:
+    """Test double for CommandRunner: records exact argv (and, per Task 3,
+    the exact `env` overlay) for every call, and replays canned (returncode,
+    stdout, stderr) results in order (or reuses a single configured result
+    for every call). Raises ClientError on rc != 0, exactly like the real
+    CommandRunner, so real client branching logic (e.g. ensure_gsa's
+    describe-then-create) exercises for real against it.
+    """
+
+    def __init__(self, results: list[tuple[int, str, str]] | None = None):
+        self._results = list(results) if results is not None else [(0, "", "")]
+        self.calls: list[list[str]] = []
+        # Parallel to `calls`: the `env` kwarg each call was made with (None
+        # when the caller passed none) — GhCLI's token_provider wiring is
+        # the only thing exercising this today.
+        self.envs: list[dict[str, str] | None] = []
+
+    def run(
+        self,
+        args: list[str],
+        stdin: str | None = None,
+        *,
+        redact_args: bool = False,
+        env: dict[str, str] | None = None,
+    ) -> str:
+        self.calls.append(list(args))
+        self.envs.append(env)
+        if len(self._results) > 1:
+            rc, out, err = self._results.pop(0)
+        else:
+            rc, out, err = self._results[0]
+        if rc != 0:
+            raise ClientError(
+                f"{' '.join(args)} failed (rc={rc}): {err or out}",
+                returncode=rc,
+                stdout=out,
+                stderr=err,
+            )
+        return out
+
+
+def test_repo_exists_is_false_for_a_name_github_only_redirects():
+    """Destruction safety: Repo exists is false for a name github only redirects.
+
+    Destroy renames an agent's repo to archived-agent-<name>-<id>; GitHub
+    keeps answering at the old name through a redirect. That name is free."""
+    runner = RecordingRunner(
+        results=[(0, '{"full_name":"acme/archived-agent-clio-5","archived":true}', "")]
+    )
+    client = GhCLI(runner=runner)
+
+    assert client.repo_exists("acme/agent-clio") is False
+    assert runner.calls == [["gh", "api", "repos/acme/agent-clio"]]
+

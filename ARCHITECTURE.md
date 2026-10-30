@@ -45,7 +45,7 @@ SEAMS → card:
 - (uncarded) models.py + migrations/: the tables; the alembic chain is the schema of record on Postgres
 - (uncarded) mcp/ — OAuth 2.1 AS (Google OIDC + PKCE), own JWTs, refresh-token families, audit log, per-replica rate limit, tools in mcp/tools/{read,write}.py
 
-DEPS: no Python imports of sibling repos (daedalus only via `pytest.importorskip` in tests/test_composer.py). Runtime contracts, all over the network or git:
+DEPS: no Python imports of sibling repos (daedalus only via `pytest.importorskip` in tests/test_wire_bundle.py). Runtime contracts, all over the network or git:
 - gojira: HTTP `/api/v1/apps` create/status/provision/delete + `/healthz` (clients.py `HttpxGojiraClient`); kobo edits each agent repo's `gojira.yaml` and `k8s/base/kustomization.yaml`.
 - daedalus: bundle schema vendored verbatim at api/kobo_api/vendor/bundle.schema.json; agent images `FROM` `config.runtime_image` (the daedalus runtime).
 - cabal: admin API (directory, relay, token mint/revoke, dispatch-pairs, conversations, SSE) with operator bearer; kobo is the policy owner.
