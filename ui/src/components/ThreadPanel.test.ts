@@ -1,49 +1,21 @@
 // @vitest-environment jsdom
 //
 // The thread surface (threads arc, Task 10): starting a shared thread from
-// an agent's own chat context, adding participants (a plain picker of
-// visible agents, filtered client-side to drop whoever's already seated or
-// not ready), and driving turns with replies attributed by name.
+// an agent's own chat context, adding participants (a picker of the agents
+// this one is paired with, issue #289, filtered client-side to drop
+// whoever's already seated), and driving turns with replies attributed by
+// name.
 import { fireEvent, screen, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ThreadPanel from "./ThreadPanel.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 import { toasts } from "../lib/toast.svelte";
 
-const AGENTS_LIST = {
-  agents: [
-    {
-      name: "ward",
-      status: "ready",
-      model: "m",
-      model_label: "M",
-      created_at: "2026-08-01T00:00:00Z",
-      has_avatar: false,
-      created_by: null,
-      group_name: null,
-    },
-    {
-      name: "clio",
-      status: "ready",
-      model: "m",
-      model_label: "M",
-      created_at: "2026-08-01T00:00:00Z",
-      has_avatar: false,
-      created_by: null,
-      group_name: null,
-    },
-    {
-      name: "not-ready-bot",
-      status: "provisioning",
-      model: "m",
-      model_label: "M",
-      created_at: "2026-08-01T00:00:00Z",
-      has_avatar: false,
-      created_by: null,
-      group_name: null,
-    },
-  ],
-  groups_unavailable: false,
+// What `GET /api/agents/ward/pairs` answers: already ready, already capped
+// to what the caller can see, so the picker has nothing left to filter but
+// the seated.
+const PAIRS = {
+  pairs: [{ name: "clio", group: "growth", via: "group" }],
 };
 
 const FRESH_THREAD = {
@@ -72,7 +44,7 @@ describe("ThreadPanel", () => {
   });
 
   it("shows the Start affordance and no composer before any thread exists", async () => {
-    stubFetch({ "/api/agents": AGENTS_LIST, "/api/": {} });
+    stubFetch({ "/api/agents/ward/pairs": PAIRS, "/api/": {} });
     renderWithClient(ThreadPanel, { agentName: "ward" });
 
     expect(await screen.findByRole("button", { name: "Start a shared thread" })).not.toBeNull();
@@ -82,7 +54,7 @@ describe("ThreadPanel", () => {
   it("starting a thread POSTs {agent} to /api/threads and seats the viewed agent", async () => {
     stubFetch({
       "/api/threads": FRESH_THREAD,
-      "/api/agents": AGENTS_LIST,
+      "/api/agents/ward/pairs": PAIRS,
       "/api/": {},
     });
     renderWithClient(ThreadPanel, { agentName: "ward" });
@@ -102,10 +74,16 @@ describe("ThreadPanel", () => {
     });
   });
 
-  it("the Add-participant picker excludes the already-seated agent and any not-ready agent", async () => {
+  it("the Add-participant picker lists the paired agents that are not yet seated", async () => {
     stubFetch({
       "/api/threads": FRESH_THREAD,
-      "/api/agents": AGENTS_LIST,
+      "/api/agents/ward/pairs": {
+        pairs: [
+          { name: "ward", group: "growth", via: "group" },
+          { name: "clio", group: "growth", via: "group" },
+          { name: "ledger", group: "payments-eng", via: "invite" },
+        ],
+      },
       "/api/": {},
     });
     renderWithClient(ThreadPanel, { agentName: "ward" });
@@ -113,7 +91,22 @@ describe("ThreadPanel", () => {
 
     const picker = (await screen.findByRole("combobox")) as HTMLSelectElement;
     const optionValues = Array.from(picker.options).map((option) => option.value);
-    expect(optionValues).toEqual(["clio"]);
+    expect(optionValues).toEqual(["clio", "ledger"]);
+  });
+
+  it("with nobody paired, the picker says to request access on the Access tab first", async () => {
+    stubFetch({
+      "/api/threads": FRESH_THREAD,
+      "/api/agents/ward/pairs": { pairs: [] },
+      "/api/": {},
+    });
+    renderWithClient(ThreadPanel, { agentName: "ward" });
+    await startThread();
+
+    expect(
+      await screen.findByText(/Request access to another team's agent on the Access tab first/),
+    ).not.toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
   });
 
   it("adding a participant POSTs {agent} to /api/threads/{id}/participants and updates the seated list", async () => {
@@ -128,7 +121,7 @@ describe("ThreadPanel", () => {
         participants: ["ward", "clio"],
       },
       "/api/threads": FRESH_THREAD,
-      "/api/agents": AGENTS_LIST,
+      "/api/agents/ward/pairs": PAIRS,
       "/api/": {},
     });
     renderWithClient(ThreadPanel, { agentName: "ward" });
@@ -158,8 +151,8 @@ describe("ThreadPanel", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
-        if (url === "/api/agents") {
-          return jsonResponse(AGENTS_LIST);
+        if (url === "/api/agents/ward/pairs") {
+          return jsonResponse(PAIRS);
         }
         if (url === "/api/threads" && init?.method === "POST") {
           return jsonResponse(FRESH_THREAD);
@@ -200,7 +193,7 @@ describe("ThreadPanel", () => {
         to: ["ward"],
       },
       "/api/threads": FRESH_THREAD,
-      "/api/agents": AGENTS_LIST,
+      "/api/agents/ward/pairs": PAIRS,
       "/api/": {},
     });
     renderWithClient(ThreadPanel, { agentName: "ward" });
@@ -230,8 +223,8 @@ describe("ThreadPanel", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
-        if (url === "/api/agents") {
-          return jsonResponse(AGENTS_LIST);
+        if (url === "/api/agents/ward/pairs") {
+          return jsonResponse(PAIRS);
         }
         if (url === "/api/threads" && init?.method === "POST") {
           return jsonResponse(FRESH_THREAD);
@@ -279,8 +272,8 @@ describe("ThreadPanel", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
-        if (url === "/api/agents") {
-          return jsonResponse(AGENTS_LIST);
+        if (url === "/api/agents/ward/pairs") {
+          return jsonResponse(PAIRS);
         }
         if (url === "/api/threads" && init?.method === "POST") {
           return jsonResponse(seated);
@@ -347,7 +340,7 @@ describe("ThreadPanel", () => {
         to: ["ward", "clio"],
       },
       "/api/threads": FRESH_THREAD,
-      "/api/agents": AGENTS_LIST,
+      "/api/agents/ward/pairs": PAIRS,
       "/api/": {},
     });
     renderWithClient(ThreadPanel, { agentName: "ward" });
@@ -367,8 +360,8 @@ describe("ThreadPanel", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
-        if (url === "/api/agents") {
-          return jsonResponse(AGENTS_LIST);
+        if (url === "/api/agents/ward/pairs") {
+          return jsonResponse(PAIRS);
         }
         if (url === "/api/threads" && init?.method === "POST") {
           return jsonResponse(FRESH_THREAD);
@@ -397,7 +390,7 @@ describe("ThreadPanel", () => {
   it("disables Start and the composer while frozen", async () => {
     stubFetch({
       "/api/threads": FRESH_THREAD,
-      "/api/agents": AGENTS_LIST,
+      "/api/agents/ward/pairs": PAIRS,
       "/api/": {},
     });
     const { rerender } = renderWithClient(ThreadPanel, { agentName: "ward", frozen: false });

@@ -313,6 +313,15 @@ export type Invite = {
  * server shape, not something this side gets to normalize away. */
 export type TeamPair = { name: string; group: string | null };
 
+/** One agent the viewed agent is paired with right now (`GET /api/agents/
+ * {name}/pairs`, issue #289): ready, visible to the caller, and allowed to
+ * share a thread with it. `via` says why: `group` is the automatic same-team
+ * pair, `invite` an accepted request in either direction. */
+export type PairedAgent = { name: string; group: string | null; via: "group" | "invite" };
+
+/** `GET /api/agents/{name}/pairs`'s response. */
+export type PairsResult = { pairs: PairedAgent[] };
+
 /** One other READY agent the viewed agent could ask for colleague access
  * (`GET /api/agents/{name}/requestable`, access-tab refinement wave) --
  * capped to exactly these five fields, same card-metadata shape
@@ -2358,6 +2367,14 @@ export async function uploadAvatar(name: string, png: ArrayBuffer): Promise<{ sh
 export async function listInvites(name: string): Promise<InvitesResult> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/invites`);
   return parse<InvitesResult>(res);
+}
+
+/** `GET /api/agents/{name}/pairs`: the agents `name` may share a thread
+ * with right now, capped to those the caller can also see. Open to anyone
+ * who can see `name`, same as starting a thread from it. */
+export async function listPairs(name: string): Promise<PairsResult> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/pairs`);
+  return parse<PairsResult>(res);
 }
 
 /** `POST /api/agents/{name}/invites`: requests cross-group colleague access

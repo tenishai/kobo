@@ -942,3 +942,41 @@ def test_thread_turn_does_not_appear_in_a_participants_colleague_feed(session_fa
 
     assert feed_response.status_code == 200
     assert feed_response.json() == {"entries": [], "truncated": False}
+
+
+# --- GET /api/agents/{name}/pairs: who may join a thread (issue #289) --------
+
+
+def test_pairs_lists_the_agents_the_viewed_agent_may_share_a_thread_with(session_factory, config):
+    """Visibility gate: a same-group colleague and an accepted request in
+    either direction are paired; an agent with neither is not."""
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({INITIATOR_EMAIL: ["growth", "payments-eng"]})
+    client = _make_client(session_factory, config, groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk))
+    _seed_agent(session_factory, name="a", group_name="growth")
+    _seed_agent(session_factory, name="b", group_name="growth")
+    _seed_agent(session_factory, name="c", group_name="payments-eng")
+    _seed_agent(session_factory, name="d", group_name="payments-eng")
+    _seed_invite(session_factory, from_agent="c", to_agent="a", status=INVITE_ACCEPTED)
+
+    response = client.get("/api/agents/a/pairs", headers=_headers(private_key, email=INITIATOR_EMAIL))
+
+    assert response.status_code == 200, response.text
+    assert response.json()["pairs"] == [
+        {"name": "b", "group": "growth", "via": "group"},
+        {"name": "c", "group": "payments-eng", "via": "invite"},
+    ]
+
+
+def test_pairs_never_names_an_agent_the_caller_cannot_see(session_factory, config):
+    private_key, jwk = _generate_jwk()
+    resolver = FakeGroupResolver({INITIATOR_EMAIL: ["growth"]})
+    client = _make_client(session_factory, config, groups_resolver=resolver, iap_jwks_fetcher=_fetcher(jwk))
+    _seed_agent(session_factory, name="a", group_name="growth")
+    _seed_agent(session_factory, name="c", group_name="payments-eng")
+    _seed_invite(session_factory, from_agent="a", to_agent="c", status=INVITE_ACCEPTED)
+
+    response = client.get("/api/agents/a/pairs", headers=_headers(private_key, email=INITIATOR_EMAIL))
+
+    assert response.status_code == 200, response.text
+    assert response.json()["pairs"] == []

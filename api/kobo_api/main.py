@@ -186,6 +186,7 @@ from kobo_api.models import (
 from kobo_api.namegen import SUGGESTION_COUNT, finalize_suggestions
 from kobo_api.org import OrgState, load_org_config
 from kobo_api.pairs import (
+    allowed_pairs,
     implicitly_paired,
     sync_dispatch_pairs,
     sync_dispatch_pairs_best_effort,
@@ -10911,6 +10912,57 @@ def create_app(
                 "team_pairs": _team_pairs(session, agent),
             }
         )
+
+    @app.get("/api/agents/{name}/pairs")
+    def list_pairs(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """The agents `name` is paired with right now, as the switchboard
+        would allow them (issue #289): built from `kobo_api.pairs.
+        allowed_pairs`, the one definition, read in EITHER direction, since
+        a pair in either direction is what lets two agents share a thread
+        (`_thread_consented` below). Each entry is `{name, group, via}`,
+        `via` being `group` (same non-shared group, automatic) or `invite`
+        (an accepted request). Only READY, non-connected agents appear,
+        because `allowed_pairs` only ever names those.
+
+        Gated like a thread, not like the invites view: anyone who can see
+        `name` may start a shared thread from it (`create_thread`), so the
+        picker that feeds has to answer for them too, owner or not. What
+        comes back is then capped to the agents the caller can ALSO see
+        (`_visible_agents`, the room's one visibility choke point): a pair
+        with an agent outside the caller's aisle is one they could never
+        seat anyway (`add_thread_participant` resolves the newcomer through
+        `_visible_agent_or_404`), and naming it here would tell a viewer
+        about an agent the room otherwise hides from them.
+        """
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+
+        caller = f"agent:{agent.name}"
+        partners: set[str] = set()
+        for from_side, to_side in allowed_pairs(session, app.state.config):
+            if from_side == caller:
+                partners.add(to_side)
+            elif to_side == agent.name:
+                partners.add(from_side.removeprefix("agent:"))
+
+        visible, _ = _visible_agents(session, request)
+        pairs = [
+            {
+                "name": other.name,
+                "group": other.group_name,
+                "via": (
+                    "group"
+                    if implicitly_paired(agent.group_name, other.group_name)
+                    else "invite"
+                ),
+            }
+            for other in sorted(visible, key=lambda row: row.name)
+            if other.name in partners
+        ]
+        return JSONResponse({"pairs": pairs})
 
     @app.get("/api/agents/{name}/requestable")
     def list_requestable_agents(

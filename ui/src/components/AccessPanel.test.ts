@@ -371,7 +371,8 @@ describe("AccessPanel", () => {
 
     await screen.findByText("network");
     expect(screen.getAllByText("Same team (growth)")).toHaveLength(3);
-    expect(screen.getAllByText("auto")).toHaveLength(3);
+    // Every paired row, automatic or accepted, says what the pair buys.
+    expect(screen.getAllByText("Can join shared threads")).toHaveLength(4);
     // Non-revocable: the only Revoke button anywhere belongs to the trailing
     // accepted pair, never one of the three auto rows.
     expect(screen.getAllByRole("button", { name: /revoke/i })).toHaveLength(1);

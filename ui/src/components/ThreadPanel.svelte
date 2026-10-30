@@ -21,13 +21,15 @@
   // The "suggest a colleague" behavior (`api/kobo_api/composer.py`'s own
   // "name a colleague whose capability fits" instruction) is plain text in
   // an agent's own reply -- there is no structured suggestion on the wire for
-  // this component to parse. What this panel offers instead, per the
-  // brief's own ruling, is a plain "Add participant" picker of every OTHER
-  // ready agent the caller can see: reads the exact same `agentsQuery()` the
-  // dashboard and RequestAccessCard already use (server-filtered to
-  // visibility, access-control Task B2), filtered here, client-side, to drop
-  // whoever's already seated -- purely a display nicety, since the server's
-  // own `_add_thread_participant` is the real gate either way.
+  // this component to parse. What this panel offers instead is an "Add
+  // participant" picker of the agents this one is PAIRED with (issue #289):
+  // `pairsQuery(agentName)`, `GET /api/agents/{name}/pairs`, already ready,
+  // already capped to what the caller can see, filtered here only to drop
+  // whoever's already seated. Before #289 the picker listed every visible
+  // agent and an unpaired pick failed on the server with "not connected";
+  // the server's own `_add_thread_participant` is still the real gate (it
+  // checks consent with EVERY seated agent, not only the primary), so a
+  // refusal can still arrive and is still shown as a toast.
   //
   // Add-participant refusals (not-ready, already seated, no shared consent,
   // not-found) surface as a toast, not an inline form error -- the brief's
@@ -46,8 +48,8 @@
   } from "../lib/api";
   import {
     addThreadParticipantMutation,
-    agentsQuery,
     createThreadMutation,
+    pairsQuery,
     postThreadTurnMutation,
   } from "../lib/queries";
   import { toast } from "../lib/toast.svelte";
@@ -98,7 +100,7 @@
   // svelte-ignore state_referenced_locally
   const turnMutation = createMutation(() => (postThreadTurnMutation()));
   // svelte-ignore state_referenced_locally
-  const agents = createQuery(() => (agentsQuery()));
+  const pairs = createQuery(() => (pairsQuery(agentName)));
 
   const canSend = $derived(
     thread !== null && input.trim().length > 0 && !turnMutation.isPending,
@@ -118,9 +120,7 @@
 
   const eligibleAgents = $derived.by(() => {
     const seated = new Set(thread?.participants ?? []);
-    return (agents.data?.agents ?? []).filter(
-      (agent) => agent.status === "ready" && !seated.has(agent.name),
-    );
+    return (pairs.data?.pairs ?? []).filter((agent) => !seated.has(agent.name));
   });
 
   let selectedParticipant = $state<string | null>(null);
@@ -315,10 +315,16 @@
 
     <form class="thread-panel__add-form" onsubmit={handleAddParticipant}>
       <label class="thread-panel__add-label" for="thread-add-participant">Add participant</label>
-      {#if agents.isPending}
+      {#if pairs.isPending}
         <p class="thread-panel__hint">Loading agents…</p>
+      {:else if pairs.isError}
+        <p class="thread-panel__hint">
+          {errorMessage(pairs.error, "Couldn't load who can join.")}
+        </p>
       {:else if eligibleAgents.length === 0}
-        <p class="thread-panel__hint">No other agents to add right now.</p>
+        <p class="thread-panel__hint">
+          Nobody to add yet. Request access to another team's agent on the Access tab first.
+        </p>
       {:else}
         <div class="thread-panel__add-row">
           <select
