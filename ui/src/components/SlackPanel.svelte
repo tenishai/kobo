@@ -764,8 +764,8 @@
 
   {#if !slackAvailable}
     <p class="panel__note slack-panel__unavailable" role="status">
-      Slack isn't set up for this room yet. A room operator adds the Slack config tokens
-      before any agent can {firstRun ? "connect" : "reconnect"} an app.
+      Slack isn't set up for this room yet. A room operator adds the Slack config tokens under
+      <a href="#/admin/integrations">Admin &gt; Integrations</a> before any agent can {firstRun ? "connect" : "reconnect"} an app.
     </p>
   {/if}
 

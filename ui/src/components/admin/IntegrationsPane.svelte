@@ -7,13 +7,23 @@
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import Modal from "../Modal.svelte";
   import AwsConnect from "./AwsConnect.svelte";
-  import { errorMessage, type AdminIntegration, type OrgAccountsCheck } from "../../lib/api";
+  import {
+    errorMessage,
+    type AdminIntegration,
+    type OrgAccountsCheck,
+    type RoomServiceId,
+    type RoomServiceStatus,
+    type RoomServiceValues,
+  } from "../../lib/api";
   import { toast } from "../../lib/toast.svelte";
   import {
     adminIntegrationsQuery,
     checkOrgAccountsMutation,
     connectAdminIntegrationMutation,
     disconnectAdminIntegrationMutation,
+    putRoomServiceMutation,
+    removeRoomServiceMutation,
+    roomServicesQuery,
   } from "../../lib/queries";
   import { CATALOG, OTHER, catalogEntry, type CatalogEntry } from "../../lib/admin/catalog";
 
@@ -29,6 +39,87 @@
   const check = createMutation(() => (checkOrgAccountsMutation(queryClient)));
   let checked = $state<Record<string, OrgAccountsCheck>>({});
   let checking = $state<string | null>(null);
+
+  // Room services (#284): the two things the room itself uses, Slack config
+  // tokens and the GitHub app for pull requests. Pasted once, read live; a
+  // value the deployment config carries shows as set by deployment.
+  const roomServices = createQuery(() => (roomServicesQuery()));
+  const putService = createMutation(() => (putRoomServiceMutation(queryClient)));
+  const removeService = createMutation(() => (removeRoomServiceMutation(queryClient)));
+  type ServiceField = { key: keyof RoomServiceValues; label: string; secret: boolean; multiline?: boolean; placeholder?: string };
+  const ROOM_SERVICES: { id: RoomServiceId; name: string; summary: string; where: string; fields: ServiceField[] }[] = [
+    {
+      id: "slack",
+      name: "Slack",
+      summary: "Lets the room create and remove Slack apps for agents.",
+      where: "Both values come from api.slack.com/apps, under Your App Configuration Tokens; generate a token for your workspace and paste the pair.",
+      fields: [
+        { key: "config_token", label: "App configuration token", secret: true, placeholder: "xoxe.xoxp-..." },
+        { key: "refresh_token", label: "Refresh token", secret: true, placeholder: "xoxe-..." },
+      ],
+    },
+    {
+      id: "github",
+      name: "GitHub app for pull requests",
+      summary: "The app agents open pull requests through, scoped per agent to the repositories you approve.",
+      where: "App ID and the private key come from the app's settings page on GitHub (Developer settings, GitHub Apps); the installation ID is the number at the end of the installation's URL under Install App.",
+      fields: [
+        { key: "app_id", label: "App ID", secret: false, placeholder: "123456" },
+        { key: "installation_id", label: "Installation ID", secret: false, placeholder: "12345678" },
+        { key: "private_key", label: "Private key (PEM)", secret: true, multiline: true, placeholder: "-----BEGIN RSA PRIVATE KEY-----" },
+      ],
+    },
+  ];
+  const SERVICE_STATE: Record<RoomServiceStatus["source"], { tone: "on" | "warn"; label: string }> = {
+    room: { tone: "on", label: "Set up" },
+    deployment: { tone: "on", label: "Set by deployment" },
+    none: { tone: "warn", label: "Not set up" },
+  };
+  let serviceForm = $state<{ id: RoomServiceId; values: Record<string, string> } | null>(null);
+  let serviceError = $state<string | null>(null);
+  let removingService = $state<RoomServiceId | null>(null);
+  const serviceDef = $derived((id: RoomServiceId) => ROOM_SERVICES.find((s) => s.id === id)!);
+  const serviceStatus = $derived((id: RoomServiceId): RoomServiceStatus | null => roomServices.data?.services[id] ?? null);
+
+  function openService(id: RoomServiceId): void {
+    serviceError = null;
+    serviceForm = { id, values: Object.fromEntries(serviceDef(id).fields.map((f) => [f.key, ""])) };
+  }
+
+  function submitService(event: SubmitEvent): void {
+    event.preventDefault();
+    if (!serviceForm) return;
+    serviceError = null;
+    const values: RoomServiceValues = {};
+    for (const f of serviceDef(serviceForm.id).fields) values[f.key] = (serviceForm.values[f.key] ?? "").trim();
+    const name = serviceDef(serviceForm.id).name;
+    putService.mutate(
+      { service: serviceForm.id, values },
+      {
+        onSuccess: () => {
+          toast.success(`${name} set up`, "Agents can use it now.");
+          serviceForm = null;
+        },
+        onError: (err: unknown) => (serviceError = errorMessage(err, "Could not store the values. Try again.")),
+      },
+    );
+  }
+
+  function handleRemoveService(id: RoomServiceId): void {
+    removingService = null;
+    const name = serviceDef(id).name;
+    removeService.mutate(id, {
+      onSuccess: () => toast.success(`${name} removed`),
+      onError: (err: unknown) => toast.error(`Could not remove ${name}`, errorMessage(err, "Try again.")),
+    });
+  }
+
+  function whenBy(s: RoomServiceStatus): string {
+    if (s.source === "deployment") return "From the room's deployment config";
+    if (s.source !== "room") return "";
+    const at = s.updated_at ? new Date(s.updated_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
+    return [at, s.updated_by ? `by ${s.updated_by}` : ""].filter(Boolean).join(" ");
+  }
 
   let search = $state("");
   const all = $derived(integrations.data ?? []);
@@ -179,6 +270,57 @@
       a service vendor is one connection. What each agent may do there is granted under Permissions.
     </p>
   </div>
+  <div class="room-services">
+    <h3 id="room-services-heading" class="room-services__title">Room services</h3>
+    <p class="page__lead">
+      What the room itself uses: the Slack config tokens it creates agents' Slack apps with, and the GitHub app that opens their pull requests.
+      Paste the values once and they are used at once; a value the room's deployment config carries shows as set by deployment.
+    </p>
+    {#if roomServices.isPending}
+      <p class="page__foot">Reading the room's services…</p>
+    {:else if roomServices.isError}
+      <p class="page__foot">Could not read the room's services just now.</p>
+    {:else if roomServices.data}
+      {@const data = roomServices.data}
+      <div class="table-card" aria-labelledby="room-services-heading">
+        {#if !data.can_store}
+          <p class="panel__empty">{data.note}</p>
+        {:else}
+          <table class="panel__table">
+            <thead>
+              <tr><th>Service</th><th>Status</th><th>Set</th><th class="panel__cell--right"></th></tr>
+            </thead>
+            <tbody>
+              {#each ROOM_SERVICES as svc (svc.id)}
+                {@const s = data.services[svc.id]}
+                <tr>
+                  <td>
+                    <span class="name">{svc.name}</span>
+                    <span class="quiet addr">{svc.summary}</span>
+                  </td>
+                  <td>
+                    <span class="status status--{SERVICE_STATE[s.source].tone}">
+                      <span class="status__dot" aria-hidden="true"></span>{SERVICE_STATE[s.source].label}
+                    </span>
+                  </td>
+                  <td class="quiet">{whenBy(s)}</td>
+                  <td class="panel__cell--right">
+                    <button type="button" class="btn btn--quiet" onclick={() => openService(svc.id)}>
+                      {s.source === "room" ? "Replace" : "Set up"}
+                    </button>
+                    {#if s.source === "room"}
+                      <button type="button" class="btn btn--quiet" disabled={removeService.isPending} onclick={() => (removingService = svc.id)}>Remove</button>
+                    {/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+      </div>
+    {/if}
+  </div>
+
   <div class="page__toolbar">
     <input class="field__input page__search" type="search" placeholder="Search integrations" bind:value={search} aria-label="Search integrations" />
     <button type="button" class="btn btn--primary" onclick={() => (catalogOpen = true)}>Add integration</button>
@@ -343,6 +485,45 @@
   {/snippet}
 </Modal>
 
+<Modal open={serviceForm !== null} title={serviceForm ? `${serviceStatus(serviceForm.id)?.source === "room" ? "Replace" : "Set up"} ${serviceDef(serviceForm.id).name}` : ""} onclose={() => (serviceForm = null)}>
+  {#if serviceForm}
+    {@const def = serviceDef(serviceForm.id)}
+    <form id="room-service-form" class="form" onsubmit={submitService}>
+      <p class="page__lead">{def.where}</p>
+      {#each def.fields as f (f.key)}
+        <label class="field">
+          <span>{f.label}</span>
+          {#if f.multiline}
+            <textarea id="room-service-{f.key}" rows="6" bind:value={serviceForm.values[f.key]} placeholder={f.placeholder ?? ""} autocomplete="off" spellcheck="false" required></textarea>
+          {:else}
+            <input id="room-service-{f.key}" type={f.secret ? "password" : "text"} bind:value={serviceForm.values[f.key]} placeholder={f.placeholder ?? ""} autocomplete="off" required />
+          {/if}
+        </label>
+      {/each}
+      {#if serviceError}<p class="page__foot fail">{serviceError}</p>{/if}
+      <p class="page__foot">The values are kept in the room's own secret store and never shown again.</p>
+    </form>
+  {/if}
+  {#snippet footer()}
+    <button type="button" class="btn" onclick={() => (serviceForm = null)}>Cancel</button>
+    <button type="submit" form="room-service-form" class="btn btn--primary" disabled={putService.isPending}>{putService.isPending ? "Saving…" : "Save"}</button>
+  {/snippet}
+</Modal>
+
+<Modal open={removingService !== null} title={removingService ? `Remove ${serviceDef(removingService).name}?` : ""} size="narrow" onclose={() => (removingService = null)}>
+  <p class="page__lead">
+    {#if removingService === "slack"}
+      The room forgets its Slack config tokens. Agents keep the Slack apps they already have, but no new app can be connected until a pair is set again, or the deployment config carries one.
+    {:else}
+      The room forgets the GitHub app. Agents can't open pull requests until an app is set again, or the deployment config carries one.
+    {/if}
+  </p>
+  {#snippet footer()}
+    <button type="button" class="btn" onclick={() => (removingService = null)}>Cancel</button>
+    <button type="button" class="btn btn--danger" onclick={() => removingService && handleRemoveService(removingService)}>Remove</button>
+  {/snippet}
+</Modal>
+
 <Modal open={removing !== null} title={removing ? `Remove ${removing.name}?` : ""} size="narrow" onclose={() => (removing = null)}>
   <p class="page__lead">
     {#if removing?.spec.kind === "org"}
@@ -358,6 +539,8 @@
 </Modal>
 
 <style>
+  .room-services { display: flex; flex-direction: column; gap: var(--space-sm); }
+  .room-services__title { margin: 0; font-size: 1rem; font-weight: 600; }
   .child td:first-child { padding-left: 1.75rem; }
   .child--waiting .name { color: var(--muted); font-weight: 500; }
   .child__tick { margin-right: 0.35rem; color: var(--muted); }

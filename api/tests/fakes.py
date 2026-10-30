@@ -1575,6 +1575,9 @@ class FakeKubectl:
         self._restart_error = restart_error
         self.calls: list[tuple[str, str]] = []
         self.secrets_applied: list[tuple[str, str, dict[str, str]]] = []
+        # `delete_secret`'s record (the room's own Secrets, #284); the
+        # entry leaves `secrets` too, as a real delete would.
+        self.secrets_deleted: list[tuple[str, str]] = []
         # restart_deploy's own call record (Task 5's tooling fast lane) --
         # deliberately NOT `.calls`, which pre-existing tests assert on
         # exactly for rollout_ok alone (see the class docstring above).
@@ -1635,6 +1638,12 @@ class FakeKubectl:
             # Errors name the object, never a value — the real
             # KubectlCLI.secret_literals' own contract.
             raise ClientError(f"kubectl get secret {namespace}/{name} failed") from None
+
+    def delete_secret(self, namespace: str, name: str) -> None:
+        if self._apply_secret_error is not None:
+            raise ClientError(self._apply_secret_error)
+        self.secrets_deleted.append((namespace, name))
+        self.secrets.pop((namespace, name), None)
 
     def deployment_status_json(self, namespace: str, deploy: str) -> dict:
         if self._deployment_status_error is not None:

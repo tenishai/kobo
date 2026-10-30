@@ -141,8 +141,8 @@
     <Skeleton rows={2} />
   {:else if brokerOff}
     <p class="panel__note" role="status">
-      This room can't open pull requests yet. A room operator connects the room's GitHub app
-      first; until then there is nothing to request here.
+      This room has no GitHub app for pull requests, so agents can't open them. A room operator
+      adds it under <a href="#/admin/integrations">Admin &gt; Integrations</a>.
     </p>
   {:else if rows.isError}
     <ErrorState

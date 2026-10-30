@@ -65,6 +65,7 @@ from kobo_api.models import (
 )
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.provisioner import _get_or_create_step, _Heartbeat
+from kobo_api.room_services import SLACK_NOT_SET_UP, slack_client
 from kobo_api.steps import refresh_colleague_rosters
 
 if TYPE_CHECKING:
@@ -510,7 +511,10 @@ def _destroy_slack(ctx: DestroyCtx) -> str:
     if agent.slack_app_self_service:
         return "The Slack app belongs to its creator. Remove it in Slack."
 
-    deleted = ctx.clients.slack.delete_app(agent.slack_app_id)
+    slack = slack_client(ctx.clients)
+    if slack is None:
+        raise ClientError(SLACK_NOT_SET_UP)
+    deleted = slack.delete_app(agent.slack_app_id)
     if deleted:
         return "slack app deleted"
     return "already gone"

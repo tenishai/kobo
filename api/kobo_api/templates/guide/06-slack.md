@@ -3,7 +3,7 @@
 
 The **Slack** tab walks you through connecting the agent to your workspace. The first time, it shows three numbered steps. Once connected, it shows only the channel list, with the setup folded away under **Reconnect the Slack app**.
 
-If the room itself has no Slack set up yet, the tab says so in one line and shows no steps. A room operator adds the room's Slack config tokens first; nothing an agent owner does can stand in for that.
+If the room itself has no Slack set up yet, the tab says so in one line and shows no steps. A room operator adds the room's Slack config tokens under **Admin > Integrations**, in **Room services**; the tab works as soon as they are saved. Nothing an agent owner does can stand in for that.
 
 ## 1. Where it answers
 

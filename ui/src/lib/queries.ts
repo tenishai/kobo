@@ -162,6 +162,11 @@ import {
   fetchAccessRequests,
   fetchActivity,
   fetchAdminAddons,
+  fetchRoomServices,
+  putRoomService,
+  removeRoomService,
+  type RoomServiceId,
+  type RoomServiceValues,
   previewDirectorySweep,
   sweepDirectory,
   fetchAdminAudit,
@@ -602,6 +607,37 @@ export function disconnectAdminIntegrationMutation(queryClient: QueryClient) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "integrations"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
+    },
+  };
+}
+
+export function roomServicesQuery() {
+  return queryOptions({
+    queryKey: ["admin", "room-services"] as const,
+    queryFn: fetchRoomServices,
+    staleTime: 15_000,
+  });
+}
+
+export function putRoomServiceMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: (input: { service: RoomServiceId; values: RoomServiceValues }) => putRoomService(input.service, input.values),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "room-services"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
+      // The Slack tab and the Repositories card read the room's state too.
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  };
+}
+
+export function removeRoomServiceMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: (service: RoomServiceId) => removeRoomService(service),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "room-services"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
     },
   };
 }
