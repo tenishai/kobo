@@ -32,6 +32,7 @@ from kobo_api.models import (
     AgentLearning,
     AgentSystemTask,
 )
+from kobo_api.timefmt import rfc3339
 
 log = logging.getLogger("kobo.learnings")
 
@@ -472,8 +473,8 @@ def system_task_status(row: AgentSystemTask, flag_after: int) -> dict:
     `flag_after` runs in a row (`Config.system_task_flag_after`)."""
     return {
         "task": row.task,
-        "last_run_at": row.last_run_at.isoformat() if row.last_run_at else None,
-        "last_success_at": row.last_success_at.isoformat() if row.last_success_at else None,
+        "last_run_at": rfc3339(row.last_run_at),
+        "last_success_at": rfc3339(row.last_success_at),
         "last_error": row.last_error,
         "consecutive_failures": row.consecutive_failures,
         "failing": row.consecutive_failures >= flag_after,

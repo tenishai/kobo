@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api.clients import KubectlClient
 from kobo_api.models import Agent, AgentStatus
+from kobo_api.timefmt import rfc3339
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ def probe_health(kubectl: KubectlClient, name: str, *, now: datetime | None = No
     A cluster that cannot be asked is `up` with no reason: the room refuses
     on facts, and "I could not check" is not a fact about the agent.
     """
-    checked_at = (now or datetime.now(UTC)).isoformat()
+    checked_at = rfc3339(now or datetime.now(UTC))
     try:
         dep = kubectl.deployment_status_json(name, name)
     except Exception:  # noqa: BLE001

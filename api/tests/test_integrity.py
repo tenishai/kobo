@@ -6397,6 +6397,19 @@ def test_put_setting_writes_the_row_and_one_audit_event_together(session__admin_
     assert events[0].landed == admin_store.LANDED_APPLIED
 
 
+def test_an_integration_row_landing_lands_its_latest_audit_event(session__admin_store):
+    """Data integrity: the audit event follows the row (issue #307): a connect
+    that stayed Pending in the log while its row read applied."""
+    row = admin_store.put_integration(session__admin_store, vendor="aws", name="acme-prod", base_access="read",
+                                      spec={"kind": "account", "parent": "acme-aws"}, credential_ref=None, actor="a@example.com")
+    admin_store.set_integration_state(session__admin_store, row.id, state=admin_store.STATE_APPLIED, detail="connected in the permission service")
+    session__admin_store.commit()
+
+    event = admin_store.audit_events(session__admin_store)[0]
+    assert (event.landed, event.landed_detail) == (admin_store.LANDED_APPLIED, "connected in the permission service")
+    assert admin_store.event_dict(event)["summary"] == "Connected account acme-prod under acme-aws"
+
+
 # --- from test_db.py ---
 
 

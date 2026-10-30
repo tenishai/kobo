@@ -6,6 +6,7 @@
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import Modal from "../Modal.svelte";
   import { errorMessage, type AccessRequest } from "../../lib/api";
+  import { serverDate, when } from "../../lib/time";
   import { toast } from "../../lib/toast.svelte";
   import { accessLeasesQuery, accessRequestsQuery, decideAccessMutation, syncAccessMutation } from "../../lib/queries";
 
@@ -74,11 +75,8 @@
   function tiers(r: AccessRequest): string {
     return Object.entries(r.tiers).map(([t, n]) => `${n} ${t}`).join(", ");
   }
-  function when(iso: string): string {
-    return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  }
   function left(iso: string): string {
-    const min = Math.max(0, Math.round((new Date(iso).getTime() - Date.now()) / 60_000));
+    const min = Math.max(0, Math.round((serverDate(iso).getTime() - Date.now()) / 60_000));
     return min >= 60 ? "about an hour" : `${min} min`;
   }
 </script>

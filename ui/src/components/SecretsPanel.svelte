@@ -78,6 +78,7 @@
     type SecretSync,
   } from "../lib/api";
   import { keyRefusal, MAX_KEYS, parseEnvPaste, RESERVED_KEYS } from "../lib/dotenv";
+  import { serverDate } from "../lib/time";
   import {
     agentEnvQuery,
     agentSecretsQuery,
@@ -721,7 +722,7 @@
     if (!updatedAt) {
       return null;
     }
-    const at = new Date(updatedAt);
+    const at = serverDate(updatedAt);
     return Number.isNaN(at.getTime()) ? null : at.toLocaleDateString();
   }
 

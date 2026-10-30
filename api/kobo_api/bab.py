@@ -29,6 +29,7 @@ import httpx
 
 from .clients import ClientError
 from .kinds import KIND_CONNECTED
+from .timefmt import stamp_strings
 
 log = logging.getLogger(__name__)
 
@@ -88,9 +89,11 @@ class HttpxBabClient:
         if resp.status_code >= 400:
             raise ClientError(f"the permission service refused {what}: {_detail(resp)}")
         try:
-            return resp.json()
+            body = resp.json()
         except ValueError as exc:
             raise ClientError(f"the permission service returned no JSON for {what}") from exc
+        # The service writes naive UTC; every `*_at` it hands back leaves here with its Z (#306).
+        return stamp_strings(body)
 
     def health(self) -> bool:
         try:
