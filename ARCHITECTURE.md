@@ -1,7 +1,7 @@
 ---
 card: repo-card:kobo
 updated: 2026-10-26
-anchor: .github/workflows/ci.yml sha=fc16495b2a2d39a9fd5fffd5ce1575c52e1a148e
+anchor: .github/workflows/ci.yml sha=449369e942ece82c62f7b7e2fef53e6d9ef11d9e
 ---
 <!-- pyproject.toml is deliberately not anchored: Dependabot moves its pins weekly and the
      CI card check would fail every one of those PRs. The version named under STATE is kept
@@ -51,7 +51,7 @@ DEPS: no Python imports of sibling repos (daedalus only via `pytest.importorskip
 - sero: machine-lane secrets, auth = pod's Google ID token (sero.py).
 - liminal: `liminal_url` baked into each bundle's tools block; techne: each agent's memory store on a PVC (runtime side; kobo never imports techne).
 - GitHub (gh CLI + GitHub App), Okta (groups/people), Vertex (names, persona drafts, avatars), GCS (catalogs), Slack (manifest API).
-HEALTH: API tests live under api/tests (pytest, `-n auto` in CI; each test owns its SQLite file; `make -C api test` locally runs serial). UI: vitest + svelte-check. CI (.github/workflows/ci.yml): `api-tests`, `ui` (build, check, test), `migrations` (alembic to head on real Postgres 16 + scripts/schema_tripwire.py), and `test-lifecycle` (TESTING.md: scaffold tests must not reach a PR). CI builds and publishes NO image (since 2026-10-02): an operator builds one from a commit and rolls it where it runs. Ruff is NOT in CI. No branch protection: CI reports, never blocks. A `dockerfile` job lints both Dockerfiles with `docker buildx build --check` (ghcr login first: the base image is private); the image itself is built only by release.yml (2026-10-29).
+HEALTH: API tests live under api/tests (pytest, `-n auto`; each test owns its SQLite file; `make -C api test` locally runs serial). UI: vitest + svelte-check. CI (.github/workflows/ci.yml): `api-tests` as three shards, each every third test file in sorted order on its own runner pod (2026-10-30: the self-hosted pod has 3.5 cores, so one job took six minutes), the architecture-card check on shard 1 only, `ui` (build, check, test), `migrations` (alembic to head on real Postgres 16 + scripts/schema_tripwire.py), and `test-lifecycle` (TESTING.md: scaffold tests must not reach a PR). CI builds and publishes NO image (since 2026-10-02): an operator builds one from a commit and rolls it where it runs. Ruff is NOT in CI. No branch protection: CI reports, never blocks. A `dockerfile` job lints both Dockerfiles with `docker buildx build --check` (ghcr login first: the base image is private); the image itself is built only by release.yml (2026-10-29).
 GOTCHAS:
 - CI installs with `uv sync --locked` against the committed `api/uv.lock` (2026-10-05); a
   drifted lock fails the job instead of silently resolving. The same job runs
