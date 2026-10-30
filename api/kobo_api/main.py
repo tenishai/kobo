@@ -3858,7 +3858,7 @@ def create_app(
         if blocked is not None:
             return blocked
         try:
-            return JSONResponse({"vendors": bab_picker(bab, _bab_actor(request), app.state.config.cloud_accounts)})
+            return JSONResponse({"vendors": bab_picker(bab, _bab_actor(request))})
         except ClientError as exc:
             return _bab_refused(exc)
 
@@ -3879,7 +3879,7 @@ def create_app(
         try:
             grants = bab.grants(agent.name, actor)
             pending = [r for r in bab.requests("pending", agent.name, actor)]
-            vendors = bab_picker(bab, actor, app.state.config.cloud_accounts)
+            vendors = bab_picker(bab, actor)
         except ClientError as exc:
             return _bab_refused(exc)
         return JSONResponse({

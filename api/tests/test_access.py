@@ -5352,14 +5352,16 @@ def test_ask_review_hold_revoke_and_the_topology_push(tmp_path, fake_storage):
     # The picker: vendor, then account (connected or listed but not yet), then
     # the vendor's permissions grouped its way with the tier as a column.
     vendors = {v["id"]: v for v in c.get("/api/access/picker", headers=h).json()["vendors"]}
-    aws, gcp, dd = vendors["aws"], vendors["gcp"], vendors["datadog"]
+    aws, dd = vendors["aws"], vendors["datadog"]
+    # Vendors come from the permission service's catalogue alone (#301): a cloud the
+    # old org file named but nothing is connected to is not a vendor here.
+    assert "gcp" not in vendors
     assert (aws["kind"], aws["label"], aws["account_noun"]) == ("cloud", "AWS", "account")
-    assert [(a["id"], a["connected"]) for a in aws["accounts"]] == [("aws-prod", True), ("acme-data", False)]
+    # Connected accounts only (#301): the org file's other names are not offered.
+    assert [(a["id"], a["connected"]) for a in aws["accounts"]] == [("aws-prod", True)]
     assert aws["accounts"][0]["ceiling"] == ["aws_cloudtrail_lake_query", "aws_inventory_read"]
     flat = {p["name"]: p for g in aws["groups"] for p in g["permissions"]}
     assert flat["aws_ecs_update_service"]["tier"] == "mutate"
-    # A cloud the org lists but bab has no catalogue for still shows its account, not connected.
-    assert gcp["kind"] == "cloud" and [(a["id"], a["connected"]) for a in gcp["accounts"]] == [("acme-platform-prod", False)]
     # A service vendor is one connection; none connected yet shows a placeholder.
     assert dd["kind"] == "service" and dd["accounts"] == [{"id": "datadog", "name": "Datadog", "connected": False, "ceiling": [],
                                                            "organization": None, "account_id": None}]

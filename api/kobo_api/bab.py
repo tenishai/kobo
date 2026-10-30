@@ -251,27 +251,6 @@ CLOUD_LABELS = {"aws": "AWS", "gcp": "Google Cloud", "azure": "Azure"}
 ACCOUNT_NOUN = {"aws": "account", "gcp": "project", "azure": "subscription"}
 
 
-_DISCOVERY_TTL_S = 300.0
-_discovery_cache: dict[str, tuple[float, list[dict]]] = {}
-
-
-def _discovered(bab: BabClient, org: str, actor: str) -> list[dict]:
-    """An organization's accounts through its hub, remembered for a few minutes: the
-    picker is read often, the organization changes rarely."""
-    import time
-
-    hit = _discovery_cache.get(org)
-    if hit and time.monotonic() - hit[0] < _DISCOVERY_TTL_S:
-        return hit[1]
-    try:
-        accounts = bab.org_accounts(org, actor)
-    except ClientError as exc:
-        log.warning("bab could not list the accounts of %s: %s", org, exc)
-        accounts = hit[1] if hit else []
-    _discovery_cache[org] = (time.monotonic(), accounts)
-    return accounts
-
-
 def _add_account(accounts: list[dict], iid: str, name: str, row: dict | None, org: str | None,
                  account_id: str | None = None) -> None:
     if any(a["id"] == iid for a in accounts):
@@ -281,25 +260,23 @@ def _add_account(accounts: list[dict], iid: str, name: str, row: dict | None, or
                      "organization": org, "account_id": account_id or (row or {}).get("account_id")})
 
 
-def picker(bab: BabClient, actor: str, cloud_accounts=()) -> list[dict]:
+def picker(bab: BabClient, actor: str) -> list[dict]:
     """The tree the Permissions section walks: vendor, then (for a cloud) the account,
     project or subscription, then the vendor's permissions grouped its way with the tier
-    as a column. Accounts come from three places: rows connected in bab (connected, with
-    their ceiling; under their organization when there is one), the organization's other
-    accounts as its hub lists them (not connected yet), and the org config's
-    `cloud_accounts` (not connected yet). An organization row itself is never offered: a
-    lease is for an account. A service vendor has one "account": its connection, or a
-    placeholder when none is connected yet. Nothing above a connection's ceiling is hidden;
-    the UI greys it with the reason."""
+    as a column. A cloud's accounts are the rows connected in bab, with their ceiling and
+    under their organization when there is one; nothing else (#301): an account the hub
+    can see but nobody connected, or one an org file merely named, is not offered, since
+    an agent cannot be granted anything there. An organization row itself is never
+    offered: a lease is for an account. A service vendor has one "account": its
+    connection, or a placeholder when none is connected yet, so the vendor stays
+    discoverable. Nothing above a connection's ceiling is hidden; the UI greys it with
+    the reason."""
     integrations = bab.integrations(actor)
     known = {v["vendor"]: v for v in bab.vendors(actor)}
     names: list[str] = list(known)
     for i in integrations:
         if i["vendor"] not in names:
             names.append(i["vendor"])
-    for a in cloud_accounts:
-        if a.vendor not in names:
-            names.append(a.vendor)
     out = []
     for vendor in names:
         meta = known.get(vendor) or {"kind": "cloud" if vendor in CLOUD_LABELS else "service",
@@ -318,15 +295,9 @@ def picker(bab: BabClient, actor: str, cloud_accounts=()) -> list[dict]:
                 for i in rows:
                     if i.get("parent") == org["integration"]:
                         _add_account(accounts, i["integration"], i.get("name") or i["integration"], i, org["integration"])
-                for a in _discovered(bab, org["integration"], actor):
-                    if not a.get("connected"):
-                        _add_account(accounts, f"{org['integration']}/{a['id']}", a.get("name") or a["id"], None, org["integration"], a["id"])
             for iid, row in connected.items():
                 if not row.get("parent"):
                     _add_account(accounts, iid, row.get("name") or iid, row, None)
-            for a in cloud_accounts:
-                if a.vendor == vendor:
-                    _add_account(accounts, a.integration_id, a.name, connected.get(a.integration_id), None)
         else:
             for iid, row in connected.items():
                 _add_account(accounts, iid, iid, row, None)

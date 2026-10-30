@@ -6,6 +6,11 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Activity: a summary strip (calls, refused, errors, tools used), rows grouped by day with the newest and any day with a problem open, **Problems only**, and 25 rows at a time (#300).
+- Permissions picker: a cloud lists only the accounts connected under Admin > Integrations, under their organization; accounts the hub can see but nobody connected are no longer offered, and the `cloud_accounts` org key is retired (#301).
+
 ## [0.3.9] - 2026-10-30
 
 ### Added
