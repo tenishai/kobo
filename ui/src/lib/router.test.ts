@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatHash, parseHash } from "./router.svelte";
+import { formatHash, hashQuery, parseHash } from "./router.svelte";
 
 describe("parseHash", () => {
   it("maps the empty string to the dashboard", () => {
@@ -12,6 +12,11 @@ describe("parseHash", () => {
 
   it("maps a hash-less root to the dashboard", () => {
     expect(parseHash("#")).toEqual({ page: "dashboard" });
+  });
+
+  it("keeps a query string out of the route and hands it back by itself", () => {
+    expect(parseHash("#/admin/audit?agent=ward")).toEqual({ page: "admin", pane: "audit" });
+    expect(hashQuery("#/admin/audit?agent=ward&outcome=failed")).toEqual({ agent: "ward", outcome: "failed" });
   });
 
   it("maps an agent hash to the agent page with its name", () => {
