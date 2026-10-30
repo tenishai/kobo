@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-platform-clients
 updated: 2026-10-30
-anchor: api/kobo_api/clients.py sha=b14c3298484f7518e5a545bbdedf2cf3625b5744
-anchor: api/tests/fakes.py sha=8c24afa1fd08cbef75d9db8de9da4105a7f0d2e2
+anchor: api/kobo_api/clients.py sha=e48f825e6fbf1df796bc326aaedd9cf48ad88aef
+anchor: api/tests/fakes.py sha=7abd2c28b9bb2be6bdc9641bb045fb17dbc6cf11
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 

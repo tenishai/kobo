@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api import admin_connections as admin_connections_flow
 from kobo_api import admin_integrations as admin_integrations_flow
 from kobo_api import admin_roles as admin_roles_catalogue
-from kobo_api import admin_store, audit, gateway_lane
+from kobo_api import admin_store, audit, gateway_lane, gateway_prs
 from kobo_api import room_services as room_services_store
 from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
@@ -4225,6 +4225,11 @@ def create_app(
         blocked = _admin_panel_gate(request)
         if blocked is not None:
             return blocked
+        # A row waiting on the gateway's pull request learns whether it merged (kobo#327).
+        try:
+            gateway_prs.reconcile(session, app.state.clients, app.state.config)
+        except Exception as exc:  # noqa: BLE001 -- a listing never fails on a GitHub read
+            log.warning("gateway pull requests could not be checked: %s", exc)
         rows = [admin_store.integration_dict(r) for r in admin_store.list_integrations(session)]
         # Connections the permission service holds that this panel never made (connected
         # straight into it) show here too, read-only, so the list is the whole truth.
