@@ -6,6 +6,12 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.19] - 2026-10-30
+
+### Changed
+
+- Admin > Integrations: the Slack and GitHub rows read Connected like every other integration. A value an older install's deployment config carries is marked so and offers Replace, which moves it into the room, where the room's value wins; a fresh room has nothing baked in and an admin pastes both (#337, #339).
+
 ## [0.3.18] - 2026-10-30
 
 ### Added
