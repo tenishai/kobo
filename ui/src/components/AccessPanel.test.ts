@@ -8,10 +8,10 @@ const EMPTY_INVITES = { incoming: [], outgoing: [], team_pairs: [] };
 const EMPTY_GRANTS = { grants: [] };
 const EMPTY_REQUESTABLE = { requestable: [], already: [] };
 
-/** Open the "Grant access" disclosure. It is shut on arrival now, so every
- * test that touches the add-a-person form opens it first. */
+/** Open the "Add someone" disclosure. It is shut on arrival, so every test
+ * that touches the add-a-person form opens it first. */
 async function openGrant(): Promise<void> {
-  await fireEvent.click(await screen.findByRole("button", { name: "Grant access" }));
+  await fireEvent.click(await screen.findByRole("button", { name: "Add someone" }));
 }
 
 /** Open the "Request another team's agent" disclosure. */
@@ -36,7 +36,7 @@ describe("AccessPanel", () => {
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
 
-    const grant = await screen.findByRole("button", { name: "Grant access" });
+    const grant = await screen.findByRole("button", { name: "Add someone" });
     const picker = screen.getByRole("button", {
       name: "Request another team's agent",
     });
@@ -56,7 +56,7 @@ describe("AccessPanel", () => {
 
     await openGrant();
     expect(
-      screen.getByRole("button", { name: "Grant access" }).getAttribute("aria-expanded"),
+      screen.getByRole("button", { name: "Add someone" }).getAttribute("aria-expanded"),
     ).toBe("true");
     expect(screen.getByLabelText("Add someone by email")).not.toBeNull();
 
@@ -71,13 +71,46 @@ describe("AccessPanel", () => {
     ).not.toBeNull();
   });
 
+  it("renders the People and Other agents sections, and the role select posts the chosen role", async () => {
+    // Issue #309: two sections with their own heading, and a grant carries a
+    // role the server's ownership gate reads.
+    stubFetch({
+      "/api/agents/warden/invites": EMPTY_INVITES,
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
+    });
+    renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
+
+    expect(await screen.findByRole("heading", { name: "People" })).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "Other agents" })).not.toBeNull();
+    expect(screen.getByText("Everyone in growth can see this agent.")).not.toBeNull();
+
+    await openGrant();
+    await fireEvent.input(screen.getByLabelText("Add someone by email"), {
+      target: { value: "lead@example.com" },
+    });
+    await fireEvent.change(screen.getByLabelText("Role"), { target: { value: "manage" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    const call = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([url, init]) =>
+          String(url) === "/api/agents/warden/grants" &&
+          (init as RequestInit | undefined)?.method === "POST",
+      );
+    expect(call).toBeDefined();
+    const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
+    expect(body).toEqual({ email: "lead@example.com", role: "manage" });
+  });
+
   // --- People section --------------------------------------------------
 
   it("renders the grants list and lets an owner remove a grant", async () => {
     stubFetch({
       "/api/agents/warden/invites": EMPTY_INVITES,
       "/api/agents/warden/grants": {
-        grants: [{ email: "guest@example.com", added_by: "owner@example.com" }],
+        grants: [{ email: "guest@example.com", role: "view", added_by: "owner@example.com" }],
       },
       "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
     });
@@ -123,7 +156,7 @@ describe("AccessPanel", () => {
       );
     expect(call).toBeDefined();
     const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
-    expect(body).toEqual({ email: "new-person@example.com" });
+    expect(body).toEqual({ email: "new-person@example.com", role: "view" });
   });
 
   // --- People: directory-backed autocomplete (access-tab refinement wave) --
@@ -214,7 +247,7 @@ describe("AccessPanel", () => {
       );
     expect(call).toBeDefined();
     const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
-    expect(body).toEqual({ email: "someone@example.com" });
+    expect(body).toEqual({ email: "someone@example.com", role: "view" });
   });
 
   // --- Agents section --------------------------------------------------

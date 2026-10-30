@@ -36,7 +36,15 @@ from kobo_api.main import (
     _owner_or_operator_or_403,
     create_app,
 )
-from kobo_api.models import Agent, AgentLearning, AgentStatus, Base
+from kobo_api.models import (
+    GRANT_ROLE_MANAGE,
+    GRANT_ROLE_VIEW,
+    Agent,
+    AgentLearning,
+    AgentStatus,
+    AgentUserGrant,
+    Base,
+)
 from kobo_api.personas import seed_default_personas
 from kobo_api.slack_state import encode_channels
 from tests.fakes import (
@@ -70,6 +78,9 @@ OPERATOR_EMAIL = "Ops@Example.com"
 
 
 STRANGER_EMAIL = "stranger@example.com"
+
+
+MANAGER_EMAIL = "manager@example.com"
 
 
 VERBATIM_403 = {"error": "Only this agent's owner or a room operator can change it."}
@@ -212,6 +223,13 @@ def _seed_agent(
             skills=skills if skills is not None else [],
         )
     )
+    session.commit()
+    session.close()
+
+
+def _seed_grant(session_factory__web_ownership_gate, *, email: str, role: str):
+    session = session_factory__web_ownership_gate()
+    session.add(AgentUserGrant(agent_name=AGENT_NAME, email=email, role=role))
     session.commit()
     session.close()
 
@@ -613,6 +631,26 @@ def test_ownerless_agent_is_operator_only(session_factory__web_ownership_gate, c
 
     operator_response = request_fn(client, _headers(private_key, email=OPERATOR_EMAIL))
     assert operator_response.status_code == 200, operator_response.text
+
+
+@pytest.mark.parametrize("class_name,request_fn", GATE_MATRIX_ROUTES, ids=[c for c, _ in GATE_MATRIX_ROUTES])
+def test_manage_grant_passes_the_ownership_gate_but_not_destroy_or_grants(
+    session_factory__web_ownership_gate, config__web_ownership_gate, class_name, request_fn
+):
+    """Gate (ownership): a `manage` grant (issue #309) mutates like the owner;
+    a `view` grant does not; neither destroys (operator-only) nor adds grants
+    (owner or operator only)."""
+    private_key, jwk = _generate_jwk()
+    client = _make_client(session_factory__web_ownership_gate, config__web_ownership_gate, iap_jwks_fetcher=_fetcher(jwk))
+    _seed_agent(session_factory__web_ownership_gate, config__web_ownership_gate, created_by=OWNER_EMAIL)
+    _seed_grant(session_factory__web_ownership_gate, email=MANAGER_EMAIL, role=GRANT_ROLE_MANAGE)
+    _seed_grant(session_factory__web_ownership_gate, email=STRANGER_EMAIL, role=GRANT_ROLE_VIEW)
+    manager = _headers(private_key, email=MANAGER_EMAIL)
+
+    assert request_fn(client, manager).status_code == 200
+    assert request_fn(client, _headers(private_key, email=STRANGER_EMAIL)).status_code == 403
+    assert client.delete(f"/api/agents/{AGENT_NAME}", headers=manager).status_code == 403
+    assert _add_grant(client, manager).status_code == 403
 
 
 @pytest.mark.parametrize("route_name,request_fn", SMOKE_ROUTES, ids=[r for r, _ in SMOKE_ROUTES])
