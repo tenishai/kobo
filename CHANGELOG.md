@@ -6,6 +6,12 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.20] - 2026-10-30
+
+### Fixed
+
+- A change the room pushed counts as delivered once the agent's new pod is available, not once the manifest carries the commit. With one replica and a Recreate strategy that moment is the restart itself, so the header said Down for a roll the room had started; it now keeps saying Updating until the agent is back (#344).
+
 ## [0.3.19] - 2026-10-30
 
 ### Changed
