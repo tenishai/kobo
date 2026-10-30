@@ -15,6 +15,14 @@ def test_no_endpoint_is_a_noop(monkeypatch):
 
 
 def test_endpoint_instruments_the_app(monkeypatch):
+    # An exporter that never dials out: the real one would retry against the
+    # dead endpoint at interpreter exit and fill the CI log with timeouts.
+    from opentelemetry.exporter.otlp.proto.http import trace_exporter
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    monkeypatch.setattr(trace_exporter, "OTLPSpanExporter", lambda endpoint: InMemorySpanExporter())
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:1")
     from fastapi import FastAPI
 
