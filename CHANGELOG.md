@@ -6,6 +6,17 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-10-30
+
+### Added
+
+- **Audit log.** One `audit_log` table of what people, the room and agents did: actor, action, target, a sentence, outcome, source, ip and bounded detail, landed state; 38 mutating paths record into it; 30-day retention (`audit_retention_days`) pruned nightly; `GET /api/admin/audit` with search, filters, cursor paging and facets, `GET /api/admin/audit/export` as CSV or JSON; the Audit page and a per-agent link from Activity (#316).
+- **Asking another team's agent is a permission.** With the permission service on, Request another team's agent posts an `a2a_ask` request on the target agent, approved in Review; switchboard pairs follow those grants, the same group, and accepted invites. Every ready agent is an `agents` integration in the permission service. Needs bab 0.4.5 (#310, room half).
+
+### Fixed
+
+- Admin: Connections no longer flashes on a hard refresh before Access is known (#314). A Can manage grant does not reach colleague requests or agent asks. The Slack set-up sheet says to use a dedicated kobo Slack account (#304).
+
 ## [0.3.11] - 2026-10-30
 
 ### Added
