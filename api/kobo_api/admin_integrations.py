@@ -330,7 +330,11 @@ def _connect_datadog(
     try:
         bab.probe_datadog(sa, actor)
     except ClientError as exc:
-        if "not configured" in str(exc).lower():
+        # Before the permission service has read the Secret, its probe answers either
+        # "not configured" or "cannot mint for datadog yet" (no minter registered):
+        # both mean "restart it, then connect again", not a refused key.
+        text = str(exc).lower()
+        if "not configured" in text or "cannot mint for" in text:
             waiting = True
         else:
             try:

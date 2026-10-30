@@ -455,15 +455,19 @@
         </label>
       {/each}
       {#if form.entry.note}<p class="page__foot">{form.entry.note}</p>{/if}
-      <label class="field">
-        <span>Vendor's MCP address <span class="quiet">(optional)</span></span>
-        <input id="integration-address" type="url" bind:value={form.address} placeholder="https://" />
-      </label>
-      <fieldset class="field">
-        <legend>Agents may</legend>
-        <label><input type="radio" name="base_access" value="read" bind:group={form.base_access} /> read</label>
-        <label><input type="radio" name="base_access" value="write" bind:group={form.base_access} /> read and write</label>
-      </fieldset>
+      {#if form.entry.auth !== "datadog_service_account"}
+        <!-- A connection through the permission service has no vendor address and its
+             ceiling is the read permissions; the two generic fields do not apply. -->
+        <label class="field">
+          <span>Vendor's MCP address <span class="quiet">(optional)</span></span>
+          <input id="integration-address" type="url" bind:value={form.address} placeholder="https://" />
+        </label>
+        <fieldset class="field">
+          <legend>Agents may</legend>
+          <label><input type="radio" name="base_access" value="read" bind:group={form.base_access} /> read</label>
+          <label><input type="radio" name="base_access" value="write" bind:group={form.base_access} /> read and write</label>
+        </fieldset>
+      {/if}
       {#if formError}<p class="page__foot fail">{formError}</p>{/if}
       {#if form.entry.auth === "datadog_service_account"}
         <p class="page__foot">The keys are kept for the permission service alone and never shown again; it checks them with Datadog before anything is saved.</p>
