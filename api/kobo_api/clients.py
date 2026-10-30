@@ -2807,12 +2807,12 @@ def slack_token_store(config: Config, kubectl: KubectlClient) -> SlackTokenStore
     """The store `Clients.real` hands `HttpxSlackClient`, or None when
     Slack connect isn't configured at all.
 
-    This is where the DEPLOYMENT half of "is Slack wired" is decided.
-    `Clients.real` layers the room-held pair (kobo_api.room_services, issue
-    #284) over whatever this returns, so a room with a namespace to keep
-    its own Secrets in gets a `Clients.slack` even when this is None; the
-    gates (the connect route's 503, the agent detail's `available`) ask
-    `room_services.slack_configured(clients)`, which asks the store, rather
+    This is the ONE place the DEPLOYMENT half of "is Slack wired" is
+    decided: returning None here is what leaves `Clients.slack` None. The
+    room-held pair (kobo_api.room_services, issue #284) is the other half,
+    resolved at request time by `room_services.slack_client(clients)`
+    (room first, then this), which is what the gates (the connect route's
+    503, the agent detail's `available`) and the destroy step ask rather
     than re-deriving the question from config.
 
     The Secret wins when both are set: a room that names a Secret is a
@@ -2852,16 +2852,20 @@ def probe_slack_token_store(clients: Clients) -> None:
     from `create_app`, so tests that build their own app see nothing of it.
     """
     store = getattr(clients.slack, "token_store", None)
-    if store is None:
-        return
-    try:
-        store.check_writable()
-    except ClientError as exc:
-        log.error(
-            "%s: slack app-config token rotation will fail until the room can "
-            "write it",
-            exc,
-        )
+    # The room-held pair (kobo_api.room_services) rotates too, and its
+    # lockout is the same one; a store with nothing held checks nothing.
+    room_check = getattr(clients.room_services, "check_slack_writable", None)
+    for check in (getattr(store, "check_writable", None), room_check):
+        if check is None:
+            continue
+        try:
+            check()
+        except ClientError as exc:
+            log.error(
+                "%s: slack app-config token rotation will fail until the room can "
+                "write it",
+                exc,
+            )
 
 
 class HttpxSlackClient:
@@ -5285,6 +5289,8 @@ class Clients:
     # liminal_admin above. None = the room has no namespace to keep its own
     # Secrets in, so Room services under Admin > Integrations says so and
     # Slack/the pull request broker come from deployment config alone.
+    # `slack` above is the deployment client only; the room-held pair is
+    # resolved per request by `room_services.slack_client(clients)`.
     room_services: object | None = None
 
     @classmethod
@@ -5293,11 +5299,7 @@ class Clients:
         # Local import for the same circularity reason as
         # `installation_token_provider`'s: kobo_api.sero imports
         # ClientError from this module.
-        from kobo_api.room_services import (
-            LayeredSlackTokenStore,
-            RoomSlackTokenStore,
-            build_room_services,
-        )
+        from kobo_api.room_services import build_room_services
         from kobo_api.sero import HttpxSeroClient
 
         runner = CommandRunner()
@@ -5315,14 +5317,7 @@ class Clients:
         # through this same client (one binary, one runner) rather than a
         # second one built just for that.
         kubectl = KubectlCLI(runner=runner)
-        slack_store: SlackTokenStore | None = slack_token_store(config, kubectl)
-        # The room-held Slack pair layers over the deployment one (issue
-        # #284): with a namespace of its own the room always gets a Slack
-        # client, and whether it can call Slack is the store's answer at
-        # request time (`room_services.slack_configured`).
-        room_services = build_room_services(config, kubectl)
-        if room_services is not None:
-            slack_store = LayeredSlackTokenStore(RoomSlackTokenStore(room_services), slack_store)
+        slack_store = slack_token_store(config, kubectl)
         return cls(
             github=GhCLI(
                 runner=runner,
@@ -5389,5 +5384,10 @@ class Clients:
             )
             if config.sero_enabled
             else None,
-            room_services=room_services,
+            # Built from config and the pod's own namespace file only, no
+            # kubectl call: whether the room HOLDS a Slack pair or a GitHub
+            # app is asked at request time (`room_services.slack_client`,
+            # `RoomServices.github_app`), so `slack` above stays the plain
+            # deployment client and None when nothing is configured.
+            room_services=build_room_services(config, kubectl),
         )

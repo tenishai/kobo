@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from kobo_api.clients import ClientError, KubectlClient, SlackTokenStore
+from kobo_api.clients import ClientError, HttpxSlackClient, KubectlClient, SlackClient
 from kobo_api.config import Config
 
 log = logging.getLogger(__name__)
@@ -85,13 +85,15 @@ class RoomServiceRefused(ValueError):
     """A value whose shape is wrong, said in one sentence (never the value)."""
 
 
-def room_namespace(config: Config, pod_file: Path = POD_NAMESPACE_FILE) -> str:
+def room_namespace(config: Config, pod_file: Path | None = None) -> str:
     """The namespace the room keeps its own Secrets in: the configured one,
-    else the pod's own, else empty (nowhere to store)."""
+    else the pod's own from the service-account mount, else empty (nowhere
+    to store). Deliberately nothing else: never kubectl's current context,
+    which is ambient state a runner or a laptop carries by accident."""
     if config.room_namespace:
         return config.room_namespace
     try:
-        return pod_file.read_text(encoding="utf-8").strip()
+        return (pod_file or POD_NAMESPACE_FILE).read_text(encoding="utf-8").strip()
     except OSError:
         return ""
 
@@ -202,10 +204,19 @@ class RoomServices:
         self._clock = clock
         self._lock = threading.Lock()
         self._cache: dict[str, tuple[float, dict[str, str] | None]] = {}
+        self._slack: HttpxSlackClient | None = None
 
     @property
     def namespace(self) -> str:
         return self._namespace
+
+    def slack_client(self) -> HttpxSlackClient:
+        """The one Slack client over the room-held pair, built on first use
+        (one httpx pool per process, like `Clients.slack`'s)."""
+        with self._lock:
+            if self._slack is None:
+                self._slack = HttpxSlackClient(RoomSlackTokenStore(self))
+            return self._slack
 
     # --- reads -------------------------------------------------------------
 
@@ -315,14 +326,16 @@ class RoomServices:
 def build_room_services(config: Config, kubectl: KubectlClient) -> RoomServices | None:
     """The store `Clients.real` wires, or None when the room has no
     namespace to keep its Secrets in (a local room, say). None is what the
-    admin routes turn into a 409 and the panel into one line."""
+    admin routes turn into a 409 and the panel into one line. Builds
+    without touching kubectl: whether the room HOLDS anything is asked at
+    request time (`slack_client`, `RoomServices.github_app`)."""
     namespace = room_namespace(config)
     if not namespace:
         return None
     return RoomServices(kubectl, namespace, config)
 
 
-# --- the Slack token store over this ------------------------------------------
+# --- the Slack client over this ----------------------------------------------
 
 
 class RoomSlackTokenStore:
@@ -333,9 +346,6 @@ class RoomSlackTokenStore:
 
     def __init__(self, services: RoomServices):
         self._services = services
-
-    def configured(self) -> bool:
-        return self._services.read(SLACK) is not None
 
     def read(self) -> tuple[str, str]:
         held = self._services.read(SLACK, fresh=True)
@@ -350,53 +360,27 @@ class RoomSlackTokenStore:
         self._services.check_slack_writable()
 
 
-class LayeredSlackTokenStore:
-    """The room-held pair when there is one, else the deployment-config
-    store (file or Secret), else nothing. Decided per call, so pasting the
-    pair under Room services makes Slack available with no restart, and a
-    rotation writes back to the layer it read from."""
+def slack_client(clients: object | None) -> SlackClient | None:
+    """The Slack client this room should call RIGHT NOW: one over the
+    room-held pair when the room holds one (`RoomServices.slack_client`,
+    so a rotation writes back there), else the deployment-config client
+    (`Clients.slack`: file or Secret store), else None.
 
-    def __init__(self, room: RoomSlackTokenStore, deployment: SlackTokenStore | None):
-        self._room = room
-        self._deployment = deployment
-
-    def _active(self, *, fresh: bool) -> SlackTokenStore | None:
-        held = self._room._services.read(SLACK, fresh=fresh)
-        if held is not None:
-            return self._room
-        return self._deployment
-
-    def configured(self) -> bool:
-        return self._active(fresh=False) is not None
-
-    def read(self) -> tuple[str, str]:
-        store = self._active(fresh=True)
-        if store is None:
-            raise ClientError(SLACK_NOT_SET_UP)
-        return store.read()
-
-    def write(self, config_token: str, refresh_token: str) -> None:
-        store = self._active(fresh=True)
-        if store is None:
-            raise ClientError(SLACK_NOT_SET_UP)
-        store.write(config_token, refresh_token)
-
-    def check_writable(self) -> None:
-        store = self._active(fresh=True)
-        if store is not None:
-            store.check_writable()
+    Resolved per call, never at `Clients.real` time: deciding it at boot
+    would need a kubectl read during construction and would freeze the
+    answer, where the whole point of Room services is that pasting the pair
+    makes Slack available with no restart. `Clients.slack` itself stays the
+    plain deployment client, so a room with nothing configured still has
+    `slack is None`, whatever its namespace."""
+    if clients is None:
+        return None
+    services = getattr(clients, "room_services", None)
+    if services is not None and services.read(SLACK) is not None:
+        return services.slack_client()
+    return getattr(clients, "slack", None)
 
 
 def slack_configured(clients: object | None) -> bool:
     """Whether this room can call Slack right now: the one question the
-    connect route's 503 and the agent detail's `available` flag ask. A
-    `Clients.slack` of None is still "off"; a client whose store can say
-    (`configured()`) is asked; any other client (the test fake) is on."""
-    slack = getattr(clients, "slack", None) if clients is not None else None
-    if slack is None:
-        return False
-    store = getattr(slack, "token_store", None)
-    configured = getattr(store, "configured", None)
-    if callable(configured):
-        return bool(configured())
-    return True
+    connect route's 503 and the agent detail's `available` flag ask."""
+    return slack_client(clients) is not None

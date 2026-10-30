@@ -12,11 +12,7 @@ from kobo_api.clients import Clients
 from kobo_api.config import Config
 from kobo_api.main import create_app
 from kobo_api.models import Base
-from kobo_api.room_services import (
-    LayeredSlackTokenStore,
-    RoomServices,
-    RoomSlackTokenStore,
-)
+from kobo_api.room_services import RoomServices, slack_client
 from tests.fakes import FakeAgent, FakeCloud, FakeGitHub, FakeGojira, FakeKubectl
 from tests.test_api_org_status import (
     ASSERTION_HEADER,
@@ -30,14 +26,6 @@ SLACK_PAIR = {"config_token": "xoxe.xoxp-1-room-config", "refresh_token": "xoxe-
 GITHUB_APP = {"app_id": "4741722", "installation_id": "157070479", "private_key": "-----BEGIN RSA PRIVATE KEY-----\nroom\n-----END RSA PRIVATE KEY-----"}
 
 
-class _TokenStoreSlack:
-    """A Slack client whose availability is its store's answer, the way
-    `HttpxSlackClient` exposes `token_store`."""
-
-    def __init__(self, store):
-        self.token_store = store
-
-
 def _client(tmp_path, config: Config, *, kubectl: FakeKubectl | None, namespace: str | None = "kobo"):
     engine = create_engine(f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
@@ -45,14 +33,13 @@ def _client(tmp_path, config: Config, *, kubectl: FakeKubectl | None, namespace:
     private_key, jwk = _generate_jwk()
     kubectl = kubectl or FakeKubectl()
     services = RoomServices(kubectl, namespace, config) if namespace else None
-    slack = _TokenStoreSlack(LayeredSlackTokenStore(RoomSlackTokenStore(services), None)) if services else None
     client = TestClient(
         create_app(
             session_factory,
             config=config,
             clients=Clients(
                 github=FakeGitHub(), gojira=FakeGojira(), cloud=FakeCloud(), agent=FakeAgent(),
-                kubectl=kubectl, slack=slack, room_services=services,
+                kubectl=kubectl, slack=None, room_services=services,
             ),
             iap_jwks_fetcher=_fetcher(jwk),
         )
@@ -103,8 +90,10 @@ def test_room_values_win_over_deployment_config_and_removal_falls_back(tmp_path)
     key.write_text("-----BEGIN RSA PRIVATE KEY-----\ndeployment\n-----END RSA PRIVATE KEY-----")
     config = _config(tmp_path, pr_app_id="1", pr_app_installation_id="2", pr_app_private_key_path=key)
     client, _, headers = _client(tmp_path, config, kubectl=None)
-    services = client.app.state.clients.room_services
+    clients = client.app.state.clients
+    services = clients.room_services
 
+    assert slack_client(clients) is None
     assert client.get("/api/admin/room-services", headers=headers()).json()["services"] == {
         "slack": {"configured": False, "source": "none", "updated_at": None, "updated_by": None},
         "github": {"configured": True, "source": "deployment", "updated_at": None, "updated_by": None},
@@ -115,7 +104,8 @@ def test_room_values_win_over_deployment_config_and_removal_falls_back(tmp_path)
     client.put("/api/admin/room-services/slack", json=SLACK_PAIR, headers=headers())
     creds = services.github_app()
     assert (creds.source, creds.app_id, creds.pem()) == ("room", GITHUB_APP["app_id"], GITHUB_APP["private_key"])
-    assert client.app.state.clients.slack.token_store.read() == (SLACK_PAIR["config_token"], SLACK_PAIR["refresh_token"])
+    # Slack is resolved per request: the room-held pair is what the client rotates against.
+    assert slack_client(clients).token_store.read() == (SLACK_PAIR["config_token"], SLACK_PAIR["refresh_token"])
 
     removed = client.delete("/api/admin/room-services/github", headers=headers())
     assert removed.status_code == 200
