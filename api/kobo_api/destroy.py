@@ -22,10 +22,10 @@ addressable; Slack, the repo, and the directory listing are paper; the
 agent's own row goes last (`destroy-forget`) so a failed run always leaves
 a resumable record — the row never disappears until every step before it
 is each done or proven already-gone. `destroy-directory` (colleagues
-switchboard plan, Task 2) is the one exception to "failure marks the run
-failed": an unconfigured or unreachable switchboard completes that step
-with a note instead (see its own docstring) rather than blocking the rest
-of the ledger.
+switchboard plan, Task 2) completes with a note only when no switchboard
+is configured (nothing to retire); a retire that did not land FAILS the
+step (issue #291), so an agent the switchboard still lists stays in the
+room as destroy_failed until Destroy again lands it.
 
 Unlike provisioning, `destroy-forget`'s job (deleting the agent's step rows
 and the agent row itself) is terminal in the most literal sense: once it
@@ -54,10 +54,14 @@ from kobo_api.kinds import KIND_COMPOSED, is_connected, is_directory
 from kobo_api.models import (
     A2AInvite,
     Agent,
+    AgentLearning,
     AgentStatus,
     AgentStep,
+    AgentSystemTask,
+    AgentUserGrant,
     RepoAccess,
     StepStatus,
+    ThreadParticipant,
 )
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.provisioner import _get_or_create_step, _Heartbeat
@@ -613,13 +617,14 @@ def _destroy_repo(ctx: DestroyCtx) -> str:
     return f"archived as {target_repo}"
 
 
-# The note a destroy run carries when the retire call did not land (issue
-# #274): the step still completes, but the operator is told the switchboard
-# still lists the agent and where the fix lives, not that it will sort itself
-# out. The nightly directory pass logs the same leftovers; Admin > Services >
-# Sweep directory retires them.
-DIRECTORY_RETIRE_MISSED_NOTE = (
-    "The switchboard still lists this agent; sweep the directory from Admin."
+# The error the directory step fails with when the retire call did not land
+# (issue #291, which hardened #274's note into a failure): the agent lands in
+# destroy_failed with this sentence on the step and on the agent, and Destroy
+# again runs the step once more. Entries left by destroys before this change
+# are still the directory sweep's job (Admin > Services > Sweep directory).
+DIRECTORY_RETIRE_MISSED_ERROR = (
+    "The switchboard still lists this agent. Destroy again asks it to drop the "
+    "entry once more."
 )
 
 
@@ -627,23 +632,21 @@ def _destroy_directory(ctx: DestroyCtx) -> str:
     """Delist the agent from the switchboard's directory
     (`kobo_api.directory.retire_directory`, absorb, 404-tolerant).
 
-    Modeled on `_destroy_slack`'s shape, including its done-with-note
-    pattern: there's no `agent.<field>` recorded to tell "never registered"
-    apart from "registered, now gone" (directory membership, like
-    `destroy-access`'s GSA group membership, isn't something kobo's own row
-    tracks), so this always attempts the retire when the switchboard is
-    configured. Unlike every step above, though, a failure here does NOT
-    propagate to FAILED: an unconfigured OR unreachable switchboard both
-    complete this step with the exact same plain note instead — the
-    directory listing is a nice-to-have, and holding an otherwise-clean
-    destroy run hostage to it would leave a fully-teardown-able agent
-    permanently stuck for something the operator has no way to fix
-    mid-destroy. A retire that did not land completes with
-    `DIRECTORY_RETIRE_MISSED_NOTE`, which names the fix: the directory
-    sweep (`kobo_api.directory.sweep_directory`, Admin > Services), which
-    retires any entry the room registered for an agent it no longer has
-    (issue #274). An unconfigured switchboard keeps its plainer note: there
-    is nothing to sweep.
+    Modeled on `_destroy_slack`'s shape: there's no `agent.<field>`
+    recorded to tell "never registered" apart from "registered, now gone"
+    (directory membership, like `destroy-access`'s GSA group membership,
+    isn't something kobo's own row tracks), so this always attempts the
+    retire when the switchboard is configured. A retire that did not land
+    (refused, or the switchboard unreachable) FAILS the step with
+    `DIRECTORY_RETIRE_MISSED_ERROR` (issue #291): a destroyed agent the
+    switchboard still lists keeps showing up to every other agent, which
+    is worse than a destroy that stops and says so. The agent lands in
+    destroy_failed and Destroy again runs this step once more; absorb is
+    idempotent, so a retry after a late success is harmless. The one
+    done-with-note case left is an unconfigured switchboard: nothing was
+    ever registered, so there is nothing to retire. Entries left behind
+    by destroys that ran before this change are the directory sweep's job
+    (`kobo_api.directory.sweep_directory`, Admin > Services, issue #274).
 
     A connected agent is the one case where "nothing to retire" IS knowable
     from the row (connected-agents design 2026-09-21), so the switchboard
@@ -667,26 +670,43 @@ def _destroy_directory(ctx: DestroyCtx) -> str:
         # raw connection failure never reaches CabalClient's own
         # CabalError, which only ever wraps a response that DID come back).
         retire_directory(ctx.clients.cabal, ctx.agent)
-    except Exception:
+    except Exception as exc:
         log.warning(
-            "destroy-directory: could not reach the switchboard for agent %s",
+            "destroy-directory: the switchboard did not drop agent %s",
             ctx.agent.name,
             exc_info=True,
         )
-        return DIRECTORY_RETIRE_MISSED_NOTE
+        # The fixed sentence, never the switchboard's own text: this lands
+        # on `AgentStep.error`/`Agent.error`, which any viewer can read.
+        raise RuntimeError(DIRECTORY_RETIRE_MISSED_ERROR) from exc
 
     return "removed from the directory"
 
 
 def _destroy_forget(ctx: DestroyCtx) -> str:
     """Delete every one of this agent's step rows (including this very
-    step's own, already committed as RUNNING by the caller), the colleague
-    invites naming it in either direction, and the agent row itself, all in
-    one transaction. Terminal: nothing survives this call to mark DONE
-    afterward. See `_run_destroy_body`'s `destroy-forget` special case.
+    step's own, already committed as RUNNING by the caller), every row
+    keyed by its name, and the agent row itself, all in one transaction.
+    Terminal: nothing survives this call to mark DONE afterward. See
+    `_run_destroy_body`'s `destroy-forget` special case.
+
+    Then, once the deletion is committed, the three places that learned the
+    agent existed learn it is gone: the switchboard's dispatch pairs, the
+    colleague rosters of every agent that could see it, and the permission
+    service's topology. All three are best-effort (the row is already gone;
+    a hiccup here must not undo that), but none is silent any more (issue
+    #291): the detail this step returns names each one that did not land,
+    and `_run_destroy_body` logs it as the step's note. The next trigger of
+    each (any pair change, roster refresh or topology push) carries the same
+    facts, so a miss heals itself; the note is there so the operator can
+    see the gap instead of hearing about it from another agent.
     """
     session = ctx.session
     agent = ctx.agent
+    # Captured before the delete: the roster refresh below asks "who could
+    # see this agent" by name and group, and the ORM row is gone by then.
+    departing_name = agent.name
+    departing_group_name = agent.group_name
     # Colleague invites are rows this step owns too (cleanup arc): destroy
     # used to leave them behind, so a destroyed agent kept appearing in
     # live agents' invite lists. Both directions, matched on the agent's
@@ -703,18 +723,89 @@ def _destroy_forget(ctx: DestroyCtx) -> str:
     session.query(RepoAccess).filter_by(agent_name=agent.name).delete(
         synchronize_session=False
     )
+    # The same rule for every other table keyed by the agent's NAME (issue
+    # #291 audit): a visibility grant, a seat in a shared thread, a queued
+    # learning or a system-task record left behind would all attach
+    # themselves to the next agent to take this name. Memories die with
+    # the agent; so does everything the room wrote down about it.
+    for model in (AgentUserGrant, ThreadParticipant, AgentLearning, AgentSystemTask):
+        session.query(model).filter_by(agent_name=agent.name).delete(
+            synchronize_session=False
+        )
     session.query(AgentStep).filter_by(agent_id=agent.id).delete()
     session.delete(agent)
     session.commit()
-    # The permission service learns the agent is gone the same way it learned
-    # it existed: the room pushes what remains. A failure is logged, never
-    # fatal here; the next push carries the same fact.
-    bab = getattr(getattr(ctx, "clients", None), "bab", None)
+
+    missed = _tell_the_room_the_agent_is_gone(ctx, departing_name, departing_group_name)
+    if missed:
+        return "forgotten; still to catch up: " + "; ".join(missed)
+    return "forgotten"
+
+
+def _tell_the_room_the_agent_is_gone(
+    ctx: DestroyCtx, departing_name: str, departing_group_name: str | None
+) -> list[str]:
+    """The three projections of "this agent exists" that destroy-forget
+    updates after its commit, each attempted whatever the others did, each
+    returning a plain phrase when it did not land. Runs only after the
+    agent's row is gone, so nothing here can throw into `_run_destroy_body`
+    and have the engine try to fail a step on a row that no longer exists:
+    every branch catches everything.
+
+    - Dispatch pairs (access-control arc, Task C4): `allowed_pairs` is
+      recomputed fresh from current rows, so the destroyed agent's pairs
+      drop out on their own. `sync_dispatch_pairs_best_effort` answers None
+      both when the switchboard is not wired and when the push failed, so
+      the gate is checked here first and only a wired miss is recorded.
+    - Colleague rosters (fast-lane + discovery arc, Task 6): every agent
+      that could see the departed one gets a fresh colleagues.md over the
+      relay. The viewers whose delivery missed are named.
+    - Topology (the permission service, kobo_api.bab): the room pushes the
+      agents that remain. `push_topology` swallows the client error and
+      answers None; anything else is caught here.
+    """
+    clients = ctx.clients
+    config = ctx.config
+    session = ctx.session
+    missed: list[str] = []
+
+    switchboard = cabal_enabled(config) and clients.cabal is not None
+    if switchboard:
+        try:
+            pushed = sync_dispatch_pairs_best_effort(clients, config, session)
+        except Exception:  # nothing may escape after the commit
+            log.warning("dispatch-pairs sync raised after agent %s was destroyed", departing_name, exc_info=True)
+            pushed = None
+        if pushed is None:
+            missed.append("the switchboard's allowed pairs (next pair change resends them)")
+
+    try:
+        unreached = refresh_colleague_rosters(
+            clients,
+            config,
+            session,
+            name=departing_name,
+            group_name=departing_group_name,
+        )
+    except Exception:  # same rule
+        log.warning("roster refresh failed after agent %s was destroyed", departing_name, exc_info=True)
+        unreached = ["every colleague"]
+    if unreached:
+        missed.append("the colleague roster of " + ", ".join(unreached))
+
+    bab = getattr(clients, "bab", None)
     if bab is not None:
         from kobo_api.bab import ROOM_ACTOR, push_topology
 
-        push_topology(bab, session.query(Agent).all(), ctx.acting_email or ROOM_ACTOR)
-    return "forgotten"
+        try:
+            out = push_topology(bab, session.query(Agent).all(), ctx.acting_email or ROOM_ACTOR)
+        except Exception:  # same rule
+            log.warning("topology push raised after agent %s was destroyed", departing_name, exc_info=True)
+            out = None
+        if out is None:
+            missed.append("the permission service's topology (next push resends it)")
+
+    return missed
 
 
 def _destroy_files(ctx: DestroyCtx) -> str:
@@ -825,21 +916,6 @@ def _run_destroy_body(
             log.warning("run_destroy: agent %s not found, nothing to destroy", agent_id)
             return
 
-        # Captured as plain values now, before "destroy-forget" (below)
-        # deletes this row outright: the roster-refresh call at that branch
-        # needs the departing agent's own name/group to ask "who could see
-        # it", and `kobo_api.steps.refresh_colleague_rosters`/`_agents_who_
-        # can_see` deliberately take these as plain values rather than an
-        # `Agent` instance for exactly this reason (see their docstrings) --
-        # by the time that branch runs, this agent's status is already
-        # DESTROYING (set just below, and possibly already set by the route
-        # before this function ever ran), so a fresh read of `agent.name`/
-        # `agent.group_name` off the ORM object would still work today, but
-        # would stop working the moment the row is actually deleted a few
-        # lines later.
-        departing_name = agent.name
-        departing_group_name = agent.group_name
-
         try:
             agent.status = AgentStatus.DESTROYING
             agent.error = None
@@ -889,42 +965,13 @@ def _run_destroy_body(
                     # _destroy_forget already deleted every AgentStep row
                     # for this agent (including this step's own, just
                     # committed as RUNNING above) and the agent row itself,
-                    # then committed — there is nothing left here to mark
-                    # DONE. The row disappearing IS the completion signal.
+                    # then committed, and told the switchboard, the
+                    # colleagues and the permission service (its detail
+                    # names whichever did not land, issue #291). There is
+                    # nothing left here to mark DONE: the row disappearing
+                    # IS the completion signal, and this log line is the
+                    # step's note.
                     log.info("destroy step %r done for agent %s: %s", name, agent_id, detail)
-                    # Access-control arc, Task C4: the destroyed agent's row
-                    # is already gone, so allowed_pairs (recomputed fresh
-                    # inside this call) naturally drops every pair that
-                    # named it -- same "query current rows only" discipline
-                    # that function's own docstring already documents.
-                    # Fail-soft and skip-when-unwired, same as every other
-                    # trigger of this shared helper (never lets a
-                    # switchboard hiccup undo this step's already-committed
-                    # deletion).
-                    sync_dispatch_pairs_best_effort(clients, config, session)
-                    # Roster refresh lane (Task 6): redeliver colleagues.md
-                    # to every agent that could see the now-departed agent
-                    # (using its name/group captured above, before this
-                    # very step deleted its row) -- their next fresh
-                    # `_colleague_roster` read naturally excludes it, since
-                    # its row is already gone. Best-effort and switchboard-
-                    # gated internally; this outer try/except is belt-and-
-                    # suspenders so a bug in the refresh path can never
-                    # undo this step's already-committed deletion.
-                    try:
-                        refresh_colleague_rosters(
-                            clients,
-                            config,
-                            session,
-                            name=departing_name,
-                            group_name=departing_group_name,
-                        )
-                    except Exception:
-                        log.warning(
-                            "roster refresh failed after agent %s was destroyed",
-                            departing_name,
-                            exc_info=True,
-                        )
                     return
 
                 log.info("destroy step %r done for agent %s: %s", name, agent_id, detail)

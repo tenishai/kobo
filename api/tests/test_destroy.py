@@ -25,7 +25,7 @@ from kobo_api import destroy as destroy_module
 from kobo_api.clients import ClientError, Clients
 from kobo_api.destroy import (
     DESTROY_STEPS,
-    DIRECTORY_RETIRE_MISSED_NOTE,
+    DIRECTORY_RETIRE_MISSED_ERROR,
     DestroyCtx,
     _destroy_access,
     _destroy_directory,
@@ -39,7 +39,16 @@ from kobo_api.destroy import (
     run_destroy,
 )
 from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED
-from kobo_api.models import A2AInvite, Agent, AgentStatus, AgentStep, StepStatus
+from kobo_api.models import (
+    A2AInvite,
+    Agent,
+    AgentStatus,
+    AgentStep,
+    AgentUserGrant,
+    StepStatus,
+    Thread,
+    ThreadParticipant,
+)
 from tests.fakes import (
     FakeCabal,
     FakeCloud,
@@ -730,44 +739,18 @@ def test_destroy_directory_enabled_absorbs_the_agent_by_name(
     session.close()
 
 
-def test_destroy_directory_unreachable_is_done_with_note_not_failed(
+def test_destroy_directory_fails_when_the_switchboard_keeps_the_entry(
     session_factory, config, monkeypatch
 ):
-    """Configured but failing (a CabalError from the switchboard itself) —
-    still completes with the same note rather than propagating, unlike
-    every other destroy step: a directory hiccup must never hold an
-    otherwise-clean teardown hostage."""
+    """Destruction safety (issue #291): a retire that did not land fails
+    the step with the fixed sentence, never the switchboard's own text."""
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
     cfg = _cabal_enabled_config(config)
     session, agent = _make_ctx_agent(session_factory)
-    fake_cabal = FakeCabal(absorb_error="switchboard unreachable")
-    ctx = _ctx(session, agent, cfg, cabal=fake_cabal)
+    ctx = _ctx(session, agent, cfg, cabal=FakeCabal(absorb_error="switchboard unreachable"))
 
-    detail = _destroy_directory(ctx)
-
-    assert detail == DIRECTORY_RETIRE_MISSED_NOTE
-    session.close()
-
-
-def test_destroy_directory_any_failure_reads_as_unreachable(session_factory, config, monkeypatch):
-    """Not only CabalError - a raw connection failure (never wrapped by
-    CabalClient's own graduate/absorb, which only ever inspect a response
-    that DID come back) must read the same "unreachable" way, never as a
-    step failure."""
-    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
-    cfg = _cabal_enabled_config(config)
-    session, agent = _make_ctx_agent(session_factory)
-    fake_cabal = FakeCabal()
-
-    def _raise_connection_error(name):
-        raise ConnectionError("connection refused")
-
-    fake_cabal.absorb = _raise_connection_error
-    ctx = _ctx(session, agent, cfg, cabal=fake_cabal)
-
-    detail = _destroy_directory(ctx)
-
-    assert detail == DIRECTORY_RETIRE_MISSED_NOTE
+    with pytest.raises(RuntimeError, match=DIRECTORY_RETIRE_MISSED_ERROR):
+        _destroy_directory(ctx)
     session.close()
 
 
@@ -787,6 +770,42 @@ def test_destroy_forget_deletes_step_rows_and_the_agent_row(session_factory, con
     assert detail == "forgotten"
     assert session.get(Agent, agent_id) is None
     assert session.query(AgentStep).filter_by(agent_id=agent_id).count() == 0
+    session.close()
+
+
+def test_destroy_forget_deletes_every_row_keyed_by_the_agents_name(session_factory, config):
+    """Data integrity (issue #291): a visibility grant and a thread seat
+    left behind would attach themselves to the next agent to take this
+    name."""
+    session, agent = _make_ctx_agent(session_factory)
+    thread = Thread(initiator_email=OWNER_EMAIL)
+    session.add(thread)
+    session.flush()
+    session.add(ThreadParticipant(thread_id=thread.id, agent_name=agent.name))
+    session.add(AgentUserGrant(agent_name=agent.name, email=OWNER_EMAIL))
+    session.commit()
+
+    _destroy_forget(_ctx(session, agent, config))
+
+    assert session.query(ThreadParticipant).count() == 0
+    assert session.query(AgentUserGrant).count() == 0
+    session.close()
+
+
+def test_destroy_forget_names_what_the_switchboard_did_not_take(
+    session_factory, config, monkeypatch
+):
+    """Destruction safety (issue #291): a dispatch-pairs push that fails
+    after the row is gone is written into the step's note, not swallowed."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    session, agent = _make_ctx_agent(session_factory)
+    ctx = _ctx(session, agent, cfg, cabal=FakeCabal(put_dispatch_pairs_error="down"))
+
+    detail = _destroy_forget(ctx)
+
+    assert detail.startswith("forgotten; still to catch up: ")
+    assert "allowed pairs" in detail
     session.close()
 
 
@@ -915,6 +934,38 @@ def test_run_destroy_happy_path_retires_the_directory_listing_when_cabal_enabled
     assert thread.is_alive() is False
 
     assert fake_cabal.absorb_calls == [AGENT_NAME]
+
+    session = session_factory()
+    assert session.get(Agent, agent_id) is None
+    session.close()
+
+
+def test_run_destroy_lands_in_destroy_failed_when_the_switchboard_keeps_the_entry_and_retries(
+    session_factory, config, monkeypatch
+):
+    """Destruction safety (issue #291): the row survives with the directory
+    step failed and the sentence on the agent; Destroy again finishes it
+    once the switchboard answers."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _cabal_enabled_config(config)
+    agent_id = _seed_agent(session_factory, status=AgentStatus.READY)
+
+    thread = run_destroy(
+        session_factory, agent_id, _clients(cabal=FakeCabal(absorb_error="refused")), cfg
+    )
+    thread.join(timeout=JOIN_TIMEOUT)
+
+    session = session_factory()
+    agent = session.get(Agent, agent_id)
+    assert agent.status == AgentStatus.DESTROY_FAILED
+    assert agent.error == DIRECTORY_RETIRE_MISSED_ERROR
+    rows = {s.name: s for s in agent.steps}
+    assert rows["destroy-directory"].status == StepStatus.FAILED
+    assert rows["destroy-forget"].error == "aborted: destroy-directory"
+    session.close()
+
+    thread2 = run_destroy(session_factory, agent_id, _clients(cabal=FakeCabal()), cfg)
+    thread2.join(timeout=JOIN_TIMEOUT)
 
     session = session_factory()
     assert session.get(Agent, agent_id) is None

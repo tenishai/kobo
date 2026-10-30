@@ -23,6 +23,12 @@
 //                                                      incoming + outgoing
 //                                                      (access-control Task
 //                                                      C1/C2)
+//   ["agents", name, "pairs"]                       - the agents `name` may
+//                                                      share a thread with
+//                                                      right now (issue #289);
+//                                                      every invite decision
+//                                                      invalidates every
+//                                                      agent's copy
 //   ["agents", name, "grants"]                      - an agent's per-user
 //                                                      visibility grants
 //                                                      (access-control Task
@@ -193,6 +199,7 @@ import {
   type IntakeFile,
   type Invite,
   type InvitesResult,
+  type PairedAgent,
   type KnowledgeFile,
   type Learning,
   listAgentEnv,
@@ -201,6 +208,7 @@ import {
   listGrants,
   listIntake,
   listInvites,
+  listPairs,
   listKnowledge,
   listLearnings,
   listSkills,
@@ -1616,6 +1624,30 @@ export function invitesQuery(name: string) {
 }
 
 /**
+ * The agents `name` may share a thread with right now (issue #289) -- `GET
+ * /api/agents/{name}/pairs`, open to anyone who can see `name`. Feeds the
+ * shared thread's Add participant picker. No polling: an accepted or revoked
+ * request invalidates this key through `invalidatePairs` below.
+ */
+export function pairsQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "pairs"] as const,
+    queryFn: () => listPairs(name),
+  });
+}
+
+/**
+ * Every agent's pairs query at once. A pair has two sides and the decision
+ * is made on ONE agent's Access tab, so invalidating that agent's key alone
+ * would leave the other side's thread picker stale.
+ */
+function invalidatePairs(queryClient: QueryClient): void {
+  queryClient.invalidateQueries({
+    predicate: (query) => query.queryKey[0] === "agents" && query.queryKey[2] === "pairs",
+  });
+}
+
+/**
  * Requests colleague access from one of the CALLER's OWN agents to another
  * agent -- both names travel with `mutate`, not bound into the factory like
  * every other agent-scoped mutation here, because the "Request colleague
@@ -1679,13 +1711,15 @@ export function peopleSearchQuery(q: string) {
 
 /**
  * Accepts a pending incoming invite; on success, invalidates `name`'s own
- * invites query so the accepted row (and its new state) shows up.
+ * invites query so the accepted row (and its new state) shows up, and every
+ * pairs query so the agent appears in the shared thread picker (issue #289).
  */
 export function acceptInviteMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (inviteId: number) => acceptInvite(inviteId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name, "invites"] });
+      invalidatePairs(queryClient);
     },
   };
 }
@@ -1710,6 +1744,7 @@ export function revokeInviteMutation(queryClient: QueryClient, name: string) {
     mutationFn: (inviteId: number) => revokeInvite(inviteId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name, "invites"] });
+      invalidatePairs(queryClient);
     },
   };
 }
@@ -1991,6 +2026,7 @@ export type {
   Invite,
   InvitesResult,
   KnowledgeFile,
+  PairedAgent,
   Learning,
   NameSuggestion,
   OrgStatus,

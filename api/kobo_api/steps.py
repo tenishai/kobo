@@ -782,7 +782,7 @@ def _deliver_knowledge_refresh(
 
 def refresh_colleague_rosters(
     clients: Clients, config: Config, session, *, name: str, group_name: str | None
-) -> None:
+) -> list[str]:
     """Best-effort roster refresh (Task 6, the roster refresh lane): when
     `name`'s presence in the room changes (it just went READY, it is
     departing via destroy-forget, or its capability just distilled),
@@ -809,16 +809,24 @@ def refresh_colleague_rosters(
     A no-op when the switchboard isn't configured/wired (`cabal_enabled
     (config) and clients.cabal is not None`, the same two-gate every other
     fast-lane caller in this room checks) -- no relay is even attempted.
+
+    Returns the names of the viewers whose delivery missed (issue #291):
+    the destroy ledger writes them into its forget step's note, so a stale
+    roster is on the record instead of only in a warning. Empty when every
+    delivery landed or there was nothing to deliver.
     """
     if not (cabal_enabled(config) and clients.cabal is not None):
-        return
+        return []
+    missed: list[str] = []
     for viewer in _agents_who_can_see(session, name=name, group_name=group_name):
         # A `none` agent has no colleagues.md (issue #131); a delivery would
         # store the doctrine its owner turned off.
         if effective_colleague_mode(viewer.colleague_mode) == COLLEAGUE_MODE_NONE:
             continue
         content = _render_colleagues_md(viewer, _colleague_roster(session, viewer))
-        _deliver_knowledge_refresh(clients, viewer.name, "colleagues.md", content)
+        if not _deliver_knowledge_refresh(clients, viewer.name, "colleagues.md", content):
+            missed.append(viewer.name)
+    return missed
 
 
 def refresh_after_capability_distill(

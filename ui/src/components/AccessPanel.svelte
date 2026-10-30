@@ -15,7 +15,10 @@
   //   - Request another team's agent — the browsable outgoing picker
   // The Agents table holds every agent fact in one place: incoming pending
   // requests (Accept/Decline), same-team pairs (automatic, not revocable)
-  // and accepted cross-group pairs (Revoke).
+  // and accepted cross-group pairs (Revoke). A paired row's status says
+  // what the pair buys, "Can join shared threads" (issue #289); the chip
+  // beside it keeps the distinction between the automatic same-team pair
+  // and an accepted request.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { errorMessage, type Person } from "../lib/api";
   import { debounced } from "../lib/debounce";
@@ -496,9 +499,9 @@
         {#each teamPairs as pair (pair.name)}
           <tr class="access-panel__row">
             <td><span class="access-panel__row-name">{pair.name}</span></td>
-            <td><span class="panel__meta">Same team ({pair.group})</span></td>
+            <td><span class="panel__meta">Can join shared threads</span></td>
             <td class="panel__cell--right">
-              <span class="access-panel__chip">auto</span>
+              <span class="access-panel__chip">Same team ({pair.group})</span>
             </td>
           </tr>
         {/each}
@@ -509,9 +512,10 @@
                 {invite.from_agent} and {invite.to_agent.name}
               </span>
             </td>
-            <td><span class="panel__meta">Paired</span></td>
+            <td><span class="panel__meta">Can join shared threads</span></td>
             <td class="panel__cell--right">
               <div class="access-panel__revoke-group">
+                <span class="access-panel__chip">Accepted request</span>
                 <button
                   type="button"
                   class="btn btn--quiet btn--danger"
