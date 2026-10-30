@@ -166,6 +166,13 @@ def agent_actor(name: str) -> str:
     return f"agent:{name}"
 
 
+def who(request: Request | None) -> str:
+    """The actor's short name for a sentence: the email's local part
+    ("kgreiner created agent ward"), or `the room`."""
+    actor, kind = actor_from(request)
+    return actor.split("@", 1)[0] if kind == ACTOR_PERSON else "the room"
+
+
 # --- writes -------------------------------------------------------------------
 
 

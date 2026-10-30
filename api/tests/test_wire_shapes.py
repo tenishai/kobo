@@ -1834,7 +1834,7 @@ def test_connect_stores_the_credential_opens_the_gateway_pr_and_records_the_row(
     # And nothing secret is in the row or the audit log.
     listing = client.get("/api/admin/integrations", headers=headers).json()["integrations"]
     assert "dd-secret-token" not in str(listing)
-    audit = client.get("/api/admin/audit", headers=headers).json()["events"]
+    audit = client.get("/api/admin/audit", headers=headers).json()["rows"]
     assert audit[0]["action"] == "integration.connect" and "dd-secret-token" not in str(audit)
     assert audit[0]["summary"] == "Connected Datadog"
 

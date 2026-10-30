@@ -2741,7 +2741,7 @@ def test_values_are_stored_in_the_rooms_secret_and_never_echoed(tmp_path):
     assert status["services"]["github"] == {
         "configured": True, "source": "room", "updated_at": status["services"]["github"]["updated_at"], "updated_by": "ops@example.com",
     }
-    audit = client.get("/api/admin/audit", headers=headers()).json()["events"]
+    audit = client.get("/api/admin/audit", headers=headers()).json()["rows"]
     assert audit[0]["action"] == "room_service.set"
     for text in (put.text, str(status), str(audit)):
         assert "4741722" not in text and "BEGIN RSA" not in text
