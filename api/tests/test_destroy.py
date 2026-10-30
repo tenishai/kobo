@@ -70,6 +70,7 @@ from kobo_api.personas import seed_default_personas
 from kobo_api.sero import HttpxSeroClient
 from tests.fakes import (
     FakeAgent,
+    FakeBab,
     FakeCabal,
     FakeCloud,
     FakeGitHub,
@@ -504,6 +505,20 @@ def test_destroy_forget_names_what_the_switchboard_did_not_take(
 
     assert detail.startswith("forgotten; still to catch up: ")
     assert "allowed pairs" in detail
+    session.close()
+
+
+def test_destroy_forget_removes_the_agents_integration_from_the_permission_service(session_factory, config):
+    """Destruction safety (kobo#310): a destroyed agent stops being something
+    other agents may hold an ask permission on."""
+    session, agent = _make_ctx_agent(session_factory)
+    bab = FakeBab(integrations=[{"integration": agent.name, "vendor": "agents", "ceiling": ["a2a_ask"], "kind": "connection"}])
+    ctx = _ctx(session, agent, config)
+    ctx.clients.bab = bab
+
+    assert _destroy_forget(ctx) == "forgotten"
+
+    assert bab.integrations("x") == []
     session.close()
 
 

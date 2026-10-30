@@ -6581,3 +6581,23 @@ def test_baseline_migration_fresh_slate_survives_a_leftover_catalog_fts_table():
     _drop_everything_postgres(POSTGRES_TEST_URL__migrations)
     _assert_baseline_matches_models(POSTGRES_TEST_URL__migrations)
 
+
+
+# --- pairs from grants reach the switchboard (kobo#310, gate 1) ----------------
+
+
+def test_an_approved_ask_is_pushed_to_the_switchboard_at_once_and_a_revoke_takes_it_back(a2a_room):
+    """Data integrity (kobo#310): the dispatch pairs the switchboard enforces
+    follow the permission service's grants, pushed the moment Review approves
+    and the moment an admin revokes; a pending request pushes nothing."""
+    c, h, bab, cabal = a2a_room.client, a2a_room.headers, a2a_room.bab, a2a_room.cabal
+    rid = c.post("/api/agents/asker/access/requests", headers=h,
+                 json={"integration": "oracle", "permissions": ["a2a_ask"], "note": None}).json()["id"]
+    assert cabal.put_dispatch_pairs_calls == []
+
+    c.post("/api/admin/access/decide", headers=h, json={"ids": [rid], "verdict": "approve"})
+    assert cabal.put_dispatch_pairs_calls[-1] == [("agent:asker", "oracle")]
+
+    (grant,) = bab.grants("asker", "ops@example.com")
+    c.delete(f"/api/agents/asker/access/grants/{grant['id']}", headers=h)
+    assert cabal.put_dispatch_pairs_calls[-1] == []

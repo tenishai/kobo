@@ -75,6 +75,11 @@
   function tiers(r: AccessRequest): string {
     return Object.entries(r.tiers).map(([t, n]) => `${n} ${t}`).join(", ");
   }
+  /** A request to ask another agent (issue #310) names the target agent as its
+   * account and one permission, shown as the word it means. */
+  function permLabel(p: string): string {
+    return p === "a2a_ask" ? "ask" : p;
+  }
   function left(iso: string): string {
     const min = Math.max(0, Math.round((serverDate(iso).getTime() - Date.now()) / 60_000));
     return min >= 60 ? "about an hour" : `${min} min`;
@@ -141,7 +146,7 @@
                   <summary>{r.permissions.length} ({tiers(r)})</summary>
                   <ul class="perms">
                     {#each r.permissions as p (p)}
-                      <li><span class="perm">{p}</span>{#if r.outcome[p]}<span class="quiet"> · {r.outcome[p]}</span>{/if}</li>
+                      <li><span class="perm">{permLabel(p)}</span>{#if r.outcome[p]}<span class="quiet"> · {r.outcome[p]}</span>{/if}</li>
                     {/each}
                   </ul>
                   {#if r.note}<p class="quiet">“{r.note}”</p>{/if}

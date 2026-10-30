@@ -74,10 +74,12 @@ from kobo_api.archetypes import (
     team_guide_persona_id,
 )
 from kobo_api.avatars import avatar_prompt, set_avatar
+from kobo_api.bab import A2A_ASK as BAB_A2A_ASK
 from kobo_api.bab import ROOM_ACTOR as BAB_ROOM_ACTOR
 from kobo_api.bab import active_leases as bab_active_leases
 from kobo_api.bab import actor_for as bab_actor_for
 from kobo_api.bab import build_bab
+from kobo_api.bab import ensure_agent_integrations as bab_ensure_agent_integrations
 from kobo_api.bab import picker as bab_picker
 from kobo_api.bab import push_topology as bab_push_topology
 from kobo_api.bab import since_days as bab_since_days
@@ -191,6 +193,8 @@ from kobo_api.org import OrgState, load_org_config
 from kobo_api.pairs import (
     allowed_pairs,
     implicitly_paired,
+    invite_pairs,
+    paired_either_way,
     sync_dispatch_pairs,
     sync_dispatch_pairs_best_effort,
 )
@@ -3950,12 +3954,32 @@ def create_app(
         agent = _visible_agent_or_404(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
-        block = _owner_or_operator_or_403(agent, request)
+        block = _owner_or_operator_or_403(agent, request, managers=BAB_A2A_ASK not in payload.permissions)
         if block is not None:
             return block
+        actor = _bab_actor(request)
         permissions = list(dict.fromkeys(payload.permissions))
+        if BAB_A2A_ASK in payload.permissions:
+            # Asking another team's agent (kobo#310, gate 1): the integration
+            # is the target agent, looked up WITHOUT the visibility filter
+            # like `create_invite`'s target (the directory of names is
+            # global), and the same two refusals apply. The target's
+            # `agents` integration is put first when bab lacks it, so a
+            # request never fails for an agent that became READY after the
+            # last topology push.
+            target = session.query(Agent).filter_by(name=payload.integration).first()
+            if target is None:
+                return JSONResponse({"error": f"no such agent: {payload.integration!r}"}, status_code=404)
+            if target.name == agent.name:
+                return JSONResponse({"error": "an agent cannot request colleague access to itself"}, status_code=422)
+            if implicitly_paired(agent.group_name, target.group_name):
+                return JSONResponse(
+                    {"error": "these two agents are already in the same group and can talk freely. No request is needed."},
+                    status_code=422,
+                )
+            bab_ensure_agent_integrations(bab, [target], actor)
         try:
-            out = bab.request(agent.name, payload.integration, permissions, payload.note, _bab_actor(request))
+            out = bab.request(agent.name, payload.integration, permissions, payload.note, actor)
         except ClientError as exc:
             audit.record(
                 session, request=request, action="access.request", target_kind="agent", target_id=agent.name,
@@ -3991,6 +4015,11 @@ def create_app(
             out = bab.revoke(grant_id, _bab_actor(request))
         except ClientError as exc:
             return _bab_refused(exc)
+        # A revoked `a2a_ask` ends a dispatch pair (kobo#310); the set is
+        # recomputed in full, so a revoke of any other grant pushes the same
+        # set again, which is cheap and keeps this route from reading the
+        # grant back to find out which kind it was.
+        _sync_dispatch_pairs(session)
         out = out if isinstance(out, dict) else {}
         audit.record(
             session, request=request, action="access.revoke", target_kind="agent", target_id=agent.name,
@@ -4046,7 +4075,9 @@ def create_app(
         payload: AccessDecideBody, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
         """Approve or deny in bulk. bab checks the reviewer's team and each
-        permission's tier; a deny needs a reason."""
+        permission's tier; a deny needs a reason. An approval may have granted
+        an `a2a_ask` (kobo#310), so the switchboard's pairs are pushed again
+        right after one, from grants and rows alike."""
         blocked = _admin_panel_gate(request)
         if blocked is not None:
             return blocked
@@ -4079,6 +4110,8 @@ def create_app(
                 + (f"; skipped: {result.get('reason')}" if skipped else ""),
             )
         session.commit()
+        if any(r.get("status") == "approved" for r in results):
+            _sync_dispatch_pairs(session)
         return JSONResponse({"results": results})
 
     @app.get("/api/admin/access/leases")
@@ -11091,6 +11124,24 @@ def create_app(
         # agent may talk to (owner ruling, 2026-10-30).
         return _owner_or_operator_or_403(_invite_side_stand_in(session, agent_name), request, managers=False)
 
+    def _allowed_pairs(session: Session, request: Request | None = None) -> set[tuple[str, str]]:
+        """`kobo_api.pairs.allowed_pairs` with the permission service's grants
+        folded in when it is on (kobo#310), for this file's READERS of the
+        set (`list_pairs`, `list_requestable_agents`, `_thread_consented`).
+        A permission service that does not answer leaves the page showing
+        rows alone (same-group and accepted invites) rather than failing it;
+        the switchboard push, which must never narrow on a blip, is the
+        sync's business, not these readers'."""
+        bab = getattr(app.state.clients, "bab", None) if app.state.clients is not None else None
+        if bab is None:
+            return allowed_pairs(session, app.state.config)
+        actor = _bab_actor(request) if request is not None else BAB_ROOM_ACTOR
+        try:
+            return allowed_pairs(session, app.state.config, bab, actor)
+        except ClientError as exc:
+            log.warning("permission service did not say whom agents may ask; pairs read from rows alone: %s", exc)
+            return allowed_pairs(session, app.state.config)
+
     def _sync_dispatch_pairs(session: Session) -> None:
         """Thin, session-only wrapper the invite accept/revoke routes below
         call after their own state-changing commit (access-control arc,
@@ -11347,23 +11398,25 @@ def create_app(
 
         caller = f"agent:{agent.name}"
         partners: set[str] = set()
-        for from_side, to_side in allowed_pairs(session, app.state.config):
+        for from_side, to_side in _allowed_pairs(session, request):
             if from_side == caller:
                 partners.add(to_side)
             elif to_side == agent.name:
                 partners.add(from_side.removeprefix("agent:"))
 
+        # `via` names the source: `group` (automatic), `invite` (an accepted
+        # request, either direction), else `grant` (an `a2a_ask` approved in
+        # Review, kobo#310).
+        by_invite = invite_pairs(session, partners | {agent.name})
+
+        def via(other: Agent) -> str:
+            if implicitly_paired(agent.group_name, other.group_name):
+                return "group"
+            return "invite" if paired_either_way(by_invite, agent.name, other.name) else "grant"
+
         visible, _ = _visible_agents(session, request)
         pairs = [
-            {
-                "name": other.name,
-                "group": other.group_name,
-                "via": (
-                    "group"
-                    if implicitly_paired(agent.group_name, other.group_name)
-                    else "invite"
-                ),
-            }
+            {"name": other.name, "group": other.group_name, "via": via(other)}
             for other in sorted(visible, key=lambda row: row.name)
             if other.name in partners
         ]
@@ -11441,6 +11494,23 @@ def create_app(
             .filter(A2AInvite.status.in_((INVITE_PENDING, INVITE_ACCEPTED)))
             .all()
         }
+        # With the permission service on (kobo#310), a pending `a2a_ask`
+        # request and an approved one (a grant-backed pair, asker -> target)
+        # are in flight the same way an invite is.
+        bab = getattr(app.state.clients, "bab", None) if app.state.clients is not None else None
+        if bab is not None:
+            caller = f"agent:{agent.name}"
+            for from_side, to_side in _allowed_pairs(session, request):
+                if from_side == caller:
+                    in_flight_status.setdefault(to_side, INVITE_ACCEPTED)
+            try:
+                pending_asks = bab.requests("pending", agent.name, _bab_actor(request))
+            except ClientError as exc:
+                log.warning("permission service did not list %s's pending requests: %s", agent.name, exc)
+                pending_asks = []
+            for row in pending_asks:
+                if BAB_A2A_ASK in (row.get("permissions") or []):
+                    in_flight_status.setdefault(str(row.get("integration")), INVITE_PENDING)
 
         requestable = []
         already = []
@@ -11611,30 +11681,17 @@ def create_app(
     def _thread_consented(session: Session, a: Agent, b: Agent) -> bool:
         """Whether `a` and `b` may share a thread: same-group agents join
         freely (`kobo_api.pairs.implicitly_paired`, the exact predicate
-        `allowed_pairs`'s own same-group rule uses), or an ACCEPTED
-        `A2AInvite` already exists between them in EITHER direction -- an
-        accepted invite is mutual consent to talk at all, so which side
-        originally asked does not matter here the way it does for
-        `allowed_pairs`'s own directional dispatch pairs. No new consent
-        concept: this is the identical predicate `create_invite`'s own
-        redundant-invite check and `list_requestable_agents` already share.
+        `allowed_pairs`'s own same-group rule uses), or they are a dispatch
+        pair in EITHER direction (`kobo_api.pairs.paired_either_way` over
+        `_allowed_pairs`: an accepted `A2AInvite`, or with the permission
+        service on an approved `a2a_ask`, kobo#310) -- either is mutual
+        consent to talk at all, so which side originally asked does not
+        matter here the way it does for the directional dispatch pairs. No
+        new consent concept: the same set the switchboard is pushed.
         """
         if implicitly_paired(a.group_name, b.group_name):
             return True
-        accepted = (
-            session.query(A2AInvite)
-            .filter(A2AInvite.status == INVITE_ACCEPTED)
-            .filter(
-                (
-                    (A2AInvite.from_agent == a.name) & (A2AInvite.to_agent == b.name)
-                )
-                | (
-                    (A2AInvite.from_agent == b.name) & (A2AInvite.to_agent == a.name)
-                )
-            )
-            .first()
-        )
-        return accepted is not None
+        return paired_either_way(_allowed_pairs(session), a.name, b.name)
 
     def _add_thread_participant(
         session: Session, thread: Thread, agent: Agent
@@ -11928,8 +11985,8 @@ def create_app(
         # didn't work, not have that silently logged and swallowed the way
         # an accept/revoke/destroy's own incidental sync attempt must be.
         try:
-            count = sync_dispatch_pairs(clients.cabal, session, cfg)
-        except (CabalError, httpx.HTTPError):
+            count = sync_dispatch_pairs(clients.cabal, session, cfg, getattr(clients, "bab", None))
+        except (ClientError, httpx.HTTPError):
             log.warning("operator-triggered dispatch-pairs resync failed", exc_info=True)
             return JSONResponse(
                 {"error": "couldn't sync the switchboard. Try again."}, status_code=502

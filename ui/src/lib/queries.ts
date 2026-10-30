@@ -793,6 +793,9 @@ export function requestAgentAccessMutation(queryClient: QueryClient, name: strin
       requestAgentAccess(name, input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name, "access"] });
+      // An ask request (issue #310) moves its target out of the Access tab's
+      // requestable list and into "already".
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "requestable"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "access"] });
     },
   };
