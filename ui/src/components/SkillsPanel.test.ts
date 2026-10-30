@@ -132,7 +132,7 @@ describe("SkillsPanel", () => {
 
     await openSuggestions();
 
-    expect(await screen.findByText("Recommended for this agent")).not.toBeNull();
+    expect(await screen.findByText(/Recommended for this agent/)).not.toBeNull();
     const row = screen.getByText("cost-report").closest("li");
     expect(row).not.toBeNull();
 
@@ -224,7 +224,7 @@ describe("SkillsPanel", () => {
     // Let any in-flight microtasks settle before asserting an absence.
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(screen.queryByText("Recommended for this agent")).toBeNull();
+    expect(screen.queryByText(/Recommended for this agent/)).toBeNull();
     expect(
       vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/api/skills/recommended")),
     ).toBe(false);
