@@ -35,7 +35,10 @@
   // gateway's lanes are the older model, so the Connections page steps aside for Review.
   const addons = createQuery(() => ({ ...adminAddonsQuery(), enabled: allowed }));
   const accessOn = $derived((addons.data ?? []).some((a) => a.id === "access" && a.state === "on"));
-  const panes = $derived(PANES.filter((p) => p.id !== "connections" || !accessOn));
+  // Until the add-ons have answered, Connections is neither shown nor hidden for sure;
+  // leaving it out until then stops it flashing on a hard refresh of a room with Access on.
+  const accessKnown = $derived(addons.data !== undefined || addons.isError);
+  const panes = $derived(PANES.filter((p) => p.id !== "connections" || (accessKnown && !accessOn)));
 
   // "addons" and "platform" were earlier names of the Services page; old links still open it.
   const pane = $derived(

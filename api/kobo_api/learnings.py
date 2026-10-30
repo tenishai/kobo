@@ -675,8 +675,27 @@ def run_nightly(app) -> None:
                 return
             _sweep(session, app.state.config, app.state.clients, now)
             _directory_dry_run(session, app.state.config, app.state.clients)
+            _audit_prune(session, app.state.config)
     finally:
         session.close()
+
+
+def _audit_prune(session, config) -> None:
+    """The audit log's retention pass (issue #316): rows older than
+    `audit_retention_days` go, and one `audit.prune` row says how many.
+    Fail-soft like the directory pass; deferred import for the same
+    circular-import reason."""
+    from kobo_api import audit
+
+    try:
+        gone = audit.prune(session, retention_days=config.audit_retention_days)
+        session.commit()
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        log.warning("audit: nightly prune skipped: %s", exc)
+        return
+    if gone:
+        log.warning("audit: pruned %d row(s) older than %d days", gone, config.audit_retention_days)
 
 
 def _directory_dry_run(session, config, clients) -> None:

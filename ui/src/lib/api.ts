@@ -1425,25 +1425,69 @@ export async function fetchAdminPeople(): Promise<AdminPeople> {
   return parse<AdminPeople>(res);
 }
 
-/** One audit event from the admin store: who did what to which object, and
- * whether the change has landed where it was meant to. */
-export type AdminAuditEvent = {
+/** One row of the room's audit log (issue #316): who did what to which
+ * target, in one sentence, with where the request came from and how far
+ * the action has landed where it projects. */
+export type AuditRow = {
   id: number;
   at: string;
   actor: string;
+  actor_kind: "person" | "room" | "agent";
   action: string;
-  object_type: string;
-  object_id: string;
-  /** One plain sentence for the Change column, built server-side. */
+  target_kind: string;
+  target_id: string;
+  agent_name: string | null;
   summary: string;
-  landed: "pending" | "applied" | "failed";
+  outcome: "ok" | "failed" | "refused";
+  source: string;
+  request_ip: string | null;
+  user_agent: string | null;
+  detail: Record<string, unknown> | null;
+  landed: "pending" | "applied" | "failed" | null;
   landed_detail: string | null;
 };
 
-export async function fetchAdminAudit(): Promise<AdminAuditEvent[]> {
-  const res = await fetch("/api/admin/audit");
-  const body = await parse<{ events: AdminAuditEvent[] }>(res);
-  return body.events;
+/** The Audit page's filters, as the query string carries them. */
+export type AuditFilters = {
+  q?: string;
+  actor?: string;
+  action?: string;
+  agent?: string;
+  outcome?: string;
+  since?: string;
+  until?: string;
+};
+
+/** One page of the log plus the facets the page's selects offer within the
+ * same window. `next_cursor` is null on the last page. */
+export type AuditPage = {
+  rows: AuditRow[];
+  next_cursor: string | null;
+  total_in_window: number;
+  actors: string[];
+  agents: string[];
+  families: string[];
+};
+
+export function auditQueryString(filters: AuditFilters, extra: Record<string, string> = {}): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries({ ...filters, ...extra })) {
+    if (value) {
+      params.set(key, value);
+    }
+  }
+  const text = params.toString();
+  return text ? `?${text}` : "";
+}
+
+export async function fetchAdminAudit(filters: AuditFilters, cursor: string | null = null): Promise<AuditPage> {
+  const res = await fetch(`/api/admin/audit${auditQueryString(filters, cursor ? { cursor } : {})}`);
+  return parse<AuditPage>(res);
+}
+
+/** The link the Export buttons open: the current filter as a file. */
+export function auditExportUrl(filters: AuditFilters, format: "csv" | "json"): string {
+  return `/api/admin/audit/export${auditQueryString(filters, { format })}`;
 }
 
 /** The facts the panel's rail shows about this room. */

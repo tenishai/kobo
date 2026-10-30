@@ -169,6 +169,7 @@ import {
   type RoomServiceValues,
   previewDirectorySweep,
   sweepDirectory,
+  type AuditFilters,
   fetchAdminAudit,
   fetchAdminAwsSetup,
   fetchAdminConnections,
@@ -719,10 +720,10 @@ export function adminPeopleQuery() {
   });
 }
 
-export function adminAuditQuery() {
+export function adminAuditQuery(filters: AuditFilters, cursor: string | null = null) {
   return queryOptions({
-    queryKey: ["admin", "audit"] as const,
-    queryFn: fetchAdminAudit,
+    queryKey: ["admin", "audit", filters, cursor] as const,
+    queryFn: () => fetchAdminAudit(filters, cursor),
     staleTime: 15_000,
   });
 }

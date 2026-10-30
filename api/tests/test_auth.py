@@ -1537,7 +1537,7 @@ def test_revoke_cuts_the_families_logs_the_action_and_the_verifier_refuses_old_t
     ]
     assert [r["email"] for r in listed] == ["gone@example.com"]
     with factory() as session:
-        actions = [(e.action, e.object_id) for e in audit_events(session)]
+        actions = [(e.action, e.target_id) for e in audit_events(session)]
     assert ("mcp.revoke", "gone@example.com") in actions
 
 

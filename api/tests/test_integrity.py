@@ -40,7 +40,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 import kobo_api.personas as personas_module
-from kobo_api import admin_store, bootstrap, db
+from kobo_api import admin_store, audit, bootstrap, db
 from kobo_api.agent_env import SECRETS_WIRING_BRANCH
 from kobo_api.archetypes import render_team_guide
 from kobo_api.bootstrap import _exit_code, run_bootstrap
@@ -98,10 +98,12 @@ from kobo_api.mcp import rate_limit
 from kobo_api.models import (
     LEARNING_APPROVED,
     LEARNING_PENDING,
+    AdminAuditEvent,
     Agent,
     AgentLearning,
     AgentStatus,
     AgentStep,
+    AuditLog,
     Base,
     StepStatus,
 )
@@ -6393,8 +6395,47 @@ def test_put_setting_writes_the_row_and_one_audit_event_together(session__admin_
     assert admin_store.get_setting(session__admin_store, "panel.preferences") == {"dense": True}
     events = admin_store.audit_events(session__admin_store)
     assert [e.action for e in events] == ["setting.put"]
-    assert events[0].before is None and events[0].after == {"dense": True}
+    assert events[0].detail["before"] is None and events[0].detail["after"] == {"dense": True}
     assert events[0].landed == admin_store.LANDED_APPLIED
+
+
+def test_audit_prune_deletes_only_older_rows_and_records_the_prune(session__admin_store):
+    """Data integrity (issue #316): retention deletes rows older than the
+    window and nothing newer, and leaves one `audit.prune` row counting them;
+    a second pass with nothing to delete writes no row."""
+    now = datetime(2026, 10, 30, 3, 0, 0)
+    for days_ago, name in ((45, "old-one"), (31, "old-two"), (29, "kept"), (0, "today")):
+        audit.record(session__admin_store, action="agent.create", target_kind="agent", target_id=name, agent_name=name,
+                     summary=f"made {name}", actor="someone@example.com", at=now - timedelta(days=days_ago))
+    session__admin_store.commit()
+
+    gone = audit.prune(session__admin_store, retention_days=30, now=now)
+    session__admin_store.commit()
+
+    assert gone == 2
+    rows = session__admin_store.query(AuditLog).order_by(AuditLog.id).all()
+    assert [r.target_id for r in rows] == ["kept", "today", "audit_log"]
+    assert rows[-1].action == "audit.prune" and rows[-1].detail["deleted"] == 2 and rows[-1].actor == "room"
+    assert audit.prune(session__admin_store, retention_days=30, now=now) == 0
+    assert session__admin_store.query(AuditLog).filter_by(action="audit.prune").count() == 1
+
+
+def test_admin_events_fold_into_the_audit_log_once(session__admin_store):
+    """Data integrity (issue #316): the boot copy of `admin_audit_events`
+    into `audit_log` runs once; a second boot copies nothing again."""
+    session__admin_store.add(AdminAuditEvent(
+        at=datetime(2026, 10, 18, 20, 0, 0), actor="kyle@example.com", action="setting.put",
+        object_type="setting", object_id="panel.preferences", landed="applied", landed_detail="stored",
+        before=None, after={"dense": True},
+    ))
+    session__admin_store.commit()
+
+    assert audit.migrate_admin_events(session__admin_store) == 1
+    session__admin_store.commit()
+    assert audit.migrate_admin_events(session__admin_store) == 0
+    [row] = session__admin_store.query(AuditLog).all()
+    assert (row.action, row.target_id, row.landed) == ("setting.put", "panel.preferences", "applied")
+    assert row.detail["migrated_from"] == "admin_audit_events"
 
 
 def test_an_integration_row_landing_lands_its_latest_audit_event(session__admin_store):
