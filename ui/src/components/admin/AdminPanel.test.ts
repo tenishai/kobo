@@ -197,13 +197,15 @@ describe("AdminPanel", () => {
     renderWithClient(AdminPanel);
     expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
     // Slack and GitHub are rows of the one table, never "added" (#304): the
-    // unset one offers Set up, the one the deployment config carries offers nothing.
+    // unset one offers Set up, the one the deployment config carries reads Connected with Replace.
     expect(screen.queryByRole("heading", { name: "Room services" })).toBeNull();
     expect(await screen.findByText("Not set up")).toBeTruthy();
     expect(screen.getAllByText("service")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Set up" })).toBeTruthy();
-    expect(await screen.findByText("Set by deployment")).toBeTruthy();
-    expect(screen.getByText("from deployment config")).toBeTruthy();
+    // A value the deployment config carries reads Connected like any other row, with the
+    // provenance as a note and Replace to move it into the room (#337).
+    expect((await screen.findAllByText("Connected")).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("set in the deployment config").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
     expect(await screen.findByText(/Nothing connected yet/)).toBeTruthy();
     await fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
