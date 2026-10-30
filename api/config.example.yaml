@@ -155,6 +155,12 @@ db_url: sqlite:///kobo.db
 # Slack apps from a manifest. Optional: when unset, Slack connect features
 # 503 with "Slack is not configured" rather than failing to start. NEVER put
 # real token values in this (or any tracked) file.
+#
+# A deployed room no longer needs this or slack_tokens_secret below: a room
+# operator can paste the pair (and the GitHub app for pull requests, the
+# pr_app_* keys) under Admin > Integrations > Room services, and the room
+# keeps them in its own Secrets (see room_namespace below). These keys stay
+# as the fallback and show there as "Set by deployment".
 slack_tokens_path: null
 
 # The same pair, kept in a Kubernetes Secret instead of a file, as
@@ -163,6 +169,13 @@ slack_tokens_path: null
 # ReadWriteOnce volume is what holds the room to a single pod, and rotation
 # rewrites it. Both set means the Secret wins, with a warning in the logs.
 # slack_tokens_secret: kobo/kobo-slack-tokens
+
+# The namespace this room runs in, where it keeps the values pasted under
+# Admin > Integrations > Room services (Secrets kobo-room-slack and
+# kobo-room-github-app). Unset, the room reads its own namespace from the
+# service-account mount a pod carries; a local room has neither and the
+# section says it has nowhere to store.
+# room_namespace: kobo
 
 # The secrets platform this room writes an agent's own secrets through: its
 # base URL, the OIDC audience this room's workload identity mints an ID

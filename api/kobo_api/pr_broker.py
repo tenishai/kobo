@@ -135,12 +135,17 @@ def mint_scoped_token(
     *,
     app_id: str,
     installation_id: str,
-    private_key_path: Path,
+    private_key_path: Path | None = None,
     repositories: list[str],
     http_client: httpx.Client | None = None,
     now=time.time,
+    private_key: str | None = None,
 ) -> dict:
     """Mint one installation access token pinned to `repositories`.
+
+    The App's private key arrives either as `private_key_path` (the
+    deployment-config file) or as `private_key`, the PEM text itself (the
+    room-held copy, kobo_api.room_services); one of the two is required.
 
     `repositories` entries arrive as "owner/name" (RepoAccess's own shape);
     GitHub's mint API wants bare repo names -- the owner is implied by the
@@ -151,6 +156,10 @@ def mint_scoped_token(
     """
     if not repositories:
         raise ClientError("refusing to mint a token scoped to nothing")
+    if private_key is None:
+        if private_key_path is None:
+            raise ClientError("no private key to mint with")
+        private_key = private_key_path.read_text()
 
     epoch = int(now())
     app_jwt = pyjwt.encode(
@@ -159,7 +168,7 @@ def mint_scoped_token(
             "exp": epoch + _JWT_LIFETIME_S,
             "iss": app_id,
         },
-        private_key_path.read_text(),
+        private_key,
         algorithm="RS256",
     )
 

@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-platform-clients
 updated: 2026-10-29
-anchor: api/kobo_api/clients.py sha=a490bc9006f6269b34a1d868f181d850f7419190
-anchor: api/tests/fakes.py sha=b682346d7d42fe8d7417647022335a4694f0a643
+anchor: api/kobo_api/clients.py sha=5f913791d971ea16a42617c0eba962aff097c634
+anchor: api/tests/fakes.py sha=5a0e9e1f835d769e3f4397cb6335191a186cbfc4
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
@@ -14,7 +14,7 @@ WHAT / SEAM: api/kobo_api/clients.py. The outside systems in the table below are
 | cloud | `CloudClient` | `GcloudClient` (GSA, WI binding, groups, bucket IAM) | `FakeCloud` |
 | agent | `AgentClient` | `KubectlAgentClient` (port-forward a2a, legacy direct path) | `FakeAgent` |
 | kubectl | `KubectlClient` | `KubectlCLI` (rollout, secrets, ExternalSecret status, `deployment_status_json`/`pods_json` for health.py) | `FakeKubectl` (set `.pods` for pod fixtures) |
-| slack | `SlackClient` + `SlackTokenStore` | `HttpxSlackClient`; `FileSlackTokenStore` / `KubeSlackTokenStore` | `FakeSlack` |
+| slack | `SlackClient` + `SlackTokenStore` | `HttpxSlackClient`; `FileSlackTokenStore` / `KubeSlackTokenStore`, layered under `room_services.LayeredSlackTokenStore` when the room has a namespace of its own | `FakeSlack` |
 | image / name | `ImageClient` / `NameClient` | `VertexImageClient` / `VertexNameClient` | `FakeImage` / `FakeName` |
 | storage | `StorageClient` | `HttpxStorageClient` (GCS JSON API), or `DirectoryStorageClient` (`<storage_root>/<bucket>/<key>`, sidecar `<key>.meta.json`, containment-checked; `storage_backend: directory`, #208) | `FakeStorage` |
 | cabal | (concrete) `CabalClient` | same | `FakeCabal` — see switchboard.md |
@@ -22,7 +22,7 @@ WHAT / SEAM: api/kobo_api/clients.py. The outside systems in the table below are
 | sero | `SeroClient` (sero.py) | `HttpxSeroClient` | `FakeSero` |
 OPS / FLOW: `Clients.real(config)` is called once per process in `main.build_default_app`; tests build `Clients(...)` from fakes and pass it to `create_app`. `CommandRunner.run()` raises `ClientError` on non-zero exit; callers that tolerate one failure catch it and inspect `.stderr` (e.g. `_gh_returned_404`). GitHub auth: a GitHub App installation token (`installation_token_provider`, github_app.py) passed as `GH_TOKEN` in the subprocess env when the App is configured, else the ambient `gh auth` session. Vertex/GCS tokens come from `CachedGcloudToken` (metadata server, then `gcloud` CLI fallback).
 INVARIANTS:
-- slack, cabal, groups, people_search and sero are None when unconfigured, and None means "feature off". Check for None; never construct a client ad hoc in a route. `image`, `name` and `storage` are always built by `Clients.real`; their None default exists only so older test constructions of `Clients(...)` keep working.
+- slack, cabal, groups, people_search and sero are None when unconfigured, and None means "feature off". Check for None; never construct a client ad hoc in a route. Slack is the one exception since issue #284: with `room_services` set, `slack` is always built and whether the room can call Slack is the store's answer at request time, so gates ask `room_services.slack_configured(clients)` rather than `clients.slack is None`. `image`, `name` and `storage` are always built by `Clients.real`; their None default exists only so older test constructions of `Clients(...)` keep working.
 - Never put a token or secret value in a raised message or log. WHY: raised messages can reach route responses. `CabalClient` and `HttpxStorageClient` go further and keep response bodies out of raised messages (logged truncated, `resp.text[:200]`); `HttpxGojiraClient` does NOT (its `ClientError` includes `resp.text`), so don't copy it for a client whose responses may echo secrets.
 - A new external call gets a Protocol method + a fake method in tests/fakes.py in the same change; the fakes mirror P0-observed backend behavior (e.g. gojira's generated kustomization) so step tests mean something.
 - `GojiraConflict` (409 on create) is distinct from `ClientError` so onboard can decide whether the app is its own.
@@ -38,3 +38,5 @@ API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provid
 - `Clients.bab` (object | None): the room's permission service, `kobo_api.bab.BabClient` (Protocol) / `HttpxBabClient` / `tests.fakes.FakeBab`; built in `main.build_default_app` by `build_bab(config)` from `bab_url` + env `KOBO_BAB_TOKEN`, like `liminal_admin`. Console token + `X-Bab-Actor` per call; `ClientError` carries bab's `detail` sentence, never the token. The room pushes its topology (`push_topology`) at boot, after create and destroy, and from Review › Sync agents (2026-10-29). AWS organizations (kobo #275): `external_id_for_org(org)` is one HMAC-derived external id per organization, and `discover_accounts(org, actor, role_name)` asks bab which member accounts carry the spoke role; `admin_integrations.register_accounts` connects those (a row here, an account under the org in bab) at hub connect time and from `POST /api/admin/integrations/{org}/accounts/check`. The fake's `reachable_accounts` says which accounts answer.
 - `CabalClient.list_agents` (2026-10-29, issue #274): `GET /admin/agents`, the switchboard's whole bulletin board with `status`, `kind` and `endpoint`; read by `directory.sweep_directory`. `FakeCabal(agents_result=[...], agents_error=...)` seeds it and counts calls in `list_agents_calls`.
 - `KubectlClient.deployment_exists(namespace, deploy)` (2026-10-29, issue #274): True/False, or `ClientError` when the cluster cannot be asked (`--ignore-not-found -o name`, the `namespace_created_at` idiom), unlike `deployment_status_json` whose failure folds absent and unreachable together. `FakeKubectl(deployments={(ns, name)}, deployment_exists_error=...)` seeds it.
+- `KubectlClient.delete_secret(namespace, name)` (2026-10-29, issue #284): the remove half of `apply_secret`, `--ignore-not-found`, for the room's own Secrets. `FakeKubectl.secrets_deleted` records it and the entry leaves `.secrets`.
+- `Clients.room_services` (object | None, 2026-10-29, issue #284): `kobo_api.room_services.RoomServices`, the room's own credentials store (Slack config-token pair, GitHub app for pull requests) as one Secret per service in `room_namespace` (or the pod's own); None when the room has neither. Built in `Clients.real` by `build_room_services`, which also layers `RoomSlackTokenStore` over the deployment Slack store. The secrets platform (sero) is NOT used for these: it has no read-back lane and the room needs the values back.

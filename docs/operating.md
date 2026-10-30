@@ -99,6 +99,14 @@ retried, rather than quietly writing the Secret a second way and leaving two sou
 The room's own Slack app-config token pair (`slack_tokens_secret` above) is unaffected and
 stays where it is.
 
+**Room services** (Admin > Integrations): a room operator can paste the Slack config-token
+pair and the GitHub app for pull requests (`pr_app_*`) into the room instead of its config
+file. The room keeps each in a Secret of its own (`kobo-room-slack`, `kobo-room-github-app`)
+in its namespace (`room_namespace`, or the pod's own), reads them live and rotates the Slack
+pair in place; the config keys remain as the fallback and show as "Set by deployment". The
+secrets platform is not used for these: it has no read-back lane, and the room needs the
+values back.
+
 What also changes is the timing, which matters on a re-wire. Delivery through the platform is
 eventually consistent: the value is stored immediately, but the agent's namespace only carries
 it once the platform re-reads the path. The room asks for a refresh interval of a minute rather

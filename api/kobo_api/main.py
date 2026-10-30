@@ -30,6 +30,7 @@ from kobo_api import admin_connections as admin_connections_flow
 from kobo_api import admin_integrations as admin_integrations_flow
 from kobo_api import admin_roles as admin_roles_catalogue
 from kobo_api import admin_store
+from kobo_api import room_services as room_services_store
 from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
     MANAGED_PURPOSES,
@@ -732,6 +733,20 @@ class AdminRoleBody(BaseModel):
     admin: list[str] = Field(default_factory=list)
     connectors: list[AdminRoleConnector] = Field(default_factory=list)
     models: list[str] = Field(default_factory=list)
+
+
+class RoomServiceValues(BaseModel):
+    """The fields for one room service (issue #284): the Slack pair, or
+    the GitHub app's three. Which are required is the service's business
+    (kobo_api.room_services.validate); the values are stored, never echoed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    config_token: str = Field(default="", max_length=4000)
+    refresh_token: str = Field(default="", max_length=4000)
+    app_id: str = Field(default="", max_length=64)
+    installation_id: str = Field(default="", max_length=64)
+    private_key: str = Field(default="", max_length=20000)
 
 
 class AdminConnectIntegration(BaseModel):
@@ -4122,6 +4137,103 @@ def create_app(
         session.commit()
         return JSONResponse(outcome)
 
+    # --- Room services (issue #284): the room's own Slack pair and GitHub app ---
+
+    def _room_services():
+        clients = app.state.clients
+        return getattr(clients, "room_services", None) if clients is not None else None
+
+    def _room_service_status(service: str) -> dict:
+        services = _room_services()
+        if services is not None:
+            return services.status(service).to_dict()
+        return room_services_store.deployment_status(app.state.config, service).to_dict()
+
+    def _room_services_body() -> dict:
+        services = _room_services()
+        return {
+            "can_store": services is not None,
+            "note": None if services is not None else room_services_store.NOWHERE_TO_STORE,
+            "services": {service: _room_service_status(service) for service in room_services_store.SERVICES},
+        }
+
+    @app.get("/api/admin/room-services")
+    def admin_room_services(request: Request) -> JSONResponse:
+        """Status for both room services: configured, from where, when and
+        by whom. Never a value."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        return JSONResponse(_room_services_body())
+
+    @app.put("/api/admin/room-services/{service}")
+    def admin_put_room_service(
+        service: str, payload: RoomServiceValues, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Set up or replace one service with the pasted values: stored in
+        the room's own Secret, audited without the values, live at once."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        if service not in room_services_store.SERVICES:
+            return JSONResponse({"error": f"no room service called {service!r}"}, status_code=404)
+        services = _room_services()
+        if services is None:
+            return JSONResponse({"error": room_services_store.NOWHERE_TO_STORE}, status_code=409)
+        try:
+            values = room_services_store.validate(service, payload.model_dump())
+        except room_services_store.RoomServiceRefused as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        actor = getattr(request.state, "iap_email", None) or "operator"
+        before = services.status(service).to_dict()
+        try:
+            after = services.put(service, values, actor=actor).to_dict()
+        except ClientError as exc:
+            log.warning("room service %s could not be stored: %s", service, exc)
+            return JSONResponse(
+                {"error": "The room could not store the values in its own secret store. Check the room's logs."},
+                status_code=502,
+            )
+        admin_store.record(
+            session, actor=actor, action="room_service.set", object_type="room_service", object_id=service,
+            before=before, after=after, landed=admin_store.LANDED_APPLIED,
+        )
+        session.commit()
+        return JSONResponse(_room_services_body())
+
+    @app.delete("/api/admin/room-services/{service}")
+    def admin_delete_room_service(
+        service: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Take back the room-held values; the deployment config, if any,
+        is what the room uses afterwards."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        if service not in room_services_store.SERVICES:
+            return JSONResponse({"error": f"no room service called {service!r}"}, status_code=404)
+        services = _room_services()
+        if services is None:
+            return JSONResponse({"error": room_services_store.NOWHERE_TO_STORE}, status_code=409)
+        before = services.status(service).to_dict()
+        if before["source"] != "room":
+            return JSONResponse({"error": f"the room holds no values of its own for {service}"}, status_code=404)
+        actor = getattr(request.state, "iap_email", None) or "operator"
+        try:
+            services.delete(service)
+        except ClientError as exc:
+            log.warning("room service %s could not be removed: %s", service, exc)
+            return JSONResponse(
+                {"error": "The room could not remove the values from its own secret store. Check the room's logs."},
+                status_code=502,
+            )
+        admin_store.record(
+            session, actor=actor, action="room_service.remove", object_type="room_service", object_id=service,
+            before=before, after=services.status(service).to_dict(), landed=admin_store.LANDED_APPLIED,
+        )
+        session.commit()
+        return JSONResponse(_room_services_body())
+
     @app.get("/api/admin/mcp/revocations")
     def admin_mcp_revocations(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
         """Who has been cut off from the room's MCP server (issue #197), newest first."""
@@ -6118,7 +6230,7 @@ def create_app(
             "channels": channels,
             "state": derive_state(channels, wired=agent.slack_wired),
             "wake": effective_wake(agent),
-            "available": slack_clients is not None and slack_clients.slack is not None,
+            "available": room_services_store.slack_configured(slack_clients),
         }
 
         return JSONResponse(
@@ -6469,12 +6581,24 @@ def create_app(
         agent = session.query(Agent).filter(Agent.name == name).one_or_none()
         return agent.pass_minted_at if agent is not None else None
 
-    def _pr_broker_off(config: Config) -> JSONResponse | None:
-        """None when all three pr_app_* config values are set; the 503 body
-        otherwise -- the same absent-equals-off convention as cabal_url,
-        answered before any gate so an unconfigured room never leaks
-        whether a given agent or repo exists on these routes."""
-        if config.pr_app_id and config.pr_app_installation_id and config.pr_app_private_key_path:
+    def _github_app() -> room_services_store.GitHubAppCredentials | None:
+        """The GitHub app the pull request broker mints with: the one a room
+        operator pasted under Admin > Integrations > Room services first,
+        else the three pr_app_* config values (kobo_api.room_services,
+        issue #284). Resolved per request, so a paste needs no restart."""
+        clients = app.state.clients
+        services = getattr(clients, "room_services", None) if clients is not None else None
+        if services is not None:
+            return services.github_app()
+        return room_services_store.github_app_from_config(app.state.config)
+
+    def _pr_broker_off() -> JSONResponse | None:
+        """None when the room has a GitHub app for pull requests from either
+        source; the 503 body otherwise -- the same absent-equals-off
+        convention as cabal_url, answered before any gate so an unconfigured
+        room never leaks whether a given agent or repo exists on these
+        routes."""
+        if _github_app() is not None:
             return None
         return JSONResponse(
             {"error": "the PR broker is not configured on this room"}, status_code=503
@@ -6487,7 +6611,7 @@ def create_app(
         request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        off = _pr_broker_off(app.state.config)
+        off = _pr_broker_off()
         if off is not None:
             return off
         agent = _visible_agent_or_404(session, request, name)
@@ -6544,7 +6668,7 @@ def create_app(
         status: str | None = None,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        off = _pr_broker_off(app.state.config)
+        off = _pr_broker_off()
         if off is not None:
             return off
         query = session.query(RepoAccess)
@@ -6584,7 +6708,7 @@ def create_app(
     ) -> JSONResponse:
         """The BATCH gate (2026-08-27 ruling 1): the operator set decides
         many rows in one call -- approve and revoke both land here."""
-        off = _pr_broker_off(app.state.config)
+        off = _pr_broker_off()
         if off is not None:
             return off
         gate = _repo_access_operator_block(request, app.state.config)
@@ -6632,7 +6756,7 @@ def create_app(
         were made) leaks nothing, where "no such agent" sent a responder
         hunting a mapping fault that wasn't there (issue #11)."""
         config: Config = app.state.config
-        off = _pr_broker_off(config)
+        off = _pr_broker_off()
         if off is not None:
             return off
         if not config.cabal_url:
@@ -6670,10 +6794,15 @@ def create_app(
             )
 
         try:
+            creds = _github_app()
+            if creds is None:
+                return JSONResponse(
+                    {"error": "the PR broker is not configured on this room"}, status_code=503
+                )
             minted = mint_scoped_token(
-                app_id=config.pr_app_id,
-                installation_id=config.pr_app_installation_id,
-                private_key_path=config.pr_app_private_key_path,
+                app_id=creds.app_id,
+                installation_id=creds.installation_id,
+                private_key=creds.pem(),
                 repositories=[r.repository for r in approved],
             )
         except ClientError:
@@ -8471,7 +8600,7 @@ def create_app(
             return gate
 
         clients = app.state.clients
-        if clients.slack is None:
+        if not room_services_store.slack_configured(clients):
             return JSONResponse({"error": "Slack is not configured"}, status_code=503)
 
         # Two-lane Slack (2026-08-17): the channel list is whatever's

@@ -46,6 +46,14 @@ describe("AdminPanel", () => {
     live: true,
     gateway_repo: true,
   };
+  const ROOM_SERVICES = {
+    can_store: true,
+    note: null,
+    services: {
+      slack: { configured: false, source: "none", updated_at: null, updated_by: null },
+      github: { configured: true, source: "deployment", updated_at: null, updated_by: null },
+    },
+  };
   const PEOPLE = {
     admin_groups: ["platform-admins"],
     operators: ["kyle@example.com"],
@@ -107,6 +115,8 @@ describe("AdminPanel", () => {
     stubFetch({
       "/api/whoami": ADMIN_WHOAMI,
       "/api/admin/addons": ADDONS,
+      // Listed before "/api/admin/room": the stub matches by substring, first wins.
+      "/api/admin/room-services": ROOM_SERVICES,
       "/api/admin/room": { org_repo: "example/kobo-config", runtime_image: "registry/daedalus-runtime@sha256:789b43aa", cluster: "agents-dev", delivery_backend: "deployed" },
       // Listed before the integrations list: the stub matches by substring, first wins.
       "/api/admin/integrations/aws/setup": AWS_SETUP,
@@ -173,6 +183,10 @@ describe("AdminPanel", () => {
     navigate({ page: "admin", pane: "integrations" });
     renderWithClient(AdminPanel);
     expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
+    // Room services sit above the vendors: each row's chip is the room's own status (#284).
+    expect(await screen.findByRole("heading", { name: "Room services" })).toBeTruthy();
+    expect(await screen.findByText("Not set up")).toBeTruthy();
+    expect(await screen.findByText("Set by deployment")).toBeTruthy();
     expect(await screen.findByText(/Nothing connected yet/)).toBeTruthy();
     await fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
     expect(await screen.findByRole("heading", { name: "Add an integration" })).toBeTruthy();

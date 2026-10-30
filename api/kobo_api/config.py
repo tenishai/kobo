@@ -380,6 +380,17 @@ class Config(BaseModel):
     # slack_tokens_path above and deliberately absent from org.py's ORG_KEYS:
     # it names an object in THIS cluster, not anything the org hands out.
     slack_tokens_secret: str = ""
+    # The Kubernetes namespace this room runs in: where it keeps the values
+    # an operator pastes under Admin > Integrations > Room services (issue
+    # #284), the Slack config-token pair and the GitHub app for pull
+    # requests, one Secret per service (`kobo-room-slack`,
+    # `kobo-room-github-app`) read and written through the same kubectl
+    # calls slack_tokens_secret uses. Empty (the default) means the room
+    # reads its own namespace from the service-account mount a pod carries;
+    # a room with neither has nowhere to hold those values, and the section
+    # says so. Deployment-local like slack_tokens_secret above and
+    # deliberately absent from org.py's ORG_KEYS. See kobo_api.room_services.
+    room_namespace: str = ""
     # The secrets platform's machine lane (2026-09-22): the service's base
     # URL, the OIDC audience this room's own workload identity mints an ID
     # token for (the lane's only accepted credential), and the team

@@ -2196,6 +2196,14 @@ class KubectlClient(Protocol):
         """
         ...
 
+    def delete_secret(self, namespace: str, name: str) -> None:
+        """Remove the Secret `name` from `namespace`; an absent Secret is
+        already done (`--ignore-not-found`). The remove half of
+        `apply_secret`, for the room's own Secrets (kobo_api.room_services,
+        issue #284): a room operator taking back a pasted credential.
+        Raises `ClientError` naming only `namespace`/`name`."""
+        ...
+
     def deployment_status_json(self, namespace: str, deploy: str) -> dict:
         """The live Deployment's full status as a decoded JSON dict
         (`kubectl get deploy ... -o json`).
@@ -2509,6 +2517,20 @@ class KubectlCLI:
                 returncode=exc.returncode, stdout=exc.stdout, stderr=exc.stderr,
             ) from None
 
+    def delete_secret(self, namespace: str, name: str) -> None:
+        try:
+            self._runner.run(
+                [self._kubectl, "-n", namespace, "delete", "secret", name, "--ignore-not-found"]
+            )
+        except ClientError as exc:
+            # No value travels on this command, but the same unchained
+            # rewrap as the other Secret calls keeps the message to the
+            # object's name.
+            raise ClientError(
+                f"kubectl delete secret {namespace}/{name} failed: {exc.stderr}",
+                returncode=exc.returncode,
+            ) from None
+
 
 # --- Slack (Web API: manifest app creation + config-token rotation) -----------
 
@@ -2785,11 +2807,13 @@ def slack_token_store(config: Config, kubectl: KubectlClient) -> SlackTokenStore
     """The store `Clients.real` hands `HttpxSlackClient`, or None when
     Slack connect isn't configured at all.
 
-    This is the ONE place "is Slack wired" is decided: returning None here
-    is what leaves `Clients.slack` None, and every other call site in the
-    room (the connect route's 503, the destroy step) branches on that field
-    rather than re-deriving the question from config — so neither store can
-    be added or removed without every gate following automatically.
+    This is where the DEPLOYMENT half of "is Slack wired" is decided.
+    `Clients.real` layers the room-held pair (kobo_api.room_services, issue
+    #284) over whatever this returns, so a room with a namespace to keep
+    its own Secrets in gets a `Clients.slack` even when this is None; the
+    gates (the connect route's 503, the agent detail's `available`) ask
+    `room_services.slack_configured(clients)`, which asks the store, rather
+    than re-deriving the question from config.
 
     The Secret wins when both are set: a room that names a Secret is a
     deployed room, and silently rotating into a mounted file there would
@@ -5256,6 +5280,12 @@ class Clients:
     # off for the room; built in main.build_default_app from `bab_url` and
     # the KOBO_BAB_TOKEN environment variable.
     bab: object | None = None
+    # The room's own credentials store (kobo_api.room_services.RoomServices,
+    # issue #284), typed loosely for the same import-direction reason as
+    # liminal_admin above. None = the room has no namespace to keep its own
+    # Secrets in, so Room services under Admin > Integrations says so and
+    # Slack/the pull request broker come from deployment config alone.
+    room_services: object | None = None
 
     @classmethod
     def real(cls, config: Config) -> Clients:
@@ -5263,6 +5293,11 @@ class Clients:
         # Local import for the same circularity reason as
         # `installation_token_provider`'s: kobo_api.sero imports
         # ClientError from this module.
+        from kobo_api.room_services import (
+            LayeredSlackTokenStore,
+            RoomSlackTokenStore,
+            build_room_services,
+        )
         from kobo_api.sero import HttpxSeroClient
 
         runner = CommandRunner()
@@ -5280,7 +5315,14 @@ class Clients:
         # through this same client (one binary, one runner) rather than a
         # second one built just for that.
         kubectl = KubectlCLI(runner=runner)
-        slack_store = slack_token_store(config, kubectl)
+        slack_store: SlackTokenStore | None = slack_token_store(config, kubectl)
+        # The room-held Slack pair layers over the deployment one (issue
+        # #284): with a namespace of its own the room always gets a Slack
+        # client, and whether it can call Slack is the store's answer at
+        # request time (`room_services.slack_configured`).
+        room_services = build_room_services(config, kubectl)
+        if room_services is not None:
+            slack_store = LayeredSlackTokenStore(RoomSlackTokenStore(room_services), slack_store)
         return cls(
             github=GhCLI(
                 runner=runner,
@@ -5347,4 +5389,5 @@ class Clients:
             )
             if config.sero_enabled
             else None,
+            room_services=room_services,
         )
