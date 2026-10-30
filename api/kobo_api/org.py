@@ -53,7 +53,6 @@ ORG_KEYS = frozenset(
         "broker_url",
         "liminal_url",
         "bab_url",
-        "cloud_accounts",
         "noto_url",
         "noto_project",
         "reader_groups",
@@ -94,7 +93,7 @@ ORG_KEYS = frozenset(
 # Disjoint from ORG_KEYS by construction — a key is live or retired, never
 # both. `_disclose_retired` says so once per boot rather than letting the
 # key look honored.
-RETIRED_ORG_KEYS = frozenset({"runtimes"})
+RETIRED_ORG_KEYS = frozenset({"runtimes", "cloud_accounts"})
 
 # Keys that changed name and still mean the same thing: an org.yaml written
 # before the rename keeps working, with one WARNING per old key so the file
@@ -110,6 +109,7 @@ RENAMED_ORG_KEYS = {
 # learns what replaced it rather than only that the key did nothing.
 _RETIRED_REASONS = {
     "runtimes": "every agent builds on runtime_image",
+    "cloud_accounts": "accounts are connected under Admin > Integrations and the picker offers only those",
 }
 
 
