@@ -107,6 +107,7 @@ def apply_agent_lanes(session: Session, clients: Clients | None, config: Config,
                 title=f"kobo: {agent_name}'s lanes",
                 body=f"Opened by the room's admin panel for {actor}. Sets {agent_name}'s grant: scopes {scopes or 'none'}, handlers {handlers or 'none'}.",
                 edit=lambda workdir: _edit_grants(workdir, agent_name, scopes, handlers),
+                files=frozenset({GRANTS_FILE}),
             )
             outcome["file"] = f"pull request open on the gateway: {pr}" if pr else "grants file already carries these lanes"
         except (ClientError, OSError) as exc:

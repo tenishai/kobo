@@ -32,7 +32,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api import admin_store
-from kobo_api.clients import ClientError, Clients
+from kobo_api.clients import COMMIT_AUTHOR_EMAIL, BranchComparison, ClientError, Clients
 from kobo_api.composer import BundleSpec, compose
 from kobo_api.config import SHARED_GROUP, Config, GroupChoice, MCPConfig
 from kobo_api.connect_scan import REPO_NOT_IN_ORG, scan_repo
@@ -5815,7 +5815,8 @@ def test_datadog_through_the_permission_service_adds_its_mcp_server_to_the_gatew
     agent's calls carry its own leased key; disconnecting opens the one that removes it, sub-tables
     and all (kobo#327)."""
     bab = FakeBab(integrations=[])
-    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True,
+                        comparisons={"kobo/integration-datadog": BranchComparison(found=True, files=("targets.toml",), authors=(COMMIT_AUTHOR_EMAIL,))})
     client, headers = _access_client(tmp_path, fake_storage, github=github, bab=bab)
     body = {"vendor": "datadog", "name": "Datadog", "base_access": "read", "auth": "datadog_service_account",
             "identity": {"service_account_id": "11111111-2222-3333-4444-555555555555", "site": "us3.datadoghq.com"},
@@ -5839,15 +5840,42 @@ def test_datadog_through_the_permission_service_adds_its_mcp_server_to_the_gatew
     hand = ('[[target]]\nname = "other"\naddress = "https://o"\n\n# Datadog, by hand (two\n# comment lines).\n[[target]]\n'
             'name = "datadog-mcp"\naddress = "https://old"\n[target.credential_headers]\nDD_API_KEY = "DD_API_KEY"\n')
     assert _without_stanza(hand, "datadog-mcp") == '[[target]]\nname = "other"\naddress = "https://o"\n'
-    # The add pull request merges; the disconnect opens the one that removes the target whole.
+    # The add pull request merges; the disconnect opens the one that removes the target whole,
+    # on its own branch.
     github.close_pr(GATEWAY_REPO, row["spec"]["pull_request"], "merged")
     out = client.delete(f"/api/admin/integrations/{row['id']}", headers=headers).json()
     assert out["gateway"].startswith("pull request open") and out["secret"] == "removed"
+    assert github.open_pr_calls[-1]["branch"] == "kobo/integration-datadog-remove"
     targets = github.pushed_file("targets.toml")
     assert "datadog-mcp" not in targets and "[target.credential_headers]" not in targets
+    # Adding again while that removal is still open closes it first: the row never links to a
+    # pull request that would take its target away (seen live on dev, 2026-10-30).
+    removal = out["gateway"].split(": ", 1)[1]
+    row = client.post("/api/admin/integrations", json=body, headers=headers).json()
+    assert any(url == removal for _repo, url, _why in github.close_pr_calls), github.close_pr_calls
+    assert row["spec"]["pull_request"] != removal and github.open_pr_calls[-1]["branch"] == "kobo/integration-datadog"
+    client.delete(f"/api/admin/integrations/{row['id']}", headers=headers)
     # A pasted address is kept without the `/mcp` the gateway adds itself.
     row = client.post("/api/admin/integrations", json={**body, "address": "https://mcp.us5.datadoghq.com/v1/mcp"}, headers=headers).json()
     assert row["spec"]["address"] == "https://mcp.us5.datadoghq.com/v1"
+
+
+def test_a_target_the_gateway_already_carries_connects_without_a_pull_request(tmp_path, fake_storage):
+    """Gate (integrity): when the gateway's targets.toml already holds the room's stanza, the
+    connect has nothing to change there; the row is Connected and says so, not "add by hand"."""
+    from kobo_api.admin_integrations import datadog_target_stanza
+    from kobo_api.models import AdminIntegration
+    row = AdminIntegration(id="datadog", vendor="datadog", name="Datadog", base_access="read", created_by="ops@example.com",
+                           spec={"auth": "datadog_service_account", "address": "https://mcp.us3.datadoghq.com/v1"})
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, track_pushed_content=True,
+                        extra_clone_files={"registry.toml": REGISTRY, "targets.toml": "config_version = 1\n" + datadog_target_stanza(row)})
+    client, headers = _access_client(tmp_path, fake_storage, github=github, bab=FakeBab(integrations=[]))
+    body = {"vendor": "datadog", "name": "Datadog", "base_access": "read", "auth": "datadog_service_account",
+            "identity": {"service_account_id": "11111111-2222-3333-4444-555555555555", "site": "us3.datadoghq.com"},
+            "secrets": {"API_KEY": "dd-api", "MGMT_APP_KEY": "dd-mgmt"}}
+    out = client.post("/api/admin/integrations", json=body, headers=headers).json()
+    assert out["state"] == "applied" and "already carries the datadog-mcp target" in out["state_detail"], out
+    assert not github.open_pr_calls and "pull_request" not in out["spec"]
 
 
 def test_removing_an_integration_twice_is_not_a_refusal(tmp_path, fake_storage):

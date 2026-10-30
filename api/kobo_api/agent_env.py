@@ -847,7 +847,7 @@ def _propose(
     return RepoEdit(how=PULL_REQUEST, pull_request=url)
 
 
-def require_our_branch(github: GitHubClient, repo: str, branch: str) -> None:
+def require_our_branch(github: GitHubClient, repo: str, branch: str, files: frozenset[str] = frozenset({GOJIRA_YAML})) -> None:
     """Raise unless `branch` is one the room made, and only the room.
 
     The room deletes this branch, and a name is not ownership: a team that
@@ -856,8 +856,9 @@ def require_our_branch(github: GitHubClient, repo: str, branch: str) -> None:
     has to prove itself against the default branch, on two counts, and
     both have to hold:
 
-    - it touches `gojira.yaml` and nothing else, because that is the only
-      file either of the room's two edits writes; and
+    - it touches `files` and nothing else (`gojira.yaml` by default, the
+      only file either of the room's two agent-repo edits writes; a gateway
+      config edit names its own file); and
     - every commit on it is authored by the room's own commit identity,
       because a person's commit on this branch means a person has been
       working here.
@@ -871,7 +872,7 @@ def require_our_branch(github: GitHubClient, repo: str, branch: str) -> None:
     comparison = github.compare(repo, DEFAULT_BRANCH_REF, branch)
     if not comparison.found:
         raise RepoBusy(branch_not_ours(branch))
-    if set(comparison.files) - {GOJIRA_YAML}:
+    if set(comparison.files) - set(files):
         raise RepoBusy(branch_not_ours(branch))
     if any(author.lower() != COMMIT_AUTHOR_EMAIL.lower() for author in comparison.authors):
         raise RepoBusy(branch_not_ours(branch))

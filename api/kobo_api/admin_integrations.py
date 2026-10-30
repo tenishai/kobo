@@ -60,6 +60,9 @@ TARGETS_FILE = "targets.toml"
 REGISTRY_FILE = "registry.toml"
 AWS_ROLES_TABLE = "aws.roles"
 BRANCH_PREFIX = "kobo/integration-"
+# An add and a removal of the same target are different pull requests on different
+# branches; opening one closes the other if it is still open.
+REMOVE_SUFFIX = "-remove"
 SECRET_KEY = "TOKEN"
 
 # How the gateway reaches a vendor (Kyle, 2026-10-25: AWS is a role, not a
@@ -288,13 +291,25 @@ def gateway_target_name(row: AdminIntegration) -> str:
     return mcp_target_name(row.id) if (row.spec or {}).get("auth") == DATADOG_AUTH else row.id
 
 
-def _gateway_branch_pr(github: GitHubClient, config: Config, *, branch: str, title: str, body: str, edit) -> str | None:
+def _gateway_branch_pr(
+    github: GitHubClient, config: Config, *, branch: str, title: str, body: str, edit,
+    files: frozenset[str] = frozenset({TARGETS_FILE, REGISTRY_FILE}), supersedes: str | None = None,
+) -> str | None:
     """Clone the gateway repo, let `edit(workdir) -> bool` change it, and
     open (or find) the pull request on `branch`. None when no repository is
-    configured or the edit changed nothing."""
+    configured or the edit changed nothing (`gateway_repo_set` tells the two
+    apart for the sentence). `supersedes` names the branch of the opposite
+    intent (an add's removal, a removal's add): a pull request still open
+    there is closed first, so the row never links to one that would undo it.
+    `files` are the only paths the room's edit writes, for the ownership
+    check before a stale branch is deleted."""
     repo = config.gateway_config_repo
     if not repo:
         return None
+    if supersedes:
+        stale = github.find_pr(repo, branch=supersedes)
+        if stale is not None:
+            github.close_pr(repo, stale, f"Superseded by the room's later change on `{branch}`.")
     existing = github.find_pr(repo, branch=branch)
     if existing is not None:
         return existing
@@ -304,7 +319,7 @@ def _gateway_branch_pr(github: GitHubClient, config: Config, *, branch: str, tit
         if not edit(workdir):
             return None
         if github.branch_exists(repo, branch):
-            require_our_branch(github, repo, branch)
+            require_our_branch(github, repo, branch, files)
             github.delete_branch(repo, branch)
         # open_pr alone: it checks the branch out, commits the edit and pushes THAT
         # branch. `commit_push` would commit and push the checked-out default branch
@@ -366,8 +381,10 @@ def _gateway_pr(
         )
     removed = f"Removes the `{row.id if aws else target_name}` {what}."
     body = f"Opened by the room\'s admin panel for {actor}.\n\n" + (removed if remove else added)
+    add_branch, remove_branch = f"{BRANCH_PREFIX}{row.id}", f"{BRANCH_PREFIX}{row.id}{REMOVE_SUFFIX}"
     return _gateway_branch_pr(
-        github, config, branch=f"{BRANCH_PREFIX}{row.id}", title=f"kobo: {verb} the {row.name} {what}", body=body, edit=edit
+        github, config, branch=remove_branch if remove else add_branch, supersedes=add_branch if remove else remove_branch,
+        title=f"kobo: {verb} the {row.name} {what}", body=body, edit=edit,
     )
 
 def probe_aws_role(clients: Clients | None, role_arn: str, audience: str) -> dict[str, str] | None:
@@ -482,6 +499,9 @@ def _connect_datadog(
                    "and the gateway rolls")
         row.spec = {**dict(row.spec or {}), "pull_request": pr}
         state = admin_store.STATE_PENDING
+    elif config.gateway_config_repo:
+        detail += f"; the gateway already carries the {mcp_target_name(row.id)} target"
+        state = admin_store.STATE_PENDING if waiting else admin_store.STATE_APPLIED
     else:
         detail += f"; no gateway config repository is set, so add the {mcp_target_name(row.id)} target by hand"
         state = admin_store.STATE_PENDING if waiting else admin_store.STATE_APPLIED
@@ -752,8 +772,13 @@ def connect(
     if pr:
         detail += f"; pull request open on the gateway: {pr}; serves after it merges and the gateway rolls"
         row.spec = {**dict(row.spec or {}), "pull_request": pr}
-    else:
-        detail += "; no gateway config repository is set, so add the target by hand"
+        admin_store.set_integration_state(session, row.id, state=admin_store.STATE_PENDING, detail=detail)
+        return row
+    if config.gateway_config_repo:
+        detail += "; the gateway already carries this target"
+        admin_store.set_integration_state(session, row.id, state=admin_store.STATE_APPLIED, detail=detail)
+        return row
+    detail += "; no gateway config repository is set, so add the target by hand"
     admin_store.set_integration_state(session, row.id, state=admin_store.STATE_PENDING, detail=detail)
     return row
 
