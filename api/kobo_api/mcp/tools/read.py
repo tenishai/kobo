@@ -49,6 +49,7 @@ from kobo_api.mcp.server import get_user_email
 from kobo_api.purpose_tags import decode_tags
 from kobo_api.search import read_marketplace_catalog
 from kobo_api.slack_state import decode_channels, derive_state
+from kobo_api.timefmt import rfc3339, rfc3339_str
 
 # The one error message both agent-scoped tools raise for "doesn't exist"
 # and "exists but you can't see it" alike -- see `kobo_api.mcp.authz.
@@ -243,7 +244,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                 ],
                 "first_reply": agent.first_reply,
                 "error": agent.error,
-                "created_at": agent.created_at.isoformat(),
+                "created_at": rfc3339(agent.created_at),
                 "slack": slack,
                 "destroy_visible": _operator_block(req, cfg) is None,
                 "has_avatar": agent.avatar_png is not None,
@@ -542,7 +543,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         held = _parse(secrets)
         return {
             "secrets": held.get("keys", []),
-            "secrets_updated_at": held.get("updated_at"),
+            "secrets_updated_at": rfc3339_str(held["updated_at"]) if held.get("updated_at") else None,
             "secrets_available": bool(held.get("platform")),
             "delivered_as": held.get("secret_name"),
             "env": _parse(env).get("env", {}),

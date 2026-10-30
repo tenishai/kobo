@@ -9,6 +9,7 @@
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { errorMessage, type AccessAccount, type AccessGrant, type AccessPermission, type AccessVendor, type AgentIdentity } from "../lib/api";
   import { agentAccessQuery, requestAgentAccessMutation, revokeAgentAccessMutation } from "../lib/queries";
+  import { serverDate } from "../lib/time";
   import { toast } from "../lib/toast.svelte";
 
   let { agentName, identity = null }: { agentName: string; identity?: AgentIdentity | null } = $props();
@@ -121,7 +122,7 @@
 
   function expires(g: AccessGrant): string {
     if (!g.expires_at) return "standing";
-    const ms = new Date(g.expires_at).getTime() - Date.now();
+    const ms = serverDate(g.expires_at).getTime() - Date.now();
     if (ms <= 0) return "expired";
     const days = Math.ceil(ms / 86_400_000);
     return days <= 1 ? "today" : `in ${days} days`;

@@ -2,10 +2,13 @@
   // What the agent did through the tool gateway: every call a lane admitted
   // and every refusal, newest first, read live from the gateway. A summary
   // first, then the rows grouped by day (the newest day open, older ones
-  // folded), an errors-only switch, and 25 rows at a time (#300).
+  // folded), an errors-only switch, and 25 rows at a time (#300). Rows are
+  // newest first whatever the gateway returned, and a row opens on click to
+  // show the whole call: its arguments wrapped, and what happened (#308).
   import { createQuery } from "@tanstack/svelte-query";
   import type { AgentActivityRow } from "../lib/api";
   import { activityQuery, agentLeasesQuery } from "../lib/queries";
+  import { when as whenIso } from "../lib/time";
 
   let { agentName }: { agentName: string } = $props();
 
@@ -17,15 +20,12 @@
   // the room has one: one row per lease, with the task the agent named.
   const leases = createQuery(() => (agentLeasesQuery(agentName, days)));
 
-  function whenIso(iso: string | null): string {
-    if (!iso) return "";
-    return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  }
-
   const all = $derived(activity.data?.rows ?? []);
   const handlers = $derived(Array.from(new Set(all.map((r) => r.handler).filter(Boolean))).sort());
   const rows = $derived(
-    all.filter((r) => (handler === "all" || r.handler === handler) && (!problemsOnly || r.outcome !== "ok")),
+    all
+      .filter((r) => (handler === "all" || r.handler === handler) && (!problemsOnly || r.outcome !== "ok"))
+      .sort((a, b) => (b.ts ?? -Infinity) - (a.ts ?? -Infinity)),
   );
   const denied = $derived(rows.filter((r) => r.outcome === "denied").length);
   const errors = $derived(rows.filter((r) => r.outcome === "error").length);
@@ -73,6 +73,14 @@
   }
   function visible(day: Day): AgentActivityRow[] {
     return day.rows.slice(0, shown[day.key] ?? PAGE);
+  }
+  // Rows opened to read the whole call, keyed by day and position.
+  let openRows = $state<Record<string, boolean>>({});
+  function rowKey(day: Day, i: number): string {
+    return `${day.key}/${i}`;
+  }
+  function toggleRow(key: string): void {
+    openRows = { ...openRows, [key]: !openRows[key] };
   }
 
   function when(ts: number | null): string {
@@ -140,16 +148,33 @@
               <thead><tr><th>When</th><th>Tool</th><th>Outcome</th><th class="num">ms</th><th>Arguments</th></tr></thead>
               <tbody>
                 {#each visible(day) as r, i (i)}
-                  <tr class:row--problem={r.outcome !== "ok"}>
-                    <td class="quiet nowrap">{when(r.ts)}</td>
+                  {@const key = rowKey(day, i)}
+                  {@const isOpenRow = !!openRows[key]}
+                  <!-- The first cell's button carries the keyboard and screen-reader
+                       path; the click on the rest of the row is the same toggle. -->
+                  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+                  <tr class="row" class:row--problem={r.outcome !== "ok"} class:row--open={isOpenRow} onclick={() => toggleRow(key)}>
+                    <td class="quiet nowrap">
+                      <button type="button" class="row__toggle" aria-expanded={isOpenRow} onclick={(e) => { e.stopPropagation(); toggleRow(key); }}>
+                        <span class="row__chev" aria-hidden="true">{isOpenRow ? "▾" : "▸"}</span>{when(r.ts)}
+                      </button>
+                    </td>
                     <td><span class="tool">{r.tool || r.handler}</span></td>
                     <td>
                       <span class="status status--{TONE[r.outcome] ?? "warn"}" title={r.detail}><span class="status__dot" aria-hidden="true"></span>{r.outcome}</span>
-                      {#if r.detail}<span class="quiet detail">{r.detail}</span>{/if}
+                      {#if r.detail && !isOpenRow}<span class="quiet detail">{r.detail}</span>{/if}
                     </td>
                     <td class="num quiet">{r.ms ?? ""}</td>
-                    <td><code class="args" title={r.args}>{r.args}</code></td>
+                    <td><code class="args" class:args--open={isOpenRow} title={isOpenRow ? "" : r.args}>{r.args}</code></td>
                   </tr>
+                  {#if isOpenRow}
+                    <tr class="row--details" class:row--problem={r.outcome !== "ok"}>
+                      <td colspan="5">
+                        <pre class="args-full">{r.args || "(no arguments)"}</pre>
+                        {#if r.detail}<p class="detail-full">{r.detail}</p>{/if}
+                      </td>
+                    </tr>
+                  {/if}
                 {/each}
               </tbody>
             </table></div>
@@ -229,9 +254,38 @@
   .day__label { font-weight: 600; }
   .day__counts { margin-left: auto; color: var(--muted); font-size: 0.85rem; }
   .day__more { margin-top: var(--space-xs); }
+  .table-card { overflow-x: auto; }
+  .row { cursor: pointer; }
   .row--problem td { background: color-mix(in srgb, var(--fail) 6%, transparent); }
+  .row__toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .row__chev { width: 0.9rem; color: var(--muted); }
+  .row--details td { padding-top: 0; }
   .tool { font-family: var(--font-mono); font-size: 0.85rem; font-weight: 600; }
   .args { display: block; max-width: 28rem; overflow: hidden; color: var(--muted); font-size: 0.78rem; text-overflow: ellipsis; white-space: nowrap; }
+  .args--open { max-width: none; white-space: normal; overflow-wrap: anywhere; }
+  .args-full {
+    margin: 0;
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .detail-full { margin: var(--space-xs) 0 0; color: var(--ink); font-size: 0.9rem; }
   .detail { display: block; font-size: 0.78rem; }
   .quiet { color: var(--muted); font-size: 0.85rem; }
   .nowrap { white-space: nowrap; }

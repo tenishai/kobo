@@ -4,6 +4,7 @@
   // org config (one line says so); the queue is decided here, as it already
   // is from the dashboard.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
+  import { when } from "../../lib/time";
   import { toast } from "../../lib/toast.svelte";
   import { adminPeopleQuery, decideGroupRequestMutation, groupRequestsQuery } from "../../lib/queries";
 
@@ -20,10 +21,6 @@
   ];
 
   const pending = $derived((requests.data ?? []).filter((r) => r.status === "pending"));
-
-  function when(iso: string): string {
-    return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  }
 
   function onDecide(id: number, action: "done" | "declined"): void {
     decide.mutate(
