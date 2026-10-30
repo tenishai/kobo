@@ -29,6 +29,15 @@ jobs:
     # pull requests and pushes. Harmless on GitHub-hosted runners.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     timeout-minutes: 30
+    # Three shards on three runner pods: the self-hosted runner has 3.5 cores, so
+    # `-n auto` alone is a six-minute run; three pods make it two. Shard k takes
+    # every third test file. The runner set allows three pods, so the ui job
+    # queues behind them briefly on a cold start; still a net win.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    name: api-tests (${{ matrix.shard }}/3)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -40,15 +49,18 @@ jobs:
         run: uv sync --locked --extra dev --python 3.12
       - name: Architecture cards are current
         # Each card pins the file it describes by blob sha; a seam that changed
-        # without its card fails here (see AGENTS.md).
+        # without its card fails here (see AGENTS.md). Once is enough.
+        if: ${{ matrix.shard == 1 }}
         working-directory: .
         run: uv run --project api --locked python scripts/check_arch_cards.py
       - name: pytest
         working-directory: api
         # One worker per available core: the suite is CPU-bound and each test
-        # owns its own SQLite file, so this is the difference between ten
-        # minutes and one on a self-hosted runner.
-        run: PYTHONPATH=. .venv/bin/python -m pytest -q -n auto
+        # owns its own SQLite file. The shard's files are every third test
+        # file, sorted, so the split is stable across runs.
+        run: |
+          files=$(ls tests/test_*.py | sort | awk -v k=${{ matrix.shard }} 'NR % 3 == k - 1')
+          PYTHONPATH=. .venv/bin/python -m pytest -q -n auto $files
 
   ui:
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
