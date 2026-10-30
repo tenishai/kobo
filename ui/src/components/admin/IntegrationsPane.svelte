@@ -56,7 +56,7 @@
       id: "slack",
       name: "Slack",
       summary: "Lets the room create agents' Slack apps.",
-      where: "Both values come from api.slack.com/apps, under Your App Configuration Tokens; generate a token for your workspace and paste the pair.",
+      where: "Both values come from api.slack.com/apps, under Your App Configuration Tokens: generate a token for your workspace and paste the pair. Every Slack app the room creates belongs to the account that generated the token, so use a dedicated kobo account rather than your own: create a Slack user for kobo in your workspace, sign in as it at api.slack.com/apps, generate the token there, and keep its sign-in with the room's operators. The token pair rotates on its own once pasted.",
       fields: [
         { key: "config_token", label: "App configuration token", secret: true, placeholder: "xoxe.xoxp-..." },
         { key: "refresh_token", label: "Refresh token", secret: true, placeholder: "xoxe-..." },

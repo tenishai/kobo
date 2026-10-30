@@ -10847,7 +10847,9 @@ def create_app(
         on this side," so the answer (and its exact 403 body, when it is
         one) can never fork between accept/decline and revoke.
         """
-        return _owner_or_operator_or_403(_invite_side_stand_in(session, agent_name), request)
+        # Owners and operators only: a Can manage grant does not reach into who the
+        # agent may talk to (owner ruling, 2026-10-30).
+        return _owner_or_operator_or_403(_invite_side_stand_in(session, agent_name), request, managers=False)
 
     def _sync_dispatch_pairs(session: Session) -> None:
         """Thin, session-only wrapper the invite accept/revoke routes below
@@ -10965,7 +10967,7 @@ def create_app(
         from_agent = _visible_agent_or_404(session, request, name)
         if isinstance(from_agent, JSONResponse):
             return from_agent
-        gate = _owner_or_operator_or_403(from_agent, request)
+        gate = _owner_or_operator_or_403(from_agent, request, managers=False)
         if gate is not None:
             return gate
 
