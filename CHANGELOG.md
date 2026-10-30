@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.15] - 2026-10-30
+
 ### Fixed
 
 - Datadog connect: the permission service's "cannot mint for datadog yet" answer (no Secret read yet) is the not-configured case, so the Secret stays and the row waits for a restart instead of being refused; the Datadog form hides the vendor address and the read/write choice, which do not apply (#322).
