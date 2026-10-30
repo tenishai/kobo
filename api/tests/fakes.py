@@ -2392,6 +2392,7 @@ class FakeBab:
         self.topologies: list[tuple[str, list[dict]]] = []
         self.revoked: list[tuple[int, str]] = []
         self.probes: list[tuple[str, str]] = []
+        self.datadog_probes: list[str] = []
         self._requests: dict[int, dict] = {}
         self._grants: dict[int, dict] = {}
         self._leases: list[dict] = []
@@ -2534,6 +2535,18 @@ class FakeBab:
         if "refuse" in role_arn:
             raise ClientError(f"the permission service refused the role {role_arn}: AWS refused {role_arn}: AccessDenied")
         return {"account": role_arn.split(":")[4], "assumed_arn": role_arn.replace(":role/", ":assumed-role/") + "/bab-probe"}
+
+    def probe_datadog(self, service_account_id, actor):
+        """`POST /probe/datadog` (kobo#322): a key named bab-probe made and deleted on the
+        service account. An id with "refuse" in it is one Datadog turns down; one with
+        "unconfigured" is a service whose pod carries no Datadog env yet."""
+        self._guard()
+        self.datadog_probes.append(service_account_id)
+        if "refuse" in service_account_id:
+            raise ClientError(f"the permission service refused the Datadog service account {service_account_id}: Datadog refused: Forbidden")
+        if "unconfigured" in service_account_id:
+            raise ClientError(f"the permission service refused the Datadog service account {service_account_id}: Datadog is not configured")
+        return {"service_account_id": service_account_id, "key_name": "bab-probe", "created": True, "deleted": True}
 
     def put_integration(self, integration, vendor, spec, ceiling, actor, parent=None):
         self._guard()

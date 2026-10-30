@@ -16,6 +16,16 @@ A connect does three things, in order, each visible on the card:
 
 Disconnect reverses the three. Rows are the truth; the vault and the repo
 are projections, and `state_detail` says how far they have caught up.
+
+Datadog through the permission service (kobo#322, `datadog_service_account`)
+takes another road: the service account's keys go into the Kubernetes Secret
+`bab-datadog` in the permission service's namespace (`bab_namespace`), which
+that service reads from env, the service proves it can mint by creating and
+deleting a probe key, and the connection is held there with every Datadog
+read permission as the ceiling. Nothing reaches the secrets add-on or the
+gateway; a lease is a scoped application key the service mints per agent.
+With the permission service off, Datadog connects as it always has, a key
+pair served through the gateway (`api_keys`).
 """
 
 from __future__ import annotations
@@ -63,7 +73,19 @@ AUTH_KINDS = {
     "aws_spoke": "an AWS account under a connected organization: the role its hub assumes",
     "gcp_identity": "workload identity, optionally impersonating a service account",
     "azure_federated": "an app registration federated to the gateway's identity",
+    # Datadog through the permission service (kobo#322): the room holds the service
+    # account's API key and a management application key (scoped to
+    # service_account_write) for the service, which mints a scoped key per agent.
+    "datadog_service_account": "a Datadog service account the permission service mints scoped application keys from",
 }
+DATADOG_AUTH = "datadog_service_account"
+DATADOG_SECRET = "bab-datadog"
+DATADOG_SECRET_KEYS = ("API_KEY", "MGMT_APP_KEY")
+DATADOG_DEFAULT_SITE = "datadoghq.com"
+DATADOG_SITES = frozenset({
+    "datadoghq.com", "us3.datadoghq.com", "us5.datadoghq.com", "datadoghq.eu",
+    "ap1.datadoghq.com", "ap2.datadoghq.com", "ddog-gov.com",
+})
 _AWS_ACCOUNT_ID = re.compile(r"^\d{12}$")
 _AWS_ROLE_ARN = re.compile(r"^arn:aws:iam::\d{12}:role/[\w+=,.@/-]+$")
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -97,6 +119,14 @@ def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> 
         _GUID.match(identity.get("client_id", "").strip()) and _GUID.match(identity.get("tenant_id", "").strip())
     ):
         raise ConnectRefused("Azure needs the app registration's client ID and tenant ID")
+    if auth == DATADOG_AUTH:
+        if not identity.get("service_account_id", "").strip():
+            raise ConnectRefused("Datadog needs the id of the service account the room mints keys from")
+        if not all(secrets.get(k, "").strip() for k in DATADOG_SECRET_KEYS):
+            raise ConnectRefused("Datadog needs the API key and the management application key (scoped to service_account_write)")
+        site = identity.get("site", "").strip()
+        if site and site not in DATADOG_SITES:
+            raise ConnectRefused(f"{site!r} is not a Datadog site; one of {', '.join(sorted(DATADOG_SITES))}")
 
 
 class ConnectRefused(ValueError):
@@ -264,6 +294,78 @@ def _bab(clients: Clients | None):
     return getattr(clients, "bab", None) if clients is not None else None
 
 
+def datadog_secret_literals(identity: dict[str, str], secrets: dict[str, str]) -> dict[str, str]:
+    """The four env variables the permission service's Datadog minter reads, as the
+    Secret `bab-datadog` carries them."""
+    return {
+        "DD_SITE": identity.get("site") or DATADOG_DEFAULT_SITE,
+        "DD_API_KEY": secrets["API_KEY"],
+        "DD_MGMT_APP_KEY": secrets["MGMT_APP_KEY"],
+        "DD_SERVICE_ACCOUNT_ID": identity["service_account_id"],
+    }
+
+
+def _connect_datadog(
+    session: Session, clients: Clients | None, config: Config, bab, *, vendor: str, name: str, base_access: str,
+    address: str, trust: str, actor: str, identity: dict[str, str], secrets: dict[str, str],
+) -> AdminIntegration:
+    """Datadog through the permission service (kobo#322). The Secret is written
+    first because the service reads it from env: a probe that answers "not
+    configured" means the service has not restarted onto it yet, so the row waits
+    and says so; any other refusal takes the Secret back and connects nothing."""
+    if bab is None:
+        raise ConnectRefused("Datadog through a service account needs the permission service; turn Access on first, "
+                             "or connect Datadog with its key pair for the gateway")
+    kubectl = getattr(clients, "kubectl", None) if clients is not None else None
+    if kubectl is None:
+        raise ConnectRefused("this room cannot write the permission service's Secret; nothing was connected")
+    identity["site"] = identity.get("site") or DATADOG_DEFAULT_SITE
+    sa = identity["service_account_id"]
+    where = f"the Secret {DATADOG_SECRET} in the {config.bab_namespace} namespace, read by the permission service"
+    try:
+        kubectl.apply_secret(config.bab_namespace, DATADOG_SECRET, datadog_secret_literals(identity, secrets))
+    except ClientError as exc:
+        raise ConnectRefused(f"{where} could not be written: {exc}; nothing was connected") from exc
+    waiting = False
+    try:
+        bab.probe_datadog(sa, actor)
+    except ClientError as exc:
+        if "not configured" in str(exc).lower():
+            waiting = True
+        else:
+            try:
+                kubectl.delete_secret(config.bab_namespace, DATADOG_SECRET)
+            except ClientError as undo:
+                log.warning("datadog connect refused and %s was left behind: %s", DATADOG_SECRET, undo)
+            raise ConnectRefused(f"{exc}; check the service account id and both keys and connect again") from exc
+    spec: dict[str, Any] = {
+        "address": address.strip(),
+        "trust": trust if trust in ("trusted", "untrusted") else "untrusted",
+        "auth": DATADOG_AUTH,
+        "identity": {"service_account_id": sa, "site": identity["site"]},
+        "secret_keys": sorted(secrets),
+    }
+    row = admin_store.put_integration(
+        session, vendor=vendor, name=name, base_access=base_access, spec=spec, credential_ref=None, actor=actor,
+    )
+    if waiting:
+        detail = (f"the permission service is not configured for Datadog yet: it picks up {where} on its next restart; "
+                  "restart it, then remove this row and add Datadog again to check the keys")
+    else:
+        detail = f"Datadog agreed: the permission service minted and removed a probe key for service account {sa}; the keys are in {where}"
+    spec_for_bab = {"site": identity["site"], "service_account_id": sa, "name": name}
+    try:
+        bab.put_integration(row.id, vendor, spec_for_bab, bab_mod.read_permissions(bab, vendor, actor), actor)
+    except ClientError as exc:
+        admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the permission service refused: {exc}")
+        return row
+    detail += "; connected in the permission service, agents may ask for its read permissions"
+    admin_store.set_integration_state(
+        session, row.id, state=admin_store.STATE_PENDING if waiting else admin_store.STATE_APPLIED, detail=detail,
+    )
+    return row
+
+
 def _org_or_refused(bab, parent: str, actor: str) -> dict:
     """The connected organization an account hangs under, with its hub role."""
     for i in bab.integrations(actor):
@@ -410,6 +512,9 @@ def connect(
         secrets[SECRET_KEY] = credential.strip()
     check_auth(auth, identity, secrets)
     bab = _bab(clients)
+    if auth == DATADOG_AUTH:
+        return _connect_datadog(session, clients, config, bab, vendor=vendor, name=name, base_access=base_access,
+                                address=address, trust=trust, actor=actor, identity=identity, secrets=secrets)
     probe: dict[str, str] | None = None
     hub_role_arn: str | None = None
     if auth in ("aws_hub", "aws_spoke") and bab is None:
@@ -604,20 +709,32 @@ def disconnect(session: Session, clients: Clients | None, config: Config, *, int
             outcome["access"] = f"removed; {out.get('grants_revoked', 0)} grant(s) revoked"
         except ClientError as exc:
             outcome["access"] = f"left: {exc}"
-    sero = clients.sero if clients is not None else None
-    if sero is not None and row.credential_ref:
+    if (row.spec or {}).get("auth") == DATADOG_AUTH:
+        # The keys live in the permission service's Secret, never in the add-on or the gateway.
+        kubectl = getattr(clients, "kubectl", None) if clients is not None else None
         try:
-            if config.gateway_namespace:
-                sero.unsync(actor, ROOM_APP, config.gateway_namespace, secret_name(integration_id))
-            sero.delete_secret(actor, row.credential_ref)
+            if kubectl is None:
+                raise ClientError("this room cannot reach the permission service's namespace")
+            kubectl.delete_secret(config.bab_namespace, DATADOG_SECRET)
             outcome["secret"] = "removed"
         except ClientError as exc:
             outcome["secret"] = f"left: {exc}"
-    try:
-        pr = _gateway_pr(clients.github, config, row, remove=True, actor=actor) if clients is not None else None
-        outcome["gateway"] = f"pull request open: {pr}" if pr else "nothing to remove"
-    except (ClientError, OSError) as exc:
-        outcome["gateway"] = f"left: {exc}"
+        outcome["gateway"] = "nothing to remove"
+    else:
+        sero = clients.sero if clients is not None else None
+        if sero is not None and row.credential_ref:
+            try:
+                if config.gateway_namespace:
+                    sero.unsync(actor, ROOM_APP, config.gateway_namespace, secret_name(integration_id))
+                sero.delete_secret(actor, row.credential_ref)
+                outcome["secret"] = "removed"
+            except ClientError as exc:
+                outcome["secret"] = f"left: {exc}"
+        try:
+            pr = _gateway_pr(clients.github, config, row, remove=True, actor=actor) if clients is not None else None
+            outcome["gateway"] = f"pull request open: {pr}" if pr else "nothing to remove"
+        except (ClientError, OSError) as exc:
+            outcome["gateway"] = f"left: {exc}"
     went_wrong = any(str(v).startswith("left:") for v in outcome.values())
     admin_store.remove_integration(
         session, integration_id, actor=actor,

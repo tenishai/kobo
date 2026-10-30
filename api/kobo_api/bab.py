@@ -70,6 +70,7 @@ class BabClient(Protocol):
     def aws_identity(self, actor: str) -> dict: ...
     def probe_aws(self, role_arn: str, audience: str, actor: str, hub_role_arn: str | None = None,
                   external_id: str | None = None) -> dict: ...
+    def probe_datadog(self, service_account_id: str, actor: str) -> dict: ...
     def put_integration(self, integration: str, vendor: str, spec: dict, ceiling: list[str], actor: str,
                         parent: str | None = None) -> dict: ...
     def delete_integration(self, integration: str, actor: str) -> dict: ...
@@ -169,6 +170,15 @@ class HttpxBabClient:
                   external_id: str | None = None) -> dict:
         body = {"role_arn": role_arn, "audience": audience, "hub_role_arn": hub_role_arn, "external_id": external_id}
         return self._call("POST", "/probe/aws", actor, json=body, what=f"the role {role_arn}")
+
+    def probe_datadog(self, service_account_id: str, actor: str) -> dict:
+        """`POST /probe/datadog` (kobo#322): the service creates and deletes an application
+        key named `bab-probe` on the service account, with the keys its own pod carries.
+        The id rides under both names the service reads: its own `service_account_id`
+        and the AWS probe's `role_arn`."""
+        body = {"service_account_id": service_account_id, "role_arn": service_account_id}
+        return self._call("POST", "/probe/datadog", actor, json=body,
+                          what=f"the Datadog service account {service_account_id}")
 
     def put_integration(self, integration: str, vendor: str, spec: dict, ceiling: list[str], actor: str,
                         parent: str | None = None) -> dict:

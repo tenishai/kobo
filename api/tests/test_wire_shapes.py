@@ -62,6 +62,7 @@ from kobo_api.tooling import list_tooling
 from tests.fakes import (
     FAKE_LOCAL_HEAD_DEFAULT,
     FakeAgent,
+    FakeBab,
     FakeCabal,
     FakeCloud,
     FakeGitHub,
@@ -1875,6 +1876,34 @@ def test_named_keys_are_stored_together_and_reach_the_gateway_as_one_env_each(tm
     assert 'auth_method = "api_keys"' in targets
     assert 'api_key_env = "INTEGRATION_DATADOG_API_KEY"' in targets and 'app_key_env = "INTEGRATION_DATADOG_APP_KEY"' in targets
     assert "dd-api" not in targets and "dd-app" not in targets
+
+
+DATADOG_SA = "11111111-2222-3333-4444-555555555555"
+
+
+def test_datadog_through_the_permission_service_writes_its_secret_and_the_read_ceiling(tmp_path, fake_storage):
+    """Wire shape: Datadog's keys land in the Secret the permission service reads (the four
+    env names) and the connection is held there with every Datadog read permission; nothing
+    goes to the secrets add-on or the gateway (kobo#322)."""
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"targets.toml": TARGETS}, track_pushed_content=True)
+    sero, bab = FakeSero(), FakeBab(integrations=[])
+    client, headers = _client__api_admin_integrations(tmp_path, fake_storage, _config(tmp_path, bab_url="http://bab.bab.svc:8080"), github=github, sero=sero)
+    client.app.state.clients.bab = bab
+    body = {"vendor": "datadog", "name": "Datadog", "base_access": "read", "auth": "datadog_service_account",
+            "identity": {"service_account_id": DATADOG_SA}, "secrets": {"API_KEY": "dd-api", "MGMT_APP_KEY": "dd-mgmt"}}
+    response = client.post("/api/admin/integrations", json=body, headers=headers)
+    assert response.status_code == 201, response.text
+    row = response.json()
+    assert row["state"] == "applied" and "minted and removed a probe key" in row["state_detail"]
+    assert client.app.state.clients.kubectl.secrets_applied == [("bab", "bab-datadog", {
+        "DD_SITE": "datadoghq.com", "DD_API_KEY": "dd-api", "DD_MGMT_APP_KEY": "dd-mgmt", "DD_SERVICE_ACCOUNT_ID": DATADOG_SA})]
+    assert bab.datadog_probes == [DATADOG_SA]
+    (integ,) = bab.integrations("x")
+    assert integ["integration"] == "datadog" and integ["spec"] == {"site": "datadoghq.com", "service_account_id": DATADOG_SA, "name": "Datadog"}
+    assert integ["ceiling"] == ["datadog_monitors_read"]
+    assert row["credential_ref"] is None and sero.puts == [] and not github._pushed_trees
+    listing = client.get("/api/admin/integrations", headers=headers).json()
+    assert "dd-mgmt" not in str(listing) and "dd-api" not in str(listing)
 
 
 # --- from test_web_learnings.py ---
