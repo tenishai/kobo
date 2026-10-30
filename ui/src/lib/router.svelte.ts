@@ -38,7 +38,9 @@ const DASHBOARD: Route = { page: "dashboard" };
  * depends on the agent, and `tabs.ts` owns it.
  */
 export function parseHash(hash: string): Route {
-  const path = hash.startsWith("#") ? hash.slice(1) : hash;
+  // A query string after the path (`#/admin/audit?agent=ward`) is the
+  // pane's own to read (`hashQuery` below); it never names a route.
+  const path = (hash.startsWith("#") ? hash.slice(1) : hash).split("?")[0];
   const segments = path.split("/").filter((segment) => segment.length > 0);
 
   // `#/getting-started/<section>` opens the guide at one section (guide
@@ -84,6 +86,16 @@ export function parseHash(hash: string): Route {
     return route;
   }
   return DASHBOARD;
+}
+
+/** The query string carried after the hash path (`#/admin/audit?agent=ward`
+ * gives `{ agent: "ward" }`), for a pane that opens pre-filtered from a link. */
+export function hashQuery(hash: string): Record<string, string> {
+  const mark = hash.indexOf("?");
+  if (mark < 0) {
+    return {};
+  }
+  return Object.fromEntries(new URLSearchParams(hash.slice(mark + 1)));
 }
 
 /** The inverse of parseHash: the hash to set for a given Route. */

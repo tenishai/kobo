@@ -7,7 +7,7 @@
   // show the whole call: its arguments wrapped, and what happened (#308).
   import { createQuery } from "@tanstack/svelte-query";
   import type { AgentActivityRow } from "../lib/api";
-  import { activityQuery, agentLeasesQuery } from "../lib/queries";
+  import { activityQuery, agentLeasesQuery, whoamiQuery } from "../lib/queries";
   import { when as whenIso } from "../lib/time";
 
   let { agentName }: { agentName: string } = $props();
@@ -19,6 +19,11 @@
   // Credentials the agent borrowed from the room's permission service, when
   // the room has one: one row per lease, with the task the agent named.
   const leases = createQuery(() => (agentLeasesQuery(agentName, days)));
+  // The room's own audit log, filtered to this agent (issue #316): a link
+  // for the people who can open the admin panel, same test the account
+  // menu uses to show the panel at all.
+  const whoami = createQuery(() => (whoamiQuery()));
+  const canAudit = $derived(Boolean(whoami.data?.operator && whoami.data?.admin_panel));
 
   const all = $derived(activity.data?.rows ?? []);
   const handlers = $derived(Array.from(new Set(all.map((r) => r.handler).filter(Boolean))).sort());
@@ -91,7 +96,12 @@
 </script>
 
 <section class="panel" aria-labelledby="activity-heading">
-  <h2 id="activity-heading" class="panel__heading">Activity</h2>
+  <div class="activity__header">
+    <h2 id="activity-heading" class="panel__heading">Activity</h2>
+    {#if canAudit}
+      <a class="activity__audit" href={`#/admin/audit?agent=${encodeURIComponent(agentName)}`}>Audit log for this agent</a>
+    {/if}
+  </div>
   <p class="panel__lead">
     Every call this agent made through the tool gateway, and every one it was refused. Cloud
     calls also appear in the account's own audit trail under the agent's name.
@@ -290,4 +300,17 @@
   .quiet { color: var(--muted); font-size: 0.85rem; }
   .nowrap { white-space: nowrap; }
   .num { text-align: right; }
+
+  .activity__header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+  }
+
+  .activity__audit {
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
 </style>

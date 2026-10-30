@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api import admin_connections as admin_connections_flow
 from kobo_api import admin_integrations as admin_integrations_flow
 from kobo_api import admin_roles as admin_roles_catalogue
-from kobo_api import admin_store
+from kobo_api import admin_store, audit
 from kobo_api import room_services as room_services_store
 from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
@@ -3182,6 +3182,10 @@ def _decide_learning(
         row.status = LEARNING_DENIED
         row.decided_by = email
         row.decided_at = datetime.now(UTC)
+        audit.record(
+            session, request=request, action="learning.deny", target_kind="learning", target_id=str(row.id),
+            agent_name=agent.name, summary=f"{audit.who(request)} denied a learning for agent {agent.name}",
+        )
         session.commit()
         return JSONResponse({"id": row.id, "status": row.status})
 
@@ -3239,6 +3243,11 @@ def _decide_learning(
     row.status = LEARNING_APPROVED
     row.decided_by = email
     row.decided_at = datetime.now(UTC)
+    audit.record(
+        session, request=request, action="learning.approve", target_kind="learning", target_id=str(row.id),
+        agent_name=agent.name, detail={"mode": mode, "filename": filename, "edited": content is not None},
+        summary=f"{audit.who(request)} approved a learning for agent {agent.name}",
+    )
     session.commit()
     return JSONResponse(
         {"id": row.id, "status": row.status, "mode": mode, "filename": filename}
@@ -3817,7 +3826,7 @@ def create_app(
         if not dry_run:
             actor = getattr(request.state, "iap_email", None) or "operator"
             admin_store.record(
-                session, actor=actor, action="directory.sweep", object_type="directory",
+                session, request=request, actor=actor, action="directory.sweep", object_type="directory",
                 object_id="switchboard", before=None,
                 after={
                     "retired": result["retired"], "failed": result["failed"],
@@ -3944,11 +3953,24 @@ def create_app(
         block = _owner_or_operator_or_403(agent, request)
         if block is not None:
             return block
+        permissions = list(dict.fromkeys(payload.permissions))
         try:
-            out = bab.request(agent.name, payload.integration, list(dict.fromkeys(payload.permissions)),
-                              payload.note, _bab_actor(request))
+            out = bab.request(agent.name, payload.integration, permissions, payload.note, _bab_actor(request))
         except ClientError as exc:
+            audit.record(
+                session, request=request, action="access.request", target_kind="agent", target_id=agent.name,
+                agent_name=agent.name, outcome=audit.OUTCOME_REFUSED,
+                detail={"integration": payload.integration, "permissions": permissions},
+                summary=f"{agent.name}'s owner asked for {', '.join(permissions)} on {payload.integration}; the permission service refused",
+            )
+            session.commit()
             return _bab_refused(exc)
+        audit.record(
+            session, request=request, action="access.request", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, detail={"integration": payload.integration, "permissions": permissions},
+            summary=f"{agent.name}'s owner asked for {', '.join(permissions)} on {payload.integration}",
+        )
+        session.commit()
         return JSONResponse(out, status_code=201)
 
     @app.delete("/api/agents/{name}/access/grants/{grant_id}")
@@ -3966,9 +3988,18 @@ def create_app(
         if isinstance(agent, JSONResponse):
             return agent
         try:
-            return JSONResponse(bab.revoke(grant_id, _bab_actor(request)))
+            out = bab.revoke(grant_id, _bab_actor(request))
         except ClientError as exc:
             return _bab_refused(exc)
+        out = out if isinstance(out, dict) else {}
+        audit.record(
+            session, request=request, action="access.revoke", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, detail={"grant_id": grant_id, "integration": out.get("integration"), "permission": out.get("permission")},
+            summary=f"{audit.who(request)} revoked {out.get('permission') or 'a permission'} from agent {agent.name}"
+            + (f" on {out['integration']}" if out.get("integration") else ""),
+        )
+        session.commit()
+        return JSONResponse(out)
 
     @app.get("/api/agents/{name}/leases")
     def agent_leases(
@@ -4011,7 +4042,9 @@ def create_app(
         return JSONResponse({"requests": rows})
 
     @app.post("/api/admin/access/decide")
-    def admin_access_decide(payload: AccessDecideBody, request: Request) -> JSONResponse:
+    def admin_access_decide(
+        payload: AccessDecideBody, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
         """Approve or deny in bulk. bab checks the reviewer's team and each
         permission's tier; a deny needs a reason."""
         blocked = _admin_panel_gate(request)
@@ -4023,9 +4056,29 @@ def create_app(
         if payload.verdict == "deny" and not (payload.reason or "").strip():
             return JSONResponse({"error": "a denial needs a reason"}, status_code=422)
         try:
+            pending = {r.get("id"): r for r in bab.requests("pending", None, _bab_actor(request))}
+        except ClientError:
+            pending = {}
+        try:
             results = bab.decide(payload.ids, payload.verdict, payload.reason, _bab_actor(request))
         except ClientError as exc:
             return _bab_refused(exc)
+        verb = "Approved" if payload.verdict == "approve" else "Denied"
+        for result in results:
+            asked = pending.get(result.get("id"), {})
+            agent_name = asked.get("agent")
+            wanted = ", ".join(asked.get("permissions") or []) or f"request {result.get('id')}"
+            where = f" on {asked['integration']}" if asked.get("integration") else ""
+            skipped = result.get("status") == "skipped"
+            audit.record(
+                session, request=request, action=f"access.{payload.verdict}", target_kind="access_request",
+                target_id=str(result.get("id")), agent_name=agent_name,
+                outcome=audit.OUTCOME_FAILED if skipped else audit.OUTCOME_OK,
+                detail={"result": result, "reason": payload.reason},
+                summary=(f"{verb} {wanted} for {agent_name}{where}" if agent_name else f"{verb} request {result.get('id')}")
+                + (f"; skipped: {result.get('reason')}" if skipped else ""),
+            )
+        session.commit()
         return JSONResponse({"results": results})
 
     @app.get("/api/admin/access/leases")
@@ -4238,7 +4291,7 @@ def create_app(
                 status_code=502,
             )
         admin_store.record(
-            session, actor=actor, action="room_service.set", object_type="room_service", object_id=service,
+            session, request=request, actor=actor, action="room_service.set", object_type="room_service", object_id=service,
             before=before, after=after, landed=admin_store.LANDED_APPLIED,
         )
         session.commit()
@@ -4271,7 +4324,7 @@ def create_app(
                 status_code=502,
             )
         admin_store.record(
-            session, actor=actor, action="room_service.remove", object_type="room_service", object_id=service,
+            session, request=request, actor=actor, action="room_service.remove", object_type="room_service", object_id=service,
             before=before, after=services.status(service).to_dict(), landed=admin_store.LANDED_APPLIED,
         )
         session.commit()
@@ -4308,7 +4361,7 @@ def create_app(
         actor = getattr(request.state, "iap_email", None) or "operator"
         revoked = mcp_refresh_tokens.revoke_email(session, email=email, actor=actor, reason=payload.reason)
         admin_store.record(
-            session, actor=actor, action="mcp.revoke", object_type="mcp_user", object_id=email,
+            session, request=request, actor=actor, action="mcp.revoke", object_type="mcp_user", object_id=email,
             before=None, after={"reason": payload.reason, "refresh_tokens_revoked": revoked},
             landed=admin_store.LANDED_APPLIED,
         )
@@ -4457,14 +4510,70 @@ def create_app(
         session.commit()
         return JSONResponse({"deleted": role_id})
 
+    def _audit_filters(q: str, actor: str, action: str, agent: str, outcome: str, since: str, until: str) -> dict:
+        return {
+            "q": q, "actor": actor, "action": action, "agent": agent, "outcome": outcome,
+            "since": audit.parse_when(since), "until": audit.parse_when(until, end=True),
+        }
+
     @app.get("/api/admin/audit")
-    def admin_audit(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
-        """The Audit pane: the admin store's audit events, newest first, with
-        whether each one has landed where it was meant to."""
+    def admin_audit(
+        request: Request,
+        q: str = Query("", max_length=200),
+        actor: str = Query("", max_length=320),
+        action: str = Query("", max_length=64),
+        agent: str = Query("", max_length=63),
+        outcome: str = Query("", max_length=16),
+        since: str = Query("", max_length=40),
+        until: str = Query("", max_length=40),
+        cursor: str = Query("", max_length=120),
+        limit: int = Query(audit.PAGE_DEFAULT, ge=1, le=audit.PAGE_MAX),
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """The Audit page (issue #316): one page of the room's audit log,
+        newest first, keyset-paged on (at, id). `q` searches actor, action,
+        target and sentence; `action` takes a family (`agent`) or one exact
+        action; `since`/`until` take a date or an instant. The answer carries
+        `rows`, `next_cursor`, `total_in_window` and the facets the page's
+        selects offer within the window."""
         blocked = _admin_panel_gate(request)
         if blocked is not None:
             return blocked
-        return JSONResponse({"events": [admin_store.event_dict(e) for e in admin_store.audit_events(session)]})
+        try:
+            filters = _audit_filters(q, actor, action, agent, outcome, since, until)
+            return JSONResponse(audit.page(session, cursor=cursor or None, limit=limit, **filters))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+
+    @app.get("/api/admin/audit/export")
+    def admin_audit_export(
+        request: Request,
+        q: str = Query("", max_length=200),
+        actor: str = Query("", max_length=320),
+        action: str = Query("", max_length=64),
+        agent: str = Query("", max_length=63),
+        outcome: str = Query("", max_length=16),
+        since: str = Query("", max_length=40),
+        until: str = Query("", max_length=40),
+        format: str = Query("csv", pattern="^(csv|json)$"),
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> Response:
+        """The current filter as a file, streamed: CSV or JSON, newest first,
+        at most `audit.EXPORT_MAX` rows. Same gate and filters as the page."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        try:
+            filters = _audit_filters(q, actor, action, agent, outcome, since, until)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        media = "application/json" if format == "json" else "text/csv"
+        return StreamingResponse(
+            audit.export(session, fmt=format, **filters),
+            media_type=media,
+            headers={"Content-Disposition": f'attachment; filename="audit-{stamp}.{format}"'},
+        )
 
     @app.get("/api/org/status")
     def org_status() -> dict:
@@ -4763,6 +4872,12 @@ def create_app(
             log.warning("persona create failed: %s", exc)
             return JSONResponse({"error": str(exc)}, status_code=502)
 
+        audit.record(
+            session, request=request, action="persona.create", target_kind="persona", target_id=entry.id,
+            detail={"team": entry.team, "tags": entry.tags},
+            summary=f"{audit.who(request)} created persona {entry.name} under {entry.team or 'shared'}",
+        )
+        session.commit()
         return JSONResponse(
             {
                 "id": entry.id,
@@ -4844,6 +4959,12 @@ def create_app(
         except ClientError as exc:
             log.warning("persona archive flip failed: %s", exc)
             return JSONResponse({"error": str(exc)}, status_code=502)
+        audit.record(
+            session, request=request, action="persona.archive" if archived else "persona.unarchive",
+            target_kind="persona", target_id=persona_id,
+            summary=f"{audit.who(request)} {'archived' if archived else 'unarchived'} persona {persona_id}",
+        )
+        session.commit()
         return JSONResponse(updated)
 
     @app.post("/api/personas/{persona_id}/archive")
@@ -4959,6 +5080,12 @@ def create_app(
             payload.team,
             caller,
         )
+        audit.record(
+            session, request=request, action="persona.move", target_kind="persona", target_id=persona_id,
+            detail={"team": payload.team, "previous": previous},
+            summary=f"{audit.who(request)} moved persona {persona_id} from {previous or 'shared'} to {payload.team or 'shared'}",
+        )
+        session.commit()
         return JSONResponse(updated)
 
     # Which cards on the Personas page get a Move action: the ids this
@@ -5655,6 +5782,12 @@ def create_app(
             # just enforced by the DB instead of a status column.
             session.rollback()
             return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
+        audit.record(
+            session, request=request, action="agent.create", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, summary=f"{audit.who(request)} created agent {agent.name}",
+            detail={"persona": agent.persona, "model": agent.model_id, "group": agent.group_name, "team": agent.team},
+        )
+        session.commit()
         _bab_push_quietly(session, request)
 
         # Capture the just-inserted status into a local BEFORE starting the
@@ -5959,6 +6092,12 @@ def create_app(
             # same way: the unique constraint is the real gate.
             session.rollback()
             return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
+        audit.record(
+            session, request=request, action="agent.connect", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, detail={"repo": agent.repo_full_name, "group": agent.group_name},
+            summary=f"{audit.who(request)} connected repository {agent.repo_full_name} as agent {agent.name}",
+        )
+        session.commit()
         _bab_push_quietly(session, request)
 
         # WARNING rather than INFO because INFO does not reach the pod logs
@@ -7054,6 +7193,12 @@ def create_app(
             )
 
         agent_id = agent.id
+        audit.record(
+            session, request=request, action="agent.destroy", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, summary=f"{audit.who(request)} asked to destroy agent {agent.name}",
+            landed=audit.LANDED_PENDING, landed_detail="destroying",
+        )
+        session.commit()
 
         try:
             run_destroy(
@@ -7551,6 +7696,12 @@ def create_app(
         agent.skills = [entry for entry in agent.skills if entry["name"] != payload.name] + [
             {"name": payload.name, "team": payload.team, "sha": source_sha, "source": "catalog"}
         ]
+        audit.record(
+            session, request=request, action="skills.refresh" if payload.refresh else "skills.add",
+            target_kind="skill", target_id=payload.name, agent_name=agent.name,
+            summary=f"{audit.who(request)} {'refreshed' if payload.refresh else 'added'} skill {payload.name} on agent {agent.name}",
+            detail={"team": payload.team, "sha": source_sha},
+        )
         session.commit()
 
         # The push rewrote the card's skills (issue #147); the switchboard
@@ -7638,6 +7789,11 @@ def create_app(
             {"name": skill_id, "team": teams[skill_id], "sha": source_sha, "source": "catalog"}
             for skill_id, source_sha in landed.items()
         ]
+        audit.record(
+            session, request=request, action="skills.add", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, detail={"added": list(landed), "refused": refused},
+            summary=f"{audit.who(request)} added {len(landed)} skill{'s' if len(landed) != 1 else ''} to agent {agent.name}: {', '.join(landed)}",
+        )
         session.commit()
 
         directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
@@ -7690,6 +7846,10 @@ def create_app(
         bust_repo_skills_cache(agent.repo_full_name)
 
         agent.skills = [entry for entry in agent.skills if entry["name"] != skill_id]
+        audit.record(
+            session, request=request, action="skills.remove", target_kind="skill", target_id=skill_id,
+            agent_name=agent.name, summary=f"{audit.who(request)} removed skill {skill_id} from agent {agent.name}",
+        )
         session.commit()
 
         directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
@@ -7776,6 +7936,10 @@ def create_app(
         agent.skills = [e for e in agent.skills if e["name"] != skill_id] + [
             {"name": skill_id, "source": "local"}
         ]
+        audit.record(
+            session, request=request, action="skills.save", target_kind="skill", target_id=skill_id,
+            agent_name=agent.name, summary=f"{audit.who(request)} saved local skill {skill_id} on agent {agent.name}",
+        )
         session.commit()
 
         directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
@@ -8051,6 +8215,12 @@ def create_app(
                 taught = record_taught(
                     session, agent.name, text, taught_by=taught_by, now=datetime.now(UTC)
                 )
+                audit.record(
+                    session, request=request, action="teach.add", target_kind="agent", target_id=agent.name,
+                    agent_name=agent.name, detail={"filename": filename, "mode": "instant"},
+                    summary=f"{audit.who(request)} taught agent {agent.name} something",
+                )
+                session.commit()
                 return JSONResponse(
                     {"filename": filename, "mode": "instant", "learning": _learning_dict(taught)}
                 )
@@ -8085,6 +8255,12 @@ def create_app(
         taught = record_taught(
             session, agent.name, text, taught_by=taught_by, now=datetime.now(UTC)
         )
+        audit.record(
+            session, request=request, action="teach.add", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, detail={"filename": filename, "mode": "archive", "sha": sha},
+            summary=f"{audit.who(request)} taught agent {agent.name} something",
+        )
+        session.commit()
         return JSONResponse(
             {
                 "filename": filename,
@@ -8453,6 +8629,12 @@ def create_app(
                     payload.content,
                 )
                 _request_tool_restart(agent.name)
+                audit.record(
+                    session, request=request, action="tooling.upload", target_kind="tool", target_id=payload.filename,
+                    agent_name=agent.name, detail={"mode": "instant"},
+                    summary=f"{audit.who(request)} uploaded tool {payload.filename} to agent {agent.name}",
+                )
+                session.commit()
                 return JSONResponse(
                     {
                         "mode": "instant",
@@ -8480,6 +8662,12 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
+        audit.record(
+            session, request=request, action="tooling.upload", target_kind="tool", target_id=payload.filename,
+            agent_name=agent.name, detail={"mode": "archive", "sha": sha},
+            summary=f"{audit.who(request)} uploaded tool {payload.filename} to agent {agent.name}",
+        )
+        session.commit()
         return JSONResponse({"sha": sha, "mode": "archive"})
 
     @app.post("/api/agents/{name}/tooling/import")
@@ -8567,6 +8755,11 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
+        audit.record(
+            session, request=request, action="tooling.delete", target_kind="tool", target_id=filename,
+            agent_name=agent.name, summary=f"{audit.who(request)} deleted tool {filename} from agent {agent.name}",
+        )
+        session.commit()
         return JSONResponse({"sha": sha})
 
     # --- Slack self-service (2026-08-17): manifest + degated connect ------------
@@ -8712,6 +8905,11 @@ def create_app(
         agent.slack_app_id = payload.app_id
         agent.slack_app_self_service = True
         agent.slack_wired = True
+        audit.record(
+            session, request=request, action="slack.connect", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, summary=f"{audit.who(request)} connected agent {agent.name} to Slack",
+            detail={"app_id": payload.app_id, "channels": channels},
+        )
         session.commit()
 
         return JSONResponse({"sha": sha})
@@ -8836,6 +9034,11 @@ def create_app(
         except ClientError as exc:
             return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
         agent.slack_wake = mode
+        audit.record(
+            session, request=request, action="slack.wake", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, detail={"wake": mode, "previous": previous},
+            summary=f"{audit.who(request)} set agent {agent.name} to wake in Slack on {mode}",
+        )
         session.commit()
         log.info("agent %s wakes in Slack on %s (was %s)", agent.name, mode, previous)
         return JSONResponse(
@@ -9218,6 +9421,12 @@ def create_app(
             if isinstance(wiring, JSONResponse):
                 return wiring
 
+        audit.record(
+            session, request=request, action="secrets.set", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, detail={"set_names": sorted(payload.set), "removed_names": list(payload.remove)},
+            summary=f"{audit.who(request)} changed agent {agent.name}'s secrets",
+        )
+        session.commit()
         return JSONResponse(
             {
                 "keys": remaining,
@@ -9554,6 +9763,12 @@ def create_app(
         except ClientError as exc:
             return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
 
+        audit.record(
+            session, request=request, action="env.set", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, detail={"set": sorted(payload.set), "removed": list(payload.remove), "wiring": result.how},
+            summary=f"{audit.who(request)} changed agent {agent.name}'s variables",
+        )
+        session.commit()
         body: dict = {"env": after["env"], "wiring": result.how}
         if result.pull_request is not None:
             body["pull_request"] = result.pull_request
@@ -9627,6 +9842,11 @@ def create_app(
                 {"error": "the agent's repository could not be updated"}, status_code=502
             )
         agent.persona = persona_id
+        audit.record(
+            session, request=request, action="agent.persona.change", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, summary=f"{audit.who(request)} gave agent {agent.name} the persona {persona_id}",
+            detail={"persona": persona_id},
+        )
         session.commit()
         log.info("agent %s now wears persona %s", agent.name, persona_id)
         return JSONResponse({"persona": persona_id, "sha": sha})
@@ -9702,6 +9922,11 @@ def create_app(
 
         previous = agent.model_id
         agent.model_id = model_id
+        audit.record(
+            session, request=request, action="agent.model.change", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, summary=f"{audit.who(request)} moved agent {agent.name} to {choice.label}",
+            detail={"model": model_id, "previous": previous, "wiring": result.how},
+        )
         session.commit()
         log.info("agent %s now runs %s (was %s)", agent.name, model_id, previous)
         return JSONResponse(
@@ -9767,6 +9992,11 @@ def create_app(
         # writes a row of its own for the same call (`kobo_api.mcp.audit`);
         # this is the line for the panel's half.
         log.info("restart requested for agent %s by %s", agent.name, caller or "nobody")
+        audit.record(
+            session, request=request, action="agent.restart", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, summary=f"{audit.who(request)} restarted agent {agent.name}",
+        )
+        session.commit()
         return JSONResponse({"restarted": True, "deployment": agent.name})
 
     # --- Runtime (#15): move an existing agent to a different runtime image ----
@@ -9839,6 +10069,11 @@ def create_app(
                 {"error": "couldn't change the runtime image. Try again."}, status_code=502
             )
 
+        audit.record(
+            session, request=request, action="agent.runtime.change", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, summary=f"{audit.who(request)} changed agent {agent.name}'s runtime",
+            detail={"runtime_image": runtime_image, "previous": previous},
+        )
         session.commit()
         # The card names the runtime (issue #147), and the commit moved it.
         directory = _sync_directory_best_effort(app.state.clients, app.state.config, agent)
@@ -9921,6 +10156,11 @@ def create_app(
             )
 
         agent.colleague_mode = mode
+        audit.record(
+            session, request=request, action="agent.colleague_mode.change", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, detail={"mode": mode, "previous": previous},
+            summary=f"{audit.who(request)} set agent {agent.name}'s colleague mode to {mode}",
+        )
         session.commit()
         # The panel's half of the audit record; the MCP tool writes its own
         # row for the same call (`kobo_api.mcp.audit`), as restart does.
@@ -10910,6 +11150,11 @@ def create_app(
         invite.status = new_status
         invite.decided_by = getattr(request.state, "iap_email", None)
         invite.decided_at = datetime.now(UTC)
+        audit.record(
+            session, request=request, action=f"invite.{verb}", target_kind="agent", target_id=invite.to_agent,
+            agent_name=invite.to_agent, detail={"from_agent": invite.from_agent, "invite_id": invite.id},
+            summary=f"{audit.who(request)} {verb + ('d' if verb.endswith('e') else 'ed')} agent {invite.from_agent}'s request to work with agent {invite.to_agent}",
+        )
         session.commit()
 
         # Only an accept actually changes `allowed_pairs` -- a decline
@@ -11026,8 +11271,12 @@ def create_app(
             status=INVITE_PENDING,
         )
         session.add(invite)
+        audit.record(
+            session, request=request, action="invite.create", target_kind="agent", target_id=from_agent.name,
+            agent_name=from_agent.name, detail={"to_agent": to_agent.name},
+            summary=f"{audit.who(request)} asked for agent {from_agent.name} to work with agent {to_agent.name}",
+        )
         session.commit()
-
         return JSONResponse(_invite_repr(session, invite), status_code=201)
 
     @app.get("/api/agents/{name}/invites")
@@ -11277,6 +11526,11 @@ def create_app(
         invite.status = INVITE_REVOKED
         invite.decided_by = getattr(request.state, "iap_email", None)
         invite.decided_at = datetime.now(UTC)
+        audit.record(
+            session, request=request, action="invite.revoke", target_kind="agent", target_id=invite.to_agent,
+            agent_name=invite.to_agent, detail={"from_agent": invite.from_agent, "invite_id": invite.id, "was_accepted": was_accepted},
+            summary=f"{audit.who(request)} ended agent {invite.from_agent}'s arrangement with agent {invite.to_agent}",
+        )
         session.commit()
 
         if was_accepted:
@@ -11446,7 +11700,10 @@ def create_app(
         gate = _add_thread_participant(session, thread, agent)
         if gate is not None:
             return gate
-
+        audit.record(
+            session, request=request, action="thread.create", target_kind="thread", target_id=str(thread.id),
+            agent_name=agent.name, summary=f"{audit.who(request)} started a thread with agent {agent.name}",
+        )
         session.commit()
         return JSONResponse(_thread_repr(session, thread), status_code=201)
 
@@ -11478,7 +11735,10 @@ def create_app(
         gate = _add_thread_participant(session, thread, agent)
         if gate is not None:
             return gate
-
+        audit.record(
+            session, request=request, action="thread.participant.add", target_kind="thread", target_id=str(thread.id),
+            agent_name=agent.name, summary=f"{audit.who(request)} added agent {agent.name} to thread {thread.id}",
+        )
         session.commit()
         return JSONResponse(_thread_repr(session, thread), status_code=201)
 
@@ -11704,6 +11964,9 @@ def create_app(
         )
         return JSONResponse({"grants": [_grant_body(g) for g in grants]})
 
+    def _role_words(role: str) -> str:
+        return "manage" if role == "manage" else "see"
+
     @app.post("/api/agents/{name}/grants", status_code=201)
     def add_grant(
         name: str,
@@ -11739,6 +12002,11 @@ def create_app(
             if existing.email.lower() == email.lower():
                 if existing.role != payload.role:
                     existing.role = payload.role
+                    audit.record(
+                        session, request=request, action="grant.update", target_kind="agent", target_id=agent.name,
+                        agent_name=agent.name, detail={"email": email, "role": payload.role},
+                        summary=f"{audit.who(request)} let {email} {_role_words(payload.role)} agent {agent.name}",
+                    )
                     session.commit()
                 return JSONResponse(_grant_body(existing), status_code=200)
 
@@ -11749,8 +12017,12 @@ def create_app(
             added_by=getattr(request.state, "iap_email", None),
         )
         session.add(grant)
+        audit.record(
+            session, request=request, action="grant.add", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, detail={"email": email, "role": payload.role},
+            summary=f"{audit.who(request)} let {email} {_role_words(payload.role)} agent {agent.name}",
+        )
         session.commit()
-
         return JSONResponse(_grant_body(grant), status_code=201)
 
     @app.delete("/api/agents/{name}/grants/{email}")
@@ -11773,8 +12045,12 @@ def create_app(
             return JSONResponse({"error": f"no such grant: {email!r}"}, status_code=404)
 
         session.delete(grant)
+        audit.record(
+            session, request=request, action="grant.remove", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, detail={"email": grant.email},
+            summary=f"{audit.who(request)} took {grant.email}'s access to agent {agent.name} away",
+        )
         session.commit()
-
         return JSONResponse({"removed": True})
 
     # --- MCP surface (MCP server arc, Task 9): flag-gated, mounted after
@@ -11859,17 +12135,22 @@ def configure_room_logging(level: int = logging.INFO) -> None:
 
 
 def _backfill_audit_landed(session_factory) -> None:
-    """Audit events recorded before the log followed the row (issue #307):
-    one cheap pass at boot, fail-soft, so old connects stop reading Pending."""
+    """The audit log's boot pass, fail-soft. First the one-time fold of the
+    admin panel's own event table into `audit_log` (issue #316; idempotent,
+    `audit.migrate_admin_events`), then the events recorded before the log
+    followed the row (issue #307), so old connects stop reading Pending."""
     session = session_factory()
     try:
+        copied = audit.migrate_admin_events(session)
         fixed = admin_store.backfill_landed(session)
         session.commit()
+        if copied:
+            log.info("audit: %d admin event(s) copied into the audit log", copied)
         if fixed:
             log.info("audit: %d event(s) landed from their rows", fixed)
     except Exception:
         session.rollback()
-        log.warning("audit backfill skipped", exc_info=True)
+        log.warning("audit boot pass skipped", exc_info=True)
     finally:
         session.close()
 

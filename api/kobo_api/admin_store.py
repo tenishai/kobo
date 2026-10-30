@@ -1,8 +1,9 @@
 """The admin panel's store: the one way panes write (design 2026-10-18, Arc 2
 data model). Two rules, both enforced here:
 
-- **Every write records an audit event in the same transaction**, with the
-  before and after bodies. The Audit pane is that table read back.
+- **Every write records an audit row in the same transaction**, with the
+  before and after bodies, through `kobo_api.audit.record` (issue #316):
+  the room's one audit log, which the Audit page reads back.
 - **Settings keys come from a registry**, not free text, so `admin_settings`
   stays a settings table. Add a key here when a pane needs one.
 
@@ -16,21 +17,23 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from fastapi import Request
 from sqlalchemy.orm import Session
 
+from . import audit
 from .models import (
-    AdminAuditEvent,
     AdminGrant,
     AdminIntegration,
     AdminRole,
     AdminRoleGroup,
     AdminSetting,
+    AuditLog,
 )
 from .timefmt import rfc3339
 
-LANDED_PENDING = "pending"
-LANDED_APPLIED = "applied"
-LANDED_FAILED = "failed"
+LANDED_PENDING = audit.LANDED_PENDING
+LANDED_APPLIED = audit.LANDED_APPLIED
+LANDED_FAILED = audit.LANDED_FAILED
 
 # Every settings key the panel may write, with the spec_version its body is
 # at. A write with a key outside this map is a programming error, not data.
@@ -56,49 +59,30 @@ def record(
     after: dict[str, Any] | None,
     landed: str = LANDED_PENDING,
     landed_detail: str | None = None,
-) -> AdminAuditEvent:
-    """Insert one audit event on the caller's session, uncommitted: the
-    caller commits it with the row it describes."""
-    event = AdminAuditEvent(
-        at=datetime.now(UTC).replace(tzinfo=None),
-        actor=actor,
-        action=action,
-        object_type=object_type,
-        object_id=object_id,
-        before=before,
-        after=after,
-        landed=landed,
-        landed_detail=landed_detail,
+    request: Request | None = None,
+) -> AuditLog:
+    """Insert one audit row on the caller's session, uncommitted: the
+    caller commits it with the row it describes. A thin call into
+    `kobo_api.audit.record` (issue #316): the sentence is built here from
+    the before and after bodies, which go into the row's bounded detail."""
+    agent_name = object_id.partition("/")[0] if object_type == "grant" and "/" in object_id else None
+    return audit.record(
+        session, request=request, actor=actor, action=action, target_kind=object_type, target_id=object_id,
+        summary=summary(action, object_type, object_id, before, after), agent_name=agent_name,
+        detail={"before": before, "after": after}, landed=landed, landed_detail=landed_detail,
     )
-    session.add(event)
-    return event
 
 
 def mark_landed(session: Session, event_id: int, *, landed: str, detail: str | None = None) -> None:
     """The projection reported back: `applied` or `failed`, with one sentence."""
-    event = session.get(AdminAuditEvent, event_id)
-    if event is None:
-        return
-    event.landed = landed
-    event.landed_detail = detail
-
-
-def _latest_event(session: Session, object_type: str, object_id: str) -> AdminAuditEvent | None:
-    return (
-        session.query(AdminAuditEvent)
-        .filter_by(object_type=object_type, object_id=object_id)
-        .order_by(AdminAuditEvent.at.desc(), AdminAuditEvent.id.desc())
-        .first()
-    )
+    audit.mark_landed(session, event_id, landed=landed, detail=detail)
 
 
 def _land_latest(session: Session, object_type: str, object_id: str, *, landed: str, detail: str | None) -> None:
     """The event follows the row (issue #307): when a row's state is set, the
     most recent event for that target lands the same way, with the same
     sentence. Without this a connect stayed Pending in the log forever."""
-    event = _latest_event(session, object_type, object_id)
-    if event is not None:
-        event.landed, event.landed_detail = landed, detail
+    audit.land(session, object_type, object_id, landed, detail)
 
 
 def backfill_landed(session: Session) -> int:
@@ -109,14 +93,14 @@ def backfill_landed(session: Session) -> int:
     two small tables, pending integration events only. Everything else is
     left as it is."""
     pending = (
-        session.query(AdminAuditEvent)
-        .filter_by(object_type="integration", landed=LANDED_PENDING)
-        .order_by(AdminAuditEvent.at.asc(), AdminAuditEvent.id.asc())
+        session.query(AuditLog)
+        .filter_by(target_kind="integration", landed=LANDED_PENDING)
+        .order_by(AuditLog.at.asc(), AuditLog.id.asc())
         .all()
     )
     fixed = 0
     for event in pending:
-        row = session.get(AdminIntegration, event.object_id)
+        row = session.get(AdminIntegration, event.target_id)
         if event.action == "integration.disconnect":
             if row is None:
                 event.landed = LANDED_APPLIED
@@ -186,19 +170,9 @@ def summary(action: str, object_type: str, object_id: str, before: dict[str, Any
     return f"{action.replace('.', ' ').capitalize()} {object_id}"
 
 
-def event_dict(event: AdminAuditEvent) -> dict[str, Any]:
-    """One audit event as the Audit pane reads it."""
-    return {
-        "id": event.id,
-        "at": rfc3339(event.at),
-        "actor": event.actor,
-        "action": event.action,
-        "object_type": event.object_type,
-        "object_id": event.object_id,
-        "summary": summary(event.action, event.object_type, event.object_id, event.before, event.after),
-        "landed": event.landed,
-        "landed_detail": event.landed_detail,
-    }
+def event_dict(event: AuditLog) -> dict[str, Any]:
+    """One audit row as the Audit page reads it (`kobo_api.audit.row_dict`)."""
+    return audit.row_dict(event)
 
 
 def get_setting(session: Session, key: str) -> dict[str, Any] | None:
@@ -236,10 +210,12 @@ def put_setting(session: Session, key: str, value: dict[str, Any], *, actor: str
     return row
 
 
-def audit_events(session: Session, *, limit: int = 200) -> list[AdminAuditEvent]:
+def audit_events(session: Session, *, limit: int = 200) -> list[AuditLog]:
+    """The newest rows of the room's audit log; the Audit page reads
+    `GET /api/admin/audit` (filters, pages) rather than this."""
     return (
-        session.query(AdminAuditEvent)
-        .order_by(AdminAuditEvent.at.desc(), AdminAuditEvent.id.desc())
+        session.query(AuditLog)
+        .order_by(AuditLog.at.desc(), AuditLog.id.desc())
         .limit(limit)
         .all()
     )

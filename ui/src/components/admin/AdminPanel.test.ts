@@ -61,18 +61,31 @@ describe("AdminPanel", () => {
     slack_operators: [],
   };
   const AUDIT = {
-    events: [
+    rows: [
       {
         id: 1,
-        at: "2026-10-18T20:00:00",
+        at: "2026-10-18T20:00:00Z",
         actor: "kyle@example.com",
-        action: "setting.put",
-        object_type: "setting",
-        object_id: "panel.preferences",
+        actor_kind: "person",
+        action: "agent.create",
+        target_kind: "agent",
+        target_id: "ward",
+        agent_name: "ward",
+        summary: "kyle created agent ward",
+        outcome: "ok",
+        source: "panel",
+        request_ip: "203.0.113.7",
+        user_agent: null,
+        detail: null,
         landed: "applied",
         landed_detail: "stored",
       },
     ],
+    next_cursor: null,
+    total_in_window: 1,
+    actors: ["kyle@example.com"],
+    agents: ["ward"],
+    families: ["agent"],
   };
   const REQUESTS = [
     {
@@ -223,11 +236,13 @@ describe("AdminPanel", () => {
     expect(screen.getByRole("button", { name: "Added" })).toBeTruthy();
   });
 
-  it("Audit reads the store's events with their landed state", async () => {
+  it("Audit reads the log as sentences with the action and the landed state", async () => {
     navigate({ page: "admin", pane: "audit" });
     renderWithClient(AdminPanel);
-    expect(await screen.findByText("panel.preferences")).toBeTruthy();
-    expect(screen.getByText("Applied")).toBeTruthy();
+    expect(await screen.findByText("kyle created agent ward")).toBeTruthy();
+    expect(screen.getByText("agent.create")).toBeTruthy();
+    expect(screen.getByText("· Applied")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "CSV" }).getAttribute("href")).toBe("/api/admin/audit/export?format=csv");
   });
 
   it("opens the role editor from the Create link", async () => {

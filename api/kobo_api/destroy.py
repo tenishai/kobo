@@ -903,6 +903,37 @@ def _run_destroy_body_and_release(
             _destroying_agent_ids.discard(agent_id)
 
 
+def _record_destroy_outcome(
+    session_factory: sessionmaker[Session], agent_name: str, acting_email: str | None, *, ok: bool, detail: str
+) -> None:
+    """The audit log learns how the destroy went (issue #316): the `agent.destroy`
+    row the DELETE wrote lands `applied` or `failed` with the engine's sentence;
+    a run with no such row behind it (a resume from the sweep) writes its own.
+    Its own session, since the agent's row is gone by the time it is called;
+    fail-soft, the teardown's own outcome never hangs on the log."""
+    from kobo_api import audit
+
+    landed = audit.LANDED_APPLIED if ok else audit.LANDED_FAILED
+    session = session_factory()
+    try:
+        latest = audit.latest_for(session, "agent", agent_name)
+        if latest is not None and latest.action == "agent.destroy" and latest.landed == audit.LANDED_PENDING:
+            latest.landed, latest.landed_detail = landed, detail
+        else:
+            audit.record(
+                session, action="agent.destroy", target_kind="agent", target_id=agent_name, agent_name=agent_name,
+                actor=acting_email or audit.ROOM_ACTOR, source=audit.SOURCE_RUNTIME,
+                outcome=audit.OUTCOME_OK if ok else audit.OUTCOME_FAILED, landed=landed, landed_detail=detail,
+                summary=f"Destroyed agent {agent_name}" if ok else f"Destroying agent {agent_name} failed",
+            )
+        session.commit()
+    except Exception:  # the log never fails the teardown
+        session.rollback()
+        log.warning("destroy: could not record the outcome for agent %s", agent_name, exc_info=True)
+    finally:
+        session.close()
+
+
 def _run_destroy_body(
     session_factory: sessionmaker[Session],
     agent_id: int,
@@ -932,6 +963,7 @@ def _run_destroy_body(
                 clients=clients,
                 acting_email=acting_email,
             )
+            agent_name = agent.name
 
             failed_step_name: str | None = None
             for name in destroy_steps_for(agent):
@@ -976,12 +1008,21 @@ def _run_destroy_body(
                     # IS the completion signal, and this log line is the
                     # step's note.
                     log.info("destroy step %r done for agent %s: %s", name, agent_id, detail)
+                    _record_destroy_outcome(
+                        session_factory, agent_name, acting_email, ok=True,
+                        detail=f"destroyed; {detail}" if detail else "destroyed",
+                    )
                     return
 
                 log.info("destroy step %r done for agent %s: %s", name, agent_id, detail)
                 step_row.status = StepStatus.DONE
                 step_row.finished_at = datetime.now(UTC)
                 session.commit()
+            if failed_step_name is not None:
+                _record_destroy_outcome(
+                    session_factory, agent_name, acting_email, ok=False,
+                    detail=f"{failed_step_name} failed: {agent.error}" if agent.error else f"{failed_step_name} failed",
+                )
         except Exception as exc:
             # Engine-level failure: anything outside a step's own body (a
             # commit, a session going bad, ...). Mirrors provisioner's own

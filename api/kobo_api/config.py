@@ -592,6 +592,11 @@ class Config(BaseModel):
     # How many runs in a row a system task (the nightly learnings pass) may
     # fail for an agent before its card says so (issue #142).
     system_task_flag_after: int = 3
+    # How long the room's audit log keeps a row (issue #316). The nightly
+    # system task deletes older rows and records one `audit.prune` row
+    # saying how many went. Deployment config, not org.yaml: retention is
+    # the operator's promise, not a team's preference. Zero keeps everything.
+    audit_retention_days: int = 30
     # Global READERS (reader-role wave, 2026-08-28): RAW Okta group names
     # whose members see EVERY agent in the room -- visibility only, no
     # mutation power of any kind. Raw directory names, deliberately NOT
