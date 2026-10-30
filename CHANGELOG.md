@@ -6,6 +6,14 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.17] - 2026-10-30
+
+### Fixed
+
+- **Gateway edits go out as a pull request's branch, never as a push to the gateway's main.** The pull-request helper committed and pushed the checked-out default branch before creating the branch, so every connect landed on the gateway repo's main first and the pull request then failed with nothing to commit; a Datadog connect doubled the `datadog-mcp` stanza on main and the gateway refused to start. A gateway edit now pushes only its branch, and a test pins that (#330).
+- Removing or replacing a target strips every stanza of that name with the comment lines above it, whoever wrote it, so a hand-written stanza is replaced rather than doubled (#330).
+- The Datadog connect waits up to a minute for the permission service to see the Secret it just wrote (a mounted Secret takes the kubelet a moment), and the waiting sentence no longer asks for a restart (#330).
+
 ## [0.3.16] - 2026-10-30
 
 ### Added
