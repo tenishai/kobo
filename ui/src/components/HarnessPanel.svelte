@@ -33,7 +33,8 @@
     modelsQuery,
     updateAgentModelMutation,
     updateAgentRuntimeMutation,
-  } from "../lib/queries";
+    whoamiQuery,
+} from "../lib/queries";
   import {
     DEFAULT_HARNESS_SECTION,
     HARNESS_SECTION_LABELS,
@@ -147,7 +148,10 @@
   }
 
   const connected = $derived(kind === KIND_CONNECTED);
-  const sections = $derived(harnessSections(kind));
+  // The permission service on means no Identity and access section (#292).
+  const who = createQuery(() => (whoamiQuery()));
+  const accessOn = $derived(who.data?.access_on === true);
+  const sections = $derived(harnessSections(kind, { accessOn }));
 
   /** The version half of an image ref: the digest after an `@`, else the
    * tag after the last `:`, else (an untagged ref) the ref itself. Used
@@ -212,9 +216,9 @@
   // Labels read as a choice an owner can make, not as mode names (#264);
   // the default says so, so a first look needs no change.
   const COLLEAGUE_MODE_LABELS: Record<ColleagueMode, string> = {
-    default: "Asks them when a question is in their field (default)",
-    "roster-only": "Knows who they are, asks a person instead",
-    none: "Works alone",
+    default: "Yes, when it helps (default)",
+    "roster-only": "No, but knows who they are",
+    none: "No",
   };
   // What each mode does, under the row (issue #133): roster-only also turns
   // off general knowledge, which the label alone doesn't say.
@@ -324,7 +328,7 @@
               <dt>Runtime</dt>
               <dd class="harness__ref">{runtimeImage ?? "Not reported."}</dd>
               {#if colleagueMode && !connected}
-                <dt>Works with colleagues</dt>
+                <dt>Asks other agents</dt>
                 <dd>
                   {#if canChangeModel}
                     <span class="harness__model-change">
@@ -464,7 +468,8 @@
         {:else if id === "learnings"}
           <LearningsPanel {agentName} canDecide={canDecideLearnings} {frozen} />
         {:else if id === "permissions"}
-          <PermissionsPanel {agentName} />
+          <!-- The identity line moves here only when the section it lived in is gone (#292). -->
+          <PermissionsPanel {agentName} identity={accessOn ? identity : null} />
         {:else if id === "activity"}
           <ActivityPanel {agentName} />
         {/if}

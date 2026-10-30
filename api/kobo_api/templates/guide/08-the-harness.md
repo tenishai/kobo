@@ -11,15 +11,15 @@ The room owns the `FROM` line in the agent's Dockerfile. If someone edits it by 
 
 To move an agent onto another model after it is deployed, pick one from the list beside **Model** and press **Change model**. The room writes the choice into the agent's deploy contract and the agent rebuilds and rolls on it. The same change is **set agent model** from your own assistant.
 
-Below them, **Works with colleagues** sets whether the agent may ask other agents: asks them when a question is in their field (the default), knows who they are but asks a person instead, or works alone. Pick one and press **Change**; the agent rebuilds with it. See "Agents talking to agents" for what each mode does.
+Below them, **Asks other agents** sets whether the agent may ask its colleagues: yes, when it helps (the default); no, but it knows who they are; or no. Pick one and press **Change**; the agent rebuilds with it. See "Agents talking to agents" for what each mode does.
 
 ## Identity and access
 
-The service account the agent runs as, the Google service account bound to it, and the room's project. Below them, **Ask for access to another project**: name the project and the roles, one per line, and the room writes the request you hand to the SRE team. Basic roles like owner, editor and viewer are refused; ask for the narrowest role that does the job.
+Shown only while the permission service is off. The service account the agent runs as, the Google service account bound to it, and the room's project, with **Ask for access to another project** to write a request you hand to the SRE team. With the permission service on, access is asked for under **Permissions**, which shows the identity the agent runs as in one line.
 
 ## Persona
 
-The persona the agent was built from, with its team, purpose tags and capability sentence. **Edit details**, in the **More** menu at the right of the agent's name, changes the team, purpose and description. The persona itself can be swapped from your own assistant with the set persona tool. See "Personas" for how personas are made.
+The persona the agent was built from, its source (Built-in, or the team whose catalog it came from), purpose tags and capability sentence. **Edit details**, in the **More** menu at the right of the agent's name, changes the team, purpose and description. The persona itself can be swapped from your own assistant with the set persona tool. See "Personas" for how personas are made.
 
 ## Skills
 

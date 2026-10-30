@@ -3415,6 +3415,10 @@ def create_app(
             # deployment names a sign-out path.
             "admin_panel": bool(app.state.config.admin_panel),
             "logout_url": app.state.config.logout_url,
+            # Whether the permission service is on: the Harness then drops its
+            # Identity and access section, since access is asked for under
+            # Permissions (issue #292).
+            "access_on": getattr(app.state.clients, "bab", None) is not None,
         }
         if is_admin:
             result["pending_group_requests"] = (

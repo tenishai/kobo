@@ -669,7 +669,7 @@
       <section class="panel">
         <h2 class="panel__heading">Persona</h2>
         <dl class="agent-detail__facts">
-          <dt>Soul</dt>
+          <dt>Persona</dt>
           <dd>
             {personaLine}
             {#if data.repo_full_name}
@@ -683,12 +683,12 @@
               </a>
             {/if}
           </dd>
-          <dt>Persona team</dt>
+          <dt>Source</dt>
           <dd>
-            {data.team}
+            {data.team === "shared" || !data.team ? "Built-in" : `${data.team} team`}
             <span class="agent-detail__fact-help">
-              The team whose personas and skills this agent draws from. Who can see the
-              agent is decided by its group, shown beside the name.
+              Where its persona and skills come from. Who can see the agent is its group,
+              shown beside the name.
             </span>
           </dd>
           <dt>Purpose</dt>
