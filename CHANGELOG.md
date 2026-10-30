@@ -6,6 +6,12 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.21] - 2026-10-30
+
+### Changed
+
+- Skills: the catalog and Suggestions rows read **Select**, the bar says the selected skills go out together as one update and one restart, and the one button reads **Add N skills**; before, each row read Add and invited one add, one save, one restart at a time (#345).
+
 ## [0.3.20] - 2026-10-30
 
 ### Fixed
