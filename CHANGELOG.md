@@ -6,6 +6,18 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.18] - 2026-10-30
+
+### Added
+
+- **A connect adds the vendor's target to the gateway live.** With the gateway's admin plane wired (liminal 0.9.0), connecting Datadog, or a token vendor, puts its target on the gateway through `PUT /admin/targets/<name>` the moment the credential is accepted; the row reads Connected at once, with no pull request and no button. Disconnecting removes it the same way. A gateway that predates the lane, or a room with no admin plane, gets the pull request as before, and the row says which (#335, liminal #222).
+- **A row waiting on a gateway pull request learns how it ended.** The Integrations listing reads each waiting row's pull request: merged makes it Connected and drops the link, closed without merging makes it Failed and says to add again (#334).
+
+### Fixed
+
+- Gateway add and remove are separate pull requests, on separate branches; opening one closes a stale opposite one, so a row never links to a change that would undo it. A connect whose edit changes nothing on the gateway repo reads Connected with "the gateway already carries the target" (#333).
+- The Add button spins and names its step; the row reads Removing while a remove runs; a second remove is "already removed", not an error (#332, #333).
+
 ## [0.3.17] - 2026-10-30
 
 ### Fixed
