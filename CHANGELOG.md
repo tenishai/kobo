@@ -6,6 +6,12 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-10-30
+
+### Added
+
+- **Datadog through the permission service.** Integrations > Datadog takes a service account id, the API key and a management application key; the room writes them where the permission service reads them, probes, and connects Datadog with every read permission as the ceiling. Each agent then borrows a one-hour application key scoped to its grants, through the tool gateway (#322).
+
 ## [0.3.13] - 2026-10-30
 
 ### Fixed
