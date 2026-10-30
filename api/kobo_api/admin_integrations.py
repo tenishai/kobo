@@ -821,6 +821,10 @@ def disconnect(session: Session, clients: Clients | None, config: Config, *, int
             try:
                 out = bab.delete_integration(integration_id, actor)
             except ClientError as exc:
+                if "no integration" in str(exc):
+                    # Gone on both sides: a second Remove while the first one was still
+                    # opening the gateway's pull request lands here. Nothing to refuse.
+                    return {"id": integration_id, "secret": "none", "gateway": "none", "access": "already removed"}
                 raise ConnectRefused(str(exc)) from exc
             return {"id": integration_id, "secret": "none", "gateway": "none",
                     "access": f"removed; {out.get('grants_revoked', 0)} grant(s) revoked"}
