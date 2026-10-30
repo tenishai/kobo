@@ -5785,11 +5785,13 @@ def test_an_organization_then_its_accounts_register_themselves(tmp_path, fake_st
     assert bad.status_code == 409
 
 
-def test_a_datadog_probe_the_permission_service_refuses_connects_nothing(tmp_path, fake_storage):
+def test_a_datadog_probe_the_permission_service_refuses_connects_nothing(tmp_path, fake_storage, monkeypatch):
     """Gate (integrity): a Datadog service account the permission service cannot mint from is
     connected nowhere: the Secret written for the probe is taken back, no row here, none in
     the service. A service not yet configured for Datadog keeps the Secret for its next
     restart and the row waits, saying so (kobo#322)."""
+    from kobo_api import admin_integrations
+    monkeypatch.setattr(admin_integrations, "DATADOG_PROBE_PAUSE_S", 0)
     bab = FakeBab(integrations=[])
     client, headers = _access_client(tmp_path, fake_storage, bab=bab)
     kubectl = client.app.state.clients.kubectl
@@ -5799,10 +5801,12 @@ def test_a_datadog_probe_the_permission_service_refuses_connects_nothing(tmp_pat
     assert response.status_code == 409 and "connect again" in response.json()["error"]
     assert bab.integrations("x") == [] and client.get("/api/admin/integrations", headers=headers).json()["integrations"] == []
     assert ("bab", "bab-datadog") not in kubectl.secrets
-    # Not configured yet: the Secret stays for the service's next restart and the row says so.
+    # Not read yet: the probe is tried for a while (the mounted Secret takes the kubelet a
+    # moment), then the Secret stays, the row waits and says so.
     response = client.post("/api/admin/integrations", json={**body, "identity": {"service_account_id": "unconfigured-sa"}}, headers=headers)
     assert response.status_code == 201 and response.json()["state"] == "pending"
-    assert "next restart" in response.json()["state_detail"] and ("bab", "bab-datadog") in kubectl.secrets
+    assert "within a minute or two" in response.json()["state_detail"] and ("bab", "bab-datadog") in kubectl.secrets
+    assert bab.datadog_probes.count("unconfigured-sa") == admin_integrations.DATADOG_PROBE_TRIES
 
 
 def test_datadog_through_the_permission_service_adds_its_mcp_server_to_the_gateway(tmp_path, fake_storage):
@@ -5824,6 +5828,17 @@ def test_datadog_through_the_permission_service_adds_its_mcp_server_to_the_gatew
                  "[target.credential_headers]", 'DD_APPLICATION_KEY = "DD_APP_KEY"', 'required_scope = "datadog:read"'):
         assert line in targets, line
     assert "dd-api" not in targets and "dd-mgmt" not in targets
+    # The edit went out as the pull request's branch and never as a push to the gateway's
+    # default branch (kobo 0.3.17: that push once doubled the stanza on main and took the
+    # gateway down, since liminal refuses a duplicate target name).
+    assert github.push_count == 0 and github.open_pr_calls[-1]["branch"] == "kobo/integration-datadog"
+    assert targets.count('name = "datadog-mcp"') == 1
+    # A stanza an operator wrote by hand under the same name, with its own comment, is
+    # replaced rather than doubled.
+    from kobo_api.admin_integrations import _without_stanza
+    hand = ('[[target]]\nname = "other"\naddress = "https://o"\n\n# Datadog, by hand (two\n# comment lines).\n[[target]]\n'
+            'name = "datadog-mcp"\naddress = "https://old"\n[target.credential_headers]\nDD_API_KEY = "DD_API_KEY"\n')
+    assert _without_stanza(hand, "datadog-mcp") == '[[target]]\nname = "other"\naddress = "https://o"\n'
     # The add pull request merges; the disconnect opens the one that removes the target whole.
     github.close_pr(GATEWAY_REPO, row["spec"]["pull_request"], "merged")
     out = client.delete(f"/api/admin/integrations/{row['id']}", headers=headers).json()

@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,11 @@ AUTH_KINDS = {
     "datadog_service_account": "a Datadog service account the permission service mints scoped application keys from",
 }
 DATADOG_AUTH = "datadog_service_account"
+# How long a connect waits for the permission service to see the Secret it just wrote
+# (a mounted Secret takes the kubelet up to about a minute to appear in the pod).
+DATADOG_PROBE_TRIES = 12
+DATADOG_PROBE_PAUSE_S = 5.0
+_sleep = time.sleep
 DATADOG_SECRET = "bab-datadog"
 DATADOG_SECRET_KEYS = ("API_KEY", "MGMT_APP_KEY")
 DATADOG_DEFAULT_SITE = "datadoghq.com"
@@ -263,10 +269,13 @@ def _without_aws_stanza(text: str, integration_id: str) -> str:
 
 
 def _without_stanza(text: str, target_name: str) -> str:
-    """`targets.toml` with the stanza of this target name (its comment, its
-    keys and its `[target.<table>]` sub-tables) gone."""
+    """`targets.toml` with every stanza of this target name gone: the comment
+    lines right above it, its keys and its `[target.<table>]` sub-tables.
+    Whoever wrote it: a stanza an operator added by hand under the same name
+    would otherwise sit next to the room's, and the gateway refuses a
+    duplicate target name at startup."""
     pattern = re.compile(
-        r"\n?#[^\n]*connected from the room[^\n]*\n\[\[target\]\]\nname = \""
+        r"\n?(?:#[^\n]*\n)*\[\[target\]\]\nname = \""
         + re.escape(target_name)
         + r"\"\n(?:(?:[A-Za-z_]+ = [^\n]*|\[target\.[a-z_]+\])\n)*",
     )
@@ -297,7 +306,10 @@ def _gateway_branch_pr(github: GitHubClient, config: Config, *, branch: str, tit
         if github.branch_exists(repo, branch):
             require_our_branch(github, repo, branch)
             github.delete_branch(repo, branch)
-        github.commit_push(workdir, title)
+        # open_pr alone: it checks the branch out, commits the edit and pushes THAT
+        # branch. `commit_push` would commit and push the checked-out default branch
+        # first, which is how a Datadog stanza once landed on the gateway's main
+        # twice and took the gateway down (kobo 0.3.17).
         return github.open_pr(workdir, repo=repo, branch=branch, title=title, body=body)
 
 
@@ -408,16 +420,23 @@ def _connect_datadog(
     except ClientError as exc:
         raise ConnectRefused(f"{where} could not be written: {exc}; nothing was connected") from exc
     waiting = False
-    try:
-        bab.probe_datadog(sa, actor)
-    except ClientError as exc:
-        # Before the permission service has read the Secret, its probe answers either
-        # "not configured" or "cannot mint for datadog yet" (no minter registered):
-        # both mean "restart it, then connect again", not a refused key.
-        text = str(exc).lower()
-        if "not configured" in text or "cannot mint for" in text:
-            waiting = True
-        else:
+    for attempt in range(DATADOG_PROBE_TRIES):
+        try:
+            bab.probe_datadog(sa, actor)
+            waiting = False
+            break
+        except ClientError as exc:
+            # The permission service reads the Secret from a mount, and the kubelet takes
+            # up to a minute to project a Secret just written; until then the probe answers
+            # "not configured" (or, on an older service, "cannot mint for datadog yet").
+            # That is a wait, not a refused key: try again for a while, then let the row
+            # say so. Any other refusal takes the Secret back and connects nothing.
+            text = str(exc).lower()
+            if "not configured" in text or "cannot mint for" in text:
+                waiting = True
+                if attempt < DATADOG_PROBE_TRIES - 1:
+                    _sleep(DATADOG_PROBE_PAUSE_S)
+                continue
             try:
                 kubectl.delete_secret(config.bab_namespace, DATADOG_SECRET)
             except ClientError as undo:
@@ -434,8 +453,8 @@ def _connect_datadog(
         session, vendor=vendor, name=name, base_access=base_access, spec=spec, credential_ref=None, actor=actor,
     )
     if waiting:
-        detail = (f"the permission service is not configured for Datadog yet: it picks up {where} on its next restart; "
-                  "restart it, then remove this row and add Datadog again to check the keys")
+        detail = (f"the permission service has not read {where} yet; it does within a minute or two, "
+                  "so remove this row and add Datadog again to check the keys")
     else:
         detail = f"Datadog agreed: the permission service minted and removed a probe key for service account {sa}; the keys are in {where}"
     spec_for_bab = {"site": identity["site"], "service_account_id": sa, "name": name}
