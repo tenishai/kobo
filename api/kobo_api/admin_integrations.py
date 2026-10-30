@@ -27,10 +27,19 @@ is a scoped application key the service mints per agent. The gateway learns
 one thing (kobo#327): a `[[target]]` named `datadog-mcp` for Datadog's hosted
 MCP server, `auth_method = "service-headers"` (liminal 0.8.0), whose calls
 carry each agent's leased key as the `DD_API_KEY` / `DD_APPLICATION_KEY`
-headers and whose catalog fetch uses the gateway's own Datadog env. The
-connect opens that pull request; the disconnect opens the one that removes it.
+headers and whose catalog fetch uses the gateway's own Datadog env.
 With the permission service off, Datadog connects as it always has, a key
 pair served through the gateway (`api_keys`).
+
+The gateway learns a target two ways (liminal#222, kobo#327). When the room
+holds the gateway's admin plane (`clients.liminal_admin`), a Datadog or
+token connect PUTs the target there and it serves at once: the row is
+Connected with `spec.gateway = "live"` and no pull request is opened; the
+disconnect DELETEs it. A gateway whose admin plane predates targets (before
+liminal 0.9.0) answers a plain 404, and the connect falls back to the pull
+request above; a gateway that refuses the spec fails the row, since a pull
+request would carry the same spec. Rows that went by pull request are
+removed by pull request.
 """
 
 from __future__ import annotations
@@ -49,6 +58,7 @@ from . import bab as bab_mod
 from .agent_env import require_our_branch
 from .clients import ClientError, Clients, GitHubClient
 from .config import Config
+from .liminal_admin import TargetNotFound, targets_unsupported
 from .models import AdminIntegration
 
 log = logging.getLogger(__name__)
@@ -109,6 +119,8 @@ DATADOG_MCP_SCOPE = "datadog:read"
 # service hands the gateway ({DD_API_KEY, DD_APP_KEY, DD_SITE}); the catalog
 # fetch reads the same two headers from the gateway pod's env.
 DATADOG_MCP_HEADERS = (("DD_API_KEY", "DD_API_KEY"), ("DD_APPLICATION_KEY", "DD_APP_KEY"))
+# `spec.gateway` on a row whose target the admin plane holds live (no pull request).
+GATEWAY_LIVE = "live"
 _AWS_ACCOUNT_ID = re.compile(r"^\d{12}$")
 _AWS_ROLE_ARN = re.compile(r"^arn:aws:iam::\d{12}:role/[\w+=,.@/-]+$")
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -193,27 +205,93 @@ def _mcp_address(pasted: str, default: str) -> str:
     return address or default
 
 
-def target_stanza(row: AdminIntegration) -> str:
-    """The `[[target]]` the gateway needs for this vendor: name, address,
-    bearer token from the env the synced Secret feeds, trust tier. Scopes are
-    the gateway operator's call and stay out of here."""
+def target_spec(row: AdminIntegration) -> dict[str, Any]:
+    """The target for a token vendor, as the admin plane takes it (the
+    `[[target]]` keys without `name`): address, trust tier, bearer token from
+    the env the synced Secret feeds. Scopes are the gateway operator's call
+    and stay out of here. Only the `token` kind has a spec the gateway knows
+    whole; the other kinds go by pull request (`target_stanza`)."""
     spec = row.spec or {}
-    address = spec.get("address", "")
-    trust = spec.get("trust", "untrusted")
-    auth = spec.get("auth", "token")
-    head = (
-        f"\n# {row.name}: connected from the room\'s admin panel by {row.created_by}.\n"
-        f"[[target]]\n"
-        f'name = "{row.id}"\n'
-        f'transport = "http"\n'
-        f'address = "{address}"\n'
-        f'trust = "{trust}"\n'
-    )
+    if spec.get("auth", "token") != "token":
+        raise ValueError(f"no live target spec for the {spec.get('auth')!r} kind")
+    return {
+        "transport": "http",
+        "address": spec.get("address", ""),
+        "trust": spec.get("trust", "untrusted"),
+        "auth_method": "bearer",
+        "bearer_token_env": token_env(row.id),
+    }
+
+
+def datadog_target_spec(row: AdminIntegration) -> dict[str, Any]:
+    """The target for Datadog's hosted MCP server (kobo#327), as the admin
+    plane takes it: untrusted, flagged, one session per persona, and
+    `service-headers` auth, so each agent's call carries the application key
+    the permission service leased it while the catalog fetch uses the
+    gateway's shared key from its env."""
+    spec = row.spec or {}
+    return {
+        "transport": "http",
+        "address": spec.get("address", ""),
+        "trust": "untrusted",
+        "on_untrusted": "flag",
+        "identity": "none",
+        "session": "per-persona",
+        "auth_method": "service-headers",
+        "required_scope": DATADOG_MCP_SCOPE,
+        "client_name": "liminal-gateway",
+        "credential_headers": dict(DATADOG_MCP_HEADERS),
+        "catalog_headers_env": dict(DATADOG_MCP_HEADERS),
+    }
+
+
+def live_target_spec(row: AdminIntegration) -> dict[str, Any] | None:
+    """The spec the admin plane takes for this row, or None for a kind that
+    only goes by pull request (AWS is a registry entry, the other key kinds
+    write a `[target.auth]` table the gateway's routes do not know)."""
+    auth = (row.spec or {}).get("auth", "token")
+    if auth == DATADOG_AUTH:
+        return datadog_target_spec(row)
     if auth == "token":
-        return head + f'auth_method = "bearer"\nbearer_token_env = "{token_env(row.id)}"\n'
-    # Every other kind: the method named, its plain fields, and an env name
-    # per stored secret, under the target's own auth table.
-    lines = [head + f'auth_method = "{auth}"\n', "[target.auth]\n"]
+        return target_spec(row)
+    return None
+
+
+def _render_stanza(row: AdminIntegration, name: str, spec: dict[str, Any]) -> str:
+    """One `[[target]]` in TOML from the spec the admin plane takes: the
+    room's comment, `name`, the scalar keys in order, then one
+    `[target.<key>]` table per object value. The same bytes whichever lane
+    carries the target."""
+    scalars = [f'{key} = "{value}"\n' for key, value in spec.items() if not isinstance(value, dict)]
+    tables = []
+    for key, value in spec.items():
+        if isinstance(value, dict):
+            tables.append(f"[target.{key}]\n")
+            tables.extend(f'{k} = "{v}"\n' for k, v in value.items())
+    return "".join([
+        f"\n# {row.name}: connected from the room\'s admin panel by {row.created_by}.\n",
+        "[[target]]\n",
+        f'name = "{name}"\n',
+        *scalars,
+        *tables,
+    ])
+
+
+def target_stanza(row: AdminIntegration) -> str:
+    """The `[[target]]` the gateway needs for this vendor: `target_spec`
+    rendered for a token; every other kind names its method, its plain
+    fields, and an env name per stored secret, under the target's own auth
+    table."""
+    spec = row.spec or {}
+    auth = spec.get("auth", "token")
+    if auth == "token":
+        return _render_stanza(row, row.id, target_spec(row))
+    lines = [
+        _render_stanza(row, row.id, {
+            "transport": "http", "address": spec.get("address", ""), "trust": spec.get("trust", "untrusted"), "auth_method": auth,
+        }),
+        "[target.auth]\n",
+    ]
     for key, value in sorted((spec.get("identity") or {}).items()):
         lines.append(f'{key} = "{value}"\n')
     for key in sorted(spec.get("secret_keys") or []):
@@ -222,30 +300,8 @@ def target_stanza(row: AdminIntegration) -> str:
 
 
 def datadog_target_stanza(row: AdminIntegration) -> str:
-    """The `[[target]]` for Datadog's hosted MCP server (kobo#327): untrusted,
-    flagged, one session per persona, and `service-headers` auth, so each
-    agent's call carries the application key the permission service leased it
-    while the catalog fetch uses the gateway's shared key from its env."""
-    spec = row.spec or {}
-    lines = [
-        f"\n# {row.name}: connected from the room\'s admin panel by {row.created_by}.\n",
-        "[[target]]\n",
-        f'name = "{mcp_target_name(row.id)}"\n',
-        'transport = "http"\n',
-        f'address = "{spec.get("address", "")}"\n',
-        'trust = "untrusted"\n',
-        'on_untrusted = "flag"\n',
-        'identity = "none"\n',
-        'session = "per-persona"\n',
-        'auth_method = "service-headers"\n',
-        f'required_scope = "{DATADOG_MCP_SCOPE}"\n',
-        'client_name = "liminal-gateway"\n',
-        "[target.credential_headers]\n",
-        *(f'{header} = "{key}"\n' for header, key in DATADOG_MCP_HEADERS),
-        "[target.catalog_headers_env]\n",
-        *(f'{header} = "{key}"\n' for header, key in DATADOG_MCP_HEADERS),
-    ]
-    return "".join(lines)
+    """`datadog_target_spec` as the `[[target]]` the pull request writes."""
+    return _render_stanza(row, mcp_target_name(row.id), datadog_target_spec(row))
 
 
 def aws_roles_stanza(row: AdminIntegration) -> str:
@@ -289,6 +345,58 @@ def gateway_target_name(row: AdminIntegration) -> str:
     """What the gateway calls this row's target: the MCP name for a Datadog
     connection through the permission service, the row id otherwise."""
     return mcp_target_name(row.id) if (row.spec or {}).get("auth") == DATADOG_AUTH else row.id
+
+
+def _admin(clients: Clients | None):
+    return getattr(clients, "liminal_admin", None) if clients is not None else None
+
+
+def apply_target_live(clients: Clients | None, row: AdminIntegration, *, remove: bool) -> str | None:
+    """Put this row's target on the gateway through its admin plane, or take
+    it off. None when no admin plane is wired, or the kind has no live spec;
+    otherwise the sentence for the row. The gateway's refusal (`ClientError`,
+    including the admin plane lacking target routes) is the caller's to
+    read; a target the gateway no longer serves counts as removed."""
+    admin = _admin(clients)
+    spec = live_target_spec(row) if admin is not None else None
+    if spec is None:
+        return None
+    name = gateway_target_name(row)
+    if remove:
+        try:
+            admin.delete_target(name)
+        except TargetNotFound:
+            pass
+        return "removed from the gateway"
+    out = admin.put_target(name, spec) or {}
+    status = str(out.get("status") or "ready")
+    if status == "ready":
+        return f"live on the gateway: the {name} target is ready"
+    return f"live on the gateway: the {name} target is degraded: {status}"
+
+
+PR_SENTENCE = "; pull request open on the gateway:"
+PR_FALLBACK_SENTENCE = "; the gateway admin plane does not take targets yet, so a pull request is open on the gateway instead:"
+
+
+def _target_live_or_fallback(
+    session: Session, row: AdminIntegration, clients: Clients | None, detail: str,
+) -> tuple[str | None, str | None]:
+    """Try the live lane for a connect. `(sentence, None)` when the gateway
+    took the target; `(None, lead-in)` when the pull request is the way (no
+    admin plane, or one without target routes: the lead-in says which);
+    `(None, None)` when the gateway refused the spec, the row already marked
+    Failed, since a pull request would carry the same spec."""
+    try:
+        live = apply_target_live(clients, row, remove=False)
+    except ClientError as exc:
+        if targets_unsupported(exc):
+            return None, PR_FALLBACK_SENTENCE
+        admin_store.set_integration_state(
+            session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the gateway refused the target: {exc}",
+        )
+        return None, None
+    return (live, None) if live else (None, PR_SENTENCE)
 
 
 def _gateway_branch_pr(
@@ -481,9 +589,18 @@ def _connect_datadog(
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the permission service refused: {exc}")
         return row
     detail += "; connected in the permission service, agents may ask for its read permissions"
-    # The gateway's half (kobo#327): the `datadog-mcp` target, a pull request on the
-    # gateway's config repository. Independent of the Secret restart, so a waiting row
-    # opens it too.
+    # The gateway's half (kobo#327): the `datadog-mcp` target. Live through the admin
+    # plane when the room holds one; a pull request on the gateway's config repository
+    # otherwise. Independent of the Secret restart, so a waiting row gets it too.
+    live, fallback = _target_live_or_fallback(session, row, clients, detail)
+    if live is None and fallback is None:
+        return row  # the gateway refused the spec; the row says so
+    if live:
+        row.spec = {**dict(row.spec or {}), "gateway": GATEWAY_LIVE}
+        admin_store.set_integration_state(
+            session, row.id, state=admin_store.STATE_PENDING if waiting else admin_store.STATE_APPLIED, detail=f"{detail}; {live}",
+        )
+        return row
     github = getattr(clients, "github", None) if clients is not None else None
     pr: str | None = None
     if github is not None and config.gateway_config_repo:
@@ -495,8 +612,7 @@ def _connect_datadog(
             )
             return row
     if pr:
-        detail += (f"; pull request open on the gateway: {pr}; agents reach Datadog\'s MCP server after it merges "
-                   "and the gateway rolls")
+        detail += f"{fallback} {pr}; agents reach Datadog\'s MCP server after it merges and the gateway rolls"
         row.spec = {**dict(row.spec or {}), "pull_request": pr}
         state = admin_store.STATE_PENDING
     elif config.gateway_config_repo:
@@ -764,13 +880,22 @@ def connect(
         # Leases come from the permission service; the gateway has nothing to learn.
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_APPLIED, detail=detail)
         return row
+    # A token's target goes live through the admin plane when the room holds one
+    # (liminal#222); the other kinds, and a room without one, go by pull request.
+    live, fallback = _target_live_or_fallback(session, row, clients, detail)
+    if live is None and fallback is None:
+        return row
+    if live:
+        row.spec = {**dict(row.spec or {}), "gateway": GATEWAY_LIVE}
+        admin_store.set_integration_state(session, row.id, state=admin_store.STATE_APPLIED, detail=f"{detail}; {live}")
+        return row
     try:
         pr = _gateway_pr(clients.github, config, row, remove=False, actor=actor)
     except (ClientError, OSError) as exc:
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the gateway pull request failed: {exc}")
         return row
     if pr:
-        detail += f"; pull request open on the gateway: {pr}; serves after it merges and the gateway rolls"
+        detail += f"{fallback} {pr}; serves after it merges and the gateway rolls"
         row.spec = {**dict(row.spec or {}), "pull_request": pr}
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_PENDING, detail=detail)
         return row
@@ -835,6 +960,34 @@ def register_accounts(session: Session, clients: Clients | None, config: Config,
     return out
 
 
+def _remove_from_gateway(clients: Clients | None, config: Config, row: AdminIntegration, *, actor: str) -> str:
+    """The gateway half of a disconnect, as one sentence. A target the admin
+    plane holds live (`spec.gateway = "live"`, or a row that never had a pull
+    request while the room holds an admin plane) is deleted there; a target
+    that went by pull request gets the removal pull request. An admin plane
+    without target routes sends the row down the pull-request path too."""
+    spec = row.spec or {}
+    went_live = spec.get("gateway") == GATEWAY_LIVE
+    admin = _admin(clients)
+    if went_live or (admin is not None and not spec.get("pull_request") and live_target_spec(row) is not None):
+        if admin is None:
+            return "left: the gateway\'s admin plane is not wired, so its live target stays"
+        try:
+            removed = apply_target_live(clients, row, remove=True)
+        except ClientError as exc:
+            if went_live or not targets_unsupported(exc):
+                return f"left: {exc}"
+        else:
+            if removed:
+                return removed
+    github = getattr(clients, "github", None) if clients is not None else None
+    try:
+        pr = _gateway_pr(github, config, row, remove=True, actor=actor) if github is not None else None
+    except (ClientError, OSError) as exc:
+        return f"left: {exc}"
+    return f"pull request open: {pr}" if pr else "nothing to remove"
+
+
 def disconnect(session: Session, clients: Clients | None, config: Config, *, integration_id: str, actor: str) -> dict[str, Any]:
     """Reverse the three steps. The row goes first (it is the truth); each
     projection\'s outcome is reported back as a sentence."""
@@ -871,13 +1024,6 @@ def disconnect(session: Session, clients: Clients | None, config: Config, *, int
             outcome["secret"] = "removed"
         except ClientError as exc:
             outcome["secret"] = f"left: {exc}"
-        # The gateway's `datadog-mcp` target goes the way it came: by pull request.
-        github = getattr(clients, "github", None) if clients is not None else None
-        try:
-            pr = _gateway_pr(github, config, row, remove=True, actor=actor) if github is not None else None
-            outcome["gateway"] = f"pull request open: {pr}" if pr else "nothing to remove"
-        except (ClientError, OSError) as exc:
-            outcome["gateway"] = f"left: {exc}"
     else:
         sero = clients.sero if clients is not None else None
         if sero is not None and row.credential_ref:
@@ -888,11 +1034,8 @@ def disconnect(session: Session, clients: Clients | None, config: Config, *, int
                 outcome["secret"] = "removed"
             except ClientError as exc:
                 outcome["secret"] = f"left: {exc}"
-        try:
-            pr = _gateway_pr(clients.github, config, row, remove=True, actor=actor) if clients is not None else None
-            outcome["gateway"] = f"pull request open: {pr}" if pr else "nothing to remove"
-        except (ClientError, OSError) as exc:
-            outcome["gateway"] = f"left: {exc}"
+    # The gateway's target goes the way it came: off the admin plane, or by pull request.
+    outcome["gateway"] = _remove_from_gateway(clients, config, row, actor=actor)
     went_wrong = any(str(v).startswith("left:") for v in outcome.values())
     admin_store.remove_integration(
         session, integration_id, actor=actor,

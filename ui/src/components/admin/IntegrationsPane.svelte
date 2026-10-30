@@ -501,9 +501,9 @@
       {#if formError}<p class="page__foot fail">{formError}</p>{/if}
       {#if connect.isPending}
         <p class="page__foot busy" role="status"><span class="spin" aria-hidden="true"></span>
-          {#if form.entry.auth === "datadog_service_account"}Checking the keys with Datadog, then opening the gateway's pull request. This can take up to a minute.
+          {#if form.entry.auth === "datadog_service_account"}Checking the keys with Datadog, then adding its MCP server to the gateway. This can take up to a minute.
           {:else if form.vendor === "aws"}Checking the role with AWS.
-          {:else}Storing the credential and opening the gateway's pull request. This can take a moment.{/if}
+          {:else}Storing the credential and adding the target to the gateway. This can take a moment.{/if}
         </p>
       {/if}
       {#if form.entry.auth === "datadog_service_account"}

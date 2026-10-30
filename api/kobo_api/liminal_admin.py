@@ -12,6 +12,13 @@ written to disk or logged.
 A grant on the gateway REPLACES the persona's row (scopes and allowed
 handlers), so the caller merges what the gateway already holds for that
 persona before writing; `admin_connections` does that merge.
+
+Targets go the same way from liminal 0.9.0 (liminal#222, kobo#327): `PUT
+/admin/targets/<name>` with the stanza as a JSON object (no `name`) adds or
+replaces a live target, `DELETE` removes it, and a target the gateway's own
+config file owns answers 409. An older gateway has no such routes and
+answers FastAPI's plain 404; `put_target` turns that into the sentence
+`TARGETS_UNSUPPORTED`, so the caller can fall back to the pull request.
 """
 
 from __future__ import annotations
@@ -33,6 +40,17 @@ ADMIN_SCOPE = "admin:*"
 TOKEN_TTL_DAYS = 7
 TOKEN_RENEW_BEFORE_S = 24 * 3600
 ISSUER = "cabal-core"
+# What `put_target` says when the gateway has no target routes (before liminal 0.9.0).
+TARGETS_UNSUPPORTED = "the gateway's admin plane does not take targets yet (liminal 0.9.0 or later)"
+
+
+class TargetNotFound(ClientError):
+    """`DELETE /admin/targets/<name>` found no live target of that name."""
+
+
+def targets_unsupported(exc: BaseException) -> bool:
+    """Whether a `ClientError` is the admin plane lacking target routes."""
+    return "does not take targets yet" in str(exc)
 
 
 @dataclass(frozen=True)
@@ -50,6 +68,9 @@ class LiminalAdminClient(Protocol):
     def aws_identity(self, audience: str) -> dict[str, str]: ...
     def aws_probe(self, role_arn: str, audience: str) -> dict[str, str]: ...
     def audit(self, *, persona: str, since: float | None = None, limit: int = 200) -> list[dict]: ...
+    def list_targets(self) -> list[dict]: ...
+    def put_target(self, name: str, spec: dict) -> dict: ...
+    def delete_target(self, name: str) -> dict: ...
 
 
 class RoomAdminToken:
@@ -159,6 +180,55 @@ class HttpxLiminalAdminClient:
         rows = body.get("audit", [])
         return [r for r in rows if isinstance(r, dict)]
 
+    def list_targets(self) -> list[dict]:
+        """Every target the gateway serves, live or from its file, with its
+        status and its spec without secrets."""
+        try:
+            body = self._check(self._client.get(f"{self._base_url}/admin/targets", headers=self._headers()), "list targets")
+        except httpx.HTTPError as exc:
+            raise ClientError(f"gateway admin plane unreachable: {exc.__class__.__name__}") from exc
+        return [t for t in body.get("targets", []) if isinstance(t, dict)]
+
+    def put_target(self, name: str, spec: dict) -> dict:
+        """Add or replace a live target; `{"name", "status"}` back. The
+        gateway's refusal (409 file-owned, 422 invalid) is the sentence
+        raised. A plain 404 is an admin plane without target routes."""
+        try:
+            resp = self._client.put(f"{self._base_url}/admin/targets/{name}", json=spec, headers=self._headers())
+        except httpx.HTTPError as exc:
+            raise ClientError(f"gateway admin plane unreachable: {exc.__class__.__name__}") from exc
+        if resp.status_code == 404 and not _about_target(_detail(resp, ""), name):
+            raise ClientError(TARGETS_UNSUPPORTED)
+        if resp.status_code in (404, 409, 422):
+            raise ClientError(_detail(resp, f"the gateway refused the {name} target: HTTP {resp.status_code}"))
+        return self._check(resp, f"target {name}")
+
+    def delete_target(self, name: str) -> dict:
+        """Remove a live target; `{"removed": name}` back. `TargetNotFound`
+        for a name the gateway does not serve live; the 409 sentence when its
+        config file owns the target; a plain 404 is the older admin plane."""
+        try:
+            resp = self._client.delete(f"{self._base_url}/admin/targets/{name}", headers=self._headers())
+        except httpx.HTTPError as exc:
+            raise ClientError(f"gateway admin plane unreachable: {exc.__class__.__name__}") from exc
+        if resp.status_code == 404:
+            detail = _detail(resp, "")
+            if not _about_target(detail, name):
+                raise ClientError(TARGETS_UNSUPPORTED)
+            raise TargetNotFound(detail)
+        if resp.status_code == 409:
+            raise ClientError(_detail(resp, f"the gateway refused removing the {name} target: HTTP 409"))
+        return self._check(resp, f"removing target {name}")
+
+
+def _about_target(detail: str, name: str) -> bool:
+    """Whether a 404's detail is the gateway talking about the target (unknown
+    name) rather than FastAPI's plain `Not Found` for a route it lacks."""
+    text = detail.strip()
+    if not text or text.lower() == "not found":
+        return False
+    return "target" in text.lower() or name in text
+
 
 def _detail(resp: httpx.Response, fallback: str) -> str:
     try:
@@ -176,4 +246,7 @@ def build_liminal_admin(config, cabal: CabalClient | None) -> LiminalAdminClient
     return HttpxLiminalAdminClient(config.liminal_admin_url, RoomAdminToken(cabal))
 
 
-__all__ = ["ADMIN_SCOPE", "ISSUER", "ROOM_PERSONA", "CabalError", "GatewayGrant", "HttpxLiminalAdminClient", "LiminalAdminClient", "RoomAdminToken", "build_liminal_admin"]
+__all__ = [
+    "ADMIN_SCOPE", "ISSUER", "ROOM_PERSONA", "TARGETS_UNSUPPORTED", "CabalError", "GatewayGrant", "HttpxLiminalAdminClient",
+    "LiminalAdminClient", "RoomAdminToken", "TargetNotFound", "build_liminal_admin", "targets_unsupported",
+]
