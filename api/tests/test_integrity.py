@@ -6601,3 +6601,25 @@ def test_an_approved_ask_is_pushed_to_the_switchboard_at_once_and_a_revoke_takes
     (grant,) = bab.grants("asker", "ops@example.com")
     c.delete(f"/api/agents/asker/access/grants/{grant['id']}", headers=h)
     assert cabal.put_dispatch_pairs_calls[-1] == []
+
+
+# --- delivery truth (kobo#268, live 2026-10-30) ---
+
+
+def test_a_delivery_is_delivered_only_once_the_new_pod_is_available():
+    """Gate (integrity): the manifest carrying the commit is not the end of a roll. With one
+    replica and Recreate, that is the moment the old pod is gone and the new one is still
+    starting; the room must keep saying Updating, not Down, until the pod is available."""
+    from kobo_api.knowledge import delivery_state
+    from tests.fakes import FAKE_DEPLOYMENT_STATUS_SETTLED, FakeGitHub, FakeKubectl
+
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    github = FakeGitHub(runs_by_sha={sha: [[{"id": 1, "status": "completed", "conclusion": "success"}]]})
+    rolling = {**FAKE_DEPLOYMENT_STATUS_SETTLED, "status": {"observedGeneration": 1, "updatedReplicas": 1, "availableReplicas": 0}}
+    kubectl = FakeKubectl(images={("acme-agent", "acme-agent"): f"registry.example/agents/acme-agent:{sha[:12]}"},
+                          deployment_status={("acme-agent", "acme-agent"): rolling})
+    out = delivery_state(github, kubectl, repo="acme-org/acme-agent", namespace="acme-agent", deploy="acme-agent", sha=sha)
+    assert out["state"] == "rolling", out
+    settled = FakeKubectl(images={("acme-agent", "acme-agent"): f"registry.example/agents/acme-agent:{sha[:12]}"})
+    out = delivery_state(github, settled, repo="acme-org/acme-agent", namespace="acme-agent", deploy="acme-agent", sha=sha)
+    assert out["state"] == "delivered", out
