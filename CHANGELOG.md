@@ -6,6 +6,19 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-10-30
+
+### Added
+
+- Access tab: **People** carries a role per grant, **Can see** or **Can manage** (owner-type actions, never destroy); **Other agents** is its own section for cross-team requests and pairs (#309).
+
+### Changed
+
+- Slack and GitHub are rows of the Integrations table with Set up / Set by deployment / Not set up; the agent's Slack tab and Repositories card grey out with "Ask a kobo admin to add the ... integration" until an admin sets them up (#304, phase 1).
+- Every timestamp leaves the API as UTC with a Z and is read as such by the UI, so pages show the viewer's local time (#306).
+- Audit events follow their row (Applied or Failed) and read as one plain sentence, newest first, with a kind filter (#307).
+- Activity rows run newest first, open on click to the full arguments, and the table scrolls sideways (#308).
+
 ## [0.3.10] - 2026-10-30
 
 ### Changed
