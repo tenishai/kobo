@@ -31,6 +31,11 @@ from kobo_api.clients import (
     _post_task,
 )
 from kobo_api.github_app import InstallationTokenProvider
+from kobo_api.liminal_admin import (
+    HttpxLiminalAdminClient,
+    TargetNotFound,
+    targets_unsupported,
+)
 from kobo_api.pr_broker import PR_PERMISSIONS, mint_scoped_token
 from kobo_api.sero import HttpxSeroClient
 from kobo_api.slack_setup import render_manifest
@@ -770,3 +775,42 @@ def test_mint_pins_repositories_and_pr_permissions(tmp_path):
     assert out["token"] == "ghs_scoped"
     assert out["repositories"] == ["acme/services-clip", "acme/sero"]
 
+
+
+def test_gateway_targets_go_out_as_the_stanza_and_a_plain_404_is_an_older_admin_plane():
+    """Wire shape (gateway admin plane, liminal#222): a target is PUT as the stanza's keys with the
+    room's bearer token; the gateway's 409/422 sentence is the error raised; FastAPI's plain
+    `Not Found` for a route the gateway lacks is told apart from a 404 about the target, so the
+    room can fall back to the pull request on one and call the target gone on the other."""
+    captured = {}
+    answers = {"PUT": httpx.Response(200, json={"name": "acme-tool", "status": "ready"})}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"], captured["url"] = request.method, str(request.url)
+        captured["json"] = json.loads(request.content) if request.content else None
+        captured["auth"] = request.headers.get("authorization")
+        return answers[request.method]
+
+    client = HttpxLiminalAdminClient("http://liminal-admin.local", lambda: "room-token",
+                                     client=httpx.Client(transport=httpx.MockTransport(handler)))
+    spec = {"transport": "http", "address": "https://acme.example", "trust": "untrusted", "auth_method": "bearer", "bearer_token_env": "INTEGRATION_ACME_TOOL_TOKEN"}
+    assert client.put_target("acme-tool", spec) == {"name": "acme-tool", "status": "ready"}
+    assert (captured["method"], captured["url"], captured["json"], captured["auth"]) == (
+        "PUT", "http://liminal-admin.local/admin/targets/acme-tool", spec, "Bearer room-token")
+
+    answers["PUT"] = httpx.Response(409, json={"detail": "target 'acme-tool' is owned by the gateway's config file"})
+    with pytest.raises(ClientError, match="owned by the gateway's config file") as refused:
+        client.put_target("acme-tool", spec)
+    assert not targets_unsupported(refused.value)
+
+    answers["PUT"] = httpx.Response(404, json={"detail": "Not Found"})
+    with pytest.raises(ClientError) as older:
+        client.put_target("acme-tool", spec)
+    assert targets_unsupported(older.value)
+
+    answers["DELETE"] = httpx.Response(404, json={"detail": "no live target 'acme-tool'"})
+    with pytest.raises(TargetNotFound):
+        client.delete_target("acme-tool")
+    answers["DELETE"] = httpx.Response(200, json={"removed": "acme-tool"})
+    assert client.delete_target("acme-tool") == {"removed": "acme-tool"}
+    assert captured["url"] == "http://liminal-admin.local/admin/targets/acme-tool"

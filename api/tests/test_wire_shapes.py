@@ -1667,6 +1667,8 @@ class FakeLiminalAdmin:
         self.writes: list[GatewayGrant] = []
         self.revokes: list[tuple[str, str]] = []
         self._fail = fail
+        # Targets through the admin plane (liminal#222): held live, no pull request.
+        self.targets: dict[str, dict] = {}
 
     def list_grants(self) -> list[GatewayGrant]:
         if self._fail:
@@ -1682,6 +1684,17 @@ class FakeLiminalAdmin:
     def revoke(self, issuer: str, persona: str) -> None:
         self.revokes.append((issuer, persona))
         self.grants.pop((issuer, persona), None)
+
+    def list_targets(self) -> list[dict]:
+        return [{"name": n, "source": "live", "status": "ready", "spec": dict(s)} for n, s in self.targets.items()]
+
+    def put_target(self, name: str, spec: dict) -> dict:
+        self.targets[name] = dict(spec)
+        return {"name": name, "status": "ready"}
+
+    def delete_target(self, name: str) -> dict:
+        self.targets.pop(name, None)
+        return {"removed": name}
 
 
 def _client__api_admin_connections(tmp_path, fake_storage, *, github: FakeGitHub, admin, config_overrides=None):

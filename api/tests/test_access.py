@@ -39,7 +39,7 @@ from kobo_api.connect_scan import REPO_NOT_IN_ORG, scan_repo
 from kobo_api.groups import OktaGroupResolver
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED, RUN_MODE_HTTP
-from kobo_api.liminal_admin import GatewayGrant
+from kobo_api.liminal_admin import TARGETS_UNSUPPORTED, GatewayGrant, TargetNotFound
 from kobo_api.main import _flatten_conversation_entries, _is_admin, create_app
 from kobo_api.mcp import audit, rate_limit
 from kobo_api.mcp.authz import (
@@ -5503,11 +5503,41 @@ GATEWAY_REPO = "example-org/gateway-config"
 
 
 class FakeLiminalAdmin:
-    def __init__(self, grants: list[GatewayGrant] | None = None, *, fail: str | None = None):
+    def __init__(self, grants: list[GatewayGrant] | None = None, *, fail: str | None = None,
+                 targets_unsupported: bool = False, refuse_target: str | None = None):
         self.grants = {(g.issuer, g.persona): g for g in (grants or [])}
         self.writes: list[GatewayGrant] = []
         self.revokes: list[tuple[str, str]] = []
         self._fail = fail
+        # Targets through the admin plane (liminal 0.9.0, liminal#222): what the gateway
+        # holds live, and every call in order. `targets_unsupported` is an older gateway
+        # without the routes; `refuse_target` is the 409/422 sentence a PUT gets.
+        self.targets: dict[str, dict] = {}
+        self.target_calls: list[tuple[str, str]] = []
+        self._targets_unsupported = targets_unsupported
+        self._refuse_target = refuse_target
+
+    def list_targets(self) -> list[dict]:
+        self.target_calls.append(("list", ""))
+        return [{"name": n, "source": "live", "status": "ready", "spec": dict(s)} for n, s in self.targets.items()]
+
+    def put_target(self, name: str, spec: dict) -> dict:
+        self.target_calls.append(("put", name))
+        if self._targets_unsupported:
+            raise ClientError(TARGETS_UNSUPPORTED)
+        if self._refuse_target:
+            raise ClientError(self._refuse_target)
+        self.targets[name] = dict(spec)
+        return {"name": name, "status": "ready"}
+
+    def delete_target(self, name: str) -> dict:
+        self.target_calls.append(("delete", name))
+        if self._targets_unsupported:
+            raise ClientError(TARGETS_UNSUPPORTED)
+        if name not in self.targets:
+            raise TargetNotFound(f"no live target {name!r}")
+        del self.targets[name]
+        return {"removed": name}
 
     def list_grants(self) -> list[GatewayGrant]:
         if self._fail:
@@ -5861,6 +5891,63 @@ def test_datadog_through_the_permission_service_adds_its_mcp_server_to_the_gatew
     # A pasted address is kept without the `/mcp` the gateway adds itself.
     row = client.post("/api/admin/integrations", json={**body, "address": "https://mcp.us5.datadoghq.com/v1/mcp"}, headers=headers).json()
     assert row["spec"]["address"] == "https://mcp.us5.datadoghq.com/v1"
+
+
+DATADOG_SA_BODY = {"vendor": "datadog", "name": "Datadog", "base_access": "read", "auth": "datadog_service_account",
+                   "identity": {"service_account_id": "11111111-2222-3333-4444-555555555555", "site": "us3.datadoghq.com"},
+                   "secrets": {"API_KEY": "dd-api", "MGMT_APP_KEY": "dd-mgmt"}}
+
+
+def test_with_the_admin_plane_wired_datadog_mcp_target_goes_live_and_no_pull_request_opens(tmp_path, fake_storage):
+    """Wire shape (gateway admin plane, liminal#222): a Datadog connect PUTs the `datadog-mcp`
+    target to the gateway's admin plane as the stanza's keys, with `service-headers` auth and
+    the leased-key headers, and opens no pull request; the disconnect DELETEs it and opens none
+    either (kobo#327)."""
+    from kobo_api.admin_integrations import datadog_target_spec
+    from kobo_api.models import AdminIntegration
+    admin = FakeLiminalAdmin()
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
+    client, headers = _access_client(tmp_path, fake_storage, github=github, bab=FakeBab(integrations=[]))
+    client.app.state.clients.liminal_admin = admin
+    row = client.post("/api/admin/integrations", json=DATADOG_SA_BODY, headers=headers).json()
+    assert row["state"] == "applied" and "live on the gateway" in row["state_detail"], row
+    assert row["spec"]["gateway"] == "live" and "pull_request" not in row["spec"]
+    assert github.open_pr_calls == []
+    expected = datadog_target_spec(AdminIntegration(id=row["id"], vendor="datadog", name="Datadog", base_access="read",
+                                                    created_by="ops@example.com", spec=row["spec"]))
+    target = admin.targets["datadog-mcp"]
+    assert target == expected
+    assert target["auth_method"] == "service-headers" and target["required_scope"] == "datadog:read"
+    assert target["credential_headers"] == {"DD_API_KEY": "DD_API_KEY", "DD_APPLICATION_KEY": "DD_APP_KEY"}
+    assert "dd-api" not in str(target) and "dd-mgmt" not in str(target)
+    out = client.delete(f"/api/admin/integrations/{row['id']}", headers=headers).json()
+    assert out["gateway"] == "removed from the gateway" and "datadog-mcp" not in admin.targets
+    assert github.open_pr_calls == []
+
+
+def test_an_admin_plane_without_target_routes_falls_back_to_the_pull_request(tmp_path, fake_storage):
+    """Wire shape (gateway config): a gateway whose admin plane predates targets (before liminal
+    0.9.0) still gets the `datadog-mcp` target by pull request, and the row says why."""
+    admin = FakeLiminalAdmin(targets_unsupported=True)
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
+    client, headers = _access_client(tmp_path, fake_storage, github=github, bab=FakeBab(integrations=[]))
+    client.app.state.clients.liminal_admin = admin
+    row = client.post("/api/admin/integrations", json=DATADOG_SA_BODY, headers=headers).json()
+    assert row["state"] == "pending" and row["spec"]["pull_request"].startswith("https://"), row
+    assert "does not take targets yet" in row["state_detail"] and admin.targets == {}
+    assert 'name = "datadog-mcp"' in github.pushed_file("targets.toml")
+
+
+def test_a_target_the_gateway_refuses_fails_the_row_and_opens_no_pull_request(tmp_path, fake_storage):
+    """Gate (integrity): a spec the gateway's admin plane refuses (409 file-owned, 422 invalid) is
+    not sent round again as a pull request; the row is Failed with the gateway's sentence."""
+    admin = FakeLiminalAdmin(refuse_target="target 'datadog-mcp' is owned by the gateway's config file")
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
+    client, headers = _access_client(tmp_path, fake_storage, github=github, bab=FakeBab(integrations=[]))
+    client.app.state.clients.liminal_admin = admin
+    row = client.post("/api/admin/integrations", json=DATADOG_SA_BODY, headers=headers).json()
+    assert row["state"] == "failed" and "the gateway refused the target: target 'datadog-mcp' is owned" in row["state_detail"], row
+    assert github.open_pr_calls == [] and "pull_request" not in row["spec"]
 
 
 def test_a_target_the_gateway_already_carries_connects_without_a_pull_request(tmp_path, fake_storage):
