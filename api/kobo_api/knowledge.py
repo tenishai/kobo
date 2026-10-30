@@ -210,7 +210,9 @@ def delivery_state(
         image hasn't rolled out yet). A tagless digest-only image
         (`repo@sha256:...`, `image_tag` -> None) can't be matched to a
         sha at all, so it also reads "rolling" — an honest pending state,
-        not a crash.
+        not a crash. A tag match with the Deployment still mid-rollout
+        (`rollout_in_progress`: the new pod not yet available) is also
+        "rolling": delivered means the agent is back up on this commit.
     """
     runs = github.runs_for_commit(repo, sha)
     if not runs:
@@ -240,6 +242,13 @@ def delivery_state(
     # tag to compare against sha[:12] at all, so it can't be proven delivered;
     # "rolling" is the honest pending state here, not a crash.
     if tag is not None and tag == sha[:12]:
+        # The manifest carries this commit, but with one replica and a
+        # Recreate strategy that is the moment the old pod is gone and the new
+        # one is still starting. "Delivered" means the new pod is available;
+        # until then the change is rolling, and the agent header keeps saying
+        # Updating instead of Down (kobo#268, seen live 2026-10-30).
+        if rollout_in_progress(kubectl, namespace=namespace, deploy=deploy):
+            return {"state": "rolling", "detail": None}
         return {"state": "delivered", "detail": None}
     return {"state": "rolling", "detail": None}
 
