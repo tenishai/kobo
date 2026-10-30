@@ -48,8 +48,9 @@
   // The room's own two services (#284, rows in this table since #304): the
   // Slack config tokens it creates agents' Slack apps with and the GitHub app
   // that opens their pull requests. Always listed, never "added"; pasted
-  // once, read live; a value the deployment config carries shows as set by
-  // deployment. Remove on these rows calls the room-services DELETE, never
+  // once, read live; a value the deployment config carries reads Connected
+  // too, with Replace to move it into the room (the room's value wins; an
+  // older install's lane, not a fresh one's). Remove calls the room-services DELETE, never
   // a vendor disconnect.
   const roomServices = createQuery(() => (roomServicesQuery()));
   const putService = createMutation(() => (putRoomServiceMutation(queryClient)));
@@ -80,7 +81,7 @@
   ];
   const SERVICE_STATE: Record<RoomServiceStatus["source"], { tone: "on" | "warn"; label: string }> = {
     room: { tone: "on", label: "Set up" },
-    deployment: { tone: "on", label: "Set by deployment" },
+    deployment: { tone: "on", label: "Connected" },
     none: { tone: "warn", label: "Not set up" },
   };
   let serviceForm = $state<{ id: RoomServiceId; values: Record<string, string> } | null>(null);
@@ -333,7 +334,12 @@
               <td class="quiet">{s ? whenBy(s) : ""}</td>
               <td class="panel__cell--right">
                 {#if s?.source === "deployment"}
-                  <span class="quiet">from deployment config</span>
+                  <!-- The deployment config carries it (an older install). A value pasted here
+                       is held by the room and wins, the way a fresh install does it. -->
+                  <span class="quiet" title="Set in the deployment config. Replace to hold it in the room instead; the room's value wins.">set in the deployment config</span>
+                  {#if roomServices.data?.can_store}
+                    <button type="button" class="btn btn--quiet" onclick={() => openService(svc.id)}>Replace</button>
+                  {/if}
                 {:else if s && roomServices.data && !roomServices.data.can_store}
                   <span class="quiet" title={roomServices.data.note ?? ""}>nowhere to store it on this room</span>
                 {:else if s?.source === "room"}
