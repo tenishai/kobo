@@ -1,6 +1,6 @@
 ---
 card: arch-card:kobo-access-control
-updated: 2026-10-25
+updated: 2026-10-29
 anchor: api/kobo_api/iap.py sha=e5cbea714933133b58d388fbfff5db78b472f53e
 anchor: api/kobo_api/mcp/authz.py sha=8e3dcca81547d6dfd86b20e13d3beb0b06de1633
 ---
@@ -23,5 +23,5 @@ INVARIANTS:
 - Readers (`config.reader_groups`, raw Okta names) see everything and mutate nothing.
 - `/mcp` is mounted and the `mcp` SDK imported only when `config.mcp_enabled` (`mcp.oauth_client_id` set; workspace domain and issuer URL then required by validators).
 - Escape hatch: `iap_audience` unset ⇒ every gate allows ("the room trusts its perimeter only when it has one"). Empty `operators` AND `admin_groups` ⇒ four operator gates are open (`_operator_block`, `_admin_operator_block`, `_convert_operator_block`, `_repo_access_operator_block`). Not the group move (it requires `_is_admin` whenever `iap_audience` is set, with no empty-list bypass) and not `_slack_operator_block`, which is keyed on its own list, `slack_operators`.
-CONSUMERS: every route in api/kobo_api/main.py; api/kobo_api/mcp/tools/read.py + write.py (via authz.py); api/kobo_api/mcp/server.py `_KoboTokenVerifier`; tests: test_iap.py, test_web_visibility.py, test_web_ownership_gate.py, test_api_grants.py, test_mcp_authz.py, test_mcp_oauth.py.
+CONSUMERS: every route in api/kobo_api/main.py; api/kobo_api/mcp/tools/read.py + write.py (via authz.py); api/kobo_api/mcp/server.py `_KoboTokenVerifier`; tests: test_auth.py (IAP, the OAuth server, MCP JWTs, broker tokens), test_gates.py (every route gate, once, over a route table), test_access.py (visibility, grants, consent, thread privacy).
 GOTCHA: the IAP-off escape hatch also applies to MCP callers, because `room_request` goes through the same gates. A room with MCP enabled but `iap_audience` unset gives every signed-in Workspace user full visibility and owner rights over every agent (read from code, not tested live).
