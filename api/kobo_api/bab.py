@@ -29,6 +29,7 @@ import httpx
 
 from .clients import ClientError
 from .kinds import KIND_CONNECTED
+from .models import AgentStatus
 from .timefmt import stamp_strings
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,14 @@ log = logging.getLogger(__name__)
 TOKEN_ENV = "KOBO_BAB_TOKEN"
 ROOM_ACTOR = "room@kobo"
 """The actor the room names when no person is behind a call (boot, destroy)."""
+
+AGENTS_VENDOR = "agents"
+"""bab's vendor for agent-to-agent talk (kobo#310, gate 1): one integration per
+built agent, id = the agent's name, offering the one permission below."""
+A2A_ASK = "a2a_ask"
+"""The permission an asker holds on a target agent's `agents` integration. An
+active grant is what the switchboard's dispatch pair follows; bab never leases
+it (a lease on an `agents` integration is 409)."""
 
 
 def _external_id(token: str, subject: str) -> str:
@@ -64,6 +73,7 @@ class BabClient(Protocol):
     def put_integration(self, integration: str, vendor: str, spec: dict, ceiling: list[str], actor: str,
                         parent: str | None = None) -> dict: ...
     def delete_integration(self, integration: str, actor: str) -> dict: ...
+    def talks_to(self, agent: str, actor: str) -> list[str]: ...
     def org_accounts(self, integration: str, actor: str) -> list[dict]: ...
     def org_hub_role_arn(self, integration: str, actor: str) -> str: ...
     def external_id_for(self, parent: str, account_id: str) -> str: ...
@@ -195,6 +205,12 @@ class HttpxBabClient:
     def delete_integration(self, integration: str, actor: str) -> dict:
         return self._call("DELETE", f"/integrations/{integration}", actor, what=f"disconnecting {integration}")
 
+    def talks_to(self, agent: str, actor: str) -> list[str]:
+        """The agents `agent` holds an active `a2a_ask` grant on (bab's
+        `GET /agents/{asker}/talks-to` -> {"agent", "talks_to": [names]})."""
+        return list(self._call("GET", f"/agents/{agent}/talks-to", actor,
+                               what=f"whom {agent} may ask").get("talks_to", []))
+
 
 def _detail(resp: httpx.Response) -> str:
     """bab's `detail` as a sentence; a dict detail (a lease refusal) is summarised."""
@@ -238,14 +254,60 @@ def push_topology(bab: BabClient, agents, actor: str) -> dict | None:
     """Tell bab which agents exist. Never raises: the push is a projection of
     the room's own state and a failure here must not fail a create or a
     destroy; the next push (boot, create, destroy, the Review pane's Sync
-    button) carries the same facts."""
+    button) carries the same facts. The same push makes every READY built
+    agent askable (`ensure_agent_integrations`), so a room that upgrades
+    into kobo#310 has its agents in bab's `agents` vendor after one boot."""
     try:
         out = bab.put_topology([topology_agent(a) for a in agents], actor)
     except ClientError as exc:
         log.warning("bab topology push failed: %s", exc)
         return None
     log.info("bab topology pushed: %s", out)
+    ensure_agent_integrations(bab, agents, actor)
     return out
+
+
+def _askable(agent) -> bool:
+    """A READY built agent: the only kind the switchboard can carry a pair to
+    (`kobo_api.pairs.allowed_pairs` names no other)."""
+    return agent.status == AgentStatus.READY and getattr(agent, "kind", None) != KIND_CONNECTED
+
+
+def ensure_agent_integrations(bab: BabClient, agents, actor: str) -> list[str]:
+    """Every READY built agent is an `agents` integration in bab (kobo#310,
+    gate 1): `PUT /integrations/{agent}` {vendor: "agents", spec: {name},
+    ceiling: ["a2a_ask"]} for each one bab does not hold yet. Returns the
+    names put. Never raises; a miss is logged and the next push tries again."""
+    try:
+        held = {i["integration"] for i in bab.integrations(actor) if i.get("vendor") == AGENTS_VENDOR}
+    except ClientError as exc:
+        log.warning("bab integrations unreadable; agents left as they are: %s", exc)
+        return []
+    put: list[str] = []
+    for agent in agents:
+        if not _askable(agent) or agent.name in held:
+            continue
+        try:
+            bab.put_integration(agent.name, AGENTS_VENDOR, {"name": agent.name}, [A2A_ASK], actor)
+        except ClientError as exc:
+            log.warning("bab would not take %s as an agents integration: %s", agent.name, exc)
+            continue
+        put.append(agent.name)
+    return put
+
+
+def remove_agent_integration(bab: BabClient, name: str, actor: str) -> bool:
+    """`DELETE /integrations/{agent}` on destroy; bab drops the grants on it.
+    True when it is gone (deleted now, or already absent), False when bab
+    refused or could not be reached."""
+    try:
+        bab.delete_integration(name, actor)
+    except ClientError as exc:
+        if "no integration" in str(exc):
+            return True
+        log.warning("bab kept the agents integration for %s: %s", name, exc)
+        return False
+    return True
 
 
 # ---- the picker ------------------------------------------------------------
@@ -282,6 +344,10 @@ def picker(bab: BabClient, actor: str) -> list[dict]:
             names.append(i["vendor"])
     out = []
     for vendor in names:
+        if vendor == AGENTS_VENDOR:
+            # Asking another agent is requested from the Access tab's Other agents
+            # section (kobo#310), not from the Permissions picker.
+            continue
         meta = known.get(vendor) or {"kind": "cloud" if vendor in CLOUD_LABELS else "service",
                                       "label": CLOUD_LABELS.get(vendor, vendor), "account": ACCOUNT_NOUN.get(vendor)}
         try:
@@ -345,14 +411,18 @@ def since_days(days: int, now: datetime | None = None) -> datetime:
 
 
 __all__ = [
+    "A2A_ASK",
+    "AGENTS_VENDOR",
     "ROOM_ACTOR",
     "TOKEN_ENV",
     "BabClient",
     "HttpxBabClient",
     "actor_for",
     "build_bab",
+    "ensure_agent_integrations",
     "picker",
     "push_topology",
+    "remove_agent_integration",
     "since_days",
     "topology_agent",
 ]

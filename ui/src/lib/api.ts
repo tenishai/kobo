@@ -319,8 +319,9 @@ export type TeamPair = { name: string; group: string | null };
 /** One agent the viewed agent is paired with right now (`GET /api/agents/
  * {name}/pairs`, issue #289): ready, visible to the caller, and allowed to
  * share a thread with it. `via` says why: `group` is the automatic same-team
- * pair, `invite` an accepted request in either direction. */
-export type PairedAgent = { name: string; group: string | null; via: "group" | "invite" };
+ * pair, `invite` an accepted request in either direction, `grant` an ask
+ * permission approved in Review (issue #310). */
+export type PairedAgent = { name: string; group: string | null; via: "group" | "invite" | "grant" };
 
 /** `GET /api/agents/{name}/pairs`'s response. */
 export type PairsResult = { pairs: PairedAgent[] };

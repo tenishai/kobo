@@ -347,6 +347,77 @@ describe("AccessPanel", () => {
     expect(body).toEqual({ to_agent: "payroll-bot" });
   });
 
+  it("with the permission service on, Request access posts an ask permission request, and the waiting and approved rows render", async () => {
+    // Issue #310: asking another team's agent is a permission approved in
+    // Review, not an invite the other owner accepts.
+    stubFetch({
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/invites": EMPTY_INVITES,
+      "/api/agents/warden/pairs": { pairs: [{ name: "auditor", group: "security", via: "grant" }] },
+      "/api/agents/warden/access": {
+        agent: "warden",
+        team: "growth",
+        grants: [],
+        pending: [
+          {
+            id: 4,
+            agent: "warden",
+            integration: "ledger",
+            permissions: ["a2a_ask"],
+            tiers: { read: 1 },
+            kind: "standing",
+            status: "pending",
+            requested_by: "owner@example.com",
+            note: null,
+            created_at: "2026-10-29T12:00:00Z",
+            decided_at: null,
+            decided_by: null,
+            reason: null,
+            outcome: {},
+          },
+        ],
+        vendors: [],
+        can_request: true,
+        can_decide: false,
+      },
+      "/api/agents/warden/requestable": {
+        requestable: [
+          { name: "payroll-bot", group: "payments-eng", team: null, capability: null, purpose_tags: [] },
+        ],
+        already: [],
+      },
+    });
+    renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
+
+    expect(await screen.findByText("Waiting for review")).not.toBeNull();
+    expect(screen.getByText("ledger")).not.toBeNull();
+    expect(await screen.findByText("auditor")).not.toBeNull();
+    expect(screen.getByText("Approved in Review")).not.toBeNull();
+
+    await openPicker();
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "Request access to payroll-bot" }),
+    );
+
+    const call = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([url, init]) =>
+          String(url) === "/api/agents/warden/access/requests" &&
+          (init as RequestInit | undefined)?.method === "POST",
+      );
+    expect(call).toBeDefined();
+    const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
+    expect(body).toEqual({ integration: "payroll-bot", permissions: ["a2a_ask"], note: null });
+    expect(
+      vi.mocked(fetch).mock.calls.some(
+        ([url, init]) =>
+          String(url) === "/api/agents/warden/invites" &&
+          (init as RequestInit | undefined)?.method === "POST",
+      ),
+    ).toBe(false);
+  });
+
   it("rows already asked (pending or accepted) render a status chip instead of a Request access button", async () => {
     stubFetch({
       "/api/agents/warden/grants": EMPTY_GRANTS,

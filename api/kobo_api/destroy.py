@@ -765,8 +765,10 @@ def _tell_the_room_the_agent_is_gone(
       that could see the departed one gets a fresh colleagues.md over the
       relay. The viewers whose delivery missed are named.
     - Topology (the permission service, kobo_api.bab): the room pushes the
-      agents that remain. `push_topology` swallows the client error and
-      answers None; anything else is caught here.
+      agents that remain, then deletes the departed agent's `agents`
+      integration (kobo#310). `push_topology` and `remove_agent_integration`
+      swallow the client error and answer None/False; anything else is
+      caught here.
     """
     clients = ctx.clients
     config = ctx.config
@@ -799,15 +801,25 @@ def _tell_the_room_the_agent_is_gone(
 
     bab = getattr(clients, "bab", None)
     if bab is not None:
-        from kobo_api.bab import ROOM_ACTOR, push_topology
+        from kobo_api.bab import ROOM_ACTOR, push_topology, remove_agent_integration
 
+        actor = ctx.acting_email or ROOM_ACTOR
         try:
-            out = push_topology(bab, session.query(Agent).all(), ctx.acting_email or ROOM_ACTOR)
+            out = push_topology(bab, session.query(Agent).all(), actor)
         except Exception:  # same rule
             log.warning("topology push raised after agent %s was destroyed", departing_name, exc_info=True)
             out = None
         if out is None:
             missed.append("the permission service's topology (next push resends it)")
+        # The agent was also an `agents` integration others could hold an
+        # `a2a_ask` on (kobo#310); deleting it drops those grants with it.
+        try:
+            gone = remove_agent_integration(bab, departing_name, actor)
+        except Exception:  # same rule
+            log.warning("agents integration delete raised after agent %s was destroyed", departing_name, exc_info=True)
+            gone = False
+        if not gone:
+            missed.append("the permission service's entry for asking this agent (remove it there)")
 
     return missed
 

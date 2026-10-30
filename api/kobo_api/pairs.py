@@ -26,7 +26,8 @@ from typing import TYPE_CHECKING
 import httpx
 from sqlalchemy.orm import Session
 
-from kobo_api.clients import CabalClient, CabalError, cabal_enabled
+from kobo_api.bab import ROOM_ACTOR, BabClient
+from kobo_api.clients import CabalClient, ClientError, cabal_enabled
 from kobo_api.config import SHARED_GROUP, Config
 from kobo_api.kinds import KIND_CONNECTED
 from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
@@ -34,8 +35,9 @@ from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
 if TYPE_CHECKING:
     # Type-only, same "keep the real Clients import light for callers that
     # don't need it" posture kobo_api.main takes with the identical import --
-    # this module only ever touches `clients.cabal` (already typed via the
-    # `CabalClient` import above), never anything else `Clients` carries.
+    # this module only ever touches `clients.cabal` and `clients.bab`
+    # (typed via the `CabalClient`/`BabClient` imports above), never
+    # anything else `Clients` carries.
     from kobo_api.clients import Clients
 
 log = logging.getLogger(__name__)
@@ -79,15 +81,27 @@ def implicitly_paired(a_group: str | None, b_group: str | None) -> bool:
     return a_group is not None and a_group == b_group and a_group != SHARED_GROUP
 
 
-def allowed_pairs(session: Session, config: Config) -> set[tuple[str, str]]:
+def allowed_pairs(
+    session: Session, config: Config, bab: BabClient | None = None, actor: str = ROOM_ACTOR
+) -> set[tuple[str, str]]:
     """Every `(caller, target)` pair currently allowed to talk, computed
     fresh from `session`'s current rows -- nothing cached, nothing carried
     over from a prior call, so a destroyed or renamed agent simply stops
     appearing next time this runs (no separate cleanup step needed anywhere
     else in this arc).
 
-    Two sources, unioned:
+    Three sources, unioned (the third only when `bab` is given):
 
+    - Grants (kobo#310, gate 1): for every READY built asker, each name bab's
+      `talks_to(asker)` returns that is itself a READY built agent yields the
+      directed pair `(agent:asker, target)`. Asking another team's agent is
+      a permission (`a2a_ask` on the target's `agents` integration) the
+      asker's owner requests and a reviewer approves in Review; the pair
+      follows the grant and ends with it. A `ClientError` from bab is RAISED,
+      not swallowed: a set computed without the grants would narrow what the
+      switchboard allows on a bab blip, and the caller (the sync below, or
+      `kobo_api.main`'s read routes) knows better than this function whether
+      to keep the last pushed set or answer from rows alone.
     - Same-group, implicit, both directions: for every ordered pair `(a,
       b)` of READY agents sharing a non-null `group_name`, `(agent:a.name,
       b.name)` is in the set. A group-less agent (`group_name is None`)
@@ -148,17 +162,51 @@ def allowed_pairs(session: Session, config: Config) -> set[tuple[str, str]]:
             if implicitly_paired(caller.group_name, target.group_name):
                 pairs.add((f"agent:{caller.name}", target.name))
 
-    accepted_invites = (
-        session.query(A2AInvite).filter(A2AInvite.status == INVITE_ACCEPTED).all()
-    )
-    for invite in accepted_invites:
-        if invite.from_agent in ready_names and invite.to_agent in ready_names:
-            pairs.add((f"agent:{invite.from_agent}", invite.to_agent))
+    pairs |= invite_pairs(session, ready_names)
+    if bab is not None:
+        pairs |= grant_pairs(bab, ready_names, actor)
 
     return pairs
 
 
-def sync_dispatch_pairs(cabal: CabalClient, session: Session, config: Config) -> int:
+def invite_pairs(session: Session, ready_names: set[str]) -> set[tuple[str, str]]:
+    """The accepted-invite half of `allowed_pairs`, on its own so a reader
+    (`GET /api/agents/{name}/pairs`) can say WHY two agents are paired:
+    `(agent:from, to)` for every ACCEPTED `A2AInvite` whose two ends are
+    both in `ready_names`."""
+    accepted_invites = (
+        session.query(A2AInvite).filter(A2AInvite.status == INVITE_ACCEPTED).all()
+    )
+    return {
+        (f"agent:{invite.from_agent}", invite.to_agent)
+        for invite in accepted_invites
+        if invite.from_agent in ready_names and invite.to_agent in ready_names
+    }
+
+
+def grant_pairs(bab: BabClient, ready_names: set[str], actor: str = ROOM_ACTOR) -> set[tuple[str, str]]:
+    """The grant-backed half of `allowed_pairs` (kobo#310): one `talks_to`
+    read per READY built asker, each answer filtered to READY built targets.
+    Raises `ClientError` when bab cannot answer; see `allowed_pairs`."""
+    pairs: set[tuple[str, str]] = set()
+    for asker in sorted(ready_names):
+        for target in bab.talks_to(asker, actor):
+            if target != asker and target in ready_names:
+                pairs.add((f"agent:{asker}", target))
+    return pairs
+
+
+def paired_either_way(pairs: set[tuple[str, str]], a: str, b: str) -> bool:
+    """Whether `a` and `b` are a pair in EITHER direction of `pairs`: the
+    consent two agents need to share a thread (`kobo_api.main.
+    _thread_consented`), where an accepted invite or an approved grant is
+    mutual consent to talk at all, whichever side asked."""
+    return (f"agent:{a}", b) in pairs or (f"agent:{b}", a) in pairs
+
+
+def sync_dispatch_pairs(
+    cabal: CabalClient, session: Session, config: Config, bab: BabClient | None = None
+) -> int:
     """Compute `allowed_pairs(session, config)` fresh and push it to the
     switchboard via `cabal.put_dispatch_pairs` (Task C4: the room becomes
     the switchboard's policy source, syncing on every consent change).
@@ -168,7 +216,9 @@ def sync_dispatch_pairs(cabal: CabalClient, session: Session, config: Config) ->
     place that already has it.
 
     Raises whatever `put_dispatch_pairs` raises (`CabalError` on a non-2xx
-    response) or a raw `httpx` transport error -- this function never
+    response), a raw `httpx` transport error, or the `ClientError` of a
+    permission service that could not say whom an agent may ask (kobo#310;
+    nothing is pushed then) -- this function never
     tolerates a failure itself, mirroring `kobo_api.directory.sync_
     directory`'s identical raising contract for the analogous directory-sync
     problem. Every real trigger in this room (`kobo_api.main`'s invite
@@ -187,7 +237,11 @@ def sync_dispatch_pairs(cabal: CabalClient, session: Session, config: Config) ->
     cannot interleave their reads and pushes.
     """
     with _SYNC_LOCK:
-        return cabal.put_dispatch_pairs(allowed_pairs(session, config))
+        # Two-argument call shape kept when no permission service is wired:
+        # the #194 incident test stands in for `allowed_pairs` with exactly
+        # that shape, and a room without bab needs nothing more.
+        pairs = allowed_pairs(session, config) if bab is None else allowed_pairs(session, config, bab)
+        return cabal.put_dispatch_pairs(pairs)
 
 
 def sync_dispatch_pairs_best_effort(
@@ -244,7 +298,11 @@ def sync_dispatch_pairs_best_effort(
     if not cabal_enabled(config) or clients.cabal is None:
         return None
     try:
-        return sync_dispatch_pairs(clients.cabal, session, config)
-    except (CabalError, httpx.HTTPError):
+        return sync_dispatch_pairs(clients.cabal, session, config, getattr(clients, "bab", None))
+    except (ClientError, httpx.HTTPError):
+        # `ClientError` covers both `CabalError` (a refused PUT) and the
+        # permission service not answering `talks_to` (kobo#310): in the
+        # second case nothing is pushed, so the switchboard keeps the last
+        # set it was given rather than one narrowed by a bab blip.
         log.warning("dispatch-pairs sync to the switchboard failed", exc_info=True)
         return None

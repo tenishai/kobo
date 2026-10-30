@@ -1,17 +1,32 @@
 import json
+import time
+from types import SimpleNamespace
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import kobo_api.skills as _skills_module
+from kobo_api.clients import Clients
 from kobo_api.config import Config
 from kobo_api.db import init_db
+from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.main import create_app
-from kobo_api.models import Base
+from kobo_api.models import Agent, AgentStatus, Base
 from kobo_api.personas import seed_default_personas
-from tests.fakes import FakeStorage
+from tests.fakes import (
+    FakeAgent,
+    FakeBab,
+    FakeCabal,
+    FakeCloud,
+    FakeGitHub,
+    FakeGojira,
+    FakeKubectl,
+    FakeStorage,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -111,3 +126,36 @@ def config(tmp_path):
 @pytest.fixture
 def client(session_factory, config):
     return TestClient(create_app(session_factory, config=config))
+
+
+@pytest.fixture
+def a2a_room(session_factory, tmp_path, monkeypatch):
+    """A room with the switchboard AND the permission service wired (kobo#310),
+    an operator signed in through IAP, and two READY agents in different groups:
+    `asker` (growth) and `oracle` (security). Shared by the integrity test (the
+    pairs push) and the wire-shape test (the request's shape), so the room is
+    built once, here."""
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    config = Config(workdir=tmp_path / "work", iap_audience="test-audience", operators=["ops@example.com"],
+                    admin_panel=True, bab_url="http://bab.bab.svc:8080", cabal_url="http://cabal.internal",
+                    agent_endpoint_template="http://agent-{name}.default.svc.cluster.local")
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    jwk = jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    jwk.update({"kid": "test-key-1", "use": "sig", "alg": "ES256"})
+    now = int(time.time())
+    token = jwt.encode({"aud": "test-audience", "iss": IAP_ISSUER, "iat": now, "exp": now + 3600,
+                        "sub": "accounts.google.com:1234567890", "email": "ops@example.com"},
+                       private_key, algorithm="ES256", headers={"kid": "test-key-1"})
+    bab, cabal = FakeBab(integrations=[]), FakeCabal()
+    clients = Clients(github=FakeGitHub(), gojira=FakeGojira(), cloud=FakeCloud(), agent=FakeAgent(),
+                      kubectl=FakeKubectl(), cabal=cabal)
+    clients.bab = bab
+    app = create_app(session_factory, config=config, clients=clients, iap_jwks_fetcher=lambda: {"keys": [jwk]})
+    with session_factory() as s:
+        for name, group in (("asker", "growth"), ("oracle", "security")):
+            s.add(Agent(name=name, persona="helpful-generalist", model_id="vertex_ai/claude-sonnet-4-5",
+                        status=AgentStatus.READY, repo_full_name=f"example-org/agent-{name}", group_name=group,
+                        created_by="ops@example.com"))
+        s.commit()
+    return SimpleNamespace(client=TestClient(app), headers={ASSERTION_HEADER: token}, bab=bab, cabal=cabal,
+                           session_factory=session_factory)

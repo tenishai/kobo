@@ -2419,6 +2419,13 @@ class FakeBab:
                     {"name": "datadog_monitors_read", "tier": "read", "description": "List and read monitors"}]}],
                 "tiers": [{"name": "read", "lease_seconds": 3600, "validity_days": None}],
             },
+            # Agent-to-agent talk (kobo#310): one integration per built agent, one permission.
+            "agents": {
+                "vendor": "agents",
+                "groups": [{"name": "Colleagues", "permissions": [
+                    {"name": "a2a_ask", "tier": "read", "description": "Ask this agent a question over the switchboard"}]}],
+                "tiers": [{"name": "read", "lease_seconds": 3600, "validity_days": None}],
+            },
         }
 
     def _guard(self):
@@ -2431,7 +2438,7 @@ class FakeBab:
     def vendors(self, actor):
         self._guard()
         return [{"vendor": v, "kind": "cloud" if v in ("aws", "gcp", "azure") else "service",
-                 "label": {"aws": "AWS", "datadog": "Datadog"}.get(v, v),
+                 "label": {"aws": "AWS", "datadog": "Datadog", "agents": "Other agents"}.get(v, v),
                  "account": {"aws": "account"}.get(v), "permissions": {}} for v in self._catalogue]
 
     def integrations(self, actor):
@@ -2454,7 +2461,8 @@ class FakeBab:
         rid = len(self._requests) + 1
         tiers: dict[str, int] = {}
         for p in permissions:
-            tier = next((x["tier"] for g in self._catalogue["aws"]["groups"] for x in g["permissions"] if x["name"] == p), "read")
+            tier = next((x["tier"] for v in self._catalogue.values() for g in v["groups"] for x in g["permissions"]
+                         if x["name"] == p), "read")
             tiers[tier] = tiers.get(tier, 0) + 1
         row = {"id": rid, "agent": agent, "integration": integration, "permissions": list(permissions), "tiers": tiers,
                "kind": "standing", "status": "pending", "requested_by": actor, "note": note,
@@ -2499,6 +2507,13 @@ class FakeBab:
         self._grants.pop(grant_id, None)
         self.revoked.append((grant_id, actor))
         return {"revoked": grant_id}
+
+    def talks_to(self, agent, actor):
+        """`GET /agents/{asker}/talks-to`: the integrations (target agents) the asker
+        holds an active `a2a_ask` grant on, as bab's `talks_to` list."""
+        self._guard()
+        return sorted({g["integration"] for g in self._grants.values()
+                       if g["agent"] == agent and g["permission"] == "a2a_ask" and g.get("state") == "active"})
 
     def leases(self, agent, since, actor):
         self._guard()

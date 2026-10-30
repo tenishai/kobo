@@ -42,7 +42,7 @@ from kobo_api.mcp import audit, authz, rate_limit
 from kobo_api.mcp.jwt import ACCESS_TTL_S, mint, signing_key
 from kobo_api.mcp.server import build_mcp_server
 from kobo_api.mcp.tools.write import _endpoint
-from kobo_api.models import Agent, AgentLearning, AgentStatus, Base
+from kobo_api.models import A2AInvite, Agent, AgentLearning, AgentStatus, Base
 from kobo_api.org import ORG_KEYS, load_org_config
 from kobo_api.personas import (
     PersonaFields,
@@ -3525,3 +3525,28 @@ def test_bundle_reference_shape():
     """Wire shape: Bundle reference shape."""
     assert bundle_reference(REPOSITORY + "/", "sam", "abc") == f"{REPOSITORY}/sam-bundle:abc"
 
+
+
+# --- asking another team's agent, with the permission service on (kobo#310) -----
+
+
+def test_asking_another_teams_agent_is_a_permission_request_on_the_target_not_an_invite(a2a_room):
+    """Wire shape (kobo#310): what bab receives, `{agent, integration: <target>,
+    permissions: ["a2a_ask"]}` on a target that is an `agents` integration with
+    ceiling ["a2a_ask"]; what the UI reads back, the target under `already`
+    while it waits and a pair `via: "grant"` once approved. No A2AInvite row."""
+    c, h, bab = a2a_room.client, a2a_room.headers, a2a_room.bab
+    r = c.post("/api/agents/asker/access/requests", headers=h,
+               json={"integration": "oracle", "permissions": ["a2a_ask"], "note": "needs its view"})
+    assert r.status_code == 201, r.text
+    assert (r.json()["agent"], r.json()["integration"], r.json()["permissions"]) == ("asker", "oracle", ["a2a_ask"])
+    (target,) = bab.integrations("ops@example.com")
+    assert (target["integration"], target["vendor"], target["ceiling"]) == ("oracle", "agents", ["a2a_ask"])
+    with a2a_room.session_factory() as s:
+        assert s.query(A2AInvite).count() == 0
+    assert c.get("/api/agents/asker/requestable", headers=h).json()["already"] == [{"name": "oracle", "status": "pending"}]
+    assert c.get("/api/agents/asker/pairs", headers=h).json()["pairs"] == []
+
+    c.post("/api/admin/access/decide", headers=h, json={"ids": [r.json()["id"]], "verdict": "approve"})
+    assert c.get("/api/agents/asker/pairs", headers=h).json()["pairs"] == [{"name": "oracle", "group": "security", "via": "grant"}]
+    assert c.get("/api/agents/asker/requestable", headers=h).json()["already"] == [{"name": "oracle", "status": "accepted"}]

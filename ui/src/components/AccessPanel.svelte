@@ -24,18 +24,28 @@
   // what the pair buys, "Can join shared threads" (issue #289); the chip
   // beside it keeps the distinction between the automatic same-team pair
   // and an accepted request.
+  //
+  // With the permission service on (issue #310; `GET /api/agents/{name}/
+  // access` answers), asking another team's agent is a permission: the
+  // picker posts an access request for `a2a_ask` on the target agent, the
+  // row waits for Review, and an approved one is a pair the server reports
+  // with `via: "grant"`. With it off (the access route is 404) the picker
+  // sends the invite it always did.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { errorMessage, type GrantRole, type Person } from "../lib/api";
   import { debounced } from "../lib/debounce";
   import {
     acceptInviteMutation,
     addGrantMutation,
+    agentAccessQuery,
     createInviteMutation,
     declineInviteMutation,
     grantsQuery,
     invitesQuery,
+    pairsQuery,
     peopleSearchQuery,
     removeGrantMutation,
+    requestAgentAccessMutation,
     requestableQuery,
     revokeInviteMutation,
   } from "../lib/queries";
@@ -74,6 +84,33 @@
   // svelte-ignore state_referenced_locally
   const removeGrant = createMutation(() => (removeGrantMutation(queryClient, agentName)));
   const requestAccess = createMutation(() => (createInviteMutation(queryClient)));
+  // The permission service's view of this agent; a 404 means it is off for
+  // the room and the invite path stands.
+  // svelte-ignore state_referenced_locally
+  const access = createQuery(() => (agentAccessQuery(agentName)));
+  const accessOn = $derived(access.isSuccess);
+  // svelte-ignore state_referenced_locally
+  const pairs = createQuery(() => ({ ...pairsQuery(agentName), enabled: access.isSuccess }));
+  // svelte-ignore state_referenced_locally
+  const askRequest = createMutation(() => (requestAgentAccessMutation(queryClient, agentName)));
+
+  const ASK_PERMISSION = "a2a_ask";
+  /** Ask requests waiting in Review, one row per target agent. */
+  const waitingAsks = $derived(
+    (access.data?.pending ?? []).filter((r) => r.permissions.includes(ASK_PERMISSION)),
+  );
+  /** Grant-backed pairs: this agent's approved asks (its own grants), plus
+   * any pair the server reports as a grant from the other side. */
+  const grantPairs = $derived.by(() => {
+    const names = new Set<string>();
+    for (const g of access.data?.grants ?? []) {
+      if (g.permission === ASK_PERMISSION) names.add(g.integration);
+    }
+    for (const p of pairs.data?.pairs ?? []) {
+      if (p.via === "grant") names.add(p.name);
+    }
+    return [...names].sort();
+  });
 
   const incomingPending = $derived(
     (invites.data?.incoming ?? []).filter((invite) => invite.status === "pending"),
@@ -84,9 +121,9 @@
       (invite) => invite.status === "accepted",
     ),
   );
-  const hasPairs = $derived(teamPairs.length > 0 || acceptedPairs.length > 0);
+  const hasPairs = $derived(teamPairs.length > 0 || acceptedPairs.length > 0 || grantPairs.length > 0);
   const agentRowCount = $derived(
-    incomingPending.length + teamPairs.length + acceptedPairs.length,
+    incomingPending.length + teamPairs.length + acceptedPairs.length + waitingAsks.length + grantPairs.length,
   );
 
   // The two toolbar disclosures. Shut on arrival: a panel that greets you
@@ -148,10 +185,21 @@
   }
 
   function handleRequestAccess(toAgentName: string): void {
-    if (requestAccess.isPending) {
+    if (requestAccess.isPending || askRequest.isPending) {
       return;
     }
     inviteActionError = null;
+    if (accessOn) {
+      askRequest.mutate(
+        { integration: toAgentName, permissions: [ASK_PERMISSION], note: null },
+        {
+          onError: (err: unknown) => {
+            inviteActionError = errorMessage(err, "Couldn't send that request. Try again.");
+          },
+        },
+      );
+      return;
+    }
     requestAccess.mutate(
       { fromAgent: agentName, toAgent: toAgentName },
       {
@@ -448,7 +496,7 @@
                 <button
                   type="button"
                   class="btn"
-                  disabled={frozen || requestAccess.isPending}
+                  disabled={frozen || requestAccess.isPending || askRequest.isPending}
                   aria-label={`Request access to ${candidate.name}`}
                   onclick={() => handleRequestAccess(candidate.name)}
                 >
@@ -546,6 +594,24 @@
               <td><span class="panel__meta">Can join shared threads</span></td>
               <td class="panel__cell--right">
                 <span class="access-panel__chip">Same team ({pair.group})</span>
+              </td>
+            </tr>
+          {/each}
+          {#each waitingAsks as ask (ask.id)}
+            <tr class="access-panel__row">
+              <td><span class="access-panel__row-name">{ask.integration}</span></td>
+              <td><span class="panel__meta">Waiting for review</span></td>
+              <td class="panel__cell--right">
+                <span class="access-panel__chip">Requested</span>
+              </td>
+            </tr>
+          {/each}
+          {#each grantPairs as name (name)}
+            <tr class="access-panel__row">
+              <td><span class="access-panel__row-name">{name}</span></td>
+              <td><span class="panel__meta">Can join shared threads</span></td>
+              <td class="panel__cell--right">
+                <span class="access-panel__chip">Approved in Review</span>
               </td>
             </tr>
           {/each}
