@@ -952,6 +952,19 @@ class FakeGitHub:
             if key.startswith(f"{repo}#") and url == pr_url:
                 del self._open_prs[key]
 
+    def pr_state(self, repo: str, pr_url: str) -> str:
+        """`open` while `find_pr` would still answer it; after `close_pr`,
+        `merged` when the closing comment was "merged" (how a test models the
+        gateway owner merging), else `closed`; `unknown` for a url this fake
+        never handed out."""
+        self.calls.append(f"pr_state:{repo}:{pr_url}")
+        if pr_url in self._open_prs.values():
+            return "open"
+        closed = [why for r, url, why in self.close_pr_calls if r == repo and url == pr_url]
+        if closed:
+            return "merged" if closed[-1] == "merged" else "closed"
+        return "unknown"
+
     def merge_pr(self, repo: str, pr_url: str) -> bool:
         """Records `(repo, pr_url)` into `merge_pr_calls` and replays
         `merge_pr_results` (holding at the last entry once exhausted, same
