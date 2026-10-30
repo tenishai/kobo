@@ -99,7 +99,7 @@ retried, rather than quietly writing the Secret a second way and leaving two sou
 The room's own Slack app-config token pair (`slack_tokens_secret` above) is unaffected and
 stays where it is.
 
-**Room services** (Admin > Integrations): a room operator can paste the Slack config-token
+**Slack and GitHub integrations** (two rows in Admin > Integrations): a room admin can paste the Slack config-token
 pair and the GitHub app for pull requests (`pr_app_*`) into the room instead of its config
 file. The room keeps each in a Secret of its own (`kobo-room-slack`, `kobo-room-github-app`)
 in its namespace (`room_namespace`, or the pod's own), reads them live and rotates the Slack

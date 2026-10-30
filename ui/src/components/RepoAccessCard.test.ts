@@ -32,8 +32,9 @@ const ROWS = [
 ];
 
 /** Decide is a sub-path of the listing route, so it has to match first. */
-function stubRepoAccess(results: unknown[]): void {
+function stubRepoAccess(results: unknown[], githubAvailable = true): void {
   stubFetch({
+    "/api/whoami": { email: "owner@example.com", operator: false, groups: [], groups_unavailable: false, github_available: githubAvailable },
     "/api/repo-access/decide": { decided: [] },
     "/api/agents/warden/repo-access": { requested: [] },
     "/api/repo-access": { results },
@@ -62,6 +63,17 @@ describe("RepoAccessCard", () => {
     await fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByLabelText("One owner/name per line")).not.toBeNull();
+  });
+
+  it("greys out with one sentence, and asks for no rows, when the room has no GitHub integration", async () => {
+    // The room's gate (#304): the flag on whoami, not a failed request, greys the card.
+    stubRepoAccess(ROWS, false);
+    renderWithClient(RepoAccessCard, { agentName: "warden" });
+
+    expect(await screen.findByText("Ask a kobo admin to add the GitHub integration.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Request repositories" })).toBeNull();
+    const asked = vi.mocked(fetch).mock.calls.map(([url]) => String(url));
+    expect(asked.some((url) => url.endsWith("/api/repo-access"))).toBe(false);
   });
 
   it("lists only this agent's repositories with their state", async () => {

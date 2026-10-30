@@ -183,10 +183,15 @@ describe("AdminPanel", () => {
     navigate({ page: "admin", pane: "integrations" });
     renderWithClient(AdminPanel);
     expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
-    // Room services sit above the vendors: each row's chip is the room's own status (#284).
-    expect(await screen.findByRole("heading", { name: "Room services" })).toBeTruthy();
+    // Slack and GitHub are rows of the one table, never "added" (#304): the
+    // unset one offers Set up, the one the deployment config carries offers nothing.
+    expect(screen.queryByRole("heading", { name: "Room services" })).toBeNull();
     expect(await screen.findByText("Not set up")).toBeTruthy();
+    expect(screen.getAllByText("service")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Set up" })).toBeTruthy();
     expect(await screen.findByText("Set by deployment")).toBeTruthy();
+    expect(screen.getByText("from deployment config")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
     expect(await screen.findByText(/Nothing connected yet/)).toBeTruthy();
     await fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
     expect(await screen.findByRole("heading", { name: "Add an integration" })).toBeTruthy();
