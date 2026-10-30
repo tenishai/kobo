@@ -6,6 +6,17 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.16] - 2026-10-30
+
+### Added
+
+- **Datadog's MCP server as a gateway target, on each agent's leased key.** Connecting Datadog through the permission service now also opens a pull request on the gateway's config repository adding the `datadog-mcp` target (Datadog's hosted MCP server for the site, `auth_method = "service-headers"`, liminal 0.8.0): every agent's call carries the application key the permission service leased it, the catalog fetch uses the gateway's own Datadog key. The row reads Pending until that merges and the gateway rolls; disconnecting opens the pull request that removes it. The Integrations form shows the Datadog MCP server address, prefilled from the site (#327).
+- **The gateway lane follows the permission.** Approving an agent's Datadog permission sets its gateway grant too (`datadog:read`, handlers `datadog` and `datadog-mcp`), revoking its last one takes the lane back, and Review > Sync agents brings every agent in step; scopes and handlers the room did not put there are left alone. The permission is the only thing anyone grants (#327).
+
+### Fixed
+
+- Removing a gateway target now also removes its `[target.*]` sub-tables from `targets.toml`; before, a target with an auth table left those lines behind.
+
 ## [0.3.15] - 2026-10-30
 
 ### Fixed
