@@ -42,7 +42,7 @@ export const CATALOG: CatalogEntry[] = [
       { key: "MGMT_APP_KEY", label: "Management application key, scoped to service_account_write", secret: true },
       { key: "site", label: "Site", secret: false, optional: true, placeholder: "datadoghq.com" },
     ],
-    note: "Make a service account for the room with a role that holds service_account_write and every Datadog read permission; the room mints a short-lived, scoped application key per agent from it.",
+    note: "Make a service account for the room with a role that holds service_account_write and every Datadog read permission; the room mints a short-lived, scoped application key per agent from it. Agents also reach Datadog's MCP server through the gateway with that key.",
   },
   {
     id: "gcp", name: "Google Cloud", summary: "Projects, resources and IAM.", auth: "gcp_identity",

@@ -4,6 +4,7 @@
   // service vendor is one connection; agents are granted permissions per account
   // or connection under Permissions. Without it, a row is one credential served
   // through the gateway with a lane per agent under Connections.
+  import { untrack } from "svelte";
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import Modal from "../Modal.svelte";
   import AwsConnect from "./AwsConnect.svelte";
@@ -153,6 +154,23 @@
   } | null>(null);
   let formError = $state<string | null>(null);
   let removing = $state<AdminIntegration | null>(null);
+
+  // Datadog through the permission service (kobo#327): the gateway gets Datadog's
+  // hosted MCP server as a target, so the address field stays and follows the Site
+  // field until the person types their own.
+  const DATADOG_AUTH = "datadog_service_account";
+  function datadogMcpAddress(site: string): string {
+    return `https://mcp.${site.trim() || "datadoghq.com"}/v1`;
+  }
+  let suggestedAddress = $state("");
+  $effect(() => {
+    if (!form || form.entry.auth !== DATADOG_AUTH) return;
+    const next = datadogMcpAddress(form.values.site ?? "");
+    untrack(() => {
+      if (form && (form.address === "" || form.address === suggestedAddress)) form.address = next;
+      suggestedAddress = next;
+    });
+  });
 
   // A deep link `#/admin/integrations/<vendor>` opens that vendor's form.
   $effect(() => {
@@ -455,13 +473,19 @@
         </label>
       {/each}
       {#if form.entry.note}<p class="page__foot">{form.entry.note}</p>{/if}
-      {#if form.entry.auth !== "datadog_service_account"}
-        <!-- A connection through the permission service has no vendor address and its
-             ceiling is the read permissions; the two generic fields do not apply. -->
+      {#if form.entry.auth === DATADOG_AUTH}
+        <label class="field">
+          <span>Datadog MCP server</span>
+          <input id="integration-address" type="url" bind:value={form.address} placeholder="https://mcp.datadoghq.com/v1" />
+        </label>
+        <p class="page__foot">Agents reach it with their own leased key; change this only if your site differs.</p>
+      {:else}
         <label class="field">
           <span>Vendor's MCP address <span class="quiet">(optional)</span></span>
           <input id="integration-address" type="url" bind:value={form.address} placeholder="https://" />
         </label>
+        <!-- A connection through the permission service has its ceiling in the read
+             permissions agents are granted; the read/write choice does not apply. -->
         <fieldset class="field">
           <legend>Agents may</legend>
           <label><input type="radio" name="base_access" value="read" bind:group={form.base_access} /> read</label>
