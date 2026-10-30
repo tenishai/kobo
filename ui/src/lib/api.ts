@@ -374,10 +374,14 @@ export type InvitesResult = {
   team_pairs: TeamPair[];
 };
 
-/** One per-user visibility grant (`GET/POST /api/agents/{name}/grants`) --
+/** How far a per-person grant reaches (issue #309): `view` sees and chats,
+ * `manage` also edits the agent as its owner would, short of destroying it. */
+export type GrantRole = "view" | "manage";
+
+/** One per-person grant (`GET/POST /api/agents/{name}/grants`) --
  * `added_by` is the verified email that created the grant, `null` for one
  * added while IAP was off. */
-export type Grant = { email: string; added_by: string | null };
+export type Grant = { email: string; role: GrantRole; added_by: string | null };
 
 export type ChatMessage = { role: "user" | "agent"; text: string };
 
@@ -2465,20 +2469,19 @@ export async function listGrants(name: string): Promise<Grant[]> {
   return data.grants;
 }
 
-/** `POST /api/agents/{name}/grants`: grants `email` visibility into this
- * agent as if they owned it. Idempotent server-side -- re-granting an
- * already-granted email returns the existing row rather than erroring. */
-export async function addGrant(name: string, email: string): Promise<Grant> {
+/** `POST /api/agents/{name}/grants`: grants `email` access to this agent
+ * with `role`. Idempotent server-side -- re-posting an already-granted
+ * email returns the one row, its role set to the posted one. */
+export async function addGrant(name: string, email: string, role: GrantRole): Promise<Grant> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/grants`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, role }),
   });
   return parse<Grant>(res);
 }
 
-/** `DELETE /api/agents/{name}/grants/{email}`: removes a per-user visibility
- * grant. */
+/** `DELETE /api/agents/{name}/grants/{email}`: removes a per-person grant. */
 export async function removeGrant(name: string, email: string): Promise<{ removed: boolean }> {
   const res = await fetch(
     `/api/agents/${encodeURIComponent(name)}/grants/${encodeURIComponent(email)}`,

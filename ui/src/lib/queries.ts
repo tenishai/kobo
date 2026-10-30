@@ -198,6 +198,7 @@ import {
   generateAvatar,
   getAgent,
   type Grant,
+  type GrantRole,
   type GroupOption,
   type GroupRequest,
   importTooling,
@@ -1796,20 +1797,20 @@ export function grantsQuery(name: string) {
 }
 
 /**
- * Grants an email visibility into this agent; on success, invalidates this
- * agent's grants query so the new row (or the existing one, on the
- * idempotent re-grant path) shows up.
+ * Grants an email access to this agent with a role; on success, invalidates
+ * this agent's grants query so the new row (or the existing one, re-roled
+ * on the idempotent re-grant path) shows up.
  */
 export function addGrantMutation(queryClient: QueryClient, name: string) {
   return {
-    mutationFn: (email: string) => addGrant(name, email),
+    mutationFn: ({ email, role }: { email: string; role: GrantRole }) => addGrant(name, email, role),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name, "grants"] });
     },
   };
 }
 
-/** Removes a per-user visibility grant; same invalidation as `addGrantMutation`. */
+/** Removes a per-person grant; same invalidation as `addGrantMutation`. */
 export function removeGrantMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (email: string) => removeGrant(name, email),
@@ -2056,6 +2057,7 @@ export type {
   ColleagueFeedEntry,
   ConnectAgentBody,
   Grant,
+  GrantRole,
   GroupOption,
   GroupRequest,
   IntakeFile,

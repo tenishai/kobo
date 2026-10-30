@@ -333,13 +333,29 @@ class A2AInvite(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+# AgentUserGrant.role values (issue #309). Plain strings on a `String(16)`
+# column, same "not a StrEnum" choice A2AInvite.status made above: a role is
+# read by equality in two gates, never dispatched on by a pipeline.
+GRANT_ROLE_VIEW = "view"
+GRANT_ROLE_MANAGE = "manage"
+GRANT_ROLES = (GRANT_ROLE_VIEW, GRANT_ROLE_MANAGE)
+
+
 class AgentUserGrant(Base):
-    """A per-user visibility grant (access-control arc, Task C1, design spec
-    section 6's "per-user additions ... for cross-group humans who need to
-    see/chat with this agent"): `email` sees `agent_name` as if they owned
-    it -- `main.py`'s `_visible_agents` (the single visibility choke point)
-    reads this table directly rather than through any separate helper, so
-    an agent's visible set never has two places that could drift apart.
+    """A per-user grant (access-control arc, Task C1, design spec section 6's
+    "per-user additions ... for cross-group humans who need to see/chat with
+    this agent"): `email` sees `agent_name` as if they owned it -- `main.py`'s
+    `_visible_agents` (the single visibility choke point) reads this table
+    directly rather than through any separate helper, so an agent's visible
+    set never has two places that could drift apart.
+
+    `role` (issue #309) says how far the grant reaches. `view` is the original
+    meaning: see the agent, open it, chat with it. `manage` adds the owner's
+    mutations: `main.py`'s `_owner_or_operator_or_403` lets a `manage` grantee
+    through, so they edit skills, tooling, Slack, secrets and permission
+    requests. Neither role reaches destroy (`_operator_block`, operator-only)
+    nor the grants routes themselves: only the owner or an operator adds,
+    changes or removes a grant, so a manager cannot widen the circle.
 
     Distinct from group-derived visibility (`Agent.group_name` matched
     against `GroupResolver.groups_for`): a grant is a direct, per-user
@@ -360,6 +376,11 @@ class AgentUserGrant(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     agent_name: Mapped[str] = mapped_column(String(63), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False)
+    # `view` or `manage` (GRANT_ROLES above). Server default so every row from
+    # before issue #309 keeps the meaning it had.
+    role: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=GRANT_ROLE_VIEW, server_default=GRANT_ROLE_VIEW
+    )
     # The verified IAP email that added this grant (the agent's owner or an
     # operator); nullable for the same IAP-disabled reason as elsewhere.
     added_by: Mapped[str | None] = mapped_column(String(255), nullable=True)

@@ -743,7 +743,7 @@ describe("AgentDetail Access tab (access-control Task C2)", () => {
     );
   }
 
-  it("owner/operator (invites 200): the Access tab shows, and its People/Agents sections render", async () => {
+  it("owner/operator (invites 200): the Access tab shows, and its People/Other agents sections render", async () => {
     stubAccessProbe(200, { incoming: [], outgoing: [] });
     renderWithClient(AgentDetail);
 
@@ -753,7 +753,7 @@ describe("AgentDetail Access tab (access-control Task C2)", () => {
 
     const panel = document.getElementById("panel-access") as HTMLElement;
     expect(within(panel).getByText("People")).not.toBeNull();
-    expect(within(panel).getByText("Agents")).not.toBeNull();
+    expect(within(panel).getByText("Other agents")).not.toBeNull();
     // No group on this fixture (group_name: null) -- the no-group fact
     // line, not the "Everyone in <group>" one.
     expect(within(panel).getByText(/This agent is not in a group\./)).not.toBeNull();

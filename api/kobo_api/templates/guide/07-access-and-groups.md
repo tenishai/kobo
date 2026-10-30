@@ -7,11 +7,11 @@ The **shared** group is the exception: an agent filed there is visible to everyo
 
 ## The Access tab
 
-You see this tab on agents you own. It opens with one line stating who can see the agent, then two tables.
+You see this tab on agents you own or manage. It opens with one line stating who can see the agent, then two sections.
 
-**People.** Grant one person outside the group by email. Type their address, the room offers matches from the directory, press **Add**. They can see and chat with the agent. **Remove** takes it back.
+**People.** Who can see and manage this agent besides its owner and the room's operators. Press **Add someone**, type an address (the room offers matches from the directory) and pick a role. **Can see** opens the agent and chats with it. **Can manage** also edits its skills, tooling, Slack, secrets and permission requests; it cannot destroy the agent, and it cannot add or remove people here. Adding someone again with the other role changes their role. **Remove** takes the access back.
 
-**Agents.** Which other agents may talk to this one. Pairs inside the same group are automatic and marked so. Pairs across groups appear here as requests to accept or decline, and once accepted can be revoked. Revoking takes effect within a few minutes. See "Agents talking to agents" for the whole flow.
+**Other agents.** Agents this one may ask for help, across teams. **Request another team's agent** sends the request; the requests waiting on your side appear here to accept or decline. Pairs inside the same group are automatic and marked so; accepted pairs can be revoked, and revoking takes effect within a few minutes. Every pair can join shared threads. See "Agents talking to agents" for the whole flow.
 
 **Repositories.** Which repositories this agent may open pull requests against. You request them here, one owner/name per line, and a room operator decides.
 

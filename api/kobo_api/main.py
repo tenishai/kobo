@@ -157,6 +157,8 @@ from kobo_api.metadata import (
 )
 from kobo_api.metrics import install as install_metrics
 from kobo_api.models import (
+    GRANT_ROLE_MANAGE,
+    GRANT_ROLE_VIEW,
     GROUP_REQUEST_DECLINED,
     GROUP_REQUEST_DONE,
     GROUP_REQUEST_PENDING,
@@ -516,10 +518,13 @@ class InviteCreateRequest(BaseModel):
 
 class GrantCreateRequest(BaseModel):
     """POST /api/agents/{name}/grants body (access-control arc, Task C1):
-    the email being granted visibility into `{name}` as if it owned the
-    agent."""
+    the email being granted access to `{name}`, and how far (issue #309):
+    `view` sees and chats, `manage` also passes the owner-or-operator gate.
+    Posting an email that already holds a grant with the other role changes
+    the role."""
 
     email: str
+    role: Literal["view", "manage"] = GRANT_ROLE_VIEW
 
 
 class ThreadCreateRequest(BaseModel):
@@ -2400,13 +2405,19 @@ def _repo_access_operator_block(request: Request, config: Config) -> JSONRespons
     )
 
 
-def _owner_or_operator_or_403(agent: Agent, request: Request) -> JSONResponse | None:
+def _owner_or_operator_or_403(
+    agent: Agent, request: Request, *, managers: bool = True
+) -> JSONResponse | None:
     """None when the caller may mutate `agent`; a 403 body otherwise
     (access-control Task A3). The gate for every mutating surface EXCEPT
     destroy (which stays operator-only, its own standing rule from the
     destruction arc -- `_operator_block` above, unchanged) and teach/chat
     (open by design to any signed-in user who can see the agent, per the
     arc spec).
+
+    A person holding a `manage` grant on the agent (issue #309) passes too,
+    unless the route says `managers=False`: the grants routes themselves do,
+    so a manager cannot add, change or remove grants and widen the circle.
 
     Read surfaces never call this -- only a route about to write something
     calls it, right after its own `_ready_agent_or_error`/agent-fetch guard
@@ -2436,10 +2447,32 @@ def _owner_or_operator_or_403(agent: Agent, request: Request) -> JSONResponse | 
         return None
     if agent.created_by and email == agent.created_by.lower():
         return None
+    if managers and _holds_manage_grant(agent, email, request):
+        return None
     return JSONResponse(
         {"error": "Only this agent's owner or a room operator can change it."},
         status_code=403,
     )
+
+
+def _holds_manage_grant(agent: Agent, email: str, request: Request) -> bool:
+    """Whether `email` (already lower-cased) holds a `manage` grant on `agent`
+    (issue #309). Reads the app's own session factory so the gate keeps its
+    two-argument shape for its forty callers; a stand-in request without one
+    (the helper tests) simply has no grants to find."""
+    if not email:
+        return False
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None:
+        return False
+    session = session_factory()
+    try:
+        return any(
+            grant.role == GRANT_ROLE_MANAGE and grant.email.lower() == email
+            for grant in session.query(AgentUserGrant).filter_by(agent_name=agent.name).all()
+        )
+    finally:
+        session.close()
 
 
 def _decider_or_403(
@@ -11642,7 +11675,13 @@ def create_app(
 
         return JSONResponse({"count": count})
 
-    # --- User grants: per-user visibility, wired into _visible_agents above -
+    # --- User grants: per-user visibility (and, with role `manage`, the
+    # owner's mutations), wired into _visible_agents and the ownership gate
+    # above. A manager may read the list; only the owner or an operator
+    # writes it (issue #309).
+
+    def _grant_body(grant: AgentUserGrant) -> dict:
+        return {"email": grant.email, "role": grant.role, "added_by": grant.added_by}
 
     @app.get("/api/agents/{name}/grants")
     def list_grants(
@@ -11661,9 +11700,7 @@ def create_app(
             .order_by(AgentUserGrant.id)
             .all()
         )
-        return JSONResponse(
-            {"grants": [{"email": g.email, "added_by": g.added_by} for g in grants]}
-        )
+        return JSONResponse({"grants": [_grant_body(g) for g in grants]})
 
     @app.post("/api/agents/{name}/grants", status_code=201)
     def add_grant(
@@ -11672,21 +11709,22 @@ def create_app(
         request: Request,
         session: Session = Depends(get_session),  # noqa: B008
     ) -> JSONResponse:
-        """Grant `payload.email` visibility into `name` as if they owned it
-        (access-control arc, Task C1, design spec section 6's per-user
-        additions) -- wired into `_visible_agents` above, the room's single
-        visibility choke point, rather than through any route-local check.
+        """Grant `payload.email` access to `name` (access-control arc, Task
+        C1, design spec section 6's per-user additions) -- wired into
+        `_visible_agents` above, the room's single visibility choke point,
+        rather than through any route-local check; with `role` `manage`
+        (issue #309) also into `_owner_or_operator_or_403`.
 
         Idempotent by design: re-granting an email that already has a row
         for this agent (matched case-insensitively, same convention
-        `_visible_agents`'s own grant lookup uses) returns the EXISTING
-        grant with a plain 200 rather than creating a second row or
-        erroring -- there is nothing more for a repeat grant to accomplish.
+        `_visible_agents`'s own grant lookup uses) answers 200 with the one
+        row, its role set to the posted one -- so re-posting with the other
+        role is how a grant changes role.
         """
         agent = _visible_agent_or_404(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
-        gate = _owner_or_operator_or_403(agent, request)
+        gate = _owner_or_operator_or_403(agent, request, managers=False)
         if gate is not None:
             return gate
 
@@ -11697,19 +11735,21 @@ def create_app(
         existing_grants = session.query(AgentUserGrant).filter_by(agent_name=agent.name).all()
         for existing in existing_grants:
             if existing.email.lower() == email.lower():
-                return JSONResponse(
-                    {"email": existing.email, "added_by": existing.added_by}, status_code=200
-                )
+                if existing.role != payload.role:
+                    existing.role = payload.role
+                    session.commit()
+                return JSONResponse(_grant_body(existing), status_code=200)
 
         grant = AgentUserGrant(
             agent_name=agent.name,
             email=email,
+            role=payload.role,
             added_by=getattr(request.state, "iap_email", None),
         )
         session.add(grant)
         session.commit()
 
-        return JSONResponse({"email": grant.email, "added_by": grant.added_by}, status_code=201)
+        return JSONResponse(_grant_body(grant), status_code=201)
 
     @app.delete("/api/agents/{name}/grants/{email}")
     def remove_grant(
@@ -11721,7 +11761,7 @@ def create_app(
         agent = _visible_agent_or_404(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
-        gate = _owner_or_operator_or_403(agent, request)
+        gate = _owner_or_operator_or_403(agent, request, managers=False)
         if gate is not None:
             return gate
 

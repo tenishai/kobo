@@ -737,6 +737,22 @@ def test_adding_the_same_grant_twice_is_idempotent(session_factory__api_grants, 
     assert len(listing.json()["grants"]) == 1
 
 
+def test_reposting_a_grant_with_the_other_role_changes_it(session_factory__api_grants, client__api_grants):
+    """Data integrity: a grant is one row per person; posting the other role
+    (issue #309) changes that row, and the listing says which role it holds."""
+    c, key = client__api_grants
+    _seed_agent__api_grants(session_factory__api_grants, name="a", created_by=OWNER_EMAIL)
+    owner = _headers(key, email=OWNER_EMAIL)
+
+    first = c.post("/api/agents/a/grants", json={"email": GRANTEE_EMAIL}, headers=owner)
+    second = c.post("/api/agents/a/grants", json={"email": GRANTEE_EMAIL, "role": "manage"}, headers=owner)
+
+    assert first.json()["role"] == "view"
+    assert second.status_code == 200
+    listing = c.get("/api/agents/a/grants", headers=owner).json()["grants"]
+    assert [g["role"] for g in listing] == ["manage"]
+
+
 def test_granted_email_sees_the_agent_as_if_owned(session_factory__api_grants, config__api_grants):
     """Gate (visibility): Granted email sees the agent as if owned."""
     private_key, jwk = _generate_jwk()
