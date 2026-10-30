@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-10-30
+
 ### Changed
 
 - Activity: a summary strip (calls, refused, errors, tools used), rows grouped by day with the newest and any day with a problem open, **Problems only**, and 25 rows at a time (#300).
