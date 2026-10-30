@@ -40,6 +40,7 @@ from typing import Any
 
 from kobo_api.clients import ClientError, HttpxSlackClient, KubectlClient, SlackClient
 from kobo_api.config import Config
+from kobo_api.timefmt import rfc3339
 
 log = logging.getLogger(__name__)
 
@@ -274,7 +275,7 @@ class RoomServices:
         """Store validated `values` for `service` as this room's own, with
         who and when. Raises `ClientError` when the write fails (its message
         names the Secret, never a value)."""
-        now = datetime.now(UTC).replace(microsecond=0).isoformat()
+        now = rfc3339(datetime.now(UTC).replace(microsecond=0))
         literals = {field: values[field] for field in FIELDS[service]}
         literals[_META_AT] = now
         literals[_META_BY] = actor

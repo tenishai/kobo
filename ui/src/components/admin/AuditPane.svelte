@@ -4,13 +4,9 @@
   // outside system (a grant, a secret, a pull request) reports back.
   import { createQuery } from "@tanstack/svelte-query";
   import { adminAuditQuery } from "../../lib/queries";
+  import { when } from "../../lib/time";
 
   const audit = createQuery(() => (adminAuditQuery()));
-
-  function when(iso: string): string {
-    const d = new Date(iso);
-    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  }
 
   const LANDED: Record<string, string> = {
     pending: "Pending",

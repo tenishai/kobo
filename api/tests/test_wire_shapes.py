@@ -14,6 +14,7 @@ import importlib.util
 import json
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -261,6 +262,19 @@ def test_list_agents_returns_name_status_model_created_at(client__api_agents, co
     # The card's description line reads these off the list, not a per-card fetch.
     assert row["persona"] == PERSONA
     assert "capability" in row
+
+
+def test_timestamps_leave_the_api_as_utc_with_a_z(client__api_agents, session_factory__api_agents, config__api_agents):
+    """Wire shape: a naive UTC datetime in a row reaches the UI as RFC 3339 with a Z (issue #306)."""
+    session = session_factory__api_agents()
+    session.add(Agent(name=AGENT_NAME, persona=PERSONA, model_id=config__api_agents.models[0].id,
+                      status=AgentStatus.READY, created_at=datetime(2026, 10, 29, 21, 7)))
+    session.commit()
+    session.close()
+
+    row = client__api_agents.get("/api/agents").json()["agents"][0]
+
+    assert row["created_at"] == "2026-10-29T21:07:00Z"
 
 
 def test_list_agents_marks_an_agent_the_room_composed(client__api_agents):

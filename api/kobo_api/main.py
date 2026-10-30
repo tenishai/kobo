@@ -288,6 +288,7 @@ from kobo_api.steps import (
     resolve_persona_body,
 )
 from kobo_api.teach import format_note, note_filename
+from kobo_api.timefmt import rfc3339, rfc3339_str
 from kobo_api.tooling import (
     ToolingError,
     _validate_content,
@@ -3062,7 +3063,7 @@ def _learning_dict(row: AgentLearning) -> dict:
         "concerns": learning_concerns(row.content, row.said_by),
         "status": row.status,
         "decided_by": row.decided_by,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "created_at": rfc3339(row.created_at),
     }
 
 
@@ -3553,9 +3554,9 @@ def create_app(
             "note": req.note,
             "status": req.status,
             "decided_by": req.decided_by,
-            "created_at": req.created_at.isoformat(),
+            "created_at": rfc3339(req.created_at),
             "decided_at": (
-                req.decided_at.isoformat() if req.decided_at is not None else None
+                rfc3339(req.decided_at)
             ),
         }
 
@@ -4247,7 +4248,7 @@ def create_app(
             return blocked
         rows = session.query(MCPRevocation).order_by(MCPRevocation.revoked_at.desc()).all()
         return JSONResponse({"revocations": [
-            {"email": r.email, "revoked_at": r.revoked_at.isoformat(), "revoked_by": r.revoked_by, "reason": r.reason}
+            {"email": r.email, "revoked_at": rfc3339(r.revoked_at), "revoked_by": r.revoked_by, "reason": r.reason}
             for r in rows
         ]})
 
@@ -4429,7 +4430,7 @@ def create_app(
         events = [
             {
                 "id": e.id,
-                "at": e.at.isoformat(),
+                "at": rfc3339(e.at),
                 "actor": e.actor,
                 "action": e.action,
                 "object_type": e.object_type,
@@ -5073,7 +5074,7 @@ def create_app(
                 "what_they_do": what_they_do,
                 "rules": rules,
                 "created_by": created_by or None,
-                "created_at": created_at or None,
+                "created_at": rfc3339_str(created_at) if created_at else None,
                 "truncated": truncated,
             }
         )
@@ -6161,7 +6162,7 @@ def create_app(
                     "team": a.team,
                     "model": a.model_id,
                     "model_label": _model_label(cfg, a.model_id),
-                    "created_at": a.created_at.isoformat(),
+                    "created_at": rfc3339(a.created_at),
                     "has_avatar": a.avatar_png is not None,
                     "health": _health_body(a.name),
                     "system_tasks_failing": sorted(failing_tasks.get(a.name, [])),
@@ -6251,7 +6252,7 @@ def create_app(
                 "status": agent.status,
                 "repo_full_name": agent.repo_full_name,
                 "error": agent.error,
-                "created_at": agent.created_at.isoformat(),
+                "created_at": rfc3339(agent.created_at),
                 "steps": steps,
                 "first_reply": agent.first_reply,
                 "slack": slack,
@@ -9069,7 +9070,7 @@ def create_app(
         return JSONResponse(
             {
                 "keys": held.keys,
-                "updated_at": held.updated_at,
+                "updated_at": rfc3339_str(held.updated_at) if held.updated_at else None,
                 "platform": True,
                 "secret_name": env_secret_name(agent.name),
                 "unreadable": False,
@@ -10743,9 +10744,9 @@ def create_app(
             "status": invite.status,
             "requested_by": invite.requested_by,
             "decided_by": invite.decided_by,
-            "created_at": invite.created_at.isoformat(),
+            "created_at": rfc3339(invite.created_at),
             "decided_at": (
-                invite.decided_at.isoformat() if invite.decided_at is not None else None
+                rfc3339(invite.decided_at)
             ),
         }
 
@@ -11323,7 +11324,7 @@ def create_app(
         return {
             "id": thread.id,
             "initiator_email": thread.initiator_email,
-            "created_at": thread.created_at.isoformat(),
+            "created_at": rfc3339(thread.created_at),
             "participants": [p.agent_name for p in _thread_participants(session, thread.id)],
         }
 

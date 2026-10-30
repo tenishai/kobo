@@ -26,6 +26,7 @@ from .models import (
     AdminRoleGroup,
     AdminSetting,
 )
+from .timefmt import rfc3339
 
 LANDED_PENDING = "pending"
 LANDED_APPLIED = "applied"
@@ -163,7 +164,7 @@ def integration_dict(row: AdminIntegration) -> dict[str, Any]:
         "id": row.id, "vendor": row.vendor, "name": row.name, "base_access": row.base_access,
         "state": row.state, "state_detail": row.state_detail, "credential_ref": row.credential_ref,
         "spec": dict(row.spec or {}), "created_by": row.created_by,
-        "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat(),
+        "created_at": rfc3339(row.created_at), "updated_at": rfc3339(row.updated_at),
     }
 
 
@@ -235,7 +236,7 @@ def role_dict(row: AdminRole) -> dict[str, Any]:
         "groups": sorted(g.group_name for g in row.groups),
         "capabilities": list(spec.get("capabilities", [])), "admin": list(spec.get("admin", [])),
         "connectors": list(spec.get("connectors", [])), "models": list(spec.get("models", [])),
-        "updated_at": row.updated_at.isoformat(),
+        "updated_at": rfc3339(row.updated_at),
     }
 
 
@@ -300,7 +301,7 @@ def grant_dict(row: AdminGrant) -> dict[str, Any]:
         "id": row.id, "agent": row.agent_name, "integration": row.integration_id, "access": row.access,
         "state": row.state, "state_detail": row.state_detail, "spec": dict(row.spec or {}),
         "requested_by": row.requested_by, "decided_by": row.decided_by,
-        "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat(),
+        "created_at": rfc3339(row.created_at), "updated_at": rfc3339(row.updated_at),
     }
 
 

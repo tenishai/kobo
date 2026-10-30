@@ -6,6 +6,7 @@
   import { createQuery } from "@tanstack/svelte-query";
   import type { AgentActivityRow } from "../lib/api";
   import { activityQuery, agentLeasesQuery } from "../lib/queries";
+  import { when as whenIso } from "../lib/time";
 
   let { agentName }: { agentName: string } = $props();
 
@@ -16,11 +17,6 @@
   // Credentials the agent borrowed from the room's permission service, when
   // the room has one: one row per lease, with the task the agent named.
   const leases = createQuery(() => (agentLeasesQuery(agentName, days)));
-
-  function whenIso(iso: string | null): string {
-    if (!iso) return "";
-    return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  }
 
   const all = $derived(activity.data?.rows ?? []);
   const handlers = $derived(Array.from(new Set(all.map((r) => r.handler).filter(Boolean))).sort());

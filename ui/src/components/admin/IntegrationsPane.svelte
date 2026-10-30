@@ -26,6 +26,7 @@
     roomServicesQuery,
   } from "../../lib/queries";
   import { CATALOG, OTHER, catalogEntry, type CatalogEntry } from "../../lib/admin/catalog";
+  import { whenDay } from "../../lib/time";
 
   let { item = null }: { item?: string | null } = $props();
 
@@ -117,7 +118,7 @@
   function whenBy(s: RoomServiceStatus): string {
     if (s.source === "deployment") return "From the room's deployment config";
     if (s.source !== "room") return "";
-    const at = s.updated_at ? new Date(s.updated_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
+    const at = whenDay(s.updated_at);
     return [at, s.updated_by ? `by ${s.updated_by}` : ""].filter(Boolean).join(" ");
   }
 
@@ -249,9 +250,7 @@
     failed: { tone: "fail", label: "Failed" },
   };
 
-  function when(iso: string): string {
-    return iso ? new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
-  }
+  const when = whenDay;
   function kindLabel(i: AdminIntegration): string {
     if (i.spec.kind === "org") return "organization";
     if (i.spec.kind === "account" || i.spec.parent) return "account";
