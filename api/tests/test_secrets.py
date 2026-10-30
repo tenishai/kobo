@@ -35,6 +35,7 @@ from mcp.shared.context import RequestContext
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from kobo_api import audit as room_audit
 from kobo_api.agent_env import (
     CONTAINER_SETS_THIS_ONE,
     ENV_PR_BODY,
@@ -2815,3 +2816,30 @@ def test_slack_tokens_secret_is_not_org_settable():
     assert "slack_tokens_secret" not in ORG_KEYS
     assert "slack_tokens_path" not in ORG_KEYS
 
+
+
+# --- the room's audit log (issue #316) ---
+
+
+def test_audit_detail_never_stores_a_key_named_like_a_secret(tmp_path):
+    """Secrets handling: a detail handed to the audit log drops the VALUE of
+    every key named token, secret, key or password, at any depth, and clips
+    the rest, so a pasted credential never reaches the audit table."""
+    engine = create_engine(f"sqlite:///{tmp_path}/kobo.db")
+    Base.metadata.create_all(engine)
+    with sessionmaker(bind=engine)() as session:
+        room_audit.record(
+            session, action="slack.connect", target_kind="agent", target_id="ward", agent_name="ward",
+            summary="someone connected ward to Slack", actor="someone@example.com",
+            detail={
+                "bot_token": "xoxb-live-value", "app_token": "xapp-live-value", "config": {"client_secret": "shh", "api_key": "k"},
+                "password": "pw", "signing_key": "sk", "channels": ["#ops"], "note": "x" * 1000,
+            },
+        )
+        session.commit()
+        [row] = session.query(room_audit.AuditLog).all()
+    flat = json.dumps(row.detail)
+    for live in ("xoxb-live-value", "xapp-live-value", "shh", '"k"', '"pw"', '"sk"'):
+        assert live not in flat
+    assert row.detail["channels"] == ["#ops"]
+    assert len(row.detail["note"]) <= room_audit.MAX_VALUE_CHARS

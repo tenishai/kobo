@@ -71,6 +71,9 @@ def room_request(app, email: str) -> Request:
         }
     )
     req.state.iap_email = email
+    # The audit log (issue #316) reads this to say the action came through
+    # an assistant's connection rather than the room's own pages.
+    req.state.audit_source = "mcp"
     return req
 
 

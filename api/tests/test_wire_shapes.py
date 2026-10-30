@@ -28,6 +28,7 @@ from mcp.shared.context import RequestContext
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from kobo_api import audit as room_audit
 from kobo_api import bootstrap
 from kobo_api.bootstrap import render_org_yaml
 from kobo_api.bundle_publish import bundle_reference
@@ -3525,3 +3526,62 @@ def test_bundle_reference_shape():
     """Wire shape: Bundle reference shape."""
     assert bundle_reference(REPOSITORY + "/", "sam", "abc") == f"{REPOSITORY}/sam-bundle:abc"
 
+
+
+# --- the room's audit log (issue #316) ---
+
+
+def _audit_client(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    private_key, jwk = _generate_jwk()
+    config = Config(workdir=tmp_path / "work", iap_audience=WHOAMI_AUDIENCE, operators=["ops@example.com"], admin_panel=True)
+    app = create_app(session_factory, config=config, iap_jwks_fetcher=_fetcher(jwk))
+    with session_factory() as s:
+        for i, (actor, action, agent) in enumerate((
+            ("ops@example.com", "agent.create", "ward"),
+            ("someone@example.com", "skills.add", "ward"),
+            ("ops@example.com", "agent.create", "sage"),
+            ("room", "audit.prune", None),
+        )):
+            room_audit.record(s, action=action, target_kind="agent" if agent else "audit_log", target_id=agent or "audit_log",
+                         agent_name=agent, actor=actor, summary=f"{actor} did {action}",
+                         at=datetime(2026, 10, 30, 12, 0, i))
+        s.commit()
+    return TestClient(app), {ASSERTION_HEADER: _sign_whoami(private_key, email="ops@example.com")}
+
+
+def test_audit_page_shape_and_cursor(tmp_path):
+    """Wire shape (issue #316): the Audit page reads rows newest first with
+    `next_cursor`, `total_in_window` and the facets; the cursor walks to the
+    end without repeating or skipping a row."""
+    client, headers = _audit_client(tmp_path)
+
+    first = client.get("/api/admin/audit?limit=3", headers=headers).json()
+
+    assert set(first) >= {"rows", "next_cursor", "total_in_window", "actors", "agents", "families"}
+    assert first["total_in_window"] == 4 and len(first["rows"]) == 3 and first["next_cursor"]
+    assert set(first["rows"][0]) >= {"id", "at", "actor", "actor_kind", "action", "target_kind", "target_id",
+                                     "agent_name", "summary", "outcome", "source", "request_ip", "landed", "detail"}
+    assert first["rows"][0]["at"].endswith("Z") and first["rows"][0]["action"] == "audit.prune"
+    assert first["families"] == ["agent", "audit", "skills"] and first["agents"] == ["sage", "ward"]
+    rest = client.get(f"/api/admin/audit?limit=3&cursor={first['next_cursor']}", headers=headers).json()
+    assert [r["id"] for r in first["rows"]] + [r["id"] for r in rest["rows"]] == [4, 3, 2, 1]
+    assert rest["next_cursor"] is None
+
+
+def test_audit_export_matches_the_filter(tmp_path):
+    """Wire shape (issue #316): the export carries exactly the rows the same
+    filter pages, as CSV with a header or as a JSON array."""
+    client, headers = _audit_client(tmp_path)
+
+    page = client.get("/api/admin/audit?agent=ward&action=agent", headers=headers).json()
+    csv_body = client.get("/api/admin/audit/export?agent=ward&action=agent", headers=headers)
+    json_body = client.get("/api/admin/audit/export?agent=ward&action=agent&format=json", headers=headers)
+
+    assert [r["id"] for r in page["rows"]] == [1]
+    assert csv_body.headers["content-type"].startswith("text/csv")
+    lines = csv_body.text.strip().splitlines()
+    assert lines[0].startswith("id,at,actor,") and len(lines) == 2 and ",agent.create," in lines[1]
+    assert [r["id"] for r in json_body.json()] == [1]

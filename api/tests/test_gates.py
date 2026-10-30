@@ -1943,6 +1943,7 @@ ADMIN_ROUTES = [
     ("GET", "/api/admin/addons", {}),
     ("GET", "/api/admin/people", {}),
     ("GET", "/api/admin/audit", {}),
+    ("GET", "/api/admin/audit/export", {}),
     ("GET", "/api/admin/roles", {}),
     ("PUT", "/api/admin/roles/custom", {"json": {"name": "Custom", "groups": []}}),
     ("DELETE", "/api/admin/roles/custom", {}),

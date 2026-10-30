@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api import admin_connections as admin_connections_flow
 from kobo_api import admin_integrations as admin_integrations_flow
 from kobo_api import admin_roles as admin_roles_catalogue
-from kobo_api import admin_store
+from kobo_api import admin_store, audit
 from kobo_api import room_services as room_services_store
 from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
@@ -4457,14 +4457,70 @@ def create_app(
         session.commit()
         return JSONResponse({"deleted": role_id})
 
+    def _audit_filters(q: str, actor: str, action: str, agent: str, outcome: str, since: str, until: str) -> dict:
+        return {
+            "q": q, "actor": actor, "action": action, "agent": agent, "outcome": outcome,
+            "since": audit.parse_when(since), "until": audit.parse_when(until, end=True),
+        }
+
     @app.get("/api/admin/audit")
-    def admin_audit(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
-        """The Audit pane: the admin store's audit events, newest first, with
-        whether each one has landed where it was meant to."""
+    def admin_audit(
+        request: Request,
+        q: str = Query("", max_length=200),
+        actor: str = Query("", max_length=320),
+        action: str = Query("", max_length=64),
+        agent: str = Query("", max_length=63),
+        outcome: str = Query("", max_length=16),
+        since: str = Query("", max_length=40),
+        until: str = Query("", max_length=40),
+        cursor: str = Query("", max_length=120),
+        limit: int = Query(audit.PAGE_DEFAULT, ge=1, le=audit.PAGE_MAX),
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """The Audit page (issue #316): one page of the room's audit log,
+        newest first, keyset-paged on (at, id). `q` searches actor, action,
+        target and sentence; `action` takes a family (`agent`) or one exact
+        action; `since`/`until` take a date or an instant. The answer carries
+        `rows`, `next_cursor`, `total_in_window` and the facets the page's
+        selects offer within the window."""
         blocked = _admin_panel_gate(request)
         if blocked is not None:
             return blocked
-        return JSONResponse({"events": [admin_store.event_dict(e) for e in admin_store.audit_events(session)]})
+        try:
+            filters = _audit_filters(q, actor, action, agent, outcome, since, until)
+            return JSONResponse(audit.page(session, cursor=cursor or None, limit=limit, **filters))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+
+    @app.get("/api/admin/audit/export")
+    def admin_audit_export(
+        request: Request,
+        q: str = Query("", max_length=200),
+        actor: str = Query("", max_length=320),
+        action: str = Query("", max_length=64),
+        agent: str = Query("", max_length=63),
+        outcome: str = Query("", max_length=16),
+        since: str = Query("", max_length=40),
+        until: str = Query("", max_length=40),
+        format: str = Query("csv", pattern="^(csv|json)$"),
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> Response:
+        """The current filter as a file, streamed: CSV or JSON, newest first,
+        at most `audit.EXPORT_MAX` rows. Same gate and filters as the page."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        try:
+            filters = _audit_filters(q, actor, action, agent, outcome, since, until)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        media = "application/json" if format == "json" else "text/csv"
+        return StreamingResponse(
+            audit.export(session, fmt=format, **filters),
+            media_type=media,
+            headers={"Content-Disposition": f'attachment; filename="audit-{stamp}.{format}"'},
+        )
 
     @app.get("/api/org/status")
     def org_status() -> dict:
@@ -11857,17 +11913,22 @@ def configure_room_logging(level: int = logging.INFO) -> None:
 
 
 def _backfill_audit_landed(session_factory) -> None:
-    """Audit events recorded before the log followed the row (issue #307):
-    one cheap pass at boot, fail-soft, so old connects stop reading Pending."""
+    """The audit log's boot pass, fail-soft. First the one-time fold of the
+    admin panel's own event table into `audit_log` (issue #316; idempotent,
+    `audit.migrate_admin_events`), then the events recorded before the log
+    followed the row (issue #307), so old connects stop reading Pending."""
     session = session_factory()
     try:
+        copied = audit.migrate_admin_events(session)
         fixed = admin_store.backfill_landed(session)
         session.commit()
+        if copied:
+            log.info("audit: %d admin event(s) copied into the audit log", copied)
         if fixed:
             log.info("audit: %d event(s) landed from their rows", fixed)
     except Exception:
         session.rollback()
-        log.warning("audit backfill skipped", exc_info=True)
+        log.warning("audit boot pass skipped", exc_info=True)
     finally:
         session.close()
 

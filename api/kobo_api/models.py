@@ -729,11 +729,10 @@ _JSON_BODY = JSON().with_variant(JSONB(), "postgresql")
 
 
 class AdminAuditEvent(Base):
-    """Who changed what from the admin panel, and whether it landed. Every
-    panel write inserts one of these in the same transaction as the row it
-    changed; the Audit pane is this table read back. `landed` moves from
-    `pending` to `applied` or `failed` as the projection to the outside
-    system (a grant, a secret, a pull request, a bab tuple) reports back."""
+    """The admin panel's own event table, before the room had one audit log
+    (issue #316). Kept so the schema stays whole; its rows were copied into
+    `audit_log` once at boot (`kobo_api.audit.migrate_admin_events`) and
+    nothing reads or writes it since."""
 
     __tablename__ = "admin_audit_events"
 
@@ -747,6 +746,38 @@ class AdminAuditEvent(Base):
     landed_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     before: Mapped[dict | None] = mapped_column(_JSON_BODY, nullable=True)
     after: Mapped[dict | None] = mapped_column(_JSON_BODY, nullable=True)
+
+
+class AuditLog(Base):
+    """The room's one audit log (issue #316): every action a person, the
+    room or an agent took that the room saw, as GitHub's organization log
+    shapes it. `actor` is an email, `room`, or `agent:<name>`; `action` is
+    dotted (`agent.create`, `skills.add`, `access.approve`); `summary` is
+    the sentence a reader sees; `detail` is bounded JSON that never holds a
+    secret (`kobo_api.audit.bound_detail`); `landed` says how far an action
+    that projects somewhere (a grant, a pull request) has got. Written only
+    through `kobo_api.audit.record`; pruned nightly after
+    `Config.audit_retention_days`. The admin store's own event table
+    (`admin_audit_events`) folded into this one at boot and is read no more."""
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    actor_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="person")
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    agent_name: Mapped[str | None] = mapped_column(String(63), nullable=True, index=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False, default="ok")
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="panel")
+    request_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    detail: Mapped[dict | None] = mapped_column(_JSON_BODY, nullable=True)
+    landed: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    landed_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AdminSetting(Base):
