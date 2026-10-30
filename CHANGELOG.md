@@ -6,6 +6,19 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-10-30
+
+### Added
+
+- **Room services** under Admin > Integrations: the Slack app config tokens and the GitHub app for pull requests are set from the room and read live, stored in a Secret the room owns in its own namespace; deployment config stays as the fallback and shows as "Set by deployment". The Slack tab and the Repositories card say plainly what is missing and where to add it (#284, #288).
+- `GET /api/agents/{name}/pairs`: the agents an agent may share a thread with. The shared thread's **Add participant** lists only those; the Access tab says "Can join shared threads" on paired rows (#289).
+
+### Changed
+
+- Persona card reads Persona, Source (Built-in, or the team), Purpose, Capability; Edit details says Persona source. The colleagues row is **Asks other agents**: Yes, when it helps; No, but knows who they are; No. With the permission service on, the Harness has no Identity and access section; Permissions shows which identity the agent runs as (#285, #286, #292).
+- Skills: **Save N skills** with no second confirm; rows show Pending, Building, Rolling, Active or Failed, the same for a new guardrail skill. While a change this page pushed is building or rolling, the whole agent page is frozen, with the banner saying why (#287, #290).
+- Destroy fails loudly when the switchboard keeps the agent's entry, so Destroy again retries it; forget also deletes the user grants, thread seats, learnings and system tasks keyed by the agent's name and records which room projections did not catch up (#291, part).
+
 ## [0.3.8] - 2026-10-29
 
 ### Changed
