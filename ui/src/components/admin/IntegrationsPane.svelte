@@ -499,6 +499,13 @@
         </fieldset>
       {/if}
       {#if formError}<p class="page__foot fail">{formError}</p>{/if}
+      {#if connect.isPending}
+        <p class="page__foot busy" role="status"><span class="spin" aria-hidden="true"></span>
+          {#if form.entry.auth === "datadog_service_account"}Checking the keys with Datadog, then opening the gateway's pull request. This can take up to a minute.
+          {:else if form.vendor === "aws"}Checking the role with AWS.
+          {:else}Storing the credential and opening the gateway's pull request. This can take a moment.{/if}
+        </p>
+      {/if}
       {#if form.entry.auth === "datadog_service_account"}
         <p class="page__foot">The keys are kept for the permission service alone and never shown again; it checks them with Datadog before anything is saved.</p>
       {:else if form.entry.fields.some((f) => f.secret)}
@@ -508,7 +515,10 @@
   {/if}
   {#snippet footer()}
     <button type="button" class="btn" onclick={() => (form = null)}>Cancel</button>
-    <button type="submit" form="integration-form" class="btn btn--primary" disabled={connect.isPending}>{form?.vendor === "aws" ? (connect.isPending ? "Checking with AWS…" : "Connect") : "Add"}</button>
+    <button type="submit" form="integration-form" class="btn btn--primary" disabled={connect.isPending}>
+      {#if connect.isPending}<span class="spin spin--btn" aria-hidden="true"></span>{form?.vendor === "aws" ? "Checking with AWS…" : form?.entry.auth === "datadog_service_account" ? "Checking with Datadog…" : "Adding…"}
+      {:else}{form?.vendor === "aws" ? "Connect" : "Add"}{/if}
+    </button>
   {/snippet}
 </Modal>
 
@@ -566,6 +576,11 @@
 </Modal>
 
 <style>
+  .busy { display: flex; align-items: center; gap: 0.5rem; }
+  .spin { display: inline-block; width: 0.9em; height: 0.9em; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin 0.8s linear infinite; flex: none; }
+  .spin--btn { margin-right: 0.4rem; vertical-align: -0.1em; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
   .child td:first-child { padding-left: 1.75rem; }
   .child--waiting .name { color: var(--muted); font-weight: 500; }
   .child__tick { margin-right: 0.35rem; color: var(--muted); }
