@@ -354,7 +354,7 @@
   });
 
   function saveLabel(count: number): string {
-    return count === 1 ? "Save 1 skill" : `Save ${count} skills`;
+    return count === 1 ? "Add 1 skill" : `Add ${count} skills`;
   }
 
   /** Save at once (issue #287): the picked rows join the table as Pending
@@ -716,10 +716,10 @@
           type="checkbox"
           checked={already || entry.name in picked}
           disabled={frozen || already}
-          aria-label={`Add ${entry.name}`}
+          aria-label={`Select ${entry.name}`}
           onchange={() => togglePick(entry)}
         />
-        <span>{already ? "Added" : "Add"}</span>
+        <span>{already ? "Added" : "Select"}</span>
       </label>
     </li>
   {/snippet}
@@ -730,7 +730,7 @@
         <p class="panel__note panel__note--fail" role="alert">{pickerError}</p>
       {/if}
       {#if recommended.data && recommended.data.length > 0}
-        <p class="panel__note">Recommended for this agent</p>
+        <p class="panel__note">Recommended for this agent. Select everything you want, then add them together: one update, one restart.</p>
         <ul class="skills-panel__catalog-list">
           {#each recommended.data as entry (entry.team + "/" + entry.name)}
             {@render pickRow(entry)}
@@ -817,7 +817,8 @@
          so the save is always in reach. One press saves (issue #287). -->
     <div class="skills-panel__pickbar" role="region" aria-label="Skills picked">
       <span class="skills-panel__pickbar-count">
-        {pickedCount === 1 ? "1 skill picked" : `${pickedCount} skills picked`}
+        {pickedCount === 1 ? "1 skill selected" : `${pickedCount} skills selected`}
+        <span class="quiet"> · they go out together: one update, one restart</span>
       </span>
       <span class="skills-panel__pickbar-actions">
         <button type="button" class="btn btn--quiet" disabled={frozen} onclick={clearPicks}>
@@ -829,7 +830,7 @@
           disabled={frozen || addPicked.isPending}
           onclick={handleSavePicked}
         >
-          {addPicked.isPending ? "Saving…" : saveLabel(pickedCount)}
+          {addPicked.isPending ? "Adding…" : saveLabel(pickedCount)}
         </button>
       </span>
     </div>

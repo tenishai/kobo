@@ -19,11 +19,11 @@ const COST_REPORT_ENTRY = {
 
 const BATCH_OK = { sha: "abc123def456", directory: "off", added: ["cost-report"], refused: [] };
 
-/** Tick one row and press the sticky "Save 1 skill": one press saves, no
+/** Tick one row and press the sticky "Add 1 skill": one press saves, no
  * second confirm (issue #287). */
 async function pickAndAdd(name: string): Promise<void> {
-  await fireEvent.click(screen.getByLabelText(`Add ${name}`));
-  await fireEvent.click(screen.getByRole("button", { name: "Save 1 skill" }));
+  await fireEvent.click(screen.getByLabelText(`Select ${name}`));
+  await fireEvent.click(screen.getByRole("button", { name: "Add 1 skill" }));
 }
 
 /** The body of the one batch POST the picker sends. */
@@ -132,7 +132,7 @@ describe("SkillsPanel", () => {
 
     await openSuggestions();
 
-    expect(await screen.findByText("Recommended for this agent")).not.toBeNull();
+    expect(await screen.findByText(/Recommended for this agent/)).not.toBeNull();
     const row = screen.getByText("cost-report").closest("li");
     expect(row).not.toBeNull();
 
@@ -224,7 +224,7 @@ describe("SkillsPanel", () => {
     // Let any in-flight microtasks settle before asserting an absence.
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(screen.queryByText("Recommended for this agent")).toBeNull();
+    expect(screen.queryByText(/Recommended for this agent/)).toBeNull();
     expect(
       vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/api/skills/recommended")),
     ).toBe(false);
