@@ -5805,6 +5805,61 @@ def test_a_datadog_probe_the_permission_service_refuses_connects_nothing(tmp_pat
     assert "next restart" in response.json()["state_detail"] and ("bab", "bab-datadog") in kubectl.secrets
 
 
+def test_datadog_through_the_permission_service_adds_its_mcp_server_to_the_gateway(tmp_path, fake_storage):
+    """Wire shape (gateway config): Datadog through the permission service opens the pull request
+    that adds Datadog's MCP server as the `datadog-mcp` target with `service-headers` auth, so each
+    agent's calls carry its own leased key; disconnecting opens the one that removes it, sub-tables
+    and all (kobo#327)."""
+    bab = FakeBab(integrations=[])
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
+    client, headers = _access_client(tmp_path, fake_storage, github=github, bab=bab)
+    body = {"vendor": "datadog", "name": "Datadog", "base_access": "read", "auth": "datadog_service_account",
+            "identity": {"service_account_id": "11111111-2222-3333-4444-555555555555", "site": "us3.datadoghq.com"},
+            "secrets": {"API_KEY": "dd-api", "MGMT_APP_KEY": "dd-mgmt"}}
+    row = client.post("/api/admin/integrations", json=body, headers=headers).json()
+    assert row["state"] == "pending" and row["spec"]["pull_request"].startswith("https://"), row
+    assert row["spec"]["address"] == "https://mcp.us3.datadoghq.com/v1", "derived from the site when nothing is pasted"
+    targets = github.pushed_file("targets.toml")
+    for line in ('name = "datadog-mcp"', 'auth_method = "service-headers"', 'address = "https://mcp.us3.datadoghq.com/v1"',
+                 "[target.credential_headers]", 'DD_APPLICATION_KEY = "DD_APP_KEY"', 'required_scope = "datadog:read"'):
+        assert line in targets, line
+    assert "dd-api" not in targets and "dd-mgmt" not in targets
+    # The add pull request merges; the disconnect opens the one that removes the target whole.
+    github.close_pr(GATEWAY_REPO, row["spec"]["pull_request"], "merged")
+    out = client.delete(f"/api/admin/integrations/{row['id']}", headers=headers).json()
+    assert out["gateway"].startswith("pull request open") and out["secret"] == "removed"
+    targets = github.pushed_file("targets.toml")
+    assert "datadog-mcp" not in targets and "[target.credential_headers]" not in targets
+    # A pasted address is kept without the `/mcp` the gateway adds itself.
+    row = client.post("/api/admin/integrations", json={**body, "address": "https://mcp.us5.datadoghq.com/v1/mcp"}, headers=headers).json()
+    assert row["spec"]["address"] == "https://mcp.us5.datadoghq.com/v1"
+
+
+def test_the_gateway_lane_follows_the_datadog_permission(tmp_path, fake_storage):
+    """Gate (authorization): approving an agent's first Datadog permission opens its lane on the
+    gateway (scope `datadog:read`, handlers `datadog` and `datadog-mcp`) beside what its grant
+    already held; revoking the last one closes it and leaves the rest alone (kobo#327)."""
+    bab = FakeBab(integrations=[{"integration": "datadog", "vendor": "datadog", "ceiling": ["datadog_monitors_read"],
+                                 "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"}])
+    c, h = _room(tmp_path, fake_storage, bab=bab)
+    admin = FakeLiminalAdmin([GatewayGrant(issuer="cabal-core", persona="ledger", scopes=("x:read",), allowed_handlers=("scratchpad",))])
+    c.app.state.clients.liminal_admin = admin
+    rid = c.post("/api/agents/ledger/access/requests", headers=h,
+                 json={"integration": "datadog", "permissions": ["datadog_monitors_read"], "note": "monitors"}).json()["id"]
+
+    out = c.post("/api/admin/access/decide", headers=h, json={"ids": [rid], "verdict": "approve"}).json()["results"]
+
+    assert out[0]["status"] == "approved"
+    lane = admin.grants[("cabal-core", "ledger")]
+    assert set(lane.scopes) == {"x:read", "datadog:read"}
+    assert set(lane.allowed_handlers) == {"scratchpad", "datadog", "datadog-mcp"}
+    (grant,) = bab.grants("ledger", "x")
+    assert c.delete(f"/api/agents/ledger/access/grants/{grant['id']}", headers=h).status_code == 200
+    lane = admin.grants[("cabal-core", "ledger")]
+    assert set(lane.scopes) == {"x:read"} and set(lane.allowed_handlers) == {"scratchpad"}
+    assert c.post("/api/admin/access/sync", headers=h).json()["gateway_lanes"] == {"set": 0, "unchanged": 1, "failed": 0}
+
+
 # --- from test_composer.py ---
 
 

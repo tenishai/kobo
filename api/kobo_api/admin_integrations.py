@@ -22,8 +22,13 @@ takes another road: the service account's keys go into the Kubernetes Secret
 `bab-datadog` in the permission service's namespace (`bab_namespace`), which
 that service reads from env, the service proves it can mint by creating and
 deleting a probe key, and the connection is held there with every Datadog
-read permission as the ceiling. Nothing reaches the secrets add-on or the
-gateway; a lease is a scoped application key the service mints per agent.
+read permission as the ceiling. Nothing reaches the secrets add-on; a lease
+is a scoped application key the service mints per agent. The gateway learns
+one thing (kobo#327): a `[[target]]` named `datadog-mcp` for Datadog's hosted
+MCP server, `auth_method = "service-headers"` (liminal 0.8.0), whose calls
+carry each agent's leased key as the `DD_API_KEY` / `DD_APPLICATION_KEY`
+headers and whose catalog fetch uses the gateway's own Datadog env. The
+connect opens that pull request; the disconnect opens the one that removes it.
 With the permission service off, Datadog connects as it always has, a key
 pair served through the gateway (`api_keys`).
 """
@@ -86,6 +91,15 @@ DATADOG_SITES = frozenset({
     "datadoghq.com", "us3.datadoghq.com", "us5.datadoghq.com", "datadoghq.eu",
     "ap1.datadoghq.com", "ap2.datadoghq.com", "ddog-gov.com",
 })
+# A vendor's MCP server is its own target on the gateway, named after the
+# integration with this suffix: the gateway's resolver leases the integration
+# `datadog` for a call on `datadog-mcp` (liminal 0.8.0, the `-mcp` rule).
+MCP_TARGET_SUFFIX = "-mcp"
+DATADOG_MCP_SCOPE = "datadog:read"
+# Header on the call -> key in the leased credentials dict the permission
+# service hands the gateway ({DD_API_KEY, DD_APP_KEY, DD_SITE}); the catalog
+# fetch reads the same two headers from the gateway pod's env.
+DATADOG_MCP_HEADERS = (("DD_API_KEY", "DD_API_KEY"), ("DD_APPLICATION_KEY", "DD_APP_KEY"))
 _AWS_ACCOUNT_ID = re.compile(r"^\d{12}$")
 _AWS_ROLE_ARN = re.compile(r"^arn:aws:iam::\d{12}:role/[\w+=,.@/-]+$")
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -150,6 +164,26 @@ def token_env(integration_id: str) -> str:
     return secret_env(integration_id, SECRET_KEY)
 
 
+def mcp_target_name(integration_id: str) -> str:
+    """The gateway target that is this integration's MCP server."""
+    return f"{integration_id}{MCP_TARGET_SUFFIX}"
+
+
+def datadog_mcp_address(site: str | None = None) -> str:
+    """Datadog's hosted MCP server for a site, without the trailing `/mcp`
+    the gateway adds itself."""
+    return f"https://mcp.{site or DATADOG_DEFAULT_SITE}/v1"
+
+
+def _mcp_address(pasted: str, default: str) -> str:
+    """A pasted MCP address as the target wants it: whitespace, a trailing
+    `/mcp` and a trailing slash gone; the default when nothing was pasted."""
+    address = pasted.strip().rstrip("/")
+    if address.endswith("/mcp"):
+        address = address[: -len("/mcp")].rstrip("/")
+    return address or default
+
+
 def target_stanza(row: AdminIntegration) -> str:
     """The `[[target]]` the gateway needs for this vendor: name, address,
     bearer token from the env the synced Secret feeds, trust tier. Scopes are
@@ -178,6 +212,33 @@ def target_stanza(row: AdminIntegration) -> str:
     return "".join(lines)
 
 
+def datadog_target_stanza(row: AdminIntegration) -> str:
+    """The `[[target]]` for Datadog's hosted MCP server (kobo#327): untrusted,
+    flagged, one session per persona, and `service-headers` auth, so each
+    agent's call carries the application key the permission service leased it
+    while the catalog fetch uses the gateway's shared key from its env."""
+    spec = row.spec or {}
+    lines = [
+        f"\n# {row.name}: connected from the room\'s admin panel by {row.created_by}.\n",
+        "[[target]]\n",
+        f'name = "{mcp_target_name(row.id)}"\n',
+        'transport = "http"\n',
+        f'address = "{spec.get("address", "")}"\n',
+        'trust = "untrusted"\n',
+        'on_untrusted = "flag"\n',
+        'identity = "none"\n',
+        'session = "per-persona"\n',
+        'auth_method = "service-headers"\n',
+        f'required_scope = "{DATADOG_MCP_SCOPE}"\n',
+        'client_name = "liminal-gateway"\n',
+        "[target.credential_headers]\n",
+        *(f'{header} = "{key}"\n' for header, key in DATADOG_MCP_HEADERS),
+        "[target.catalog_headers_env]\n",
+        *(f'{header} = "{key}"\n' for header, key in DATADOG_MCP_HEADERS),
+    ]
+    return "".join(lines)
+
+
 def aws_roles_stanza(row: AdminIntegration) -> str:
     """The trust-registry table the gateway's `aws` handler reads for this
     account: the role to assume and the audience its trust policy expects."""
@@ -201,14 +262,21 @@ def _without_aws_stanza(text: str, integration_id: str) -> str:
     return pattern.sub("", text)
 
 
-def _without_stanza(text: str, integration_id: str) -> str:
-    """`targets.toml` with this integration\'s stanza (and its comment) gone."""
+def _without_stanza(text: str, target_name: str) -> str:
+    """`targets.toml` with the stanza of this target name (its comment, its
+    keys and its `[target.<table>]` sub-tables) gone."""
     pattern = re.compile(
         r"\n?#[^\n]*connected from the room[^\n]*\n\[\[target\]\]\nname = \""
-        + re.escape(integration_id)
-        + r"\"\n(?:[a-z_]+ = [^\n]*\n)*",
+        + re.escape(target_name)
+        + r"\"\n(?:(?:[A-Za-z_]+ = [^\n]*|\[target\.[a-z_]+\])\n)*",
     )
     return pattern.sub("", text)
+
+
+def gateway_target_name(row: AdminIntegration) -> str:
+    """What the gateway calls this row's target: the MCP name for a Datadog
+    connection through the permission service, the row id otherwise."""
+    return mcp_target_name(row.id) if (row.spec or {}).get("auth") == DATADOG_AUTH else row.id
 
 
 def _gateway_branch_pr(github: GitHubClient, config: Config, *, branch: str, title: str, body: str, edit) -> str | None:
@@ -241,6 +309,8 @@ def _gateway_pr(
     verb = "remove" if remove else "add"
 
     aws = (row.spec or {}).get("auth") == "aws_role"
+    datadog = (row.spec or {}).get("auth") == DATADOG_AUTH
+    target_name = gateway_target_name(row)
 
     def edit(workdir: Path) -> bool:
         path = workdir / (REGISTRY_FILE if aws else TARGETS_FILE)
@@ -249,8 +319,9 @@ def _gateway_pr(
             stripped = _without_aws_stanza(current, row.id)
             updated = stripped if remove else stripped.rstrip("\n") + "\n" + aws_roles_stanza(row)
         else:
-            stripped = _without_stanza(current, row.id)
-            updated = stripped if remove else stripped.rstrip("\n") + "\n" + target_stanza(row)
+            stripped = _without_stanza(current, target_name)
+            stanza = datadog_target_stanza(row) if datadog else target_stanza(row)
+            updated = stripped if remove else stripped.rstrip("\n") + "\n" + stanza
         if updated == current:
             return False
         path.write_text(updated)
@@ -263,6 +334,15 @@ def _gateway_pr(
             f"The gateway\'s `aws` handler assumes the role with its own identity, one session per agent, "
             f"once a lane grants `{row.id}:read`. No secret is involved. Serves after this merges and the gateway rolls."
         )
+    elif datadog:
+        what = "target"
+        added = (
+            f"Adds the `{target_name}` target: Datadog\'s hosted MCP server at {(row.spec or {}).get('address', '')}. "
+            f"Each agent\'s calls carry its own application key leased from the permission service "
+            f"(`[target.credential_headers]`); the catalog fetch uses the gateway\'s shared Datadog key from its env "
+            f"(`[target.catalog_headers_env]`, DD_API_KEY / DD_APP_KEY). Needs the gateway on liminal 0.8.0 or later. "
+            f"Serves after this merges and the gateway rolls."
+        )
     else:
         what = "target"
         added = (
@@ -272,7 +352,8 @@ def _gateway_pr(
             f"`{token_env(row.id)}` (key `{SECRET_KEY}`). The target serves after this merges and "
             f"the gateway rolls."
         )
-    body = f"Opened by the room\'s admin panel for {actor}.\n\n" + (f"Removes the `{row.id}` {what}." if remove else added)
+    removed = f"Removes the `{row.id if aws else target_name}` {what}."
+    body = f"Opened by the room\'s admin panel for {actor}.\n\n" + (removed if remove else added)
     return _gateway_branch_pr(
         github, config, branch=f"{BRANCH_PREFIX}{row.id}", title=f"kobo: {verb} the {row.name} {what}", body=body, edit=edit
     )
@@ -343,7 +424,7 @@ def _connect_datadog(
                 log.warning("datadog connect refused and %s was left behind: %s", DATADOG_SECRET, undo)
             raise ConnectRefused(f"{exc}; check the service account id and both keys and connect again") from exc
     spec: dict[str, Any] = {
-        "address": address.strip(),
+        "address": _mcp_address(address, datadog_mcp_address(identity["site"])),
         "trust": trust if trust in ("trusted", "untrusted") else "untrusted",
         "auth": DATADOG_AUTH,
         "identity": {"service_account_id": sa, "site": identity["site"]},
@@ -364,9 +445,28 @@ def _connect_datadog(
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the permission service refused: {exc}")
         return row
     detail += "; connected in the permission service, agents may ask for its read permissions"
-    admin_store.set_integration_state(
-        session, row.id, state=admin_store.STATE_PENDING if waiting else admin_store.STATE_APPLIED, detail=detail,
-    )
+    # The gateway's half (kobo#327): the `datadog-mcp` target, a pull request on the
+    # gateway's config repository. Independent of the Secret restart, so a waiting row
+    # opens it too.
+    github = getattr(clients, "github", None) if clients is not None else None
+    pr: str | None = None
+    if github is not None and config.gateway_config_repo:
+        try:
+            pr = _gateway_pr(github, config, row, remove=False, actor=actor)
+        except (ClientError, OSError) as exc:
+            admin_store.set_integration_state(
+                session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the gateway pull request failed: {exc}",
+            )
+            return row
+    if pr:
+        detail += (f"; pull request open on the gateway: {pr}; agents reach Datadog\'s MCP server after it merges "
+                   "and the gateway rolls")
+        row.spec = {**dict(row.spec or {}), "pull_request": pr}
+        state = admin_store.STATE_PENDING
+    else:
+        detail += f"; no gateway config repository is set, so add the {mcp_target_name(row.id)} target by hand"
+        state = admin_store.STATE_PENDING if waiting else admin_store.STATE_APPLIED
+    admin_store.set_integration_state(session, row.id, state=state, detail=detail)
     return row
 
 
@@ -723,7 +823,13 @@ def disconnect(session: Session, clients: Clients | None, config: Config, *, int
             outcome["secret"] = "removed"
         except ClientError as exc:
             outcome["secret"] = f"left: {exc}"
-        outcome["gateway"] = "nothing to remove"
+        # The gateway's `datadog-mcp` target goes the way it came: by pull request.
+        github = getattr(clients, "github", None) if clients is not None else None
+        try:
+            pr = _gateway_pr(github, config, row, remove=True, actor=actor) if github is not None else None
+            outcome["gateway"] = f"pull request open: {pr}" if pr else "nothing to remove"
+        except (ClientError, OSError) as exc:
+            outcome["gateway"] = f"left: {exc}"
     else:
         sero = clients.sero if clients is not None else None
         if sero is not None and row.credential_ref:

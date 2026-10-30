@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api import admin_connections as admin_connections_flow
 from kobo_api import admin_integrations as admin_integrations_flow
 from kobo_api import admin_roles as admin_roles_catalogue
-from kobo_api import admin_store, audit
+from kobo_api import admin_store, audit, gateway_lane
 from kobo_api import room_services as room_services_store
 from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
@@ -4021,10 +4021,14 @@ def create_app(
         # set again, which is cheap and keeps this route from reading the
         # grant back to find out which kind it was.
         _sync_dispatch_pairs(session)
+        # The gateway lane follows the permission (kobo#327): the last Datadog
+        # grant gone takes the agent's `datadog-mcp` lane with it.
+        lane = gateway_lane.follow(app.state.clients, bab, agent_name=agent.name, actor=_bab_actor(request))
         out = out if isinstance(out, dict) else {}
         audit.record(
             session, request=request, action="access.revoke", target_kind="agent", target_id=agent.name,
-            agent_name=agent.name, detail={"grant_id": grant_id, "integration": out.get("integration"), "permission": out.get("permission")},
+            agent_name=agent.name, detail={"grant_id": grant_id, "integration": out.get("integration"),
+                                           "permission": out.get("permission"), "gateway_lane": lane},
             summary=f"{audit.who(request)} revoked {out.get('permission') or 'a permission'} from agent {agent.name}"
             + (f" on {out['integration']}" if out.get("integration") else ""),
         )
@@ -4096,17 +4100,27 @@ def create_app(
         except ClientError as exc:
             return _bab_refused(exc)
         verb = "Approved" if payload.verdict == "approve" else "Denied"
+        # The gateway lane follows the permission (kobo#327): once per agent
+        # whose request was approved, its gateway grant is brought in step.
+        lanes: dict[str, str] = {}
+        for result in results:
+            agent_name = pending.get(result.get("id"), {}).get("agent")
+            if result.get("status") == "approved" and agent_name and agent_name not in lanes:
+                lanes[agent_name] = gateway_lane.follow(app.state.clients, bab, agent_name=agent_name, actor=_bab_actor(request))
         for result in results:
             asked = pending.get(result.get("id"), {})
             agent_name = asked.get("agent")
             wanted = ", ".join(asked.get("permissions") or []) or f"request {result.get('id')}"
             where = f" on {asked['integration']}" if asked.get("integration") else ""
             skipped = result.get("status") == "skipped"
+            detail = {"result": result, "reason": payload.reason}
+            if result.get("status") == "approved" and agent_name in lanes:
+                detail["gateway_lane"] = lanes[agent_name]
             audit.record(
                 session, request=request, action=f"access.{payload.verdict}", target_kind="access_request",
                 target_id=str(result.get("id")), agent_name=agent_name,
                 outcome=audit.OUTCOME_FAILED if skipped else audit.OUTCOME_OK,
-                detail={"result": result, "reason": payload.reason},
+                detail=detail,
                 summary=(f"{verb} {wanted} for {agent_name}{where}" if agent_name else f"{verb} request {result.get('id')}")
                 + (f"; skipped: {result.get('reason')}" if skipped else ""),
             )
@@ -4138,10 +4152,16 @@ def create_app(
         bab, off = _bab_or_404()
         if off is not None:
             return off
-        out = bab_push_topology(bab, session.query(Agent).all(), _bab_actor(request))
+        agents = session.query(Agent).all()
+        actor = _bab_actor(request)
+        out = bab_push_topology(bab, agents, actor)
         if out is None:
             return JSONResponse({"error": "the permission service did not take the topology"}, status_code=502)
-        return JSONResponse(out)
+        # Every agent's gateway lane brought in step with its permissions (kobo#327).
+        lanes = {"set": 0, "unchanged": 0, "failed": 0}
+        for a in agents:
+            lanes[gateway_lane.tally(gateway_lane.follow(app.state.clients, bab, agent_name=a.name, actor=actor))] += 1
+        return JSONResponse({**out, "gateway_lanes": lanes})
 
     @app.get("/api/admin/integrations/aws/setup")
     def admin_aws_setup(request: Request, packs: str = "", integration: str = "aws", mode: str = "role",

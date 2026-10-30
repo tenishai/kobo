@@ -1884,7 +1884,8 @@ DATADOG_SA = "11111111-2222-3333-4444-555555555555"
 def test_datadog_through_the_permission_service_writes_its_secret_and_the_read_ceiling(tmp_path, fake_storage):
     """Wire shape: Datadog's keys land in the Secret the permission service reads (the four
     env names) and the connection is held there with every Datadog read permission; nothing
-    goes to the secrets add-on or the gateway (kobo#322)."""
+    goes to the secrets add-on, and the gateway learns only the `datadog-mcp` target, by pull
+    request (kobo#322, kobo#327)."""
     github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"targets.toml": TARGETS}, track_pushed_content=True)
     sero, bab = FakeSero(), FakeBab(integrations=[])
     client, headers = _client__api_admin_integrations(tmp_path, fake_storage, _config(tmp_path, bab_url="http://bab.bab.svc:8080"), github=github, sero=sero)
@@ -1894,16 +1895,19 @@ def test_datadog_through_the_permission_service_writes_its_secret_and_the_read_c
     response = client.post("/api/admin/integrations", json=body, headers=headers)
     assert response.status_code == 201, response.text
     row = response.json()
-    assert row["state"] == "applied" and "minted and removed a probe key" in row["state_detail"]
+    assert row["state"] == "pending" and "minted and removed a probe key" in row["state_detail"]
+    assert "pull request open on the gateway" in row["state_detail"]
     assert client.app.state.clients.kubectl.secrets_applied == [("bab", "bab-datadog", {
         "DD_SITE": "datadoghq.com", "DD_API_KEY": "dd-api", "DD_MGMT_APP_KEY": "dd-mgmt", "DD_SERVICE_ACCOUNT_ID": DATADOG_SA})]
     assert bab.datadog_probes == [DATADOG_SA]
     (integ,) = bab.integrations("x")
     assert integ["integration"] == "datadog" and integ["spec"] == {"site": "datadoghq.com", "service_account_id": DATADOG_SA, "name": "Datadog"}
     assert integ["ceiling"] == ["datadog_monitors_read"]
-    assert row["credential_ref"] is None and sero.puts == [] and not github._pushed_trees
+    assert row["credential_ref"] is None and sero.puts == []
+    targets = github.pushed_file("targets.toml")
+    assert 'name = "existing"' in targets and 'name = "datadog-mcp"' in targets and 'name = "datadog"\n' not in targets
     listing = client.get("/api/admin/integrations", headers=headers).json()
-    assert "dd-mgmt" not in str(listing) and "dd-api" not in str(listing)
+    assert "dd-mgmt" not in str(listing) and "dd-api" not in str(listing) and "dd-mgmt" not in targets
 
 
 # --- from test_web_learnings.py ---
