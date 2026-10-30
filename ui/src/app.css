@@ -224,6 +224,33 @@ kbd {
   color: var(--fail);
 }
 
+/* A panel body that waits on an admin (#304): the whole body is one greyed
+   box, no fields and no buttons, saying who to ask and where they set it up. */
+.panel__locked {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-lg);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--muted);
+  opacity: 0.85;
+  cursor: not-allowed;
+  user-select: none;
+}
+
+.panel__locked-text {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.panel__locked-where {
+  margin: 0;
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+
 .panel__toolbar {
   display: flex;
   flex-wrap: wrap;

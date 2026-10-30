@@ -430,6 +430,18 @@ describe("SlackPanel", () => {
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("greys out with one sentence when the room has no Slack integration", () => {
+    // The room's gate (#304): no fields, no buttons, only who to ask.
+    renderWithClient(SlackPanel, {
+      agentName: "warden",
+      slack: { ...IDLE_SLACK, available: false },
+      frozen: false,
+    });
+
+    expect(screen.getByText("Ask a kobo admin to add the Slack integration.")).not.toBeNull();
+    expect(document.querySelectorAll("input, textarea, button")).toHaveLength(0);
+  });
+
   it("a connected agent gets the channels table, not the stepper", () => {
     renderWithClient(SlackPanel, {
       agentName: "warden",

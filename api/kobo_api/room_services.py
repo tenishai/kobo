@@ -9,7 +9,7 @@ held by the room rather than by its deployment config.
 Both were deployment-config keys only (`slack_tokens_secret` /
 `slack_tokens_path`, `pr_app_*`), so a room that forgot them told owners
 "not configured" with no way to fix it from the room. Now an operator pastes
-the values under Admin > Integrations > Room services; they are read live,
+the values under Admin > Integrations (the Slack and GitHub rows, #304); they are read live,
 and the deployment-config keys stay as the fallback (`source:
 "deployment"`).
 
