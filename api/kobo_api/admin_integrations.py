@@ -618,5 +618,10 @@ def disconnect(session: Session, clients: Clients | None, config: Config, *, int
         outcome["gateway"] = f"pull request open: {pr}" if pr else "nothing to remove"
     except (ClientError, OSError) as exc:
         outcome["gateway"] = f"left: {exc}"
-    admin_store.remove_integration(session, integration_id, actor=actor)
+    went_wrong = any(str(v).startswith("left:") for v in outcome.values())
+    admin_store.remove_integration(
+        session, integration_id, actor=actor,
+        landed=admin_store.LANDED_FAILED if went_wrong else admin_store.LANDED_APPLIED,
+        detail="; ".join(f"{k}: {outcome[k]}" for k in ("access", "secret", "gateway") if k in outcome),
+    )
     return outcome

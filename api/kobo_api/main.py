@@ -4427,20 +4427,7 @@ def create_app(
         blocked = _admin_panel_gate(request)
         if blocked is not None:
             return blocked
-        events = [
-            {
-                "id": e.id,
-                "at": rfc3339(e.at),
-                "actor": e.actor,
-                "action": e.action,
-                "object_type": e.object_type,
-                "object_id": e.object_id,
-                "landed": e.landed,
-                "landed_detail": e.landed_detail,
-            }
-            for e in admin_store.audit_events(session)
-        ]
-        return JSONResponse({"events": events})
+        return JSONResponse({"events": [admin_store.event_dict(e) for e in admin_store.audit_events(session)]})
 
     @app.get("/api/org/status")
     def org_status() -> dict:
@@ -11825,6 +11812,22 @@ def configure_room_logging(level: int = logging.INFO) -> None:
     room.setLevel(level)
 
 
+def _backfill_audit_landed(session_factory) -> None:
+    """Audit events recorded before the log followed the row (issue #307):
+    one cheap pass at boot, fail-soft, so old connects stop reading Pending."""
+    session = session_factory()
+    try:
+        fixed = admin_store.backfill_landed(session)
+        session.commit()
+        if fixed:
+            log.info("audit: %d event(s) landed from their rows", fixed)
+    except Exception:
+        session.rollback()
+        log.warning("audit backfill skipped", exc_info=True)
+    finally:
+        session.close()
+
+
 def build_default_app() -> FastAPI:
     """Wire the real config, org config, database, and platform clients."""
     configure_room_logging()
@@ -11868,6 +11871,7 @@ def build_default_app() -> FastAPI:
     # affected by it.
     role = role_from_env()
     sweep_interrupted(session_factory, queue_mode=role != ROLE_ALL)
+    _backfill_audit_landed(session_factory)
     # One real Clients (and the httpx.Client(s) it owns) per process, built
     # once here rather than per-request: the accepted pattern for this app's
     # lifetime (a longer-lived httpx client pool is the deferred concern, not

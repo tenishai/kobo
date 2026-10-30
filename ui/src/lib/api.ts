@@ -1426,6 +1426,8 @@ export type AdminAuditEvent = {
   action: string;
   object_type: string;
   object_id: string;
+  /** One plain sentence for the Change column, built server-side. */
+  summary: string;
   landed: "pending" | "applied" | "failed";
   landed_detail: string | null;
 };

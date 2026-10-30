@@ -83,6 +83,124 @@ def mark_landed(session: Session, event_id: int, *, landed: str, detail: str | N
     event.landed_detail = detail
 
 
+def _latest_event(session: Session, object_type: str, object_id: str) -> AdminAuditEvent | None:
+    return (
+        session.query(AdminAuditEvent)
+        .filter_by(object_type=object_type, object_id=object_id)
+        .order_by(AdminAuditEvent.at.desc(), AdminAuditEvent.id.desc())
+        .first()
+    )
+
+
+def _land_latest(session: Session, object_type: str, object_id: str, *, landed: str, detail: str | None) -> None:
+    """The event follows the row (issue #307): when a row's state is set, the
+    most recent event for that target lands the same way, with the same
+    sentence. Without this a connect stayed Pending in the log forever."""
+    event = _latest_event(session, object_type, object_id)
+    if event is not None:
+        event.landed, event.landed_detail = landed, detail
+
+
+def backfill_landed(session: Session) -> int:
+    """One best-effort pass over events recorded before the log followed the
+    row (issue #307), uncommitted. A pending connect or update whose row has
+    since landed takes the row's state and sentence; a pending disconnect
+    whose row is gone is applied, since the row going was the change. Cheap:
+    two small tables, pending integration events only. Everything else is
+    left as it is."""
+    pending = (
+        session.query(AdminAuditEvent)
+        .filter_by(object_type="integration", landed=LANDED_PENDING)
+        .order_by(AdminAuditEvent.at.asc(), AdminAuditEvent.id.asc())
+        .all()
+    )
+    fixed = 0
+    for event in pending:
+        row = session.get(AdminIntegration, event.object_id)
+        if event.action == "integration.disconnect":
+            if row is None:
+                event.landed = LANDED_APPLIED
+                event.landed_detail = "the connection was removed; recorded before the log followed outcomes"
+                fixed += 1
+        elif row is not None and row.state in (STATE_APPLIED, STATE_FAILED):
+            event.landed, event.landed_detail = row.state, row.state_detail
+            fixed += 1
+    return fixed
+
+
+_SERVICE_LABELS = {"slack": "Slack", "github": "the GitHub app"}
+
+
+def _count(value: Any) -> int:
+    if isinstance(value, list):
+        return len(value)
+    return int(value or 0)
+
+
+def _integration_phrase(body: dict[str, Any] | None, object_id: str) -> str:
+    body = body or {}
+    name = body.get("name") or object_id
+    spec = body.get("spec") or {}
+    if spec.get("kind") == "account":
+        return f"account {name} under {spec.get('parent') or 'its organization'}"
+    if spec.get("kind") == "org":
+        return f"organization {name}"
+    return str(name)
+
+
+def summary(action: str, object_type: str, object_id: str, before: dict[str, Any] | None, after: dict[str, Any] | None) -> str:
+    """One plain sentence for the Audit pane's Change column (issue #307),
+    built from the event's kind, target and body. The raw `action` stays on
+    the row for the quiet second line."""
+    body = after if after is not None else before
+    if object_type == "integration":
+        verb = {"integration.connect": "Connected", "integration.update": "Updated", "integration.disconnect": "Disconnected"}.get(action)
+        if verb:
+            return f"{verb} {_integration_phrase(body, object_id)}"
+    if object_type == "room_service":
+        label = _SERVICE_LABELS.get(object_id, object_id)
+        if action == "room_service.set":
+            return f"Set {label} in room services"
+        if action == "room_service.remove":
+            return f"Removed {label} from room services"
+    if object_type == "role":
+        verb = {"role.create": "Created", "role.update": "Updated", "role.delete": "Deleted"}.get(action)
+        if verb:
+            return f"{verb} role {(body or {}).get('name') or object_id}"
+    if object_type == "grant":
+        agent, _, integration = object_id.partition("/")
+        access = (body or {}).get("access") or "a"
+        if action == "grant.create":
+            return f"Gave {agent} a {access} lane to {integration}"
+        if action == "grant.update":
+            return f"Changed {agent}'s lane to {integration} to {access}"
+        if action == "grant.revoke":
+            return f"Revoked {agent}'s lane to {integration}"
+    if action == "directory.sweep":
+        retired, failed = _count((body or {}).get("retired")), _count((body or {}).get("failed"))
+        return f"Swept the directory: retired {retired}" + (f", {failed} refused" if failed else "")
+    if action == "setting.put":
+        return "Saved panel preferences" if object_id == "panel.preferences" else f"Saved setting {object_id}"
+    if action == "mcp.revoke":
+        return f"Cut {object_id} off from the assistant connection"
+    return f"{action.replace('.', ' ').capitalize()} {object_id}"
+
+
+def event_dict(event: AdminAuditEvent) -> dict[str, Any]:
+    """One audit event as the Audit pane reads it."""
+    return {
+        "id": event.id,
+        "at": rfc3339(event.at),
+        "actor": event.actor,
+        "action": event.action,
+        "object_type": event.object_type,
+        "object_id": event.object_id,
+        "summary": summary(event.action, event.object_type, event.object_id, event.before, event.after),
+        "landed": event.landed,
+        "landed_detail": event.landed_detail,
+    }
+
+
 def get_setting(session: Session, key: str) -> dict[str, Any] | None:
     if key not in SETTING_KEYS:
         raise UnknownSettingKey(key)
@@ -209,15 +327,20 @@ def put_integration(
 
 
 def set_integration_state(session: Session, integration_id: str, *, state: str, detail: str | None) -> None:
+    """The row's state, and the latest audit event for it lands the same way."""
     row = session.get(AdminIntegration, integration_id)
     if row is None:
         return
     row.state, row.state_detail, row.updated_at = state, detail, _now()
+    _land_latest(session, "integration", integration_id, landed=state, detail=detail)
 
 
-def remove_integration(session: Session, integration_id: str, *, actor: str) -> None:
+def remove_integration(
+    session: Session, integration_id: str, *, actor: str, landed: str = LANDED_PENDING, detail: str | None = None,
+) -> None:
     """Disconnect: the row goes, its grants go with it, and the audit event
-    says so. Reversing the projections is the caller's job."""
+    says so. Reversing the projections is the caller's job; a caller that
+    has already done so passes how it went as `landed` and `detail`."""
     row = session.get(AdminIntegration, integration_id)
     if row is None:
         raise AdminStoreError(f"no integration {integration_id!r}")
@@ -226,7 +349,7 @@ def remove_integration(session: Session, integration_id: str, *, actor: str) -> 
         session.delete(grant)
     session.delete(row)
     record(session, actor=actor, action="integration.disconnect", object_type="integration",
-           object_id=integration_id, before=before, after=None)
+           object_id=integration_id, before=before, after=None, landed=landed, landed_detail=detail)
 
 
 def role_dict(row: AdminRole) -> dict[str, Any]:
@@ -347,6 +470,7 @@ def set_grant_state(session: Session, grant_id: int, *, state: str, detail: str 
     row.state, row.state_detail, row.updated_at = state, detail, _now()
     if spec is not None:
         row.spec = {**dict(row.spec or {}), **spec}
+    _land_latest(session, "grant", f"{row.agent_name}/{row.integration_id}", landed=state, detail=detail)
 
 
 def revoke_grant(session: Session, *, agent_name: str, integration_id: str, actor: str) -> AdminGrant:

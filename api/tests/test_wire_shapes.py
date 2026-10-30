@@ -1832,6 +1832,7 @@ def test_connect_stores_the_credential_opens_the_gateway_pr_and_records_the_row(
     assert "dd-secret-token" not in str(listing)
     audit = client.get("/api/admin/audit", headers=headers).json()["events"]
     assert audit[0]["action"] == "integration.connect" and "dd-secret-token" not in str(audit)
+    assert audit[0]["summary"] == "Connected Datadog"
 
 
 def test_an_aws_role_is_checked_with_aws_then_written_into_the_trust_registry(tmp_path, fake_storage):
