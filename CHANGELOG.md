@@ -6,6 +6,12 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.23] - 2026-10-31
+
+### Changed
+
+- Admin > Services is a status page with one action, Reload org config. The **Wire agents to the tool gateway** button from 0.3.22 and the **Sweep directory** button are gone, with their routes: new agents get the gateway at create, older ones are migrated by hand once, and the room retires stale switchboard directory entries itself each night, writing an audit row as the room (#351).
+
 ## [0.3.22] - 2026-10-30
 
 ### Added
