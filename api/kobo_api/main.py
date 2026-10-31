@@ -3961,7 +3961,7 @@ def create_app(
         _sync_dispatch_pairs(session)
         # The gateway lane follows the permission (kobo#327): the last Datadog
         # grant gone takes the agent's `datadog-mcp` lane with it.
-        lane = gateway_lane.follow(app.state.clients, bab, agent_name=agent.name, actor=_bab_actor(request))
+        lane = gateway_lane.follow(session, app.state.clients, bab, agent_name=agent.name, actor=_bab_actor(request))
         out = out if isinstance(out, dict) else {}
         audit.record(
             session, request=request, action="access.revoke", target_kind="agent", target_id=agent.name,
@@ -4044,7 +4044,7 @@ def create_app(
         for result in results:
             agent_name = pending.get(result.get("id"), {}).get("agent")
             if result.get("status") == "approved" and agent_name and agent_name not in lanes:
-                lanes[agent_name] = gateway_lane.follow(app.state.clients, bab, agent_name=agent_name, actor=_bab_actor(request))
+                lanes[agent_name] = gateway_lane.follow(session, app.state.clients, bab, agent_name=agent_name, actor=_bab_actor(request))
         for result in results:
             asked = pending.get(result.get("id"), {})
             agent_name = asked.get("agent")
@@ -4098,7 +4098,7 @@ def create_app(
         # Every agent's gateway lane brought in step with its permissions (kobo#327).
         lanes = {"set": 0, "unchanged": 0, "failed": 0}
         for a in agents:
-            lanes[gateway_lane.tally(gateway_lane.follow(app.state.clients, bab, agent_name=a.name, actor=actor))] += 1
+            lanes[gateway_lane.tally(gateway_lane.follow(session, app.state.clients, bab, agent_name=a.name, actor=actor))] += 1
         return JSONResponse({**out, "gateway_lanes": lanes})
 
     @app.get("/api/admin/integrations/aws/setup")

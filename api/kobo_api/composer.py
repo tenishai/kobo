@@ -1342,6 +1342,42 @@ def update_agent_yaml_colleague_mode(bundle_dir: Path, *, mode: str) -> bool:
     return True
 
 
+def update_agent_yaml_allow(bundle_dir: Path, *, entries: list[str]) -> bool:
+    """Make an already-composed `bundle_dir/agent.yaml`'s allow list admit
+    every pattern in `entries`, appending the ones no existing pattern
+    already covers (daedalus matches `tools.allow` with fnmatch, so
+    `datadog-mcp.*` is one entry for a whole target). Returns whether the
+    file changed; nothing else in the tools block moves. Raises
+    `ClientError` when the file is missing, does not parse, or has no tools
+    section.
+
+    Why: the gateway filters its catalog per grant, and the runtime offers a
+    gateway tool only when the bundle's allow list matches it too, so a
+    permission approved in the room has to reach the bundle as well
+    (2026-10-31: an agent held a Datadog lane, listed the tools at the
+    gateway, and offered none of them to its model).
+    """
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    try:
+        text = agent_yaml_path.read_text()
+    except OSError as exc:
+        raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ClientError(f"agent.yaml does not parse: {agent_yaml_path}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("tools"), dict):
+        raise ClientError(f"agent.yaml has no tools section to update: {agent_yaml_path}")
+    tools = data["tools"]
+    allow = list(tools.get("allow") or [])
+    missing = [e for e in entries if not any(fnmatch(e, str(pattern)) or e == pattern for pattern in allow)]
+    if not missing:
+        return False
+    tools["allow"] = [*allow, *missing]
+    _splice_tools_section(agent_yaml_path, text, tools)
+    return True
+
+
 def update_agent_yaml_skills_load(bundle_dir: Path) -> bool:
     """Make an already-composed `bundle_dir/agent.yaml`'s allow list admit
     `skills.load`, appending it when no entry matches (issue #137).
