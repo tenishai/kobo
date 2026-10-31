@@ -6,6 +6,12 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.24] - 2026-10-31
+
+### Fixed
+
+- Approving an agent's first permission on a vendor now also lets the agent see that vendor's gateway tools: its bundle's allow list gains the vendor's patterns as one commit and one restart. Before, the grant and the gateway lane were set and the runtime still offered none of the tools, because the bundle's allow list never named them (#353).
+
 ## [0.3.23] - 2026-10-31
 
 ### Changed
