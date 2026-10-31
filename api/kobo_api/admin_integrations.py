@@ -106,11 +106,14 @@ GITHUB_AUTH = "github_app"
 GITHUB_SECRET = "bab-github"
 # GitHub's hosted MCP server: the gateway's client appends /mcp. Read lanes send
 # X-MCP-Readonly on every request (the server only honours it per request, not
-# per session), and the catalog fetch needs a long-lived bearer the gateway's
-# pod carries in this env variable, as "Bearer <token>".
+# per session). The server refuses an unauthenticated initialize and wants the
+# credential on Authorization, which liminal's catalog_headers_env may not set,
+# so the catalog fetch names a catalog token provider the gateway registers
+# (liminal 0.9.2): the gateway mints its own App installation token before
+# every fetch, and nobody stores or rotates a long-lived token for it.
 GITHUB_MCP_ADDRESS = "https://api.githubcopilot.com"
 GITHUB_MCP_SCOPE = "github:read"
-GITHUB_MCP_CATALOG_AUTH_ENV = "GITHUB_MCP_CATALOG_AUTHORIZATION"
+GITHUB_MCP_CATALOG_PROVIDER = "github-app"
 GITHUB_PRIVATE_KEY_FIELD = "PRIVATE_KEY"
 _DIGITS = re.compile(r"^\d+$")
 # How long a connect waits for the permission service to see the Secret it just wrote
@@ -275,7 +278,8 @@ def github_target_spec(row: AdminIntegration) -> dict[str, Any]:
     plane takes it: untrusted, flagged, one session per persona, and
     `service-token` auth, so each agent's call carries the installation token
     the permission service leased it. Read-only on every request; the catalog
-    fetch carries the gateway's own long-lived bearer from its env."""
+    fetch carries an App installation token the gateway mints on demand
+    (`catalog_token_provider`, liminal 0.9.2)."""
     spec = row.spec or {}
     return {
         "transport": "http",
@@ -289,7 +293,7 @@ def github_target_spec(row: AdminIntegration) -> dict[str, Any]:
         "required_scope": GITHUB_MCP_SCOPE,
         "client_name": "liminal-gateway",
         "headers": {"X-MCP-Readonly": "true"},
-        "catalog_headers_env": {"Authorization": GITHUB_MCP_CATALOG_AUTH_ENV},
+        "catalog_token_provider": GITHUB_MCP_CATALOG_PROVIDER,
     }
 
 
@@ -542,8 +546,9 @@ def _gateway_pr(
         added = (
             f"Adds the `{target_name}` target: GitHub\'s hosted MCP server at {(row.spec or {}).get('address') or GITHUB_MCP_ADDRESS}. "
             f"Each agent\'s calls carry its own installation token leased from the permission service "
-            f"(`service-token`, `GITHUB_TOKEN`), read-only on every request; the catalog fetch uses the gateway\'s "
-            f"own bearer from its env (`{GITHUB_MCP_CATALOG_AUTH_ENV}`). Needs the gateway on liminal 0.8.0 or later. "
+            f"(`service-token`, `GITHUB_TOKEN`), read-only on every request; the catalog fetch carries an installation "
+            f"token the gateway mints from its own App (`catalog_token_provider = \"{GITHUB_MCP_CATALOG_PROVIDER}\"`). "
+            f"Needs the gateway on liminal 0.9.2 or later. "
             f"Serves after this merges and the gateway rolls."
         )
     else:
