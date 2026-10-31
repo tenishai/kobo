@@ -32,6 +32,7 @@ approve agents. An agent holds no standing credential and never sees one.
 | 6 | **The lane**: what an agent granted this vendor needs on the gateway (scope, handlers) **and in its own bundle** (allow patterns). Approving the first permission applies both; the second half restarts the agent once. | `api/kobo_api/gateway_lane.py` `GATEWAY_LANES` | The runtime offers a gateway tool only when the bundle's allow list matches it, however the gateway is configured. Forgetting `allow` is the quietest failure: the agent lists the tools at the gateway and offers none to its model. |
 | 7 | **Skills**: any skill that mentions the vendor must tell an agent to use the gateway tools by name, and must not ask for a shell, keys or curl. | the skills catalogue repository | A skill written for a person's terminal makes the agent say "I have no shell". Keep the terminal recipe under its own heading for people. |
 | 8 | **Guide**: the Integrations paragraph and the Permissions paragraph name the vendor and what the person must do at the vendor. | `api/kobo_api/templates/guide/07-access-and-groups.md`, `08-the-harness.md` | Same pull request as the form. |
+| 9 | **Wire test, both layers, green**: the gateway-level script against the vendor with one agent's real lease, then the agent-level script through the switchboard. Run before anyone is asked to try the vendor in chat, and again after any change to the gateway, the permission service or the runtime. Red means not done. | the deployment config repository, `scripts/wire-test/` (README there) | Chat is not the test harness: a person asking in Slack finds one failure per turn and cannot tell which layer it is. The scripts find all of them in one run and name the layer. |
 
 ## Smoke test, in order
 
@@ -39,5 +40,7 @@ approve agents. An agent holds no standing credential and never sees one.
 2. **Request and approve** one read permission for one agent under Review. The audit row's sentence names the lane and, the first time, the allow patterns; the agent restarts once and its header reads Updating, not Down.
 3. **Ask the agent** in chat to do one read. The gateway log shows the lease request and the admitted call; the permission service's ledger shows the lease; the vendor's own audit trail shows the per-agent credential name.
 4. **Revoke** and ask again: the refusal names Permissions.
+
+Steps 3 and 4 are what the agent-level wire test (gate 9) runs as fixed-shape turns, plus three calls in one turn and a later turn after a pause; run it instead of asking in chat.
 
 If step 3 fails with "no tool", check the agent's log for `[tools] offering:`; the vendor's tools missing there is gate 6 (allow) or gate 0a/0d (no gateway block). If the tools are offered and the call is refused, it is the gateway grant (gate 6, first half) or the lease (gates 1 to 3).
