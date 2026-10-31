@@ -48,9 +48,7 @@
 
   function go(event: MouseEvent, id: string): void {
     event.preventDefault();
-    navigate({ page: "getting-started", section: id });
-    document.querySelector(".shell__main")?.scrollTo?.({ top: 0 });
-    window.scrollTo?.({ top: 0 });
+    jump(id);
   }
 </script>
 
