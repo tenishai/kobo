@@ -1280,6 +1280,10 @@ export function deliveryQuery(name: string, sha: string | null) {
     queryFn: () => fetchDeliveryState(name, sha as string),
     enabled: sha !== null,
     refetchInterval: (query) => deliveryRefetchInterval(query.state.data),
+    // The person usually goes to Slack to try the change while it rolls; the
+    // poll must not pause with the tab, or the chip pulses "Delivering" long
+    // after the change landed, until a reload.
+    refetchIntervalInBackground: true,
   });
 }
 

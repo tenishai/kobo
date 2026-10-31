@@ -54,7 +54,10 @@
         note: integrations.isPending ? "…" : failed ? `${plural(failed, "connection")} failed` : i.length ? `${plural(i.length, "vendor")} connected` : "none yet",
         warn: failed > 0,
       },
-      ...(accessOn ? [] : [{
+      // Connections exists only while the permission service is off; until the
+      // add-ons have answered, nobody knows, so the row waits rather than flash
+      // and vanish (the nav got the same rule in #315).
+      ...(addons.isPending || accessOn ? [] : [{
         pane: "connections",
         name: "Connections",
         note: connections.isPending ? "…" : noLane ? `${plural(agents.length, "agent")}, ${noLane} without a lane` : `${plural(agents.length, "agent")}, all with a lane`,
