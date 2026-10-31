@@ -34,6 +34,14 @@ approve agents. An agent holds no standing credential and never sees one.
 | 8 | **Guide**: the Integrations paragraph and the Permissions paragraph name the vendor and what the person must do at the vendor. | `api/kobo_api/templates/guide/07-access-and-groups.md`, `08-the-harness.md` | Same pull request as the form. |
 | 9 | **Wire test, both layers, green**: the gateway-level script against the vendor with one agent's real lease, then the agent-level script through the switchboard. Run before anyone is asked to try the vendor in chat, and again after any change to the gateway, the permission service or the runtime. Red means not done. | the deployment config repository, `scripts/wire-test/` (README there) | Chat is not the test harness: a person asking in Slack finds one failure per turn and cannot tell which layer it is. The scripts find all of them in one run and name the layer. |
 
+## What GitHub taught (vendor 1, 2026-10-31)
+
+- **The vendor's MCP server may need a credential for the catalog fetch too.** GitHub's refuses an unauthenticated `initialize`, and leased installation tokens expire hourly, so the target carries `catalog_headers_env` pointing at a long-lived read token in the gateway's secret (`GITHUB_MCP_CATALOG_AUTHORIZATION`, the value `Bearer <token>`). Check this on gate 5 before the connect form exists; a target with no catalog is "startup failed" on the gateway and the row says degraded.
+- **Per-request switches are target `headers`, not session state.** GitHub honours `X-MCP-Readonly` only on the request that carries it, so the spec sends it on every request. Test the header's scope with two requests before relying on it.
+- **The app or account the room mints from must hold the union of the catalogue rows.** A GitHub App without `issues: read` refuses any token that asks for it (HTTP 422), so gate 3 lists the exact permissions and gate 1's rows must stay inside them. Read the live app's permissions (`GET /app/installations/{id}` with the app's JWT) before writing the rows.
+- **Reuse what the room already holds.** The room's own GitHub App (Integrations > GitHub) is the natural minter; the connect form takes blanks to mean it and only asks for a second app when someone pastes one.
+- **Release mechanics differ per repository.** The kobo release script edits `api/pyproject.toml` and `ui/`; bab and the others bump `pyproject.toml` by hand. The release workflow refuses a tag whose version the project does not declare, so a mismatch costs a version number, not a bad image.
+
 ## Smoke test, in order
 
 1. **Connect** on Admin > Integrations: the row reads Connected at once. The gateway's health page lists the target as ready (its catalog fetched with the shared credential).
