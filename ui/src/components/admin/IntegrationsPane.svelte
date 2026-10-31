@@ -160,6 +160,12 @@
   // hosted MCP server as a target, so the address field stays and follows the Site
   // field until the person types their own.
   const DATADOG_AUTH = "datadog_service_account";
+  const GITHUB_AUTH = "github_app";
+  // Connections through the permission service: the keys go to it alone, the
+  // vendor's MCP server becomes a gateway target, and the read/write choice does
+  // not apply (the ceiling is the read permissions agents are granted).
+  const SERVICE_AUTHS = new Set([DATADOG_AUTH, GITHUB_AUTH]);
+  const VENDOR_OF_AUTH: Record<string, string> = { [DATADOG_AUTH]: "Datadog", [GITHUB_AUTH]: "GitHub" };
   function datadogMcpAddress(site: string): string {
     return `https://mcp.${site.trim() || "datadoghq.com"}/v1`;
   }
@@ -491,6 +497,12 @@
           <input id="integration-address" type="url" bind:value={form.address} placeholder="https://mcp.datadoghq.com/v1" />
         </label>
         <p class="page__foot">Agents reach it with their own leased key; change this only if your site differs.</p>
+      {:else if form.entry.auth === GITHUB_AUTH}
+        <label class="field">
+          <span>GitHub MCP server <span class="quiet">(optional)</span></span>
+          <input id="integration-address" type="url" bind:value={form.address} placeholder="https://api.githubcopilot.com" />
+        </label>
+        <p class="page__foot">Agents reach it with their own leased token, read-only; leave this blank for GitHub.com.</p>
       {:else}
         <label class="field">
           <span>Vendor's MCP address <span class="quiet">(optional)</span></span>
@@ -507,13 +519,13 @@
       {#if formError}<p class="page__foot fail">{formError}</p>{/if}
       {#if connect.isPending}
         <p class="page__foot busy" role="status"><span class="spin" aria-hidden="true"></span>
-          {#if form.entry.auth === "datadog_service_account"}Checking the keys with Datadog, then adding its MCP server to the gateway. This can take up to a minute.
+          {#if SERVICE_AUTHS.has(form.entry.auth)}Checking with {VENDOR_OF_AUTH[form.entry.auth]}, then adding its MCP server to the gateway. This can take up to a minute.
           {:else if form.vendor === "aws"}Checking the role with AWS.
           {:else}Storing the credential and adding the target to the gateway. This can take a moment.{/if}
         </p>
       {/if}
-      {#if form.entry.auth === "datadog_service_account"}
-        <p class="page__foot">The keys are kept for the permission service alone and never shown again; it checks them with Datadog before anything is saved.</p>
+      {#if SERVICE_AUTHS.has(form.entry.auth)}
+        <p class="page__foot">The keys are kept for the permission service alone and never shown again; it checks them with {VENDOR_OF_AUTH[form.entry.auth]} before anything is saved.</p>
       {:else if form.entry.fields.some((f) => f.secret)}
         <p class="page__foot">Secret values are stored in the room's secrets service and never shown again.</p>
       {/if}
@@ -522,7 +534,7 @@
   {#snippet footer()}
     <button type="button" class="btn" onclick={() => (form = null)}>Cancel</button>
     <button type="submit" form="integration-form" class="btn btn--primary" disabled={connect.isPending}>
-      {#if connect.isPending}<span class="spin spin--btn" aria-hidden="true"></span>{form?.vendor === "aws" ? "Checking with AWS…" : form?.entry.auth === "datadog_service_account" ? "Checking with Datadog…" : "Adding…"}
+      {#if connect.isPending}<span class="spin spin--btn" aria-hidden="true"></span>{form?.vendor === "aws" ? "Checking with AWS…" : form && SERVICE_AUTHS.has(form.entry.auth) ? `Checking with ${VENDOR_OF_AUTH[form.entry.auth]}…` : "Adding…"}
       {:else}{form?.vendor === "aws" ? "Connect" : "Add"}{/if}
     </button>
   {/snippet}

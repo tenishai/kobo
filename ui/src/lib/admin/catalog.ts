@@ -7,7 +7,7 @@
 // application key per agent from (kobo#322); with it off, a key pair served
 // through the gateway (`DATADOG_GATEWAY`).
 // A vendor not on this list is still connectable as "Other" with a token.
-export type AuthKind = "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "azure_federated" | "datadog_service_account";
+export type AuthKind = "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "azure_federated" | "datadog_service_account" | "github_app";
 
 export type CatalogField = {
   key: string;
@@ -43,6 +43,16 @@ export const CATALOG: CatalogEntry[] = [
       { key: "site", label: "Site", secret: false, optional: true, placeholder: "datadoghq.com" },
     ],
     note: "Make a service account for the room with a role that holds service_account_write and every Datadog read permission; the room mints a short-lived, scoped application key per agent from it. Agents also reach Datadog's MCP server through the gateway with that key.",
+  },
+  {
+    id: "github", name: "GitHub", summary: "Code, issues, pull requests and workflow runs.", auth: "github_app",
+    fields: [
+      { key: "app_id", label: "App id", secret: false, optional: true, placeholder: "leave blank to use the room's GitHub App" },
+      { key: "installation_id", label: "Installation id", secret: false, optional: true },
+      { key: "PRIVATE_KEY", label: "Private key (PEM)", secret: true, optional: true },
+      { key: "repositories", label: "Repositories agents may be granted", secret: false, optional: true, placeholder: "all the app can see; or names, comma-separated" },
+    ],
+    note: "Uses the room's own GitHub App (the one under Integrations that opens pull requests) unless you paste another. The app must hold every permission agents may be granted: metadata, contents, issues, pull requests, actions and checks, read. The room mints a short-lived installation token per agent, narrowed to its permissions and these repositories. Agents also reach GitHub's MCP server through the gateway with that token.",
   },
   {
     id: "gcp", name: "Google Cloud", summary: "Projects, resources and IAM.", auth: "gcp_identity",
@@ -87,9 +97,10 @@ export const DATADOG_GATEWAY: CatalogEntry = {
   note: "Make the application key under a service account, not a person, so it outlives them.",
 };
 
-/** The catalog as this room offers it: Datadog's shape follows whether the permission service is on. */
+/** The catalog as this room offers it: Datadog's shape follows whether the permission
+ * service is on, and GitHub (which only works through it) is offered only then. */
 export function catalogFor(accessOn: boolean): CatalogEntry[] {
-  return accessOn ? CATALOG : CATALOG.map((c) => (c.id === "datadog" ? DATADOG_GATEWAY : c));
+  return accessOn ? CATALOG : CATALOG.filter((c) => c.id !== "github").map((c) => (c.id === "datadog" ? DATADOG_GATEWAY : c));
 }
 
 export function catalogEntry(id: string): CatalogEntry | undefined {

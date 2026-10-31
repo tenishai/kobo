@@ -2413,6 +2413,7 @@ class FakeBab:
         self.revoked: list[tuple[int, str]] = []
         self.probes: list[tuple[str, str]] = []
         self.datadog_probes: list[str] = []
+        self.github_probes: list[str] = []
         self._requests: dict[int, dict] = {}
         self._grants: dict[int, dict] = {}
         self._leases: list[dict] = []
@@ -2567,6 +2568,18 @@ class FakeBab:
         if "unconfigured" in service_account_id:
             raise ClientError(f"the permission service refused the Datadog service account {service_account_id}: Datadog is not configured")
         return {"service_account_id": service_account_id, "key_name": "bab-probe", "created": True, "deleted": True}
+
+    def probe_github(self, installation_id, actor):
+        """`POST /probe/github` (kobo#338). Installation ids are numbers, so the triggers
+        are numeric: one ending in 999 is an installation GitHub turns down; one ending in
+        998 is a service whose pod carries no GitHub Secret yet."""
+        self._guard()
+        self.github_probes.append(installation_id)
+        if installation_id.endswith("999"):
+            raise ClientError(f"the permission service refused the GitHub App installation {installation_id}: GitHub refused: Not Found")
+        if installation_id.endswith("998"):
+            raise ClientError(f"the permission service refused the GitHub App installation {installation_id}: GitHub is not configured")
+        return {"subject": "acme-room", "installation_id": installation_id, "account": "acme", "repositories": 3}
 
     def put_integration(self, integration, vendor, spec, ceiling, actor, parent=None):
         self._guard()
