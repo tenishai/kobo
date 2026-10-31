@@ -6,6 +6,16 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.22] - 2026-10-30
+
+### Added
+
+- **Admin > Services: Wire agents to the tool gateway.** A room that named its tool gateway (\`liminal_url\`) after its agents were made had agents with permissions and no provider to use them with. The button gives every READY agent of the room's own the composer's gateway block, as one commit and one restart each, and leaves one that already carries it alone. \`GET/POST /api/admin/agents/gateway-wiring\` (#349).
+
+### Fixed
+
+- Admin > Overview no longer flashes the Connections row on a hard refresh; the delivery chip keeps polling while the tab is in the background, so it stops pulsing when the change lands rather than on the next reload (#348).
+
 ## [0.3.21] - 2026-10-30
 
 ### Changed
