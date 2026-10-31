@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api import admin_connections as admin_connections_flow
 from kobo_api import admin_integrations as admin_integrations_flow
 from kobo_api import admin_roles as admin_roles_catalogue
-from kobo_api import admin_store, audit, gateway_lane, gateway_prs
+from kobo_api import admin_store, audit, gateway_lane, gateway_prs, gateway_wiring
 from kobo_api import room_services as room_services_store
 from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
@@ -3278,6 +3278,13 @@ class AccessRequestBody(BaseModel):
     note: str | None = Field(default=None, max_length=2000)
 
 
+class GatewayWiringBody(BaseModel):
+    """`POST /api/admin/agents/gateway-wiring`: the agents to wire; empty or
+    absent means every one of the room's own READY agents."""
+
+    names: list[str] | None = None
+
+
 class AccessDecideBody(BaseModel):
     """A reviewer deciding requests in bulk (Review pane)."""
 
@@ -3861,6 +3868,47 @@ def create_app(
         """Retire every directory entry the room registered for an agent it
         no longer has; records an audit event with the names."""
         return _directory_sweep(request, session, dry_run=False)
+
+    # --- Wire agents to the tool gateway (2026-10-30, kobo_api.gateway_wiring):
+    # an org that names its gateway after agents were created has agents with
+    # no provider for the tools their permissions unlock. GET previews the
+    # room's own READY agents; POST gives each the composer's gateway block as
+    # one commit on its repository (one rebuild, one restart each). 409 when the
+    # org config names no gateway.
+
+    @app.get("/api/admin/agents/gateway-wiring")
+    def admin_gateway_wiring_preview(
+        request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        return JSONResponse(gateway_wiring.preview(session, app.state.config))
+
+    @app.post("/api/admin/agents/gateway-wiring")
+    def admin_gateway_wiring(
+        request: Request, payload: GatewayWiringBody | None = None, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        names = payload.names if payload is not None else None
+        pre = gateway_wiring.preview(session, app.state.config, names)
+        if pre["note"]:
+            return JSONResponse({"error": pre["note"]}, status_code=409)
+        result = gateway_wiring.wire(session, app.state.clients, app.state.config, names=names)
+        wired = [w["name"] for w in result["wired"]]
+        audit.record(
+            session, request=request, action="agents.gateway_wiring", target_kind="room", target_id="agents",
+            outcome=audit.OUTCOME_FAILED if result["failed"] and not wired else audit.OUTCOME_OK,
+            detail=result,
+            summary=(f"{audit.who(request)} wired {len(wired)} agent(s) to the tool gateway"
+                     + (f" ({', '.join(wired)})" if wired else "")
+                     + (f"; {len(result['already'])} already wired" if result["already"] else "")
+                     + (f"; failed: {', '.join(result['failed'])}" if result["failed"] else "")),
+        )
+        session.commit()
+        return JSONResponse(result)
 
     @app.get("/api/admin/people")
     def admin_people(request: Request) -> JSONResponse:

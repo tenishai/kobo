@@ -11,8 +11,10 @@
   import {
     adminAddonsQuery,
     directorySweepPreviewQuery,
+    gatewayWiringPreviewQuery,
     reloadAdminOrgMutation,
     sweepDirectoryMutation,
+    wireAgentsToGatewayMutation,
   } from "../../lib/queries";
 
   const queryClient = useQueryClient();
@@ -27,6 +29,31 @@
   const preview = createQuery(() => ({ ...directorySweepPreviewQuery(), enabled: sweeping }));
   const sweep = createMutation(() => (sweepDirectoryMutation(queryClient)));
   const switchboardOn = $derived((addons.data ?? []).some((a) => a.id === "switchboard" && a.state === "on"));
+
+  // Wire agents to the tool gateway (2026-10-30): an org that names its gateway
+  // after agents were created has agents with no provider for the tools their
+  // permissions unlock. The preview names the room's own agents; the wire gives
+  // each the gateway block as one commit, one rebuild and one restart.
+  let wiring = $state(false);
+  const wiringPreview = createQuery(() => ({ ...gatewayWiringPreviewQuery(), enabled: wiring }));
+  const wire = createMutation(() => (wireAgentsToGatewayMutation(queryClient)));
+
+  function handleWire(): void {
+    wire.mutate(undefined, {
+      onSuccess: (r) => {
+        wiring = false;
+        const n = r.wired.length;
+        const failed = Object.keys(r.failed);
+        toast.success(
+          n ? `Wired ${n} agent${n === 1 ? "" : "s"} to the tool gateway` : "Every agent already carries the gateway",
+          [n ? `${r.wired.map((w) => w.name).join(", ")} rebuild and restart once.` : "",
+           r.already.length ? `${r.already.length} already wired.` : "",
+           failed.length ? `Could not wire ${failed.join(", ")}.` : ""].filter(Boolean).join(" ") || undefined,
+        );
+      },
+      onError: (err: unknown) => toast.error("Could not wire the agents", errorMessage(err, "Try again.")),
+    });
+  }
 
   function handleSweep(): void {
     sweep.mutate(undefined, {
@@ -69,6 +96,9 @@
           Sweep directory
         </button>
       {/if}
+      <button type="button" class="btn" onclick={() => (wiring = true)} disabled={wire.isPending}>
+        Wire agents to the tool gateway
+      </button>
       <button type="button" class="btn" onclick={() => (confirming = true)} disabled={reload.isPending}>
         Reload org config
       </button>
@@ -113,6 +143,37 @@
   {#snippet footer()}
     <button type="button" class="btn" onclick={() => (confirming = false)}>Cancel</button>
     <button type="button" class="btn btn--primary" onclick={handleReload}>Reload</button>
+  {/snippet}
+</Modal>
+
+<Modal open={wiring} title="Wire agents to the tool gateway?" size="narrow" onclose={() => (wiring = false)}>
+  <p class="page__lead">
+    Each of the room's own agents gets the tool gateway in its files, so the tools its permissions
+    unlock have something to run through. An agent that already carries it is left alone. Every
+    agent that changes rebuilds and restarts once.
+  </p>
+  {#if wiringPreview.isPending}
+    <p class="page__foot">Reading the room's agents…</p>
+  {:else if wiringPreview.isError}
+    <p class="page__foot fail">{errorMessage(wiringPreview.error, "Could not read the agents.")}</p>
+  {:else if wiringPreview.data}
+    {#if wiringPreview.data.note}
+      <p class="page__foot fail">{wiringPreview.data.note}</p>
+    {:else if wiringPreview.data.agents.length}
+      <p class="sweep__heading">Agents checked</p>
+      <ul class="sweep__list">
+        {#each wiringPreview.data.agents as name (name)}<li>{name}</li>{/each}
+      </ul>
+      <p class="page__foot">Gateway: {wiringPreview.data.gateway}</p>
+    {:else}
+      <p class="page__foot">No agents of the room's own are ready to wire.</p>
+    {/if}
+  {/if}
+  {#snippet footer()}
+    <button type="button" class="btn" onclick={() => (wiring = false)}>Cancel</button>
+    <button type="button" class="btn btn--primary" disabled={wire.isPending || !wiringPreview.data || !!wiringPreview.data.note || !wiringPreview.data.agents.length} onclick={handleWire}>
+      {wire.isPending ? "Wiring…" : "Wire"}
+    </button>
   {/snippet}
 </Modal>
 
