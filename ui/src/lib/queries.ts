@@ -169,6 +169,8 @@ import {
   type RoomServiceValues,
   previewDirectorySweep,
   sweepDirectory,
+  previewGatewayWiring,
+  wireAgentsToGateway,
   type AuditFilters,
   fetchAdminAudit,
   fetchAdminAwsSetup,
@@ -762,6 +764,26 @@ export function sweepDirectoryMutation(queryClient: QueryClient) {
     mutationFn: () => sweepDirectory(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin"] });
+    },
+  };
+}
+
+export function gatewayWiringPreviewQuery() {
+  return queryOptions({
+    queryKey: ["admin", "gateway-wiring"] as const,
+    queryFn: previewGatewayWiring,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
+}
+
+export function wireAgentsToGatewayMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: () => wireAgentsToGateway(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin"] });
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
     },
   };
 }

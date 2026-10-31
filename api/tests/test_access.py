@@ -5339,16 +5339,17 @@ def _sign_whoami(private_key, *, email: str | None, kid: str = WHOAMI_KID) -> st
 # --- from test_api_access.py ---
 
 
-def _room(tmp_path, fake_storage, *, bab):
+def _room(tmp_path, fake_storage, *, bab, github=None, **config_over):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     engine = create_engine(f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     config = Config(workdir=tmp_path / "work", iap_audience=WHOAMI_AUDIENCE, operators=["ops@example.com"],
                     admin_panel=True, bab_url="http://bab.bab.svc:8080" if bab is not None else "",
                     cloud_accounts=[{"vendor": "aws", "name": "aws-prod"}, {"vendor": "aws", "name": "acme-data"},
-                                    {"vendor": "gcp", "name": "acme-platform-prod"}])
+                                    {"vendor": "gcp", "name": "acme-platform-prod"}], **config_over)
     private_key, jwk = _generate_jwk__api_org_status()
-    clients = Clients(github=FakeGitHub(), gojira=FakeGojira(), cloud=FakeCloud(), agent=FakeAgent(),
+    clients = Clients(github=github or FakeGitHub(), gojira=FakeGojira(), cloud=FakeCloud(), agent=FakeAgent(),
                       kubectl=FakeKubectl(), storage=fake_storage)
     clients.bab = bab
     app = create_app(session_factory, config=config, clients=clients, iap_jwks_fetcher=_fetcher__api_org_status(jwk))
@@ -6084,3 +6085,37 @@ def test_team_guide_archetype_composes_no_github_and_no_liminal(tmp_path):
     # Memory is untouched by the suppression.
     assert data["memory"]["personal"] == "techne"
 
+
+
+def test_admin_wires_the_rooms_own_agents_to_the_tool_gateway(tmp_path, fake_storage):
+    """Gate (authorization + integrity): Admin > Services gives every READY composed agent the
+    gateway block as one commit on its repository; one already carrying it is reported, not
+    rewritten; an org that names no gateway gets a 409 and nothing is touched."""
+    import yaml as _yaml
+
+    bare = ("name: ledger\ncard: agent-card.json\npersona: persona.md\n"
+            "transports:\n  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
+            "tools: {provider: none, allow: []}\nmemory: {personal: techne, home: /techne}\n")
+    github = FakeGitHub(existing_repos={"example-org/agent-ledger"}, extra_clone_files={"bundle/agent.yaml": bare}, track_pushed_content=True)
+    client, headers = _room(tmp_path, fake_storage, bab=FakeBab(integrations=[]), github=github,
+                            liminal_url="http://liminal.test", cabal_url="http://cabal.test")
+    pre = client.get("/api/admin/agents/gateway-wiring", headers=headers).json()
+    assert pre["agents"] == ["ledger"] and pre["note"] is None and pre["gateway"] == "http://liminal.test"
+    out = client.post("/api/admin/agents/gateway-wiring", json={}, headers=headers).json()
+    assert [w["name"] for w in out["wired"]] == ["ledger"] and out["failed"] == {} and out["already"] == [], out
+    pushed = _yaml.safe_load(github.pushed_file("bundle/agent.yaml"))
+    assert pushed["tools"]["liminal"] == {"url": "http://liminal.test", "token_env": "CABAL_COLLEAGUE_TOKEN", "exchange_url": "http://cabal.test"}
+    assert github.pushes[-1][1] == "kobo: wire the tool gateway"
+    # A file already carrying the block is reported and left alone (the fake's clone does not
+    # follow a commit_push, so this is a second room whose repository already has it).
+    wired_yaml = bare.replace("tools: {provider: none, allow: []}",
+                              "tools: {provider: none, liminal: {url: http://liminal.test, token_env: CABAL_COLLEAGUE_TOKEN, exchange_url: http://cabal.test}, allow: []}")
+    github3 = FakeGitHub(existing_repos={"example-org/agent-ledger"}, extra_clone_files={"bundle/agent.yaml": wired_yaml}, track_pushed_content=True)
+    client3, headers3 = _room(tmp_path / "three", fake_storage, bab=FakeBab(integrations=[]), github=github3,
+                              liminal_url="http://liminal.test", cabal_url="http://cabal.test")
+    out = client3.post("/api/admin/agents/gateway-wiring", json={}, headers=headers3).json()
+    assert out["already"] == ["ledger"] and out["wired"] == [] and github3.push_count == 0, out
+    # No gateway named: refused with the sentence, nothing touched.
+    client2, headers2 = _room(tmp_path / "two", fake_storage, bab=FakeBab(integrations=[]))
+    r = client2.post("/api/admin/agents/gateway-wiring", json={}, headers=headers2)
+    assert r.status_code == 409 and "liminal_url" in r.json()["error"]

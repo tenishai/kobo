@@ -6623,3 +6623,25 @@ def test_a_delivery_is_delivered_only_once_the_new_pod_is_available():
     settled = FakeKubectl(images={("acme-agent", "acme-agent"): f"registry.example/agents/acme-agent:{sha[:12]}"})
     out = delivery_state(github, settled, repo="acme-org/acme-agent", namespace="acme-agent", deploy="acme-agent", sha=sha)
     assert out["state"] == "delivered", out
+
+
+# --- the tool gateway on an existing agent (2026-10-30) ---
+
+
+def test_update_agent_yaml_gateway_adds_the_block_once_and_keeps_the_rest(tmp_path):
+    """Data integrity: an already-composed file gains the composer's gateway block before its
+    allow list, nothing else in the file moves, and a second call changes nothing."""
+    import yaml as _yaml
+
+    from kobo_api.composer import update_agent_yaml_gateway
+
+    bundle_dir = _write_bare_agent_yaml(tmp_path, extra_lines="# keep me\n")
+    assert update_agent_yaml_gateway(bundle_dir, url="http://liminal.test", exchange_url="http://cabal.test") is True
+    text = (bundle_dir / "agent.yaml").read_text()
+    data = _yaml.safe_load(text)
+    assert data["tools"]["liminal"] == {"url": "http://liminal.test", "token_env": "CABAL_COLLEAGUE_TOKEN", "exchange_url": "http://cabal.test"}
+    assert list(data["tools"]) == ["provider", "liminal", "allow"], "placed before allow, provider kept first"
+    assert data["tools"]["allow"] == [] and "# keep me" in text and "# a hand-written comment" in text
+    assert data["memory"] == {"personal": "techne", "home": "/techne"}
+    assert update_agent_yaml_gateway(bundle_dir, url="http://liminal.test", exchange_url="http://cabal.test") is False
+    assert (bundle_dir / "agent.yaml").read_text() == text
