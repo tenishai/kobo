@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, waitFor } from "@testing-library/svelte";
+import { fireEvent, screen, waitFor, within } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import GettingStarted from "./GettingStarted.svelte";
 import { navigate } from "../lib/router.svelte";
@@ -45,9 +45,9 @@ describe("GettingStarted", () => {
     const nav = await screen.findByRole("navigation", { name: "Guide sections" });
     const links = Array.from(nav.querySelectorAll("a"));
     expect(links.map((a) => a.textContent?.replace(/\s+/g, " ").trim())).toEqual([
-      "1 Before you start",
-      "2 Slack",
-      "3 Glossary",
+      "01 Before you start",
+      "02 Slack",
+      "03 Glossary",
     ]);
     expect(links[0].getAttribute("aria-current")).toBe("page");
     expect(links[1].getAttribute("href")).toBe("#/getting-started/slack");
@@ -62,7 +62,8 @@ describe("GettingStarted", () => {
 
   it("switches sections from the side list and writes the section into the hash", async () => {
     renderWithClient(GettingStarted);
-    const slack = await screen.findByRole("link", { name: /Slack/ });
+    const nav = await screen.findByRole("navigation", { name: "Guide sections" });
+    const slack = within(nav).getByRole("link", { name: /Slack/ });
     await fireEvent.click(slack);
 
     await waitFor(() =>

@@ -121,7 +121,7 @@
       return null;
     }
     const when = data.created_at ? ` · ${relativeTime(data.created_at)}` : "";
-    return `Made by ${data.created_by}${when}`;
+    return `Author: ${data.created_by}${when}`;
   });
 </script>
 
@@ -237,7 +237,7 @@
   .sheet__tag {
     padding: 0.1rem var(--space-2xs);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--muted);
     font-size: 0.7rem;
     white-space: nowrap;
@@ -250,12 +250,13 @@
   }
 
   .sheet__heading {
-    margin: var(--space-sm) 0 0;
-    color: var(--muted);
-    font-size: 0.7rem;
+    margin: 0;
+    color: var(--ink);
+    font-family: var(--font-heading);
+    font-size: var(--title-size);
     font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    letter-spacing: var(--title-tracking);
+    text-transform: var(--label-case);
   }
 
   .sheet__line,

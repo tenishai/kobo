@@ -1036,11 +1036,12 @@
 
   .secrets__heading {
     margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
+    color: var(--ink);
+    font-family: var(--font-heading);
+    font-size: var(--title-size);
     font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    letter-spacing: var(--title-tracking);
+    text-transform: var(--label-case);
   }
 
   .secrets__lead,

@@ -372,12 +372,12 @@
      terminal always looks like a natural extension of the room, never an
      unrelated black box dropped onto a light page. */
   .colleague-terminal {
-    --term-bg: #0b1220;
-    --term-panel: #111a2e;
-    --term-border: #243147;
-    --term-ink: #e5e7eb;
-    --term-muted: #a3adbd;
-    --term-outgoing: #60a5fa;
+    --term-bg: oklch(0.147 0.004 49.25);
+    --term-panel: oklch(0.216 0.006 56.043);
+    --term-border: oklch(1 0 0 / 10%);
+    --term-ink: oklch(0.985 0.001 106.423);
+    --term-muted: oklch(0.709 0.01 56.259);
+    --term-outgoing: oklch(0.809 0.105 251.813);
     --term-incoming: #4ade80;
 
     display: flex;
@@ -399,11 +399,12 @@
 
   .colleague-terminal__heading {
     margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
+    color: var(--ink);
+    font-family: var(--font-heading);
+    font-size: var(--title-size);
     font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    letter-spacing: var(--title-tracking);
+    text-transform: var(--label-case);
   }
 
   .colleague-terminal__status {
@@ -437,7 +438,7 @@
   .colleague-terminal__chip {
     padding: 0.1rem var(--space-sm);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: transparent;
     color: var(--muted);
     font-family: var(--font-mono);
@@ -473,7 +474,7 @@
   .colleague-terminal__count {
     padding: 0 0.4rem;
     border: 1px solid var(--term-border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--term-muted);
     font-size: 0.75rem;
   }
@@ -486,7 +487,7 @@
     margin-left: var(--space-xs);
     padding: 0 var(--space-sm);
     border: 1px solid var(--term-border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: transparent;
     color: var(--term-ink);
     font-family: var(--font-sans);
@@ -576,7 +577,7 @@
     transform: translateX(-50%);
     padding: var(--space-2xs) var(--space-sm);
     border: 1px solid var(--term-border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--term-panel);
     color: var(--term-ink);
     font-family: var(--font-sans);

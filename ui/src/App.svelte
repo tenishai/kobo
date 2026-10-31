@@ -142,17 +142,24 @@
 <Toasts />
 
 <style>
+  /* White page; the dark rail floats on the left, and the main content sits
+     in a light grey frame beside it, so the white cards inside float. */
   .shell {
     display: flex;
     flex-direction: row;
-    gap: var(--space-xl);
-    padding: 0;
+    align-items: flex-start;
+    gap: var(--space-sm);
+    padding: var(--space-sm);
     min-height: 100vh;
+    background: var(--page);
   }
 
   .shell__main {
     flex: 1;
-    padding: var(--space-xl);
     min-width: 0;
+    min-height: calc(100vh - 2 * var(--space-sm));
+    padding: var(--space-xl);
+    border-radius: var(--radius);
+    background: var(--bg);
   }
 </style>

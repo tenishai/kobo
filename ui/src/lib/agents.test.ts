@@ -6,6 +6,7 @@ import {
   agentGroups,
   filterAgents,
 } from "./agents";
+import type { StatusFilter } from "./agents";
 import type { AgentSummary } from "./api";
 
 const BASE: AgentSummary = {
@@ -121,3 +122,25 @@ describe("filterAgents", () => {
   });
 });
 
+
+describe("filterAgents by status", () => {
+  const row = (name: string, status: string, health: "up" | "down" | null = null) =>
+    ({ name, status, health: health ? { state: health } : null, purpose_tags: [], group_name: null }) as unknown as AgentSummary;
+  const agents = [
+    row("up", "ready", "up"),
+    row("down", "ready", "down"),
+    row("new", "provisioning"),
+    row("pr", "waiting"),
+    row("broken", "failed"),
+  ];
+  const names = (status: StatusFilter) => filterAgents(agents, "", "", status).map((a) => a.name);
+
+  it("matches what the card's badge says", () => {
+    expect(names("")).toEqual(["up", "down", "new", "pr", "broken"]);
+    expect(names("ready")).toEqual(["up"]);
+    expect(names("down")).toEqual(["down"]);
+    expect(names("building")).toEqual(["new"]);
+    expect(names("waiting")).toEqual(["pr"]);
+    expect(names("failed")).toEqual(["broken"]);
+  });
+});

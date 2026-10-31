@@ -37,6 +37,18 @@
   // loading/error/populated split Dashboard already uses.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { derived, writable } from "svelte/store";
+  import {
+    ArrowUpRight,
+    ArrowLeft,
+    Camera,
+    CaretRight,
+    ChatCircle,
+    GearSix,
+    PencilSimple,
+    ShieldCheck,
+    SlackLogo,
+    Stack,
+  } from "phosphor-svelte";
   import AccessPanel from "../components/AccessPanel.svelte";
   import BuildLogCard from "../components/BuildLogCard.svelte";
   import DangerZone from "../components/DangerZone.svelte";
@@ -44,7 +56,6 @@
   import ChatPanel from "../components/ChatPanel.svelte";
   import ColleagueConversations from "../components/ColleagueConversations.svelte";
   import ErrorState from "../components/ErrorState.svelte";
-  import FirstReply from "../components/FirstReply.svelte";
   import HarnessPanel from "../components/HarnessPanel.svelte";
   import MetadataDetails from "../components/MetadataDetails.svelte";
   import RequestAccessCard from "../components/RequestAccessCard.svelte";
@@ -79,6 +90,7 @@
     type HarnessSectionId,
     type TabId,
   } from "../lib/tabs";
+  import { relativeTime } from "../lib/time";
   import { toast } from "../lib/toast.svelte";
 
   // Invariant: App.svelte only mounts this page when `route.page === "agent"`,
@@ -417,9 +429,14 @@
 </script>
 
 <div class="agent-detail">
-  <a class="agent-detail__back" href={formatHash({ page: "dashboard" })}>
-    ← Back to dashboard
-  </a>
+  <nav class="agent-detail__crumbs" aria-label="Breadcrumb">
+    <a class="agent-detail__back" href={formatHash({ page: "dashboard" })}>
+      <ArrowLeft size={13} aria-hidden="true" />
+      All agents
+    </a>
+    <CaretRight size={12} aria-hidden="true" />
+    <span aria-current="page">{name}</span>
+  </nav>
 
   {#if agent.isPending}
     <Skeleton rows={6} />
@@ -454,168 +471,154 @@
     {@const shownChips = chipsExpanded ? chips : chips.slice(0, 3)}
     {@const hiddenChips = chips.length - shownChips.length}
     {@const hiddenNames = chips.slice(shownChips.length).map((chip) => chip.text).join(", ")}
+    <!-- The header card (2026-10-31 redesign): who it is and its status on
+         the left, the ways out (repository, dashboard, the menu) on the
+         right, what it is for under that, and the plain facts in one
+         labelled row at the bottom. -->
     <header class="agent-detail__header">
-      {#if data.has_avatar || avatarVersion !== null}
-        <img class="agent-detail__avatar" src={avatarSrc} alt="{data.name}'s picture" />
-      {/if}
-      <div class="agent-detail__heading">
-        <div class="agent-detail__title">
-          <h1 class="agent-detail__name">{data.name}</h1>
-          <StatusBadge status={data.status} health={data.health} {updating} />
-          <!-- The same marker the dashboard card carries, in the same
-               words, so the two pages agree about what this agent is. -->
-          {#if connected}
-            <span class="agent-detail__chip">connected</span>
-          {/if}
+      <div class="agent-detail__hero">
+        <div class="agent-detail__identity">
           <div class="agent-detail__menu" bind:this={menuEl}>
-            <button
-              type="button"
-              class="agent-detail__menu-button"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              aria-label="More actions"
-              title="Portrait, details, destroy"
-              onclick={() => (menuOpen = !menuOpen)}
-            >
-              <span class="agent-detail__menu-label" aria-hidden="true">More</span>
-              <span aria-hidden="true">⋯</span>
-            </button>
-            {#if menuOpen}
-              <div class="agent-detail__menu-list">
-                <button
-                  type="button"
-                  class="agent-detail__menu-item"
-                  disabled={frozen || generateAvatar.isPending}
-                  onclick={handleGenerateAvatar}
-                >
-                  {#if generateAvatar.isPending}
-                    <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
-                    Painting…
-                  {:else if data.has_avatar || avatarVersion !== null}
-                    New face
-                  {:else}
-                    Give {data.name} a face
-                  {/if}
-                </button>
-
-                <label
-                  class="agent-detail__menu-item"
-                  class:agent-detail__menu-item--disabled={frozen ||
-                    uploadAvatar.isPending}
-                >
-                  {uploadAvatar.isPending ? "Uploading…" : "Upload a portrait"}
-                  <input
-                    class="composition__avatar-upload-input"
-                    type="file"
-                    accept=".png,image/png"
-                    disabled={frozen || uploadAvatar.isPending}
-                    onchange={handleAvatarFileSelect}
-                  />
-                </label>
-
-                {#if data.has_avatar || avatarVersion !== null}
-                  <a
-                    class="agent-detail__menu-item"
-                    href={avatarSrc}
-                    download={`${data.name}-portrait.png`}
-                    onclick={() => (menuOpen = false)}
-                  >
-                    Download the portrait
-                  </a>
+          <!-- The portrait is its own menu: click the face to paint a new
+               one, upload one, or download it. The camera badge says so. -->
+          <button
+            type="button"
+            class="agent-detail__portrait"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label="Change portrait"
+            title="Change portrait"
+            onclick={() => (menuOpen = !menuOpen)}
+          >
+            {#if data.has_avatar || avatarVersion !== null}
+              <img class="agent-detail__avatar" src={avatarSrc} alt="{data.name}'s picture" />
+            {:else}
+              <span class="agent-detail__avatar agent-detail__avatar--initial" aria-hidden="true">
+                {data.name.slice(0, 1).toUpperCase()}
+              </span>
+            {/if}
+            <span class="agent-detail__portrait-badge" aria-hidden="true">
+              <Camera size={11} weight="bold" />
+            </span>
+          </button>
+          {#if menuOpen}
+            <div class="agent-detail__menu-list">
+              <button
+                type="button"
+                class="agent-detail__menu-item"
+                disabled={frozen || generateAvatar.isPending}
+                onclick={handleGenerateAvatar}
+              >
+                {#if generateAvatar.isPending}
+                  <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
+                  Painting…
+                {:else if data.has_avatar || avatarVersion !== null}
+                  New face
+                {:else}
+                  Give {data.name} a face
                 {/if}
+              </button>
 
-                {#if !connected}
-                  <hr class="agent-detail__menu-rule" />
-                  <!-- The editor lives in the Harness tab's Persona section
-                       now, so this brings the page there before opening it:
-                       a modal inside a hidden panel is a modal nobody can
-                       see. -->
-                  <button
-                    type="button"
-                    class="agent-detail__menu-item"
-                    disabled={frozen}
-                    onclick={() => {
-                      menuOpen = false;
-                      activeTab = "harness";
-                      harnessSection = "persona";
-                      metadata?.openEditor();
-                    }}
-                  >
-                    Edit details
-                  </button>
-                {/if}
-              </div>
+              <label
+                class="agent-detail__menu-item"
+                class:agent-detail__menu-item--disabled={frozen ||
+                  uploadAvatar.isPending}
+              >
+                {uploadAvatar.isPending ? "Uploading…" : "Upload a portrait"}
+                <input
+                  class="composition__avatar-upload-input"
+                  type="file"
+                  accept=".png,image/png"
+                  disabled={frozen || uploadAvatar.isPending}
+                  onchange={handleAvatarFileSelect}
+                />
+              </label>
+
+              {#if data.has_avatar || avatarVersion !== null}
+                <a
+                  class="agent-detail__menu-item"
+                  href={avatarSrc}
+                  download={`${data.name}-portrait.png`}
+                  onclick={() => (menuOpen = false)}
+                >
+                  Download the portrait
+                </a>
+              {/if}
+
+            </div>
+          {/if}
+        </div>
+          <div class="agent-detail__heading">
+            <div class="agent-detail__title">
+              <h1 class="agent-detail__name">{data.name}</h1>
+              <span class="agent-detail__status">
+                <StatusBadge status={data.status} health={data.health} {updating} />
+              </span>
+              <!-- The same marker the dashboard card carries, in the same
+                   words, so the two pages agree about what this agent is. -->
+              {#if connected}
+                <span class="agent-detail__chip">connected</span>
+              {/if}
+            </div>
+            <!-- The capability sentence is earned at first contact, and the
+                 room never makes first contact with a connected agent, so for
+                 one it would be a promise that never arrives. -->
+            {#if !connected}
+              <p class="agent-detail__capability">
+                {data.capability ?? "Not written yet. It arrives after first contact."}
+              </p>
             {/if}
           </div>
         </div>
-        <!-- One run of facts, one separator, in the order somebody reads
-             them: what it runs on, where its code is, who it belongs to,
-             who made it, who it is, and where to watch it. -->
-        <div class="agent-detail__meta">
-          <!-- The model is a fact about the agent, in the reading face like
-               every other fact on this line -- not an identifier to match. -->
-          <span title={data.model}>{data.model_label}</span>
+
+        <div class="agent-detail__actions">
           {#if data.repo_full_name}
             <!-- A connected agent's page names the repository rather than
-                 saying "source": it is somebody else's repository, and
+                 saying "Repository": it is somebody else's repository, and
                  which one it is is the main fact about this agent. -->
             <a
-              class="agent-detail__repo"
+              class="agent-detail__action agent-detail__repo"
               href={`https://github.com/${data.repo_full_name}`}
               target="_blank"
               rel="noreferrer"
             >
-              {connected ? data.repo_full_name : "source"}
+              {connected ? data.repo_full_name : "Repository"}
+              <ArrowUpRight size={12} weight="bold" aria-hidden="true" />
             </a>
-          {/if}
-          {#if data.group_name}
-            <span>{data.group_name}</span>
-          {/if}
-          {#if data.created_by}
-            <span>Made by {data.created_by}</span>
-          {/if}
-          {#if !connected}
-            <!-- Soul-line (persona-naming law): the persona's NAME, with
-                 who-they-are on the hover. The whole line was its own grey
-                 row until this wave; in a one-line run it would crowd out
-                 every other fact beside it. -->
-            {#if data.repo_full_name}
-              <!-- Personas-in-place wave: the one place a persona lives in
-                   GitHub is the agent's own bundle, so the name opens that
-                   file -- exactly what the running agent was built from. -->
-              <a
-                class="agent-detail__repo agent-detail__persona"
-                href={`https://github.com/${data.repo_full_name}/blob/main/bundle/persona.md`}
-                target="_blank"
-                rel="noreferrer"
-                title={personaLine}
-              >
-                {personaName}
-              </a>
-            {:else}
-              <span class="agent-detail__persona" title={personaLine}>{personaName}</span>
-            {/if}
           {/if}
           {#if dashboardUrl}
             <a
-              class="agent-detail__repo"
+              class="agent-detail__action"
               href={dashboardUrl}
               target="_blank"
               rel="noreferrer"
               title={`${name}-agent-health`}
             >
-              Observability
+              Health
+              <ArrowUpRight size={12} weight="bold" aria-hidden="true" />
             </a>
           {/if}
+          {#if !connected}
+            <!-- The editor lives in the Harness tab's Persona section, so
+                 this brings the page there before opening it: a modal
+                 inside a hidden panel is a modal nobody can see. -->
+            <button
+              type="button"
+              class="agent-detail__action"
+              disabled={frozen}
+              onclick={() => {
+                activeTab = "harness";
+                harnessSection = "persona";
+                metadata?.openEditor();
+              }}
+            >
+              <PencilSimple size={13} weight="bold" aria-hidden="true" />
+              Edit details
+            </button>
+          {/if}
         </div>
-        <!-- The capability sentence is earned at first contact, and the
-             room never makes first contact with a connected agent, so for
-             one it would be a promise that never arrives. -->
-        {#if !connected}
-          <p class="agent-detail__capability">
-            {data.capability ?? "Not written yet. It arrives after first contact."}
-          </p>
-        {/if}
+      </div>
+
         {#if !connected && (chips.length > 0 || (data.team && data.team !== "shared"))}
           <p class="agent-detail__tags">
             {#if data.team && data.team !== "shared"}
@@ -650,7 +653,51 @@
             {/if}
           </p>
         {/if}
-      </div>
+
+      <!-- The plain facts, each under its own label, in the order somebody
+           reads them: what it runs on, who it belongs to, who made it, who
+           it is, and how long it has been here. -->
+      <dl class="agent-detail__stats">
+        <div class="agent-detail__stat">
+          <dt>Model</dt>
+          <dd title={data.model}>{data.model_label}</dd>
+        </div>
+        <div class="agent-detail__stat">
+          <dt>Group</dt>
+          <dd>{data.group_name ?? "None"}</dd>
+        </div>
+        <div class="agent-detail__stat">
+          <dt>Author</dt>
+          <dd title={data.created_by ?? undefined}>{data.created_by ?? "Unknown"}</dd>
+        </div>
+        {#if !connected}
+          <!-- Soul-line (persona-naming law): the persona's NAME, with
+               who-they-are on the hover. The name opens the bundle's
+               persona.md, exactly what the running agent was built from. -->
+          <div class="agent-detail__stat">
+            <dt>Persona</dt>
+            <dd>
+              {#if data.repo_full_name}
+                <a
+                  class="agent-detail__persona"
+                  href={`https://github.com/${data.repo_full_name}/blob/main/bundle/persona.md`}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={personaLine}
+                >
+                  {personaName}
+                </a>
+              {:else}
+                <span class="agent-detail__persona" title={personaLine}>{personaName}</span>
+              {/if}
+            </dd>
+          </div>
+        {/if}
+        <div class="agent-detail__stat">
+          <dt>Created</dt>
+          <dd>{relativeTime(data.created_at)}</dd>
+        </div>
+      </dl>
     </header>
 
     <!-- Whatever the last portrait action said, on one line under the
@@ -701,7 +748,7 @@
           <dt>Capability</dt>
           <dd>{data.capability ?? "Not written yet. It arrives after first contact."}</dd>
         </dl>
-        <p class="panel__lead">Edit details, in the menu beside the name, writes these.</p>
+        <p class="panel__lead">Edit details, at the top of the page, writes these.</p>
         <MetadataDetails
           bind:this={metadata}
           agentName={data.name}
@@ -831,6 +878,17 @@
                 }
               }}
             >
+              {#if tab === "chat"}
+                <ChatCircle class="detail-tabs__icon" size={15} aria-hidden="true" />
+              {:else if tab === "slack"}
+                <SlackLogo class="detail-tabs__icon" size={15} aria-hidden="true" />
+              {:else if tab === "access"}
+                <ShieldCheck class="detail-tabs__icon" size={15} aria-hidden="true" />
+              {:else if tab === "harness"}
+                <Stack class="detail-tabs__icon" size={15} aria-hidden="true" />
+              {:else}
+                <GearSix class="detail-tabs__icon" size={15} aria-hidden="true" />
+              {/if}
               {TAB_LABELS[tab]}
               <!-- The pending-learnings count rides on Harness, which is
                    where Learnings lives now. -->
@@ -852,12 +910,13 @@
           tabindex="0"
         >
           {#if tab === "chat"}
-            {#if data.first_reply}
-              <FirstReply reply={data.first_reply} />
-            {/if}
-            <ChatPanel agentName={data.name} frozen={frozen} />
-            <ThreadPanel agentName={data.name} frozen={frozen} />
-            <ColleagueConversations agentName={data.name} />
+            <!-- The agent's first reply opens the conversation, as its first
+                 message, rather than sitting in a card of its own. -->
+            <ChatPanel agentName={data.name} frozen={frozen} firstReply={data.first_reply} />
+            <div class="agent-detail__pair">
+              <ThreadPanel agentName={data.name} frozen={frozen} />
+              <ColleagueConversations agentName={data.name} />
+            </div>
           {:else if tab === "harness"}
             <!-- What runs the agent. The five panels that used to be tabs
                  behind the More menu are sections in here, unchanged, plus
@@ -928,47 +987,103 @@
 </div>
 
 <style>
+  /* Centred in the frame like the guide, wide enough for the header's
+     facts row and the side-by-side panels under the chat. */
   .agent-detail {
     display: flex;
     flex-direction: column;
     gap: var(--space-lg);
-    /* Wider since the page-shell wave: one tab row that does not wrap
-       needs the room, and the panels under it were always cramped at
-       40rem. */
-    max-width: 56rem;
+    width: 100%;
+    max-width: 72rem;
+    margin: 0 auto;
   }
 
-  .agent-detail__back {
-    align-self: flex-start;
+  .agent-detail__crumbs {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
     color: var(--muted);
-    font-size: 0.875rem;
+    font-family: var(--font-display-mono);
+    font-size: 0.75rem;
+  }
+
+  .agent-detail__crumbs [aria-current="page"] {
+    color: var(--ink);
+  }
+
+  /* The way back to the agent cards: a small button, not a faint word. */
+  .agent-detail__back {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    height: 1.9rem;
+    padding: 0 var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    background: var(--panel);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 0.8rem;
+    font-weight: 500;
     text-decoration: none;
+    transition: background 0.15s ease, border-color 0.15s ease;
   }
 
   .agent-detail__back:hover {
-    color: var(--accent);
+    border-color: var(--ring);
+    background: var(--accent-soft);
   }
 
   .agent-detail__header {
     display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    padding: var(--space-lg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel);
+  }
+
+  .agent-detail__hero {
+    display: flex;
+    flex-wrap: wrap;
     align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-md);
+  }
+
+  .agent-detail__identity {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-items: center;
     gap: var(--space-md);
   }
 
   .agent-detail__avatar {
-    width: 4rem;
-    height: 4rem;
+    width: 3.5rem;
+    height: 3.5rem;
     flex-shrink: 0;
-    border-radius: 50%;
+    border-radius: var(--radius-sm);
     object-fit: cover;
+  }
+
+  .agent-detail__avatar--initial {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-family: var(--font-display-mono);
+    font-size: 1.4rem;
+    font-weight: 600;
   }
 
   .agent-detail__heading {
     display: flex;
-    flex-direction: column;
     min-width: 0;
-    flex: 1;
-    gap: var(--space-xs);
+    flex-direction: column;
+    gap: var(--space-2xs);
   }
 
   .agent-detail__title {
@@ -982,35 +1097,57 @@
     margin: 0;
     overflow-wrap: anywhere;
     color: var(--ink);
-    font-size: 1.4rem;
+    font-family: var(--font-display-mono);
+    font-size: 1.6rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
   }
 
-  /* One run of facts at one weight. The separator is drawn by CSS rather
-     than written into the markup, so a fact that is absent takes its
-     separator with it and nothing has to know which one is first. */
-  .agent-detail__meta {
-    display: flex;
-    flex-wrap: wrap;
+  /* The status as a soft pill beside the name. */
+  .agent-detail__status {
+    display: inline-flex;
     align-items: center;
-    gap: var(--space-2xs);
-    color: var(--muted);
+    padding: 0.15rem var(--space-xs);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg);
     font-size: 0.8rem;
   }
 
-  .agent-detail__meta > * + *::before {
-    content: "·";
-    margin-right: var(--space-2xs);
-    color: var(--border);
-  }
-
-  .agent-detail__repo {
-    color: var(--link);
-  }
-
-  /* Soul-line (persona-naming law): the persona is one grey fact among the
-     others -- never a co-equal title beside the agent's own name. */
-  .agent-detail__persona {
+  .agent-detail__capability {
+    margin: 0;
     color: var(--muted);
+    font-size: 0.92rem;
+  }
+
+  .agent-detail__actions {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .agent-detail__action {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    height: 2.1rem;
+    padding: 0 var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    background: var(--panel);
+    color: var(--ink);
+    font-size: 0.82rem;
+    font-weight: 500;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+
+  .agent-detail__action:hover {
+    border-color: var(--ring);
+    background: var(--accent-soft);
   }
 
   .agent-detail__tags {
@@ -1020,99 +1157,176 @@
     margin: 0;
   }
 
-  .agent-detail__chip--more {
-    background: none;
+  .agent-detail__chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.15rem var(--space-xs);
+    border: 1px solid transparent;
+    border-radius: var(--radius-pill);
+    background: var(--accent-soft);
+    color: var(--ink);
     font: inherit;
-    font-size: 0.7rem;
-    color: var(--accent);
-    cursor: pointer;
+    font-size: 0.75rem;
+    font-weight: 500;
   }
 
   .agent-detail__chip--skill {
-    color: var(--ink);
+    border-color: var(--border);
+    background: var(--panel);
   }
 
-  .agent-detail__chip {
-    display: inline-flex;
-    padding: 0.1rem var(--space-2xs);
-    border: 1px solid var(--border);
-    border-radius: 999px;
+  .agent-detail__chip--more {
+    border-color: var(--border);
+    background: var(--panel);
     color: var(--muted);
-    font-size: 0.7rem;
+    cursor: pointer;
+  }
+
+  /* The facts row: label over value, on a line of its own under a rule. */
+  .agent-detail__stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: var(--space-md);
+    margin: 0;
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--border);
+  }
+
+  .agent-detail__stat {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .agent-detail__stat dt {
+    color: var(--muted);
+    font-family: var(--font-display-mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .agent-detail__stat dd {
+    margin: 0;
+    overflow: hidden;
+    color: var(--ink);
+    font-size: 0.88rem;
+    font-weight: 500;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .agent-detail__capability {
-    margin: 0;
+  .agent-detail__persona {
     color: var(--ink);
-    font-size: 0.9rem;
+    text-decoration: underline;
+    text-decoration-color: var(--border);
+    text-underline-offset: 3px;
   }
 
-  /* The Persona section's read-only pairs, same two-column shape the
-     Harness tab's Model and runtime section uses. */
+  a.agent-detail__persona:hover {
+    text-decoration-color: var(--ink);
+  }
+
+  /* Under the chat: the shared thread and the colleague log side by side,
+     stacked when the frame is narrow. */
+  .agent-detail__pair {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+    gap: var(--space-lg);
+    align-items: stretch;
+  }
+
+  /* The Persona section's facts, as rows like Model and runtime: the
+     name on the left, the value on the right, a hairline between rows. */
   .agent-detail__facts {
     display: grid;
-    grid-template-columns: 7rem minmax(0, 1fr);
-    gap: var(--space-2xs) var(--space-sm);
+    grid-template-columns: 11rem minmax(0, 1fr);
     margin: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .agent-detail__facts dt,
+  .agent-detail__facts dd {
+    padding: var(--space-md) 0;
+    border-bottom: 1px solid var(--border);
   }
 
   .agent-detail__facts dt {
+    padding-right: var(--space-md);
     color: var(--muted);
-    font-size: 0.8rem;
+    font-size: 0.85rem;
   }
 
   .agent-detail__facts dd {
     margin: 0;
     overflow-wrap: anywhere;
     color: var(--ink);
-    font-size: 0.85rem;
+    font-size: 0.875rem;
+    line-height: 1.6;
+  }
+
+  .agent-detail__facts dd .agent-detail__repo {
+    margin-left: var(--space-2xs);
+    color: var(--link);
   }
 
   .agent-detail__fact-help {
     display: block;
+    max-width: 40rem;
+    margin-top: var(--space-2xs);
     color: var(--muted);
     font-size: 0.8rem;
+    line-height: 1.5;
   }
 
   /* The one button in the header, and it is quiet on purpose: the header
      is for reading, and every action it used to spell out is behind this. */
   .agent-detail__menu {
     position: relative;
-    margin-left: auto;
+    flex-shrink: 0;
   }
 
-  /* A visible button, not three faint dots: the portrait actions live in
-     here and nobody found them (2026-10-01). */
-  .agent-detail__menu-button {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2xs);
-    padding: 0.1rem var(--space-xs);
-    border: 1px solid var(--border);
+  .agent-detail__portrait {
+    position: relative;
+    display: block;
+    padding: 0;
+    border: none;
     border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-    font: inherit;
-    font-size: 0.85rem;
-    line-height: 1.4;
+    background: none;
     cursor: pointer;
   }
 
-  .agent-detail__menu-label {
-    font-size: 0.8rem;
+  .agent-detail__portrait:hover .agent-detail__avatar,
+  .agent-detail__portrait[aria-expanded="true"] .agent-detail__avatar {
+    filter: brightness(0.92);
   }
 
-  .agent-detail__menu-button:hover,
-  .agent-detail__menu-button[aria-expanded="true"] {
-    border-color: var(--border);
+  .agent-detail__portrait-badge {
+    position: absolute;
+    right: -4px;
+    bottom: -4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.35rem;
+    height: 1.35rem;
+    border: 2px solid var(--panel);
+    border-radius: 50%;
+    background: var(--panel);
     color: var(--ink);
+    box-shadow: 0 0 0 1px var(--border);
+  }
+
+  .agent-detail__action:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .agent-detail__menu-list {
     position: absolute;
-    top: calc(100% + var(--space-2xs));
-    right: 0;
+    top: calc(100% + var(--space-xs));
+    left: 0;
     z-index: 20;
     display: flex;
     min-width: 12rem;
@@ -1154,12 +1368,6 @@
   .agent-detail__menu-item--disabled {
     opacity: 0.5;
     cursor: not-allowed;
-  }
-
-  .agent-detail__menu-rule {
-    margin: var(--space-2xs) 0;
-    border: none;
-    border-top: 1px solid var(--border);
   }
 
   .agent-detail__note {
@@ -1290,6 +1498,12 @@
     flex-wrap: nowrap;
     align-items: center;
     gap: var(--space-md);
+  }
+
+  /* Underline tabs: a hairline rule across the full width, the tabs on it
+     at their natural widths, and the chosen one marked by dark text and a
+     dark bar that sits on the rule. */
+  .detail-tabs__bar {
     border-bottom: 1px solid var(--border);
   }
 
@@ -1297,30 +1511,62 @@
     display: flex;
     min-width: 0;
     flex-wrap: nowrap;
-    gap: var(--space-md);
-    overflow: hidden;
+    gap: var(--space-lg);
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 
   .detail-tabs__tab {
+    position: relative;
+    display: inline-flex;
     flex-shrink: 0;
-    padding: var(--space-sm) var(--space-md);
+    align-items: center;
+    gap: 0.45rem;
+    height: 2.75rem;
+    padding: 0 var(--space-2xs);
     border: none;
-    border-bottom: 2px solid transparent;
     background: none;
     color: var(--muted);
     font: inherit;
-    font-size: 0.9rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    letter-spacing: var(--label-tracking);
+    text-transform: var(--label-case);
     cursor: pointer;
+    transition: color 0.15s ease;
   }
 
-  .detail-tabs__tab:hover {
+  .detail-tabs__tab::after {
+    content: "";
+    position: absolute;
+    right: 0;
+    bottom: -1px;
+    left: 0;
+    height: 2px;
+    border-radius: 2px 2px 0 0;
+    background: transparent;
+    transition: background 0.15s ease;
+  }
+
+  .detail-tabs__tab:hover:not(:disabled) {
     color: var(--ink);
+  }
+
+  .detail-tabs__tab:hover:not(:disabled):not([aria-selected="true"])::after {
+    background: var(--border);
   }
 
   .detail-tabs__tab[aria-selected="true"] {
-    border-bottom-color: var(--accent);
     color: var(--ink);
-    font-weight: 600;
+  }
+
+  .detail-tabs__tab[aria-selected="true"]::after {
+    background: var(--accent);
+  }
+
+  .detail-tabs__tab :global(.detail-tabs__icon) {
+    flex-shrink: 0;
+    opacity: 0.85;
   }
 
   .detail-tabs__tab:disabled {
@@ -1329,16 +1575,23 @@
   }
 
   .detail-tabs__badge {
-    display: inline-block;
-    min-width: 1.2em;
-    margin-left: 0.35em;
-    padding: 0 0.35em;
+    display: inline-flex;
+    min-width: 1.15rem;
+    height: 1.15rem;
+    align-items: center;
+    justify-content: center;
+    padding: 0 0.3rem;
     border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--ink);
+    font-family: var(--font-display-mono);
+    font-size: 0.65rem;
+    font-weight: 600;
+  }
+
+  .detail-tabs__tab[aria-selected="true"] .detail-tabs__badge {
     background: var(--accent);
     color: var(--accent-ink);
-    font-size: 0.72rem;
-    line-height: 1.5;
-    text-align: center;
   }
 
   .detail-tabs__panel {

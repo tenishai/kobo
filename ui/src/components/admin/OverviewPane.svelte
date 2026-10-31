@@ -3,6 +3,16 @@
   // sentence an admin wants before opening it. Everything here is read from
   // the room; nothing is a tile that leads nowhere.
   import { createQuery } from "@tanstack/svelte-query";
+  import {
+    CaretRight,
+    ClockCounterClockwise,
+    Graph,
+    Plugs,
+    SealCheck,
+    Stack,
+    UserGear,
+    Users,
+  } from "phosphor-svelte";
   import { formatHash } from "../../lib/router.svelte";
   import {
     accessLeasesQuery,
@@ -28,6 +38,18 @@
   }
 
   type Row = { pane: string; name: string; note: string; warn?: boolean };
+
+  // What each page is for, and its icon: the card's second line, so an
+  // admin who has not opened the page yet knows why they would.
+  const ABOUT: Record<string, { text: string; icon: typeof Stack }> = {
+    services: { text: "What the room runs on, and which add-ons are on.", icon: Stack },
+    integrations: { text: "The vendors the room can lend agents access to.", icon: Plugs },
+    connections: { text: "Which agent reaches which vendor through the gateway.", icon: Graph },
+    review: { text: "Permission requests waiting for a decision.", icon: SealCheck },
+    roles: { text: "What each role may do in the room.", icon: UserGear },
+    people: { text: "Who runs the room, and group requests.", icon: Users },
+    audit: { text: "Who changed what, and whether it landed.", icon: ClockCounterClockwise },
+  };
   const rows = $derived.by((): Row[] => {
     const a = addons.data ?? [];
     const on = a.filter((x) => x.state === "on").length;
@@ -75,21 +97,124 @@
         note: requests.isPending ? "…" : pending ? `${plural(pending, "group request")} waiting` : "nothing waiting",
         warn: pending > 0,
       },
-      { pane: "audit", name: "Audit", note: "who changed what, and whether it landed" },
+      { pane: "audit", name: "Audit", note: "Open the log" },
     ];
   });
 </script>
 
-<section class="panel page" aria-labelledby="overview-heading">
-  <h2 id="overview-heading" class="page__title">Overview</h2>
-  <p class="page__lead">Where things stand. Open a page for the details.</p>
-  <div class="table-card">
+<section class="panel page overview" aria-labelledby="overview-heading">
+  <header class="overview__head">
+    <h2 id="overview-heading" class="page__title">Overview</h2>
+    <p class="page__lead">Where things stand. Open a page for the details.</p>
+  </header>
+  <div class="overview__grid">
     {#each rows as r (r.pane)}
-      <a class="row-link" href={formatHash({ page: "admin", pane: r.pane })}>
-        <span class="row-link__name">{r.name}</span>
-        <span class="row-link__note" class:row-link__note--warn={r.warn}>{r.note}</span>
-        <span class="row-link__chevron" aria-hidden="true">›</span>
+      {@const about = ABOUT[r.pane]}
+      <a class="overview__card" href={formatHash({ page: "admin", pane: r.pane })}>
+        <span class="overview__top">
+          <span class="overview__icon" aria-hidden="true">
+            {#if about}<about.icon size={18} />{/if}
+          </span>
+          <CaretRight class="overview__chevron" size={14} aria-hidden="true" />
+        </span>
+        <span class="overview__name">{r.name}</span>
+        <span class="overview__note" class:overview__note--warn={r.warn}>{r.note}</span>
+        {#if about}<span class="overview__about">{about.text}</span>{/if}
       </a>
     {/each}
   </div>
 </section>
+
+<style>
+  .overview {
+    gap: var(--space-lg);
+  }
+
+  .overview__head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .overview__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+    gap: var(--space-md);
+  }
+
+  .overview__card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    padding: var(--space-lg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel);
+    color: var(--ink);
+    text-decoration: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  }
+
+  .overview__card:hover {
+    border-color: var(--ring);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
+    transform: translateY(-1px);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .overview__card:hover {
+      transform: none;
+    }
+  }
+
+  .overview__top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: var(--space-sm);
+  }
+
+  .overview__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: var(--radius-sm);
+    background: var(--accent-soft);
+    color: var(--ink);
+  }
+
+  .overview__top :global(.overview__chevron) {
+    color: var(--muted);
+  }
+
+  .overview__name {
+    color: var(--muted);
+    font-size: 0.82rem;
+    font-weight: 500;
+  }
+
+  .overview__note {
+    display: block;
+    color: var(--ink);
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .overview__note::first-letter {
+    text-transform: uppercase;
+  }
+
+  .overview__note--warn {
+    color: var(--warn);
+  }
+
+  .overview__about {
+    margin-top: var(--space-xs);
+    color: var(--muted);
+    font-size: 0.8rem;
+    line-height: 1.5;
+  }
+</style>

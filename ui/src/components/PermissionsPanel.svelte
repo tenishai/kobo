@@ -264,13 +264,13 @@
   .perm { font-family: var(--font-mono); font-size: 0.85rem; font-weight: 600; }
   .quiet { color: var(--muted); font-size: 0.85rem; }
   .org { font-weight: 400; }
-  .tier { display: inline-block; padding: 0.05rem 0.45rem; border: 1px solid var(--border); border-radius: 999px; font-size: 0.75rem; }
+  .tier { display: inline-block; padding: 0.05rem 0.45rem; border: 1px solid var(--border); border-radius: var(--radius-pill); font-size: 0.75rem; }
   .tier--mutate { border-color: var(--warn); }
   .tier--destroy { border-color: var(--danger, var(--warn)); }
   .pending { margin: 0 0 var(--space-md); padding-left: 1.2rem; }
   .picker .row-link { width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--border); cursor: pointer; font: inherit; color: inherit; }
   .picker .row-link:last-child { border-bottom: 0; }
-  .picker .row-link:disabled { cursor: default; color: var(--muted); }
+  .picker .row-link:disabled { cursor: default; }
   .crumbs { display: flex; align-items: center; gap: var(--space-xs); margin: 0 0 var(--space-sm); }
   .crumb { background: none; border: 0; padding: 0; font: inherit; color: var(--accent, var(--ink)); cursor: pointer; }
   .crumb--here { color: var(--ink); font-weight: 600; cursor: default; }

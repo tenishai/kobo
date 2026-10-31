@@ -1107,7 +1107,7 @@
     gap: var(--space-xs);
     padding: var(--space-2xs) var(--space-sm);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--muted);
     font-size: 0.85rem;
   }
@@ -1455,7 +1455,7 @@
     flex-shrink: 0;
     padding: 0.15rem var(--space-xs);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: 0.75rem;
     font-weight: 600;
     white-space: nowrap;

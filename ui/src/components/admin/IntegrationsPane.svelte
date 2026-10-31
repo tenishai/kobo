@@ -7,6 +7,7 @@
   import { untrack } from "svelte";
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import Modal from "../Modal.svelte";
+  import { vendorMark } from "../../lib/admin/logos";
   import AwsConnect from "./AwsConnect.svelte";
   import {
     errorMessage,
@@ -139,7 +140,12 @@
   const visibleServices = $derived(ROOM_SERVICES.filter((s) => s.name.toLowerCase().includes(search.trim().toLowerCase())));
   const connected = $derived(new Set(all.map((i) => i.vendor)));
   // A second AWS organization is a second row, so AWS stays addable.
-  const addable = $derived(catalog.filter((c) => c.id === "aws" || !connected.has(c.id)));
+  const addable = $derived(
+    catalog
+      .filter((c) => c.id === "aws" || !connected.has(c.id))
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })),
+  );
 
   let catalogOpen = $state(false);
   let form = $state<{
@@ -440,24 +446,32 @@
   {/if}
 </section>
 
-<Modal open={catalogOpen} title="Add an integration" onclose={() => (catalogOpen = false)}>
-  <div class="table-card">
+<Modal open={catalogOpen} title="Add an integration" size="wide" onclose={() => (catalogOpen = false)}>
+  <p class="catalog__lead">Pick a vendor. The room holds one connection to it and lends agents only what you grant under Permissions.</p>
+  <div class="catalog">
     {#each addable as c (c.id)}
-      <div class="pick">
-        <div>
-          <span class="name">{c.name}</span>
-          <p class="quiet pick__desc">{c.summary}</p>
+      {@const mark = vendorMark(c.id, c.name)}
+      <div class="catalog__card">
+        {#if mark.kind === "path"}
+          <span class="catalog__tile" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill={mark.hex ? `#${mark.hex}` : "currentColor"}>
+              <path d={mark.path} />
+            </svg>
+          </span>
+        {:else}
+          <span
+            class="catalog__tile catalog__tile--initials"
+            style={mark.hex ? `background:${mark.hex};color:#fff;border-color:${mark.hex}` : undefined}
+            aria-hidden="true">{mark.text}</span
+          >
+        {/if}
+        <div class="catalog__text">
+          <span class="catalog__name">{c.name}</span>
+          <p class="catalog__desc">{c.summary}</p>
         </div>
-        <button type="button" class="btn" onclick={() => openConnect(c)}>Add</button>
+        <button type="button" class="btn catalog__add" aria-label={`Add ${c.name}`} onclick={() => openConnect(c)}>Add</button>
       </div>
     {/each}
-    <div class="pick">
-      <div>
-        <span class="name">Other</span>
-        <p class="quiet pick__desc">A vendor not on this list.</p>
-      </div>
-      <button type="button" class="btn" onclick={() => openConnect(null)}>Add</button>
-    </div>
   </div>
 </Modal>
 
@@ -616,4 +630,76 @@
   }
   .pick:last-child { border-bottom: none; }
   .pick__desc { margin: 2px 0 0; }
+
+  /* The vendor catalog: a two-column grid of cards. */
+  .catalog__lead {
+    margin: 0 0 var(--space-md);
+    color: var(--muted);
+    font-size: 0.875rem;
+  }
+
+  .catalog {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+    gap: var(--space-sm);
+  }
+
+  .catalog__card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+
+  .catalog__card:hover {
+    border-color: var(--ring);
+    background: color-mix(in oklab, var(--accent-soft) 50%, var(--panel));
+  }
+
+
+  .catalog__tile {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    color: var(--ink);
+  }
+
+  .catalog__tile--initials {
+    background: var(--accent-soft);
+    font-family: var(--font-display-mono);
+    font-size: 0.85rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  .catalog__text {
+    min-width: 0;
+  }
+
+  .catalog__name {
+    color: var(--ink);
+    font-size: 0.92rem;
+    font-weight: 600;
+  }
+
+  .catalog__desc {
+    margin: 0.15rem 0 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+    line-height: 1.45;
+  }
+
+  .catalog__add {
+    align-self: center;
+  }
 </style>

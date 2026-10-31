@@ -252,7 +252,7 @@
   .repo-access__state {
     padding: 0.1rem var(--space-xs);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--muted);
     font-size: 0.7rem;
     text-transform: capitalize;

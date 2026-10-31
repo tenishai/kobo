@@ -14,7 +14,7 @@
   //
   // Each section's form is a toolbar disclosure that stays shut until asked
   // for:
-  //   - Add someone — a person by email (directory autocomplete) and a role,
+  //   - Add person — a person by email (directory autocomplete) and a role,
   //     Can see (opens and chats) or Can manage (the owner's edits, short
   //     of destroying the agent; the server's ownership gate honours it)
   //   - Request another team's agent — the browsable outgoing picker
@@ -319,346 +319,415 @@
        disabled while frozen, which is where the freeze actually bites. -->
 
   <section class="access-panel__section" aria-labelledby="access-people-heading">
-    <div class="panel__header">
+    <div class="panel__header access-panel__head">
       <h3 id="access-people-heading" class="panel__subheading">People</h3>
       <p class="panel__lead">
         Who can see and manage this agent besides its owner and the room's operators.
       </p>
-    </div>
-
-    <div class="panel__toolbar">
       <div class="panel__tools">
-        <button
-          type="button"
-          class="btn"
-          aria-expanded={grantOpen}
-          onclick={() => (grantOpen = !grantOpen)}
-        >
-          Add someone
-        </button>
+          <button
+            type="button"
+            class="btn"
+            aria-expanded={grantOpen}
+            onclick={() => (grantOpen = !grantOpen)}
+          >
+            Add person
+          </button>
       </div>
     </div>
 
-    {#if grantOpen}
-      <form class="panel__drawer access-panel__grant" onsubmit={handleAddGrant}>
-        <label class="access-panel__label" for="access-grant-email">Add someone by email</label>
-        <div class="access-panel__grant-row">
-          <div class="access-panel__autocomplete">
-            <input
-              id="access-grant-email"
-              class="access-panel__input"
-              type="text"
-              autocomplete="off"
-              bind:value={grantEmail}
-              oninput={handleGrantEmailTyped}
+    <div class="access-panel__body">
+
+      {#if grantOpen}
+        <form class="panel__drawer access-panel__grant" onsubmit={handleAddGrant}>
+          <label class="access-panel__label" for="access-grant-email">Add someone by email</label>
+          <div class="access-panel__grant-row">
+            <div class="access-panel__autocomplete">
+              <input
+                id="access-grant-email"
+                class="access-panel__input"
+                type="text"
+                autocomplete="off"
+                bind:value={grantEmail}
+                oninput={handleGrantEmailTyped}
+                disabled={frozen}
+              />
+              {#if showSuggestions}
+                <ul class="access-panel__suggestions" role="listbox">
+                  {#each suggestions as person (person.email)}
+                    <li role="option" aria-selected="false">
+                      <button
+                        type="button"
+                        class="access-panel__suggestion"
+                        disabled={frozen}
+                        onclick={() => pickPerson(person)}
+                      >
+                        {person.name} &lt;{person.email}&gt;
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+            <label class="panel__sr" for="access-grant-role">Role</label>
+            <select
+              id="access-grant-role"
+              class="access-panel__select"
+              bind:value={grantRole}
               disabled={frozen}
-            />
-            {#if showSuggestions}
-              <ul class="access-panel__suggestions" role="listbox">
-                {#each suggestions as person (person.email)}
-                  <li role="option" aria-selected="false">
-                    <button
-                      type="button"
-                      class="access-panel__suggestion"
-                      disabled={frozen}
-                      onclick={() => pickPerson(person)}
-                    >
-                      {person.name} &lt;{person.email}&gt;
-                    </button>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
+            >
+              <option value="view">{ROLE_LABEL.view}</option>
+              <option value="manage">{ROLE_LABEL.manage}</option>
+            </select>
+            <button type="submit" class="btn btn--primary" disabled={frozen || !canAddGrant}>
+              {addGrant.isPending ? "Adding…" : "Add"}
+            </button>
           </div>
-          <label class="panel__sr" for="access-grant-role">Role</label>
-          <select
-            id="access-grant-role"
-            class="access-panel__select"
-            bind:value={grantRole}
-            disabled={frozen}
-          >
-            <option value="view">{ROLE_LABEL.view}</option>
-            <option value="manage">{ROLE_LABEL.manage}</option>
-          </select>
-          <button type="submit" class="btn btn--primary" disabled={frozen || !canAddGrant}>
-            {addGrant.isPending ? "Adding…" : "Add"}
-          </button>
-        </div>
-        <p class="panel__note"><strong>Can see:</strong> opens the agent and chats with it.</p>
-        <p class="panel__note">
-          <strong>Can manage:</strong> edits its skills, tooling, Slack, secrets and permission
-          requests. Cannot destroy it.
-        </p>
-        {#if directoryUnavailable}
+          <p class="panel__note"><strong>Can see:</strong> opens the agent and chats with it.</p>
           <p class="panel__note">
-            Directory search is unavailable right now. You can still type an email directly.
+            <strong>Can manage:</strong> edits its skills, tooling, Slack, secrets and permission
+            requests. Cannot destroy it.
           </p>
-        {/if}
-        {#if grantError}
+          {#if directoryUnavailable}
+            <p class="panel__note">
+              Directory search is unavailable right now. You can still type an email directly.
+            </p>
+          {/if}
+          {#if grantError}
+            <p class="panel__note panel__note--fail" role="alert">{grantError}</p>
+          {/if}
+        </form>
+      {/if}
+
+      {#if grants.isPending}
+        <Skeleton rows={2} />
+      {:else if grants.isError}
+        <ErrorState
+          message={errorMessage(grants.error, "Couldn't load who has access.")}
+          onretry={() => grants.refetch()}
+        />
+      {:else}
+        <table class="panel__table">
+          <thead>
+            <tr>
+              <th scope="col">Person</th>
+              <th scope="col" class="access-panel__col-role">Role</th>
+              <th scope="col" class="access-panel__col-action">
+                <span class="panel__sr">Remove</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {#if grants.data.length === 0}
+              <tr>
+                <td class="panel__empty" colspan="3">Nobody has been added yet.</td>
+              </tr>
+            {/if}
+            {#each grants.data as grant (grant.email)}
+              <tr class="access-panel__row">
+                <td><span class="access-panel__row-name">{grant.email}</span></td>
+                <td><span class="access-panel__chip">{ROLE_LABEL[grant.role] ?? grant.role}</span></td>
+                <td class="panel__cell--right">
+                  <button
+                    type="button"
+                    class="btn btn--quiet btn--danger"
+                    disabled={frozen || removeGrant.isPending}
+                    aria-label={`Remove ${grant.email}`}
+                    onclick={() => handleRemoveGrant(grant.email)}
+                  >
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+        {#if grantError && !grantOpen}
           <p class="panel__note panel__note--fail" role="alert">{grantError}</p>
         {/if}
-      </form>
-    {/if}
-
-    {#if grants.isPending}
-      <Skeleton rows={2} />
-    {:else if grants.isError}
-      <ErrorState
-        message={errorMessage(grants.error, "Couldn't load who has access.")}
-        onretry={() => grants.refetch()}
-      />
-    {:else}
-      <table class="panel__table">
-        <thead>
-          <tr>
-            <th scope="col">Person</th>
-            <th scope="col" class="access-panel__col-role">Role</th>
-            <th scope="col" class="access-panel__col-action">
-              <span class="panel__sr">Remove</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {#if grants.data.length === 0}
-            <tr>
-              <td class="panel__empty" colspan="3">Nobody has been added yet.</td>
-            </tr>
-          {/if}
-          {#each grants.data as grant (grant.email)}
-            <tr class="access-panel__row">
-              <td><span class="access-panel__row-name">{grant.email}</span></td>
-              <td><span class="access-panel__chip">{ROLE_LABEL[grant.role] ?? grant.role}</span></td>
-              <td class="panel__cell--right">
-                <button
-                  type="button"
-                  class="btn btn--quiet btn--danger"
-                  disabled={frozen || removeGrant.isPending}
-                  aria-label={`Remove ${grant.email}`}
-                  onclick={() => handleRemoveGrant(grant.email)}
-                >
-                  Remove
-                </button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-      {#if grantError && !grantOpen}
-        <p class="panel__note panel__note--fail" role="alert">{grantError}</p>
       {/if}
-    {/if}
+    </div>
   </section>
 
   <section class="access-panel__section" aria-labelledby="access-agents-heading">
-    <div class="panel__header">
+    <div class="panel__header access-panel__head">
       <h3 id="access-agents-heading" class="panel__subheading">Other agents</h3>
       <p class="panel__lead">Agents this one may ask for help, across teams.</p>
-    </div>
-
-    <div class="panel__toolbar">
       <div class="panel__tools">
-        <button
-          type="button"
-          class="btn"
-          aria-expanded={pickerOpen}
-          onclick={() => (pickerOpen = !pickerOpen)}
-        >
-          Request another team's agent
-        </button>
+          <button
+            type="button"
+            class="btn"
+            aria-expanded={pickerOpen}
+            onclick={() => (pickerOpen = !pickerOpen)}
+          >
+            Request another team's agent
+          </button>
       </div>
     </div>
 
-    {#if pickerOpen}
-      <div class="panel__drawer access-panel__picker">
-        {#if requestable.isPending}
-          <Skeleton rows={2} />
-        {:else if requestable.isError}
-          <ErrorState
-            message={errorMessage(requestable.error, "Couldn't load other agents.")}
-            onretry={() => requestable.refetch()}
-          />
-        {:else if (requestable.data?.requestable ?? []).length === 0 && (requestable.data?.already ?? []).length === 0 && (requestable.data?.not_ready ?? []).length === 0}
-          <p class="panel__note">
-            Nobody to ask: every other agent is already reachable (same group, listed
-            below), or there is no other agent yet.
-          </p>
-        {:else}
-          <ul class="access-panel__list">
-            {#each requestable.data?.requestable ?? [] as candidate (candidate.name)}
-              <li class="access-panel__candidate">
-                <div class="access-panel__candidate-info">
-                  <span class="access-panel__row-name">{candidate.name}</span>
-                  {#if candidate.group}
-                    <span class="access-panel__chip">{candidate.group}</span>
-                  {/if}
-                  <p class="panel__note">{purposeText(candidate)}</p>
-                </div>
-                <button
-                  type="button"
-                  class="btn"
-                  disabled={frozen || requestAccess.isPending || askRequest.isPending}
-                  aria-label={`Request access to ${candidate.name}`}
-                  onclick={() => handleRequestAccess(candidate.name)}
-                >
-                  Request access
-                </button>
-              </li>
-            {/each}
-            {#each requestable.data?.already ?? [] as entry (entry.name)}
-              <li class="access-panel__candidate">
-                <span class="access-panel__row-name">{entry.name}</span>
-                <span class="access-panel__chip access-panel__chip--state">{entry.status}</span>
-              </li>
-            {/each}
-            {#each requestable.data?.not_ready ?? [] as entry (entry.name)}
-              <li class="access-panel__candidate access-panel__candidate--muted">
-                <span class="access-panel__row-name">{entry.name}</span>
-                {#if entry.group}
-                  <span class="access-panel__chip">{entry.group}</span>
-                {/if}
-                <span class="access-panel__chip access-panel__chip--state">
-                  not ready ({entry.status})
-                </span>
-              </li>
-            {/each}
-          </ul>
-          {#if (requestable.data?.requestable ?? []).length === 0}
-            <p class="panel__note">
-              Agents in the same group are already reachable and listed below.
-            </p>
-          {/if}
-        {/if}
-      </div>
-    {/if}
+    <div class="access-panel__body">
 
-    {#if invites.isPending}
-      <Skeleton rows={2} />
-    {:else if invites.isError}
-      <ErrorState
-        message={errorMessage(invites.error, "Couldn't load colleague requests.")}
-        onretry={() => invites.refetch()}
-      />
-    {:else}
-      {#if inviteActionError}
-        <p class="panel__note panel__note--fail" role="alert">{inviteActionError}</p>
-      {/if}
-      <table class="panel__table">
-        <thead>
-          <tr>
-            <th scope="col">Agent</th>
-            <th scope="col" class="access-panel__col-role">Status</th>
-            <th scope="col" class="access-panel__col-action">
-              <span class="panel__sr">Actions</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {#if agentRowCount === 0}
-            <tr>
-              <td class="panel__empty" colspan="3">No requests or pairs yet.</td>
-            </tr>
-          {/if}
-          {#each incomingPending as invite (invite.id)}
-            <tr class="access-panel__row">
-              <td><span class="access-panel__row-name">{invite.from_agent}</span></td>
-              <td><span class="panel__meta">Wants to talk to yours</span></td>
-              <td class="panel__cell--right">
-                <div class="access-panel__actions">
+      {#if pickerOpen}
+        <div class="panel__drawer access-panel__picker">
+          {#if requestable.isPending}
+            <Skeleton rows={2} />
+          {:else if requestable.isError}
+            <ErrorState
+              message={errorMessage(requestable.error, "Couldn't load other agents.")}
+              onretry={() => requestable.refetch()}
+            />
+          {:else if (requestable.data?.requestable ?? []).length === 0 && (requestable.data?.already ?? []).length === 0 && (requestable.data?.not_ready ?? []).length === 0}
+            <p class="panel__note">
+              Nobody to ask: every other agent is already reachable (same group, listed
+              below), or there is no other agent yet.
+            </p>
+          {:else}
+            <ul class="access-panel__list">
+              {#each requestable.data?.requestable ?? [] as candidate (candidate.name)}
+                <li class="access-panel__candidate">
+                  <div class="access-panel__candidate-info">
+                    <span class="access-panel__row-name">{candidate.name}</span>
+                    {#if candidate.group}
+                      <span class="access-panel__chip">{candidate.group}</span>
+                    {/if}
+                    <p class="panel__note">{purposeText(candidate)}</p>
+                  </div>
                   <button
                     type="button"
                     class="btn"
-                    disabled={frozen || acceptMutation.isPending}
-                    aria-label={`Accept ${invite.from_agent}`}
-                    onclick={() => handleAccept(invite.id)}
+                    disabled={frozen || requestAccess.isPending || askRequest.isPending}
+                    aria-label={`Request access to ${candidate.name}`}
+                    onclick={() => handleRequestAccess(candidate.name)}
                   >
-                    Accept
+                    Request access
                   </button>
-                  <button
-                    type="button"
-                    class="btn btn--quiet btn--danger"
-                    disabled={frozen || declineMutation.isPending}
-                    aria-label={`Decline ${invite.from_agent}`}
-                    onclick={() => handleDecline(invite.id)}
-                  >
-                    Decline
-                  </button>
-                </div>
-              </td>
-            </tr>
-          {/each}
-          <!-- Same-team pairs first, and never revocable: the room pairs them
-               on its own, so there is no grant here for anyone to take back. -->
-          {#each teamPairs as pair (pair.name)}
-            <tr class="access-panel__row">
-              <td><span class="access-panel__row-name">{pair.name}</span></td>
-              <td><span class="panel__meta">Can join shared threads</span></td>
-              <td class="panel__cell--right">
-                <span class="access-panel__chip">Same team ({pair.group})</span>
-              </td>
-            </tr>
-          {/each}
-          {#each waitingAsks as ask (ask.id)}
-            <tr class="access-panel__row">
-              <td><span class="access-panel__row-name">{ask.integration}</span></td>
-              <td><span class="panel__meta">Waiting for review</span></td>
-              <td class="panel__cell--right">
-                <span class="access-panel__chip">Requested</span>
-              </td>
-            </tr>
-          {/each}
-          {#each grantPairs as name (name)}
-            <tr class="access-panel__row">
-              <td><span class="access-panel__row-name">{name}</span></td>
-              <td><span class="panel__meta">Can join shared threads</span></td>
-              <td class="panel__cell--right">
-                <span class="access-panel__chip">Approved in Review</span>
-              </td>
-            </tr>
-          {/each}
-          {#each acceptedPairs as invite (invite.id)}
-            <tr class="access-panel__row">
-              <td>
-                <span class="access-panel__row-name">
-                  {invite.from_agent} and {invite.to_agent.name}
-                </span>
-              </td>
-              <td><span class="panel__meta">Can join shared threads</span></td>
-              <td class="panel__cell--right">
-                <div class="access-panel__revoke-group">
-                  <span class="access-panel__chip">Accepted request</span>
-                  <button
-                    type="button"
-                    class="btn btn--quiet btn--danger"
-                    disabled={frozen || revokeMutation.isPending}
-                    aria-label={`Revoke ${invite.from_agent} and ${invite.to_agent.name}`}
-                    onclick={() => handleRevoke(invite.id)}
-                  >
-                    Revoke
-                  </button>
-                  <span class="access-panel__hint">
-                    Revoking takes effect within a few minutes.
+                </li>
+              {/each}
+              {#each requestable.data?.already ?? [] as entry (entry.name)}
+                <li class="access-panel__candidate">
+                  <span class="access-panel__row-name">{entry.name}</span>
+                  <span class="access-panel__chip access-panel__chip--state">{entry.status}</span>
+                </li>
+              {/each}
+              {#each requestable.data?.not_ready ?? [] as entry (entry.name)}
+                <li class="access-panel__candidate access-panel__candidate--muted">
+                  <span class="access-panel__row-name">{entry.name}</span>
+                  {#if entry.group}
+                    <span class="access-panel__chip">{entry.group}</span>
+                  {/if}
+                  <span class="access-panel__chip access-panel__chip--state">
+                    not ready ({entry.status})
                   </span>
-                </div>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-      {#if hasPairs}
-        <p class="panel__note">Pairs are live as soon as they appear here.</p>
+                </li>
+              {/each}
+            </ul>
+            {#if (requestable.data?.requestable ?? []).length === 0}
+              <p class="panel__note">
+                Agents in the same group are already reachable and listed below.
+              </p>
+            {/if}
+          {/if}
+        </div>
       {/if}
-    {/if}
+
+      {#if invites.isPending}
+        <Skeleton rows={2} />
+      {:else if invites.isError}
+        <ErrorState
+          message={errorMessage(invites.error, "Couldn't load colleague requests.")}
+          onretry={() => invites.refetch()}
+        />
+      {:else}
+        {#if inviteActionError}
+          <p class="panel__note panel__note--fail" role="alert">{inviteActionError}</p>
+        {/if}
+        <table class="panel__table">
+          <thead>
+            <tr>
+              <th scope="col">Agent</th>
+              <th scope="col" class="access-panel__col-role">Status</th>
+              <th scope="col" class="access-panel__col-action">
+                <span class="panel__sr">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {#if agentRowCount === 0}
+              <tr>
+                <td class="panel__empty" colspan="3">No requests or pairs yet.</td>
+              </tr>
+            {/if}
+            {#each incomingPending as invite (invite.id)}
+              <tr class="access-panel__row">
+                <td><span class="access-panel__row-name">{invite.from_agent}</span></td>
+                <td><span class="panel__meta">Wants to talk to yours</span></td>
+                <td class="panel__cell--right">
+                  <div class="access-panel__actions">
+                    <button
+                      type="button"
+                      class="btn"
+                      disabled={frozen || acceptMutation.isPending}
+                      aria-label={`Accept ${invite.from_agent}`}
+                      onclick={() => handleAccept(invite.id)}
+                    >
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn--quiet btn--danger"
+                      disabled={frozen || declineMutation.isPending}
+                      aria-label={`Decline ${invite.from_agent}`}
+                      onclick={() => handleDecline(invite.id)}
+                    >
+                      Decline
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            {/each}
+            <!-- Same-team pairs first, and never revocable: the room pairs them
+                 on its own, so there is no grant here for anyone to take back. -->
+            {#each teamPairs as pair (pair.name)}
+              <tr class="access-panel__row">
+                <td><span class="access-panel__row-name">{pair.name}</span></td>
+                <td><span class="panel__meta">Can join shared threads</span></td>
+                <td class="panel__cell--right">
+                  <span class="access-panel__chip">Same team ({pair.group})</span>
+                </td>
+              </tr>
+            {/each}
+            {#each waitingAsks as ask (ask.id)}
+              <tr class="access-panel__row">
+                <td><span class="access-panel__row-name">{ask.integration}</span></td>
+                <td><span class="panel__meta">Waiting for review</span></td>
+                <td class="panel__cell--right">
+                  <span class="access-panel__chip">Requested</span>
+                </td>
+              </tr>
+            {/each}
+            {#each grantPairs as name (name)}
+              <tr class="access-panel__row">
+                <td><span class="access-panel__row-name">{name}</span></td>
+                <td><span class="panel__meta">Can join shared threads</span></td>
+                <td class="panel__cell--right">
+                  <span class="access-panel__chip">Approved in Review</span>
+                </td>
+              </tr>
+            {/each}
+            {#each acceptedPairs as invite (invite.id)}
+              <tr class="access-panel__row">
+                <td>
+                  <span class="access-panel__row-name">
+                    {invite.from_agent} and {invite.to_agent.name}
+                  </span>
+                </td>
+                <td><span class="panel__meta">Can join shared threads</span></td>
+                <td class="panel__cell--right">
+                  <div class="access-panel__revoke-group">
+                    <span class="access-panel__chip">Accepted request</span>
+                    <button
+                      type="button"
+                      class="btn btn--quiet btn--danger"
+                      disabled={frozen || revokeMutation.isPending}
+                      aria-label={`Revoke ${invite.from_agent} and ${invite.to_agent.name}`}
+                      onclick={() => handleRevoke(invite.id)}
+                    >
+                      Revoke
+                    </button>
+                    <span class="access-panel__hint">
+                      Revoking takes effect within a few minutes.
+                    </span>
+                  </div>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+        {#if hasPairs}
+          <p class="panel__note">Pairs are live as soon as they appear here.</p>
+        {/if}
+      {/if}
+    </div>
   </section>
 </section>
 
 <style>
   /* One section per thing the tab governs (issue #309): its own heading,
      sentence, toolbar and table, stacked with the panel's own rhythm. */
+  /* Each part of Access is a settings row (2026-10-31): what it is and its
+     action on the left, the list itself on the right, a rule between rows. */
   .access-panel__section {
+    display: grid;
+    grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+    gap: var(--space-xl);
+    width: 100%;
+    padding: var(--space-lg) 0 var(--space-sm);
+    border-top: 1px solid var(--border);
+  }
+
+  .access-panel__head {
+    align-content: start;
+    gap: var(--space-xs);
+  }
+
+  .access-panel__head :global(.panel__subheading) {
+    color: var(--ink);
+    font-size: 0.92rem;
+    font-weight: 600;
+    letter-spacing: normal;
+    text-transform: none;
+  }
+
+  .access-panel__head :global(.panel__lead) {
+    font-size: 0.82rem;
+    line-height: 1.5;
+  }
+
+  .access-panel__head :global(.panel__tools) {
+    margin-top: var(--space-xs);
+  }
+
+  .access-panel__body {
     display: flex;
+    min-width: 0;
     flex-direction: column;
     gap: var(--space-sm);
-    width: 100%;
+  }
+
+  /* The lists sit in a bordered card with a tinted header row. */
+  .access-panel__body :global(.panel__table) {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+
+  .access-panel__body :global(.panel__table th) {
+    height: 2.4rem;
+    padding: 0 var(--space-md);
+    background: var(--bg);
+    vertical-align: middle;
+  }
+
+  .access-panel__body :global(.panel__table td) {
+    height: 3rem;
+    padding: var(--space-2xs) var(--space-md);
+  }
+
+  .access-panel__body :global(.panel__table tbody tr:last-child td) {
+    border-bottom: none;
+  }
+
+  .access-panel__body :global(.panel__empty) {
+    padding: var(--space-lg) var(--space-md);
+  }
+
+  @media (max-width: 52rem) {
+    .access-panel__section {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--space-sm);
+    }
   }
 
   .access-panel__grant,
@@ -783,7 +852,7 @@
     align-self: flex-start;
     padding: 0.1rem var(--space-xs);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--muted);
     font-size: 0.7rem;
     white-space: nowrap;

@@ -162,6 +162,15 @@ unauthenticated, for localhost only. The room opens with no agents and the full 
 (Getting started, in the sidebar), and every optional integration (Slack, the switchboard, the
 secrets platform, the MCP connector) stays off until configured.
 
+Working on the UI alone? Run the room over the test fakes instead of a real API: it serves
+every route from seeded agents in each state the UI draws, with you signed in as an admin,
+and nothing it does leaves your laptop.
+
+```
+cd api && make lab          # the fake-backed room on :8100 (api/scripts/ui_lab.py)
+cd ui && npm run dev        # the UI on :5173, proxying /api to it
+```
+
 Creating an agent needs somewhere to put it: a [gojira](https://github.com/tenishai/gojira) and a
 Kubernetes cluster it deploys to, plus a GitHub login (`gh auth login`) for the repositories the
 room writes. Copy `api/config.example.yaml` to `api/config.local.yaml`, fill in `gojira_url` and

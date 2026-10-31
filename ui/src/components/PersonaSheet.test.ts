@@ -63,7 +63,7 @@ describe("PersonaSheet (personas-in-place wave)", () => {
     expect(screen.getByText("Acts second.")).not.toBeNull();
     expect(screen.getAllByRole("listitem")).toHaveLength(7);
     expect(screen.queryByText(/and \d+ more/)).toBeNull();
-    expect(screen.getByText(/Made by kyle/)).not.toBeNull();
+    expect(screen.getByText(/Author: kyle/)).not.toBeNull();
 
     await fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(onback).toHaveBeenCalled();

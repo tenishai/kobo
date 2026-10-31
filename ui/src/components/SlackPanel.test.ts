@@ -42,7 +42,7 @@ async function pasteSetup(): Promise<void> {
 
 /** Adds one channel row and types an id into it. */
 async function addChannel(value: string): Promise<void> {
-  await fireEvent.click(screen.getByRole("button", { name: "+ Channel" }));
+  await fireEvent.click(screen.getByRole("button", { name: "Add channel" }));
   const rows = screen.getAllByLabelText(/^Channel \d+$/);
   await fireEvent.input(rows[rows.length - 1], { target: { value } });
 }
@@ -375,14 +375,14 @@ describe("SlackPanel", () => {
 
   // --- The channels ----------------------------------------------------------
 
-  it("+ Channel adds an inline row and puts the cursor in it", async () => {
+  it("Add channel adds an inline row and puts the cursor in it", async () => {
     renderWithClient(SlackPanel, {
       agentName: "warden",
       slack: IDLE_SLACK,
       frozen: false,
     });
 
-    await fireEvent.click(screen.getByRole("button", { name: "+ Channel" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Add channel" }));
 
     const rows = screen.getAllByLabelText(/^Channel \d+$/);
     expect(rows).toHaveLength(1);
@@ -506,7 +506,7 @@ describe("SlackPanel", () => {
     expect(save.disabled).toBe(true);
 
     // An empty new row is not a change either: it saves nothing.
-    await fireEvent.click(screen.getByRole("button", { name: "+ Channel" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Add channel" }));
     expect(save.disabled).toBe(true);
 
     await fireEvent.input(screen.getAllByLabelText(/^Channel \d+$/)[1], {

@@ -19,7 +19,7 @@
   // refetched by AgentDetail's polling, same "no local state machine of my
   // own" idiom SlackPanel documents for its own three states):
   //  - anything else (ready/pending/provisioning/failed/...): a quiet
-  //    "Destroy..." that opens the confirm. Typing the agent's exact name
+  //    "Destroy" that opens the confirm. Typing the agent's exact name
   //    arms the "Destroy this agent" button, a plain equality check with no
   //    partial-match leniency, so a typo can't accidentally arm it.
   //  - "destroying": no confirm, no button, just a plain in-progress line.
@@ -138,7 +138,7 @@
         </button>
       {:else}
         <button type="button" class="btn btn--danger" onclick={openConfirm}>
-          Destroy...
+          Destroy
         </button>
       {/if}
     </div>
@@ -167,7 +167,7 @@
     </button>
     <!-- Danger, never the room's filled button: nothing in here is an
          invitation, and the same reasoning already applies to the quiet
-         "Destroy..." on the row behind it. -->
+         "Destroy" on the row behind it. -->
     <button
       type="button"
       class="btn btn--danger"

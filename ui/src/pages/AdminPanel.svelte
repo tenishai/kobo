@@ -11,6 +11,27 @@
   import RolesPane from "../components/admin/RolesPane.svelte";
   import ReviewPane from "../components/admin/ReviewPane.svelte";
   import { createQuery } from "@tanstack/svelte-query";
+  import {
+    ClockCounterClockwise,
+    Graph,
+    Plugs,
+    SealCheck,
+    SquaresFour,
+    Stack,
+    UserGear,
+    Users,
+  } from "phosphor-svelte";
+
+  const PANE_ICONS: Record<string, typeof Stack> = {
+    overview: SquaresFour,
+    services: Stack,
+    integrations: Plugs,
+    connections: Graph,
+    review: SealCheck,
+    roles: UserGear,
+    people: Users,
+    audit: ClockCounterClockwise,
+  };
   import { formatHash, route } from "../lib/router.svelte";
   import { adminAddonsQuery, adminRoomQuery, whoamiQuery } from "../lib/queries";
 
@@ -66,28 +87,46 @@
   </section>
 {:else}
 <div class="admin">
+  <header class="admin__head">
+    <h1 class="admin__title">Admin</h1>
+    <p class="admin__lead">Run the room: what it runs on, the vendors it lends, who may do what, and the record of every change.</p>
+  </header>
+
+  <div class="admin__layout">
   <nav class="admin__nav" aria-label="Admin panel">
-    <p class="admin__group">Admin</p>
     <ul class="admin__list">
       {#each panes as p (p.id)}
+        {@const Icon = PANE_ICONS[p.id]}
         <li>
           <a
             class="admin__link"
             href={formatHash({ page: "admin", pane: p.id })}
             aria-current={pane === p.id ? "page" : undefined}
           >
+            {#if Icon}<Icon class="admin__icon" size={17} aria-hidden="true" />{/if}
             {p.label}
           </a>
         </li>
       {/each}
     </ul>
     {#if room.data}
-      <p class="admin__group">This room</p>
-      <ul class="admin__list admin__list--quiet">
-        <li><span class="admin__fact">Org config <code title={room.data.org_repo ?? ""}>{room.data.org_repo ?? "not set"}</code></span></li>
-        <li><span class="admin__fact">Runtime <code title={room.data.runtime_image}>{short(room.data.runtime_image)}</code></span></li>
-        <li><span class="admin__fact">Deploys to <code title={room.data.cluster}>{room.data.cluster || "not set"}</code></span></li>
-      </ul>
+      <div class="admin__room">
+        <p class="admin__group">This room</p>
+        <dl class="admin__facts">
+          <div>
+            <dt>Org config</dt>
+            <dd><code title={room.data.org_repo ?? ""}>{room.data.org_repo ?? "not set"}</code></dd>
+          </div>
+          <div>
+            <dt>Runtime</dt>
+            <dd><code title={room.data.runtime_image}>{short(room.data.runtime_image)}</code></dd>
+          </div>
+          <div>
+            <dt>Deploys to</dt>
+            <dd><code title={room.data.cluster}>{room.data.cluster || "not set"}</code></dd>
+          </div>
+        </dl>
+      </div>
     {/if}
   </nav>
 
@@ -110,6 +149,7 @@
       <AuditPane />
     {/if}
   </section>
+  </div>
 </div>
 {/if}
 
@@ -121,27 +161,67 @@
     color: var(--muted);
   }
 
+  /* The page: a header, then the navigation card beside the open page. */
+  /* At least as tall as the frame, so the open page's card reaches the
+     bottom of the window even when it has little in it. */
   .admin {
-    display: grid;
-    grid-template-columns: 12rem minmax(0, 1fr);
+    display: flex;
+    min-height: calc(100vh - 2 * var(--space-sm) - 2 * var(--space-xl));
+    flex-direction: column;
     gap: var(--space-xl);
-    align-items: start;
+    width: 100%;
+    max-width: 76rem;
+    margin: 0 auto;
   }
 
-  .admin__nav {
-    position: sticky;
-    top: var(--space-md);
+  .admin__head {
     display: flex;
     flex-direction: column;
-    gap: var(--space-xs);
+    gap: var(--space-2xs);
+  }
+
+  .admin__title {
+    margin: 0;
+    color: var(--ink);
+    font-size: 1.6rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .admin__lead {
+    margin: 0;
+    max-width: 44rem;
+    color: var(--muted);
+    font-size: 0.92rem;
+  }
+
+  .admin__layout {
+    display: grid;
+    flex: 1;
+    grid-template-columns: 14rem minmax(0, 1fr);
+    gap: var(--space-xl);
+    align-items: stretch;
+  }
+
+  /* As tall as the page card beside it, with the room's facts at the
+     bottom. */
+  .admin__nav {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    padding: var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel);
   }
 
   .admin__group {
-    margin: var(--space-sm) 0 0;
+    margin: 0 0 var(--space-xs);
     color: var(--muted);
-    font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
+    font-family: var(--font-display-mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
@@ -155,32 +235,62 @@
   }
 
   .admin__link {
-    display: block;
-    padding: var(--space-xs) var(--space-sm);
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    min-height: 2.6rem;
+    padding: 0 var(--space-sm);
     border-radius: var(--radius-sm);
-    color: var(--ink);
+    color: var(--muted);
+    font-size: 0.875rem;
+    font-weight: 500;
     text-decoration: none;
+    transition: background 0.15s ease, color 0.15s ease;
   }
 
   .admin__link:hover {
-    background: var(--panel);
+    background: var(--accent-soft);
+    color: var(--ink);
   }
 
   .admin__link[aria-current="page"] {
     background: var(--accent-soft);
-    font-weight: 600;
+    color: var(--ink);
+    box-shadow: inset 2px 0 0 var(--accent);
   }
 
-  .admin__fact {
-    display: block;
-    padding: var(--space-2xs) var(--space-sm);
+  .admin__link :global(.admin__icon) {
+    flex-shrink: 0;
+    opacity: 0.8;
+  }
+
+  .admin__room {
+    margin-top: auto;
+    padding: var(--space-md) var(--space-sm) var(--space-xs);
+    border-top: 1px solid var(--border);
+  }
+
+  .admin__facts {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    margin: 0;
+  }
+
+  .admin__facts dt {
     color: var(--muted);
-    font-size: 0.8rem;
+    font-size: 0.75rem;
   }
 
-  .admin__fact code {
+  .admin__facts dd {
+    margin: 0.1rem 0 0;
+  }
+
+  .admin__facts code {
     display: block;
     overflow: hidden;
+    color: var(--ink);
+    font-family: var(--font-display-mono);
     font-size: 0.75rem;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -193,8 +303,13 @@
     min-width: 0;
   }
 
-  @media (max-width: 48rem) {
-    .admin {
+  /* The open page's own card grows to fill the column. */
+  .admin__content > :global(.panel:first-child) {
+    flex: 1;
+  }
+
+  @media (max-width: 52rem) {
+    .admin__layout {
       grid-template-columns: 1fr;
     }
 
@@ -202,12 +317,12 @@
       position: static;
     }
 
-    .admin__list:not(.admin__list--quiet) {
+    .admin__list {
       flex-direction: row;
       flex-wrap: wrap;
     }
 
-    .admin__list--quiet {
+    .admin__room {
       display: none;
     }
   }

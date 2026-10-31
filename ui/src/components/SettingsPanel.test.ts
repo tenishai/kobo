@@ -29,8 +29,8 @@ describe("SettingsPanel rows", () => {
 
     expect(screen.queryByText("Convert to connected")).toBeNull();
     expect(screen.queryByText("Destroy this agent")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Convert..." })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Destroy..." })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Convert" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Destroy" })).toBeNull();
   });
 
   it("shows the convert row, and asks before doing anything", async () => {
@@ -46,7 +46,7 @@ describe("SettingsPanel rows", () => {
     // Closed: no paragraph, no confirm, nothing to press by accident.
     expect(screen.queryByRole("button", { name: "Convert this agent" })).toBeNull();
 
-    await fireEvent.click(screen.getByRole("button", { name: "Convert..." }));
+    await fireEvent.click(screen.getByRole("button", { name: "Convert" }));
 
     expect(
       screen.getByText(
@@ -79,7 +79,7 @@ describe("SettingsPanel rows", () => {
       canConvert: true,
     });
 
-    await fireEvent.click(screen.getByRole("button", { name: "Convert..." }));
+    await fireEvent.click(screen.getByRole("button", { name: "Convert" }));
     await fireEvent.click(screen.getByRole("button", { name: "Convert this agent" }));
 
     const call = vi
@@ -108,7 +108,7 @@ describe("SettingsPanel rows", () => {
       canConvert: true,
     });
 
-    await fireEvent.click(screen.getByRole("button", { name: "Convert..." }));
+    await fireEvent.click(screen.getByRole("button", { name: "Convert" }));
     await fireEvent.click(screen.getByRole("button", { name: "Convert this agent" }));
 
     expect(await screen.findByText("This agent is not yours to convert.")).not.toBeNull();

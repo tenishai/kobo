@@ -5,10 +5,10 @@ import DangerZone from "./DangerZone.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
 /** Opens the confirm. Since the page-shell wave the row carries a quiet
- * "Destroy..." and everything that matters -- the copy, the type-the-name
+ * "Destroy" and everything that matters -- the copy, the type-the-name
  * field, the armed button -- is inside the dialog behind it. */
 async function openConfirm(): Promise<void> {
-  await fireEvent.click(screen.getByRole("button", { name: "Destroy..." }));
+  await fireEvent.click(screen.getByRole("button", { name: "Destroy" }));
 }
 
 describe("DangerZone arming", () => {
@@ -22,7 +22,7 @@ describe("DangerZone arming", () => {
 
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("button", { name: /destroy this agent/i })).toBeNull();
-    expect(screen.getByRole("button", { name: "Destroy..." })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Destroy" })).not.toBeNull();
   });
 
   it("keeps Destroy disabled until the exact name is typed", async () => {
@@ -62,7 +62,7 @@ describe("DangerZone arming", () => {
   it("offers no confirm at all while the destruction is running", () => {
     renderWithClient(DangerZone, { agentName: "warden", status: "destroying", error: null });
 
-    expect(screen.queryByRole("button", { name: "Destroy..." })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Destroy" })).toBeNull();
     expect(screen.getByText("Destroying this agent…")).not.toBeNull();
   });
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ArrowsClockwise, SealCheck } from "phosphor-svelte";
   // Permission requests waiting on a reviewer: who asked for what, for which
   // agent, by tier. Tick rows, Approve or Deny (a reason is required). bab
   // decides what the signed-in person may approve (the admin team, or the
@@ -87,9 +88,16 @@
 </script>
 
 <section class="panel page" aria-labelledby="review-heading">
-  <div class="page__header">
-    <h2 id="review-heading" class="page__title">Review</h2>
-    <p class="page__lead">Permissions agents' owners asked for. Approve and the agent may borrow a credential for them; deny with a reason.</p>
+  <div class="review__head">
+    <div class="page__header">
+      <h2 id="review-heading" class="page__title">Review</h2>
+      <p class="page__lead">Permissions agents' owners asked for. Approve and the agent may borrow a credential for them; deny with a reason.</p>
+    </div>
+    <!-- A page-level action, so it sits with the title, not with the list. -->
+    <button type="button" class="btn review__sync" disabled={sync.isPending} onclick={handleSync} title="Tell the permission service which agents exist now">
+      <ArrowsClockwise size={14} aria-hidden="true" />
+      Sync agents
+    </button>
   </div>
 
   {#if leases.data && leases.data.length > 0}
@@ -117,17 +125,32 @@
   {:else if requests.isError}
     <p class="panel__note">{errorMessage(requests.error, "Access is off for this room.")}</p>
   {:else}
-    <div class="toolbar">
-      <label class="pick"><span>Show</span>
-        <select bind:value={scope}><option value="pending">waiting</option><option value="all">everything</option></select>
-      </label>
-      <span class="count">{pendingIds.length} waiting</span>
-      <button type="button" class="btn btn--primary" disabled={ticked.length === 0 || decide.isPending} onclick={approve}>Approve {ticked.length || ""}</button>
-      <button type="button" class="btn" disabled={ticked.length === 0 || decide.isPending} onclick={() => (denying = true)}>Deny…</button>
-      <button type="button" class="btn btn--quiet" disabled={sync.isPending} onclick={handleSync} title="Tell the permission service which agents exist now">Sync agents</button>
+    <!-- Which requests to show, as two tabs; and the decision buttons only
+         once something is ticked, so an empty queue is not a row of dead
+         controls. -->
+    <div class="review__bar">
+      <div class="review__tabs" role="tablist" aria-label="Show">
+        <button type="button" role="tab" class="review__tab" aria-selected={scope === "pending"} onclick={() => (scope = "pending")}>
+          Waiting <span class="review__count">{pendingIds.length}</span>
+        </button>
+        <button type="button" role="tab" class="review__tab" aria-selected={scope === "all"} onclick={() => (scope = "all")}>
+          Everything
+        </button>
+      </div>
+      {#if ticked.length > 0}
+        <div class="review__selection" role="group" aria-label="Decide the selected requests">
+          <span class="review__selected">{ticked.length} selected</span>
+          <button type="button" class="btn btn--danger" disabled={decide.isPending} onclick={() => (denying = true)}>Deny</button>
+          <button type="button" class="btn btn--primary" disabled={decide.isPending} onclick={approve}>Approve</button>
+        </div>
+      {/if}
     </div>
     {#if rows.length === 0}
-      <p class="panel__empty">{scope === "pending" ? "Nothing waiting." : "No requests yet."}</p>
+      <div class="review__empty">
+        <SealCheck size={28} aria-hidden="true" />
+        <p class="review__empty-title">{scope === "pending" ? "Nothing waiting" : "No requests yet"}</p>
+        <p class="review__empty-text">When an agent's owner asks for a permission, it shows up here for a decision.</p>
+      </div>
     {:else}
       <div class="table-card"><table class="panel__table">
         <thead><tr>
@@ -179,10 +202,116 @@
 </Modal>
 
 <style>
-  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); margin: 0 0 var(--space-sm); }
-  .pick { display: inline-flex; align-items: center; gap: var(--space-xs); color: var(--muted); font-size: 0.9rem; }
-  .pick select { font: inherit; }
-  .count { margin-right: auto; color: var(--muted); font-size: 0.9rem; }
+  .review__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-md);
+  }
+
+  .review__head > :global(.page__header) {
+    flex: 1 1 24rem;
+    min-width: 0;
+  }
+
+  .review__sync {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .review__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
+    padding-bottom: var(--space-sm);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .review__tabs {
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    border-radius: calc(var(--radius-sm) + 3px);
+    background: var(--accent-soft);
+  }
+
+  .review__tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    height: 2rem;
+    padding: 0 var(--space-sm);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  .review__tab[aria-selected="true"] {
+    background: var(--panel);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px var(--border);
+    color: var(--ink);
+  }
+
+  .review__count {
+    display: inline-flex;
+    min-width: 1.15rem;
+    height: 1.15rem;
+    align-items: center;
+    justify-content: center;
+    padding: 0 0.3rem;
+    border-radius: 999px;
+    background: var(--border);
+    color: var(--ink);
+    font-family: var(--font-display-mono);
+    font-size: 0.65rem;
+  }
+
+  .review__selection {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .review__selected {
+    margin-right: var(--space-xs);
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .review__empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2xs);
+    padding: var(--space-2xl) var(--space-lg);
+    color: var(--muted);
+    text-align: center;
+  }
+
+  .review__empty-title {
+    margin: var(--space-xs) 0 0;
+    color: var(--ink);
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
+
+  .review__empty-text {
+    max-width: 26rem;
+    margin: 0;
+    font-size: 0.85rem;
+  }
+
   .perm { font-family: var(--font-mono); font-size: 0.85rem; }
   .perms { margin: var(--space-2xs) 0 0; padding-left: 1rem; }
   .quiet { color: var(--muted); font-size: 0.85rem; }

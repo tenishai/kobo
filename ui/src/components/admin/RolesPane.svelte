@@ -132,7 +132,11 @@
 {#if draft}
   <section class="panel page" aria-labelledby="role-heading">
     <div class="page__header">
-      <a class="btn btn--link-quiet back" href={formatHash({ page: "admin", pane: "roles" })}>← Roles</a>
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <a class="back" href={formatHash({ page: "admin", pane: "roles" })}>Roles</a>
+        <span aria-hidden="true">›</span>
+        <span aria-current="page">{draft.id ? draft.name : "New role"}</span>
+      </nav>
       <h2 id="role-heading" class="title">{draft.id ? draft.name : "Create a role"}</h2>
       <p class="page__lead">Define what the groups in this role can and cannot do.</p>
     </div>
@@ -144,71 +148,92 @@
     </div>
 
     {#if tab === "Details"}
-      <div class="form">
-        <label class="field">
-          <span>Role name</span>
-          <input id="role-name" type="text" bind:value={draft.name} placeholder="ex: Data engineering" disabled={draft.builtin} />
-        </label>
-        <label class="field">
-          <span>Description</span>
-          <input id="role-desc" type="text" bind:value={draft.description} placeholder="One line on who this is for" />
-        </label>
-        <div class="field">
-          <span>Groups</span>
-          <p class="panel__note">Members of these groups get this role.</p>
-          {#if draft.groups.length === 0}
-            <p class="panel__note">No groups assigned.</p>
-          {:else}
-            <div class="chip-row">
-              {#each draft.groups as g (g)}
-                <span class="chip">{g}
-                  <button type="button" class="chip__remove" aria-label="Remove {g}" onclick={() => toggle(draft!.groups, g)}>×</button>
-                </span>
-              {/each}
+      <!-- Settings rows: what each field is on the left, the field on the
+           right. -->
+      <div class="rows">
+        <div class="row">
+          <div class="row__head">
+            <label class="row__title" for="role-name">Role name</label>
+            <p class="row__help">How the role shows up across the room.</p>
+          </div>
+          <input id="role-name" type="text" bind:value={draft.name} placeholder="Data engineering" disabled={draft.builtin} />
+        </div>
+        <div class="row">
+          <div class="row__head">
+            <label class="row__title" for="role-desc">Description</label>
+            <p class="row__help">One line on who this role is for.</p>
+          </div>
+          <input id="role-desc" type="text" bind:value={draft.description} placeholder="Engineers who build data pipelines" />
+        </div>
+        <div class="row">
+          <div class="row__head">
+            <label class="row__title" for="role-group">Groups</label>
+            <p class="row__help">Members of these groups get this role.</p>
+          </div>
+          <div class="groups">
+            {#if draft.groups.length === 0}
+              <p class="groups__empty">No groups assigned yet.</p>
+            {:else}
+              <div class="chip-row">
+                {#each draft.groups as g (g)}
+                  <span class="chip">{g}
+                    <button type="button" class="chip__remove" aria-label="Remove {g}" onclick={() => toggle(draft!.groups, g)}>×</button>
+                  </span>
+                {/each}
+              </div>
+            {/if}
+            <div class="add-group">
+              <select id="role-group" bind:value={groupPick}>
+                <option value="">Choose a group</option>
+                {#each GROUPS.filter((g) => !draft!.groups.includes(g)) as g (g)}
+                  <option value={g}>{g}</option>
+                {/each}
+              </select>
+              <button type="button" class="btn" onclick={addGroup} disabled={!groupPick}>Add group</button>
             </div>
-          {/if}
-          <div class="add-group">
-            <select id="role-group" bind:value={groupPick}>
-              <option value="">Add group…</option>
-              {#each GROUPS.filter((g) => !draft!.groups.includes(g)) as g (g)}
-                <option value={g}>{g}</option>
-              {/each}
-            </select>
-            <button type="button" class="btn" onclick={addGroup} disabled={!groupPick}>Add</button>
           </div>
         </div>
       </div>
     {:else if tab === "Capabilities"}
+      <p class="tab-lead">What members of this role can do with agents.</p>
       <ul class="perm">
         {#each CAPABILITIES as c (c.id)}
-          <li class="perm__row">
-            <label class="perm__label">
+          <li>
+            <label class="perm__row" class:perm__row--on={draft.capabilities.includes(c.id)}>
               <input type="checkbox" id="cap-{c.id}" checked={draft.capabilities.includes(c.id)} onchange={() => toggle(draft!.capabilities, c.id)} />
-              <span>{c.label}</span>
+              <span class="perm__text">
+                <span class="perm__title">{c.label}</span>
+                <span class="perm__desc">{c.desc}</span>
+              </span>
             </label>
-            <span class="perm__desc">{c.desc}</span>
           </li>
         {/each}
       </ul>
     {:else if tab === "Admin permissions"}
+      <p class="tab-lead">Which parts of the admin panel members of this role can change.</p>
       <ul class="perm">
         {#each ADMIN_PERMISSIONS as p (p.id)}
-          <li class="perm__row">
-            <label class="perm__label">
+          <li>
+            <label class="perm__row" class:perm__row--on={draft.admin.includes(p.id)}>
               <input type="checkbox" id="adm-{p.id}" checked={draft.admin.includes(p.id)} onchange={() => toggle(draft!.admin, p.id)} />
-              <span>{p.label}</span>
+              <span class="perm__text">
+                <span class="perm__title">{p.label}</span>
+                <span class="perm__desc">{p.desc}</span>
+              </span>
             </label>
-            <span class="perm__desc">{p.desc}</span>
           </li>
         {/each}
       </ul>
     {:else if tab === "Connectors"}
-      <p class="page__lead">The ceiling per vendor: the most an agent in this role may be granted under Connections.</p>
+      <p class="tab-lead">The ceiling per vendor: the most an agent in this role may be granted under Connections.</p>
       <div class="table-card"><table class="panel__table">
         <thead>
           <tr><th>Vendor</th>{#each CEILINGS as c (c.id)}<th>{c.label}</th>{/each}</tr>
         </thead>
         <tbody>
+          {#if vendorIds.length === 0}
+            <tr><td class="panel__empty" colspan={CEILINGS.length + 1}>No vendors connected yet. Add one under Integrations, then set its ceiling here.</td></tr>
+          {/if}
           {#each vendorIds as v (v)}
             <tr>
               <td>{pluginName(v)}</td>
@@ -223,13 +248,15 @@
         </tbody>
       </table></div>
     {:else}
-      <p class="page__lead">Models agents in this role may be built with or switched to.</p>
+      <p class="tab-lead">Models agents in this role may be built with or switched to.</p>
       <ul class="perm">
         {#each MODELS as m (m.id)}
-          <li class="perm__row">
-            <label class="perm__label">
+          <li>
+            <label class="perm__row" class:perm__row--on={draft.models.includes(m.id)}>
               <input type="checkbox" id="model-{m.id}" checked={draft.models.includes(m.id)} onchange={() => toggle(draft!.models, m.id)} />
-              <span>{m.label}</span>
+              <span class="perm__text">
+                <span class="perm__title">{m.label}</span>
+              </span>
             </label>
           </li>
         {/each}
@@ -294,59 +321,130 @@
   .role-name { margin-right: var(--space-xs); font-weight: 600; }
   .quiet { color: var(--muted); font-size: 0.85rem; }
 
-  .back {
-    align-self: flex-start;
-    padding: 0;
-    border: none;
-    background: none;
+  .crumbs {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    margin-bottom: var(--space-xs);
     color: var(--muted);
-    font-size: 0.85rem;
+    font-family: var(--font-display-mono);
+    font-size: 0.75rem;
+  }
+
+  .crumbs [aria-current="page"] {
+    color: var(--ink);
+  }
+
+  .back {
+    color: var(--muted);
     text-decoration: none;
+  }
+
+  .back:hover {
+    color: var(--ink);
+    text-decoration: underline;
   }
 
   .title {
     margin: 0;
-    font-size: 1.3rem;
+    font-size: 1.35rem;
+    letter-spacing: -0.01em;
   }
 
+  /* Underline tabs, the same as the agent page's. */
   .tabs {
     display: flex;
-    gap: var(--space-xs);
+    gap: var(--space-lg);
+    margin-top: var(--space-sm);
     border-bottom: 1px solid var(--border);
   }
 
   .tab {
-    padding: var(--space-xs) var(--space-sm);
+    position: relative;
+    height: 2.75rem;
+    padding: 0 var(--space-2xs);
     border: none;
-    border-bottom: 2px solid transparent;
     background: none;
     color: var(--muted);
     font: inherit;
-    font-weight: 600;
+    font-size: 0.875rem;
+    font-weight: 500;
     cursor: pointer;
   }
 
-  .tab[aria-selected="true"] {
-    border-bottom-color: var(--accent);
+  .tab:hover {
     color: var(--ink);
   }
 
-  .form {
+  .tab::after {
+    content: "";
+    position: absolute;
+    right: 0;
+    bottom: -1px;
+    left: 0;
+    height: 2px;
+    background: transparent;
+  }
+
+  .tab[aria-selected="true"] {
+    color: var(--ink);
+  }
+
+  .tab[aria-selected="true"]::after {
+    background: var(--accent);
+  }
+
+  .rows {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0, 15rem) minmax(0, 32rem);
+    gap: var(--space-xl);
+    align-items: start;
+    padding: var(--space-lg) 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .row:last-child {
+    border-bottom: none;
+  }
+
+  .row__head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .row__title {
+    color: var(--ink);
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .row__help {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.5;
+  }
+
+  .row input {
+    width: 100%;
+  }
+
+  .groups {
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-    max-width: 36rem;
   }
 
-  .field input,
-  .field select,
-  .add-group select {
-    padding: var(--space-2xs) var(--space-xs);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
-    color: var(--ink);
-    font: inherit;
+  .groups__empty {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.85rem;
   }
 
   .add-group {
@@ -354,39 +452,88 @@
     gap: var(--space-xs);
   }
 
+  .add-group select {
+    flex: 1;
+    min-width: 0;
+  }
+
+  @media (max-width: 52rem) {
+    .row {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--space-sm);
+    }
+  }
+
+  .tab-lead {
+    margin: var(--space-lg) 0 var(--space-md);
+    color: var(--muted);
+    font-size: 0.875rem;
+  }
+
+  /* A permission list: one bordered card, a row per permission, the whole
+     row clickable, checked rows tinted. */
   .perm {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2xs);
     margin: 0;
     padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
     list-style: none;
   }
 
-  .perm__row {
-    display: grid;
-    grid-template-columns: minmax(12rem, 16rem) 1fr;
-    gap: var(--space-sm);
-    align-items: center;
-    padding: var(--space-2xs) 0;
-    border-bottom: 1px solid var(--border);
+  .perm li + li {
+    border-top: 1px solid var(--border);
   }
 
-  .perm__label {
+  .perm__row {
     display: flex;
-    align-items: center;
-    gap: var(--space-xs);
+    align-items: flex-start;
+    gap: var(--space-md);
+    padding: var(--space-md) var(--space-lg);
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+
+  .perm__row:hover {
+    background: color-mix(in oklab, var(--accent-soft) 60%, var(--panel));
+  }
+
+  .perm__row--on {
+    background: var(--accent-soft);
+  }
+
+  .perm__row input {
+    flex-shrink: 0;
+    width: 1rem;
+    height: 1rem;
+    margin: 0.15rem 0 0;
+  }
+
+  .perm__text {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .perm__title {
+    color: var(--ink);
+    font-size: 0.9rem;
     font-weight: 600;
   }
 
   .perm__desc {
     color: var(--muted);
-    font-size: 0.85rem;
+    font-size: 0.82rem;
+    line-height: 1.5;
   }
 
-  @media (max-width: 40rem) {
-    .perm__row {
-      grid-template-columns: 1fr;
-    }
+  /* The footer under its own rule, with room above it. */
+  .page :global(.panel__footer) {
+    margin-top: var(--space-lg);
+    padding-top: var(--space-lg);
+    border-top: 1px solid var(--border);
   }
 </style>

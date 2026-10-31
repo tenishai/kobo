@@ -8,10 +8,10 @@ const EMPTY_INVITES = { incoming: [], outgoing: [], team_pairs: [] };
 const EMPTY_GRANTS = { grants: [] };
 const EMPTY_REQUESTABLE = { requestable: [], already: [] };
 
-/** Open the "Add someone" disclosure. It is shut on arrival, so every test
+/** Open the "Add person" disclosure. It is shut on arrival, so every test
  * that touches the add-a-person form opens it first. */
 async function openGrant(): Promise<void> {
-  await fireEvent.click(await screen.findByRole("button", { name: "Add someone" }));
+  await fireEvent.click(await screen.findByRole("button", { name: "Add person" }));
 }
 
 /** Open the "Request another team's agent" disclosure. */
@@ -36,7 +36,7 @@ describe("AccessPanel", () => {
     });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: "growth" });
 
-    const grant = await screen.findByRole("button", { name: "Add someone" });
+    const grant = await screen.findByRole("button", { name: "Add person" });
     const picker = screen.getByRole("button", {
       name: "Request another team's agent",
     });
@@ -56,7 +56,7 @@ describe("AccessPanel", () => {
 
     await openGrant();
     expect(
-      screen.getByRole("button", { name: "Add someone" }).getAttribute("aria-expanded"),
+      screen.getByRole("button", { name: "Add person" }).getAttribute("aria-expanded"),
     ).toBe("true");
     expect(screen.getByLabelText("Add someone by email")).not.toBeNull();
 

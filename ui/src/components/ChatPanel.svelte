@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { PaperPlaneRight } from "phosphor-svelte";
   // A live conversation with an already-ready agent. Always mounted inside
   // its own tabpanel (AgentDetail) regardless of the agent's status — the
   // server gates the actual chat mutation until `status === "ready"`
@@ -22,7 +23,14 @@
   import { chatMutation } from "../lib/queries";
   import TeachModal from "./TeachModal.svelte";
 
-  let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
+  // `firstReply`: what the agent said at first contact. It opens the log as
+  // the agent's first message, but it is never part of `transcript`, so it
+  // is not replayed to the agent on every turn.
+  let {
+    agentName,
+    frozen = false,
+    firstReply = null,
+  }: { agentName: string; frozen?: boolean; firstReply?: string | null } = $props();
 
   // Client-side cap: keeps the transcript (and the payload re-sent on every
   // turn) bounded. Not a protocol limit — just a quiet trim once the
@@ -161,9 +169,21 @@
 </script>
 
 <section class="chat-panel" aria-labelledby="chat-panel-heading">
-  <h2 id="chat-panel-heading" class="chat-panel__heading">Chat</h2>
+  <header class="chat-panel__head">
+    <h2 id="chat-panel-heading" class="chat-panel__heading">Chat</h2>
+    <p class="chat-panel__hint">Enter to send, Shift+Enter for a new line</p>
+  </header>
 
   <div class="chat-panel__log" role="log" aria-live="polite">
+    {#if firstReply}
+      <div class="chat-bubble chat-bubble--agent chat-bubble--first">
+        <span class="chat-bubble__caption">First words</span>
+        <span class="chat-panel__sr-only">{agentName}:</span>
+        <p class="chat-bubble__text">{firstReply}</p>
+      </div>
+    {:else if transcript.length === 0 && !mutation.isPending}
+      <p class="chat-panel__empty">Say hello to {agentName}.</p>
+    {/if}
     {#if trimmed}
       <p class="chat-panel__notice">Older messages were trimmed to keep this short.</p>
     {/if}
@@ -211,6 +231,7 @@
     </div>
   {/if}
 
+  <!-- The composer: one rounded box with the send button inside it. -->
   <div class="chat-panel__form">
     <label class="chat-panel__label" for="chat-panel-input">Your message</label>
     <textarea
@@ -219,7 +240,7 @@
       bind:this={inputEl}
       bind:value={input}
       onkeydown={handleKeydown}
-      placeholder="Say something…"
+      placeholder={`Message ${agentName}…`}
       rows="2"
       maxlength={MAX_MESSAGE_LEN}
       disabled={frozen}
@@ -231,6 +252,7 @@
       onclick={handleSend}
     >
       {mutation.isPending ? "Sending…" : "Send"}
+      <PaperPlaneRight size={14} weight="fill" aria-hidden="true" />
     </button>
   </div>
 </section>
@@ -248,16 +270,33 @@
     background: var(--panel);
   }
 
-  .chat-panel__heading {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+  .chat-panel__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-xs);
   }
 
-  .chat-panel__sr-only {
+  .chat-panel__heading {
+    margin: 0;
+    color: var(--ink);
+    font-family: var(--font-heading);
+    font-size: var(--title-size);
+    font-weight: 600;
+    letter-spacing: var(--title-tracking);
+    text-transform: var(--label-case);
+  }
+
+  .chat-panel__hint {
+    margin: 0;
+    color: var(--muted);
+    font-family: var(--font-display-mono);
+    font-size: 0.68rem;
+  }
+
+  .chat-panel__sr-only,
+  .chat-panel__label {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -266,10 +305,22 @@
     white-space: nowrap;
   }
 
+  /* The conversation, on the card itself: it grows, then scrolls. */
   .chat-panel__log {
     display: flex;
+    min-height: 10rem;
+    max-height: 32rem;
     flex-direction: column;
     gap: var(--space-sm);
+    overflow-y: auto;
+    padding: var(--space-2xs) 0;
+    background: var(--panel);
+  }
+
+  .chat-panel__empty {
+    margin: auto;
+    color: var(--muted);
+    font-size: 0.9rem;
   }
 
   .chat-panel__notice {
@@ -280,33 +331,48 @@
   }
 
   .chat-bubble {
-    max-width: 80%;
+    max-width: 78%;
     padding: var(--space-xs) var(--space-sm);
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+    border-radius: 1rem;
+  }
+
+  .chat-bubble--agent {
+    align-self: flex-start;
+    border-top-left-radius: 0.3rem;
+    background: var(--bg);
   }
 
   .chat-bubble--user {
     align-self: flex-end;
     border-color: var(--accent);
-    background: var(--accent-soft);
+    border-top-right-radius: 0.3rem;
+    background: var(--accent);
   }
 
-  .chat-bubble--agent {
-    align-self: flex-start;
-    background: var(--bg);
+  .chat-bubble--user .chat-bubble__text {
+    color: var(--accent-ink);
+  }
+
+  .chat-bubble__caption {
+    display: block;
+    margin-bottom: var(--space-2xs);
+    color: var(--muted);
+    font-family: var(--font-display-mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
   }
 
   .chat-bubble__text {
     margin: 0;
     color: var(--ink);
-    font-size: 0.95rem;
+    font-size: 0.92rem;
     line-height: 1.6;
     white-space: pre-wrap;
   }
 
-  /* Quiet by design: no border, no background, small and muted — the
-   * bubbles stay clean, this never competes with the message itself. */
+  /* Quiet by design: small and muted, never competing with the message. */
   .chat-bubble__teach {
     display: block;
     margin-top: var(--space-2xs);
@@ -314,17 +380,21 @@
     border: none;
     background: none;
     color: var(--muted);
-    font-size: 0.75rem;
+    font: inherit;
+    font-size: 0.72rem;
     cursor: pointer;
   }
 
+  .chat-bubble--user .chat-bubble__teach {
+    color: color-mix(in srgb, var(--accent-ink) 65%, transparent);
+  }
+
   .chat-bubble__teach:hover {
-    color: var(--accent);
     text-decoration: underline;
   }
 
   .chat-bubble__teach:focus-visible {
-    outline: 2px solid var(--accent);
+    outline: 2px solid var(--ring);
     outline-offset: 1px;
   }
 
@@ -344,9 +414,9 @@
     justify-content: space-between;
     gap: var(--space-sm);
     padding: var(--space-sm) var(--space-md);
-    border: 1px solid var(--fail);
+    border: 1px solid color-mix(in srgb, var(--fail) 40%, transparent);
     border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--fail) 8%, var(--panel));
+    background: color-mix(in srgb, var(--fail) 6%, var(--panel));
   }
 
   .chat-panel__error-text {
@@ -357,17 +427,15 @@
 
   .chat-panel__retry {
     padding: var(--space-2xs) var(--space-sm);
-    border: 1px solid var(--fail);
-    border-radius: var(--radius-sm);
+    border: 1px solid color-mix(in srgb, var(--fail) 40%, transparent);
+    border-radius: var(--radius-pill);
     background: var(--panel);
     color: var(--fail);
+    font: inherit;
+    font-size: 0.8rem;
     font-weight: 600;
     cursor: pointer;
     white-space: nowrap;
-  }
-
-  .chat-panel__retry:hover:not(:disabled) {
-    filter: brightness(1.05);
   }
 
   .chat-panel__retry:disabled {
@@ -376,49 +444,68 @@
   }
 
   .chat-panel__form {
+    position: relative;
     display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .chat-panel__label {
-    color: var(--ink);
-    font-weight: 600;
-    font-size: 0.85rem;
-  }
-
-  .chat-panel__input {
-    padding: var(--space-xs) var(--space-sm);
+    align-items: flex-end;
+    gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-sm);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--panel);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .chat-panel__form:focus-within {
+    border-color: var(--ring);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 25%, transparent);
+  }
+
+  .chat-panel__input {
+    flex: 1;
+    min-height: 2.5rem;
+    max-height: 12rem;
+    padding: var(--space-xs) 0;
+    border: none;
+    background: transparent;
     color: var(--ink);
     font: inherit;
-    resize: vertical;
+    font-size: 0.92rem;
+    line-height: 1.5;
+    resize: none;
+    field-sizing: content;
   }
 
   .chat-panel__input:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
+    outline: none;
+  }
+
+  .chat-panel__input::placeholder {
+    color: var(--muted);
   }
 
   .chat-panel__send {
-    align-self: flex-end;
-    padding: var(--space-xs) var(--space-md);
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 0.35rem;
+    height: 2.25rem;
+    padding: 0 var(--space-md);
     border: none;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-pill);
     background: var(--accent);
     color: var(--accent-ink);
+    font: inherit;
+    font-size: 0.85rem;
     font-weight: 600;
     cursor: pointer;
   }
 
   .chat-panel__send:hover:not(:disabled) {
-    filter: brightness(1.05);
+    background: color-mix(in srgb, var(--accent) 85%, var(--panel));
   }
 
   .chat-panel__send:disabled {
-    opacity: 0.5;
+    opacity: 0.35;
     cursor: not-allowed;
   }
 </style>

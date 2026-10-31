@@ -30,7 +30,7 @@ export type AgentSummary = {
   system_tasks_failing?: string[];
   /** The verified email that created this agent (access-control Task A2/
    * A3), `null` for a pre-A2 row or one created while IAP was off. Drives
-   * the "Made by <email>" line on the card and detail Overview, and is the
+   * the "Author: <email>" line on the card and detail Overview, and is the
    * OWNER half of the server's owner-or-operator mutation gate -- shown
    * here for information only, never itself a source of authority. */
   created_by: string | null;

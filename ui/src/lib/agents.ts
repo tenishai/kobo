@@ -56,14 +56,48 @@ export function agentGroups(agents: AgentSummary[]): string[] {
  * and `group` narrowing to one group. Either can be empty, meaning "no
  * opinion". Order is never changed.
  */
+/** The status picker's choices, in the order it shows them. Each one names
+ * what a person sees on the card's badge, not the raw status: Building
+ * covers both pre-ready states, and Down is a ready agent whose pods are
+ * not running (the badge says Down for it, so the filter does too). */
+export const STATUS_FILTERS = [
+  { value: "ready", label: "Ready" },
+  { value: "building", label: "Building" },
+  { value: "waiting", label: "Waiting" },
+  { value: "down", label: "Down" },
+  { value: "failed", label: "Failed" },
+] as const;
+
+export type StatusFilter = (typeof STATUS_FILTERS)[number]["value"] | "";
+
+export function matchesStatus(agent: AgentSummary, status: StatusFilter): boolean {
+  const down = agent.status === "ready" && agent.health?.state === "down";
+  switch (status) {
+    case "":
+      return true;
+    case "ready":
+      return agent.status === "ready" && !down;
+    case "building":
+      return agent.status === "pending" || agent.status === "provisioning";
+    case "waiting":
+      return agent.status === "waiting";
+    case "down":
+      return down;
+    case "failed":
+      return agent.status === "failed" || agent.status === "destroy_failed";
+  }
+}
+
 export function filterAgents(
   agents: AgentSummary[],
   query: string,
   group: string,
+  status: StatusFilter = "",
 ): AgentSummary[] {
   const needle = query.trim().toLowerCase();
   return agents.filter((agent) => {
     if (group && agent.group_name !== group) return false;
+    if (!matchesStatus(agent, status)) return false;
     if (!needle) return true;
     const haystack = [
       agent.name,
