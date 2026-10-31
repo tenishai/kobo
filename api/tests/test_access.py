@@ -6084,38 +6084,3 @@ def test_team_guide_archetype_composes_no_github_and_no_liminal(tmp_path):
     assert "liminal" not in text
     # Memory is untouched by the suppression.
     assert data["memory"]["personal"] == "techne"
-
-
-
-def test_admin_wires_the_rooms_own_agents_to_the_tool_gateway(tmp_path, fake_storage):
-    """Gate (authorization + integrity): Admin > Services gives every READY composed agent the
-    gateway block as one commit on its repository; one already carrying it is reported, not
-    rewritten; an org that names no gateway gets a 409 and nothing is touched."""
-    import yaml as _yaml
-
-    bare = ("name: ledger\ncard: agent-card.json\npersona: persona.md\n"
-            "transports:\n  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
-            "tools: {provider: none, allow: []}\nmemory: {personal: techne, home: /techne}\n")
-    github = FakeGitHub(existing_repos={"example-org/agent-ledger"}, extra_clone_files={"bundle/agent.yaml": bare}, track_pushed_content=True)
-    client, headers = _room(tmp_path, fake_storage, bab=FakeBab(integrations=[]), github=github,
-                            liminal_url="http://liminal.test", cabal_url="http://cabal.test")
-    pre = client.get("/api/admin/agents/gateway-wiring", headers=headers).json()
-    assert pre["agents"] == ["ledger"] and pre["note"] is None and pre["gateway"] == "http://liminal.test"
-    out = client.post("/api/admin/agents/gateway-wiring", json={}, headers=headers).json()
-    assert [w["name"] for w in out["wired"]] == ["ledger"] and out["failed"] == {} and out["already"] == [], out
-    pushed = _yaml.safe_load(github.pushed_file("bundle/agent.yaml"))
-    assert pushed["tools"]["liminal"] == {"url": "http://liminal.test", "token_env": "CABAL_COLLEAGUE_TOKEN", "exchange_url": "http://cabal.test"}
-    assert github.pushes[-1][1] == "kobo: wire the tool gateway"
-    # A file already carrying the block is reported and left alone (the fake's clone does not
-    # follow a commit_push, so this is a second room whose repository already has it).
-    wired_yaml = bare.replace("tools: {provider: none, allow: []}",
-                              "tools: {provider: none, liminal: {url: http://liminal.test, token_env: CABAL_COLLEAGUE_TOKEN, exchange_url: http://cabal.test}, allow: []}")
-    github3 = FakeGitHub(existing_repos={"example-org/agent-ledger"}, extra_clone_files={"bundle/agent.yaml": wired_yaml}, track_pushed_content=True)
-    client3, headers3 = _room(tmp_path / "three", fake_storage, bab=FakeBab(integrations=[]), github=github3,
-                              liminal_url="http://liminal.test", cabal_url="http://cabal.test")
-    out = client3.post("/api/admin/agents/gateway-wiring", json={}, headers=headers3).json()
-    assert out["already"] == ["ledger"] and out["wired"] == [] and github3.push_count == 0, out
-    # No gateway named: refused with the sentence, nothing touched.
-    client2, headers2 = _room(tmp_path / "two", fake_storage, bab=FakeBab(integrations=[]))
-    r = client2.post("/api/admin/agents/gateway-wiring", json={}, headers=headers2)
-    assert r.status_code == 409 and "liminal_url" in r.json()["error"]

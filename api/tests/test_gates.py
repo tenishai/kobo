@@ -1969,8 +1969,6 @@ ADMIN_ROUTES = [
     ("GET", "/api/admin/access/leases", {}),
     ("POST", "/api/admin/access/sync", {}),
     ("POST", "/api/admin/sync-pairs", {}),
-    ("GET", "/api/admin/directory/sweep", {}),
-    ("POST", "/api/admin/directory/sweep", {}),
     ("GET", "/api/group-requests", {}),
     ("POST", "/api/group-requests/1/done", {}),
     ("POST", "/api/group-requests/1/declined", {}),

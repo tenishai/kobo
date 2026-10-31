@@ -54,6 +54,8 @@ SOURCE_API = "api"
 SOURCE_MCP = "mcp"
 SOURCE_RUNTIME = "runtime"
 SOURCE_PERMISSION_SERVICE = "permission-service"
+# The room's own housekeeping (the nightly pass), nobody at a keyboard.
+SOURCE_ROOM = "room"
 
 LANDED_PENDING = "pending"
 LANDED_APPLIED = "applied"
