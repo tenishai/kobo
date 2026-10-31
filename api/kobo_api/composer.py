@@ -1303,51 +1303,6 @@ def _splice_tools_section(agent_yaml_path: Path, text: str, tools: dict) -> None
     agent_yaml_path.write_text(updated)
 
 
-def update_agent_yaml_gateway(bundle_dir: Path, *, url: str, exchange_url: str, token_env: str = CABAL_COLLEAGUE_TOKEN_ENV) -> bool:
-    """Give an already-composed `bundle_dir/agent.yaml` the tool gateway block
-    the composer emits at create (`_tools_block`): `tools.liminal = {url,
-    token_env, exchange_url}`. Everything else in the tools block rides
-    through untouched, in order; a block already carrying these exact
-    coordinates is left byte for byte (returns False). The allow list is
-    not touched: which gateway tools an agent may call arrives with its
-    grant, never as a composed default. Raises `ClientError` when the file
-    is missing, does not parse, or has no tools section.
-
-    Why this exists: an org that names its gateway (`liminal_url`) after
-    agents were created has agents with no provider for the tools their
-    permissions unlock (2026-10-30: an agent held a Datadog lane and had no
-    tool to use it with). Admin > Services wires them with this.
-    """
-    agent_yaml_path = bundle_dir / "agent.yaml"
-    try:
-        text = agent_yaml_path.read_text()
-    except OSError as exc:
-        raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
-    try:
-        data = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise ClientError(f"agent.yaml does not parse: {agent_yaml_path}") from exc
-    if not isinstance(data, dict) or not isinstance(data.get("tools"), dict):
-        raise ClientError(f"agent.yaml has no tools section to update: {agent_yaml_path}")
-    existing = data["tools"]
-    wanted = {"url": url, "token_env": token_env, "exchange_url": exchange_url}
-    if existing.get("liminal") == wanted:
-        return False
-    merged: dict = {}
-    placed = False
-    for key, value in existing.items():
-        if key == "allow" and not placed:
-            merged["liminal"] = wanted
-            placed = True
-        if key == "liminal":
-            continue
-        merged[key] = value
-    if not placed:
-        merged["liminal"] = wanted
-    _splice_tools_section(agent_yaml_path, text, merged)
-    return True
-
-
 def update_agent_yaml_colleague_mode(bundle_dir: Path, *, mode: str) -> bool:
     """Make an already-composed `bundle_dir/agent.yaml`'s allow list carry
     exactly the colleague tools `mode` grants (issue #131), first and in

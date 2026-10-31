@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api import admin_connections as admin_connections_flow
 from kobo_api import admin_integrations as admin_integrations_flow
 from kobo_api import admin_roles as admin_roles_catalogue
-from kobo_api import admin_store, audit, gateway_lane, gateway_prs, gateway_wiring
+from kobo_api import admin_store, audit, gateway_lane, gateway_prs
 from kobo_api import room_services as room_services_store
 from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
@@ -109,7 +109,7 @@ from kobo_api.config import SHARED_GROUP, Config, vertex_location_for
 from kobo_api.connect_scan import NAME_TAKEN, Finding, ScanReport, scan_repo
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
-from kobo_api.directory import retire_directory, sweep_directory, sync_directory
+from kobo_api.directory import retire_directory, sync_directory
 from kobo_api.guide import find_section, load_guide
 from kobo_api.health import AgentHealth, health_sweep_loop
 from kobo_api.iap import HttpsOnlyMiddleware, IapMiddleware, IapVerifier
@@ -3278,13 +3278,6 @@ class AccessRequestBody(BaseModel):
     note: str | None = Field(default=None, max_length=2000)
 
 
-class GatewayWiringBody(BaseModel):
-    """`POST /api/admin/agents/gateway-wiring`: the agents to wire; empty or
-    absent means every one of the room's own READY agents."""
-
-    names: list[str] | None = None
-
-
 class AccessDecideBody(BaseModel):
     """A reviewer deciding requests in bulk (Review pane)."""
 
@@ -3806,109 +3799,6 @@ def create_app(
         if blocked is not None:
             return blocked
         return JSONResponse({"addons": addon_cards(app.state.config, app.state.clients)})
-
-    # --- Directory sweep (issue #274): the switchboard's directory against --
-    # the room's agents. GET is always a dry run (what WOULD be retired);
-    # POST retires. Both answer through `kobo_api.directory.sweep_directory`,
-    # which only ever retires an entry carrying the room's own registration
-    # marker AND no Deployment of that name in the cluster, so an agent
-    # graduated by hand is listed under `unknown` or `live` and left alone.
-    # Same gate as every pane route: 404 while the panel is off,
-    # 403 for a non-admin. 409 when the switchboard is not configured, the
-    # same body the sync-pairs route gives.
-
-    def _directory_sweep(request: Request, session: Session, *, dry_run: bool) -> JSONResponse:
-        blocked = _admin_panel_gate(request)
-        if blocked is not None:
-            return blocked
-        cfg: Config = app.state.config
-        clients: Clients | None = app.state.clients
-        if not cabal_enabled(cfg) or clients is None or clients.cabal is None:
-            return JSONResponse(_SWITCHBOARD_NOT_CONFIGURED, status_code=409)
-        try:
-            result = sweep_directory(
-                clients.cabal, cfg, session, kubectl=clients.kubectl, dry_run=dry_run
-            )
-        except (CabalError, httpx.HTTPError):
-            log.warning("directory sweep could not read the switchboard", exc_info=True)
-            return JSONResponse(
-                {"error": "couldn't read the switchboard's directory. Try again."},
-                status_code=502,
-            )
-        if not dry_run:
-            actor = getattr(request.state, "iap_email", None) or "operator"
-            admin_store.record(
-                session, request=request, actor=actor, action="directory.sweep", object_type="directory",
-                object_id="switchboard", before=None,
-                after={
-                    "retired": result["retired"], "failed": result["failed"],
-                    "kept": len(result["kept"]), "live": result["live"],
-                    "unknown": result["unknown"], "note": result["note"],
-                },
-                landed=admin_store.LANDED_APPLIED if not result["failed"] else admin_store.LANDED_FAILED,
-                landed_detail=(
-                    None if not result["failed"]
-                    else "the switchboard refused to retire: " + ", ".join(result["failed"])
-                ),
-            )
-            session.commit()
-        return JSONResponse(result)
-
-    @app.get("/api/admin/directory/sweep")
-    def admin_directory_sweep_preview(
-        request: Request, session: Session = Depends(get_session)  # noqa: B008
-    ) -> JSONResponse:
-        """What a sweep would retire, keep and leave alone. Never writes."""
-        return _directory_sweep(request, session, dry_run=True)
-
-    @app.post("/api/admin/directory/sweep")
-    def admin_directory_sweep(
-        request: Request, session: Session = Depends(get_session)  # noqa: B008
-    ) -> JSONResponse:
-        """Retire every directory entry the room registered for an agent it
-        no longer has; records an audit event with the names."""
-        return _directory_sweep(request, session, dry_run=False)
-
-    # --- Wire agents to the tool gateway (2026-10-30, kobo_api.gateway_wiring):
-    # an org that names its gateway after agents were created has agents with
-    # no provider for the tools their permissions unlock. GET previews the
-    # room's own READY agents; POST gives each the composer's gateway block as
-    # one commit on its repository (one rebuild, one restart each). 409 when the
-    # org config names no gateway.
-
-    @app.get("/api/admin/agents/gateway-wiring")
-    def admin_gateway_wiring_preview(
-        request: Request, session: Session = Depends(get_session)  # noqa: B008
-    ) -> JSONResponse:
-        blocked = _admin_panel_gate(request)
-        if blocked is not None:
-            return blocked
-        return JSONResponse(gateway_wiring.preview(session, app.state.config))
-
-    @app.post("/api/admin/agents/gateway-wiring")
-    def admin_gateway_wiring(
-        request: Request, payload: GatewayWiringBody | None = None, session: Session = Depends(get_session)  # noqa: B008
-    ) -> JSONResponse:
-        blocked = _admin_panel_gate(request)
-        if blocked is not None:
-            return blocked
-        names = payload.names if payload is not None else None
-        pre = gateway_wiring.preview(session, app.state.config, names)
-        if pre["note"]:
-            return JSONResponse({"error": pre["note"]}, status_code=409)
-        result = gateway_wiring.wire(session, app.state.clients, app.state.config, names=names)
-        wired = [w["name"] for w in result["wired"]]
-        audit.record(
-            session, request=request, action="agents.gateway_wiring", target_kind="room", target_id="agents",
-            outcome=audit.OUTCOME_FAILED if result["failed"] and not wired else audit.OUTCOME_OK,
-            detail=result,
-            summary=(f"{audit.who(request)} wired {len(wired)} agent(s) to the tool gateway"
-                     + (f" ({', '.join(wired)})" if wired else "")
-                     + (f"; {len(result['already'])} already wired" if result["already"] else "")
-                     + (f"; failed: {', '.join(result['failed'])}" if result["failed"] else "")),
-        )
-        session.commit()
-        return JSONResponse(result)
 
     @app.get("/api/admin/people")
     def admin_people(request: Request) -> JSONResponse:

@@ -1,73 +1,19 @@
 <script lang="ts">
   // What the room runs on, one row each, read from the org keys that turn
-  // each part on. Nothing here is edited; the org config is. Two actions,
-  // each behind a confirmation that says what it does: reloading that
-  // config, and sweeping the switchboard's directory (issue #274), whose
-  // confirm lists exactly what will be retired before anything is.
+  // each part on. Nothing here is edited; the org config is. One action,
+  // behind a confirmation that says what it does: reloading that config.
+  // (Repairs and sweeps are not buttons: the room does its own housekeeping
+  // nightly, and a migration is done by hand, once.)
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import Modal from "../Modal.svelte";
   import { errorMessage } from "../../lib/api";
   import { toast } from "../../lib/toast.svelte";
-  import {
-    adminAddonsQuery,
-    directorySweepPreviewQuery,
-    gatewayWiringPreviewQuery,
-    reloadAdminOrgMutation,
-    sweepDirectoryMutation,
-    wireAgentsToGatewayMutation,
-  } from "../../lib/queries";
+  import { adminAddonsQuery, reloadAdminOrgMutation } from "../../lib/queries";
 
   const queryClient = useQueryClient();
   const addons = createQuery(() => (adminAddonsQuery()));
   const reload = createMutation(() => (reloadAdminOrgMutation(queryClient)));
   let confirming = $state(false);
-
-  let sweeping = $state(false);
-  // The preview runs only while the sweep confirm is open: what it lists is
-  // the switchboard's answer right now, and the Retire button is disabled
-  // until that answer is in (and when there is nothing to retire).
-  const preview = createQuery(() => ({ ...directorySweepPreviewQuery(), enabled: sweeping }));
-  const sweep = createMutation(() => (sweepDirectoryMutation(queryClient)));
-  const switchboardOn = $derived((addons.data ?? []).some((a) => a.id === "switchboard" && a.state === "on"));
-
-  // Wire agents to the tool gateway (2026-10-30): an org that names its gateway
-  // after agents were created has agents with no provider for the tools their
-  // permissions unlock. The preview names the room's own agents; the wire gives
-  // each the gateway block as one commit, one rebuild and one restart.
-  let wiring = $state(false);
-  const wiringPreview = createQuery(() => ({ ...gatewayWiringPreviewQuery(), enabled: wiring }));
-  const wire = createMutation(() => (wireAgentsToGatewayMutation(queryClient)));
-
-  function handleWire(): void {
-    wire.mutate(undefined, {
-      onSuccess: (r) => {
-        wiring = false;
-        const n = r.wired.length;
-        const failed = Object.keys(r.failed);
-        toast.success(
-          n ? `Wired ${n} agent${n === 1 ? "" : "s"} to the tool gateway` : "Every agent already carries the gateway",
-          [n ? `${r.wired.map((w) => w.name).join(", ")} rebuild and restart once.` : "",
-           r.already.length ? `${r.already.length} already wired.` : "",
-           failed.length ? `Could not wire ${failed.join(", ")}.` : ""].filter(Boolean).join(" ") || undefined,
-        );
-      },
-      onError: (err: unknown) => toast.error("Could not wire the agents", errorMessage(err, "Try again.")),
-    });
-  }
-
-  function handleSweep(): void {
-    sweep.mutate(undefined, {
-      onSuccess: (r) => {
-        sweeping = false;
-        const n = r.retired.length;
-        toast.success(
-          n ? `Retired ${n} director${n === 1 ? "y entry" : "y entries"}` : "Directory already clean",
-          r.failed.length ? `The switchboard refused ${r.failed.join(", ")}.` : n ? r.retired.join(", ") : undefined,
-        );
-      },
-      onError: (err: unknown) => toast.error("Could not sweep the directory", errorMessage(err, "Try again.")),
-    });
-  }
 
   const STATE: Record<string, { tone: "on" | "off" | "fail"; label: string }> = {
     on: { tone: "on", label: "On" },
@@ -91,14 +37,6 @@
       <p class="page__lead">What this room runs on. Each service is turned on in the org config.</p>
     </div>
     <div class="page__actions">
-      {#if switchboardOn}
-        <button type="button" class="btn" onclick={() => (sweeping = true)} disabled={sweep.isPending}>
-          Sweep directory
-        </button>
-      {/if}
-      <button type="button" class="btn" onclick={() => (wiring = true)} disabled={wire.isPending}>
-        Wire agents to the tool gateway
-      </button>
       <button type="button" class="btn" onclick={() => (confirming = true)} disabled={reload.isPending}>
         Reload org config
       </button>
@@ -146,88 +84,9 @@
   {/snippet}
 </Modal>
 
-<Modal open={wiring} title="Wire agents to the tool gateway?" size="narrow" onclose={() => (wiring = false)}>
-  <p class="page__lead">
-    Each of the room's own agents gets the tool gateway in its files, so the tools its permissions
-    unlock have something to run through. An agent that already carries it is left alone. Every
-    agent that changes rebuilds and restarts once.
-  </p>
-  {#if wiringPreview.isPending}
-    <p class="page__foot">Reading the room's agents…</p>
-  {:else if wiringPreview.isError}
-    <p class="page__foot fail">{errorMessage(wiringPreview.error, "Could not read the agents.")}</p>
-  {:else if wiringPreview.data}
-    {#if wiringPreview.data.note}
-      <p class="page__foot fail">{wiringPreview.data.note}</p>
-    {:else if wiringPreview.data.agents.length}
-      <p class="sweep__heading">Agents checked</p>
-      <ul class="sweep__list">
-        {#each wiringPreview.data.agents as name (name)}<li>{name}</li>{/each}
-      </ul>
-      <p class="page__foot">Gateway: {wiringPreview.data.gateway}</p>
-    {:else}
-      <p class="page__foot">No agents of the room's own are ready to wire.</p>
-    {/if}
-  {/if}
-  {#snippet footer()}
-    <button type="button" class="btn" onclick={() => (wiring = false)}>Cancel</button>
-    <button type="button" class="btn btn--primary" disabled={wire.isPending || !wiringPreview.data || !!wiringPreview.data.note || !wiringPreview.data.agents.length} onclick={handleWire}>
-      {wire.isPending ? "Wiring…" : "Wire"}
-    </button>
-  {/snippet}
-</Modal>
-
-<Modal open={sweeping} title="Sweep the directory?" size="narrow" onclose={() => (sweeping = false)}>
-  <p class="page__lead">
-    The switchboard's directory is compared with this room's agents. Entries the room registered
-    for agents it no longer has are retired. Agents that run in the cluster and entries registered
-    by hand are left alone.
-  </p>
-  {#if preview.isPending}
-    <p class="page__foot">Reading the directory…</p>
-  {:else if preview.isError}
-    <p class="page__foot fail">{errorMessage(preview.error, "Could not read the directory.")}</p>
-  {:else if preview.data}
-    {#if preview.data.retired.length}
-      <p class="sweep__heading">Will be retired</p>
-      <ul class="sweep__list">
-        {#each preview.data.retired as name (name)}<li>{name}</li>{/each}
-      </ul>
-    {:else if preview.data.note}
-      <p class="page__foot fail">{preview.data.note}</p>
-    {:else}
-      <p class="page__foot">Nothing to retire. Every entry the room registered has an agent behind it.</p>
-    {/if}
-    {#if preview.data.live.length}
-      <p class="sweep__heading">Kept, runs in the cluster</p>
-      <ul class="sweep__list">
-        {#each preview.data.live as name (name)}<li>{name}</li>{/each}
-      </ul>
-    {/if}
-    <p class="page__foot">
-      {preview.data.kept.length} kept{preview.data.unknown.length
-        ? `, ${preview.data.unknown.length} not the room's (${preview.data.unknown.join(", ")})`
-        : ""}.
-    </p>
-  {/if}
-  {#snippet footer()}
-    <button type="button" class="btn" onclick={() => (sweeping = false)}>Cancel</button>
-    <button
-      type="button"
-      class="btn btn--primary"
-      onclick={handleSweep}
-      disabled={sweep.isPending || !preview.data || preview.data.retired.length === 0}
-    >
-      Retire {preview.data?.retired.length ?? ""}
-    </button>
-  {/snippet}
-</Modal>
-
 <style>
   .name { font-weight: 600; }
   .page__actions { display: flex; gap: var(--space-xs); }
-  .sweep__heading { margin: var(--space-sm) 0 var(--space-2xs); font-weight: 600; }
-  .sweep__list { margin: 0 0 var(--space-sm); padding-left: 1.25rem; }
   .quiet { color: var(--muted); font-size: 0.85rem; }
   .fail { color: var(--fail); }
 </style>

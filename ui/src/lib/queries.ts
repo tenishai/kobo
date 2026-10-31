@@ -167,10 +167,6 @@ import {
   removeRoomService,
   type RoomServiceId,
   type RoomServiceValues,
-  previewDirectorySweep,
-  sweepDirectory,
-  previewGatewayWiring,
-  wireAgentsToGateway,
   type AuditFilters,
   fetchAdminAudit,
   fetchAdminAwsSetup,
@@ -749,45 +745,6 @@ export function adminAddonsQuery() {
 /** What a directory sweep would retire (issue #274). Read only while the
  * confirm is open, never cached across openings: the answer is the
  * switchboard's right now. */
-export function directorySweepPreviewQuery() {
-  return queryOptions({
-    queryKey: ["admin", "directory-sweep"] as const,
-    queryFn: previewDirectorySweep,
-    staleTime: 0,
-    gcTime: 0,
-    retry: false,
-  });
-}
-
-export function sweepDirectoryMutation(queryClient: QueryClient) {
-  return {
-    mutationFn: () => sweepDirectory(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["admin"] });
-    },
-  };
-}
-
-export function gatewayWiringPreviewQuery() {
-  return queryOptions({
-    queryKey: ["admin", "gateway-wiring"] as const,
-    queryFn: previewGatewayWiring,
-    staleTime: 0,
-    gcTime: 0,
-    retry: false,
-  });
-}
-
-export function wireAgentsToGatewayMutation(queryClient: QueryClient) {
-  return {
-    mutationFn: () => wireAgentsToGateway(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["admin"] });
-      queryClient.invalidateQueries({ queryKey: ["agents"] });
-    },
-  };
-}
-
 // Access through bab. Keys: ["agents", name, "access"] for the agent page,
 // ["agents", name, "leases", days] for Activity, ["admin", "access", status]
 // for Review. Never ["agents", name, "grants"]: that key is the per-person

@@ -1516,48 +1516,6 @@ export async function fetchAdminAddons(): Promise<AdminAddon[]> {
  * the cluster and is never touched; `unknown` was registered by hand or by
  * another room and is never touched; `failed` is what the switchboard
  * refused to retire. `note` says why nothing was retired when the cluster
- * could not be asked. */
-export type DirectorySweep = {
-  dry_run: boolean;
-  retired: string[];
-  kept: string[];
-  live: string[];
-  unknown: string[];
-  failed: string[];
-  note: string | null;
-};
-
-export async function previewDirectorySweep(): Promise<DirectorySweep> {
-  const res = await fetch("/api/admin/directory/sweep");
-  return parse<DirectorySweep>(res);
-}
-
-export async function sweepDirectory(): Promise<DirectorySweep> {
-  const res = await fetch("/api/admin/directory/sweep", { method: "POST" });
-  return parse<DirectorySweep>(res);
-}
-
-/** Wire the room's own agents to the tool gateway (Admin > Services): the
- * preview names the agents; the wire gives each the gateway block as one
- * commit on its repository, one rebuild and one restart each. */
-export type GatewayWiringPreview = { agents: string[]; gateway: string | null; note: string | null };
-export type GatewayWiringResult = {
-  wired: { name: string; sha: string }[];
-  already: string[];
-  failed: Record<string, string>;
-  note: string | null;
-};
-
-export async function previewGatewayWiring(): Promise<GatewayWiringPreview> {
-  const res = await fetch("/api/admin/agents/gateway-wiring");
-  return parse<GatewayWiringPreview>(res);
-}
-
-export async function wireAgentsToGateway(): Promise<GatewayWiringResult> {
-  const res = await fetch("/api/admin/agents/gateway-wiring", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-  return parse<GatewayWiringResult>(res);
-}
-
 /** Access through bab (design 2026-10-27). One permission in a vendor's tree;
  * the tier is a column. Whether an account's connection honours it is the
  * account's `ceiling`, so the same tree serves every account of the vendor. */

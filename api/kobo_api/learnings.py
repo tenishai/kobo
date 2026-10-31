@@ -674,7 +674,7 @@ def run_nightly(app) -> None:
                 )
                 return
             _sweep(session, app.state.config, app.state.clients, now)
-            _directory_dry_run(session, app.state.config, app.state.clients)
+            _directory_sweep(session, app.state.config, app.state.clients)
             _audit_prune(session, app.state.config)
     finally:
         session.close()
@@ -698,15 +698,17 @@ def _audit_prune(session, config) -> None:
         log.warning("audit: pruned %d row(s) older than %d days", gone, config.audit_retention_days)
 
 
-def _directory_dry_run(session, config, clients) -> None:
-    """The nightly directory pass (issue #274): read the switchboard's
-    directory and log, at WARNING so it reaches pod logs, every entry the
-    room registered for an agent it no longer has. Dry run only, on
-    purpose: a room that shares a switchboard with another room whose
-    agents are shaped the same way would otherwise retire that room's
-    agents in the night. Retiring is an operator's click (Admin > Services
-    > Sweep directory) after seeing the list. Same deferred imports as
-    `_sweep`, for the same circular-import reason."""
+def _directory_sweep(session, config, clients) -> None:
+    """The nightly directory pass (issue #274): retire every switchboard
+    entry the room registered for an agent it no longer has. Real since
+    2026-10-31 (the owner's call: the room does its own housekeeping; no
+    admin button). Safe across rooms that share a switchboard because
+    `sweep_directory` retires only an entry carrying THIS room's marker
+    (its own endpoint shape) with no Deployment of that name in the
+    cluster; a hand-built or another room's agent is never touched. What
+    happened lands in the audit log as the room's own action. Same deferred
+    imports as `_sweep`, for the same circular-import reason."""
+    from kobo_api import audit
     from kobo_api.clients import cabal_enabled
     from kobo_api.directory import sweep_directory
 
@@ -714,20 +716,34 @@ def _directory_dry_run(session, config, clients) -> None:
         return
     try:
         result = sweep_directory(
-            clients.cabal, config, session, kubectl=clients.kubectl, dry_run=True
+            clients.cabal, config, session, kubectl=clients.kubectl, dry_run=False
         )
     except Exception as exc:  # noqa: BLE001
-        log.warning("directory: nightly dry run could not read the switchboard: %s", exc)
+        log.warning("directory: nightly sweep could not read the switchboard: %s", exc)
         return
     if result["note"]:
         log.warning("directory: %s", result["note"])
-    if result["retired"]:
-        log.warning(
-            "directory: the switchboard lists %d agent(s) this room no longer has: %s. "
-            "Sweep the directory from Admin to retire them.",
-            len(result["retired"]),
-            ", ".join(sorted(result["retired"])),
+    if not result["retired"] and not result["failed"]:
+        return
+    log.warning(
+        "directory: retired %d entry(ies) the room no longer has an agent for: %s%s",
+        len(result["retired"]), ", ".join(sorted(result["retired"])),
+        f"; the switchboard refused {', '.join(result['failed'])}" if result["failed"] else "",
+    )
+    try:
+        audit.record(
+            session, action="directory.sweep", target_kind="directory", target_id="switchboard",
+            actor="the room", actor_kind=audit.ACTOR_ROOM, source=audit.SOURCE_ROOM,
+            outcome=audit.OUTCOME_FAILED if result["failed"] else audit.OUTCOME_OK,
+            detail={"retired": result["retired"], "failed": result["failed"], "live": result["live"], "unknown": result["unknown"]},
+            summary=(f"The room retired {len(result['retired'])} directory entr{'y' if len(result['retired']) == 1 else 'ies'} "
+                     f"with no agent behind {'it' if len(result['retired']) == 1 else 'them'}"
+                     + (f" ({', '.join(sorted(result['retired']))})" if result["retired"] else "")
+                     + (f"; the switchboard refused {', '.join(result['failed'])}" if result["failed"] else "")),
         )
+        session.commit()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("directory: the sweep's audit row could not be written: %s", exc)
 
 
 def _sweep(session, config, clients, now: datetime) -> None:
