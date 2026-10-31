@@ -6107,3 +6107,97 @@ def test_team_guide_archetype_composes_no_github_and_no_liminal(tmp_path):
     assert "liminal" not in text
     # Memory is untouched by the suppression.
     assert data["memory"]["personal"] == "techne"
+
+
+# ---- GitHub through the permission service (kobo#338) ----------------------------
+
+GITHUB_APP_BODY = {"vendor": "github", "name": "GitHub", "base_access": "read", "auth": "github_app",
+                   "identity": {"repositories": "infra, web"}, "secrets": {}}
+PEM = "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"
+
+
+def _room_github_app(client, app_id="4487276", installation_id="151256501"):
+    from types import SimpleNamespace
+
+    from kobo_api.room_services import GitHubAppCredentials
+    client.app.state.clients.room_services = SimpleNamespace(
+        github_app=lambda: GitHubAppCredentials(app_id=app_id, installation_id=installation_id, private_key=PEM, source="room"))
+
+
+def test_a_github_connect_uses_the_rooms_app_writes_the_secret_and_puts_the_github_mcp_target_live(tmp_path, fake_storage):
+    """Wire shape (kobo#338, GitHub on the Datadog template): a connect with the app fields blank
+    takes the room's own GitHub App, writes the permission service's `bab-github` Secret, probes
+    the installation, connects the integration in the service with the read ceiling, and PUTs
+    the `github-mcp` target (service-token, read-only on every request, the catalog bearer from
+    the gateway's env) through the admin plane with no pull request. Remove takes all of it back."""
+    from kobo_api.admin_integrations import github_target_spec
+    from kobo_api.models import AdminIntegration
+    admin = FakeLiminalAdmin()
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
+    bab = FakeBab(integrations=[])
+    client, headers = _access_client(tmp_path, fake_storage, github=github, bab=bab)
+    client.app.state.clients.liminal_admin = admin
+    _room_github_app(client)
+    kubectl = client.app.state.clients.kubectl
+    r = client.post("/api/admin/integrations", json=GITHUB_APP_BODY, headers=headers)
+    assert r.status_code == 201, r.text
+    row = r.json()
+    assert row["state"] == "applied" and "live on the gateway" in row["state_detail"], row
+    assert "GitHub agreed" in row["state_detail"] and "3 repositories" in row["state_detail"]
+    assert row["spec"]["identity"] == {"app_id": "4487276", "installation_id": "151256501", "source": "room",
+                                       "account": "acme", "repositories": ["infra", "web"]}
+    assert row["spec"]["gateway"] == "live" and "pull_request" not in row["spec"] and row["spec"]["secret_keys"] == []
+    assert github.open_pr_calls == []
+    # The Secret the minter reads, the probe it answered, the integration it holds.
+    assert kubectl.secrets[("bab", "bab-github")] == {"GITHUB_APP_ID": "4487276", "GITHUB_APP_INSTALLATION_ID": "151256501",
+                                                      "GITHUB_APP_PRIVATE_KEY": PEM}
+    assert bab.github_probes == ["151256501"]
+    held = next(i for i in bab._integrations if i["integration"] == row["id"])
+    assert held["vendor"] == "github" and held["spec"]["repositories"] == ["infra", "web"] and held["spec"]["account"] == "acme"
+    # The target, exactly as the spec builder says, and never the key.
+    expected = github_target_spec(AdminIntegration(id=row["id"], vendor="github", name="GitHub", base_access="read",
+                                                   created_by="ops@example.com", spec=row["spec"]))
+    target = admin.targets["github-mcp"]
+    assert target == expected
+    assert target["auth_method"] == "service-token" and target["credential_key"] == "GITHUB_TOKEN"
+    assert target["required_scope"] == "github:read" and target["headers"] == {"X-MCP-Readonly": "true"}
+    assert target["catalog_headers_env"] == {"Authorization": "GITHUB_MCP_CATALOG_AUTHORIZATION"}
+    assert target["address"] == "https://api.githubcopilot.com" and "abc" not in str(target)
+    out = client.delete(f"/api/admin/integrations/{row['id']}", headers=headers).json()
+    assert out["gateway"] == "removed from the gateway" and "github-mcp" not in admin.targets
+    assert out["secret"] == "removed" and ("bab", "bab-github") not in kubectl.secrets
+    assert github.open_pr_calls == []
+
+
+def test_a_github_connect_refuses_without_an_app_or_with_half_of_one_or_a_refused_installation(tmp_path, fake_storage):
+    """Gate (authorization): no room app and nothing pasted is a refusal that says where to go;
+    half an app is a refusal; an installation GitHub turns down takes the Secret back."""
+    from types import SimpleNamespace
+    admin = FakeLiminalAdmin()
+    bab = FakeBab(integrations=[])
+    client, headers = _access_client(tmp_path, fake_storage, bab=bab)
+    client.app.state.clients.liminal_admin = admin
+    client.app.state.clients.room_services = SimpleNamespace(github_app=lambda: None)
+    kubectl = client.app.state.clients.kubectl
+    r = client.post("/api/admin/integrations", json=GITHUB_APP_BODY, headers=headers)
+    assert r.status_code == 409 and "set up GitHub under Integrations first" in r.json()["error"]
+    half = {**GITHUB_APP_BODY, "identity": {"app_id": "1", "installation_id": "2"}}
+    r = client.post("/api/admin/integrations", json=half, headers=headers)
+    assert r.status_code == 409 and "together" in r.json()["error"]
+    letters = {**GITHUB_APP_BODY, "identity": {"app_id": "one", "installation_id": "2"}, "secrets": {"PRIVATE_KEY": PEM}}
+    r = client.post("/api/admin/integrations", json=letters, headers=headers)
+    assert r.status_code == 409 and "numbers" in r.json()["error"]
+    pasted = {**GITHUB_APP_BODY, "identity": {"app_id": "1", "installation_id": "2999"}, "secrets": {"PRIVATE_KEY": PEM}}
+    r = client.post("/api/admin/integrations", json=pasted, headers=headers)
+    assert r.status_code == 409 and "connect again" in r.json()["error"], r.text
+    assert ("bab", "bab-github") not in kubectl.secrets and ("bab", "bab-github") in {(ns, n) for ns, n, _ in kubectl.secrets_applied}
+    assert admin.targets == {} and bab._integrations == []
+
+
+def test_a_github_grant_opens_the_github_lane_on_the_gateway():
+    """Gate (authorization): the lane for GitHub names the handler, the MCP target and the
+    bundle allow patterns, so approving a GitHub permission opens both halves."""
+    from kobo_api.gateway_lane import GATEWAY_LANES
+    lane = GATEWAY_LANES["github"]
+    assert lane.scopes == ("github:read",) and lane.handlers == ("github", "github-mcp")
+    assert lane.allow == ("github.*", "github-mcp.*")

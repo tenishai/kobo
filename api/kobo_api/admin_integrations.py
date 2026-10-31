@@ -96,8 +96,23 @@ AUTH_KINDS = {
     # account's API key and a management application key (scoped to
     # service_account_write) for the service, which mints a scoped key per agent.
     "datadog_service_account": "a Datadog service account the permission service mints scoped application keys from",
+    # GitHub through the permission service (kobo#338): the room holds a GitHub App (its
+    # own, or one pasted here) and the service mints an installation token per agent,
+    # narrowed to the granted permissions and the connection's repositories.
+    "github_app": "a GitHub App the permission service mints narrowed installation tokens from",
 }
 DATADOG_AUTH = "datadog_service_account"
+GITHUB_AUTH = "github_app"
+GITHUB_SECRET = "bab-github"
+# GitHub's hosted MCP server: the gateway's client appends /mcp. Read lanes send
+# X-MCP-Readonly on every request (the server only honours it per request, not
+# per session), and the catalog fetch needs a long-lived bearer the gateway's
+# pod carries in this env variable, as "Bearer <token>".
+GITHUB_MCP_ADDRESS = "https://api.githubcopilot.com"
+GITHUB_MCP_SCOPE = "github:read"
+GITHUB_MCP_CATALOG_AUTH_ENV = "GITHUB_MCP_CATALOG_AUTHORIZATION"
+GITHUB_PRIVATE_KEY_FIELD = "PRIVATE_KEY"
+_DIGITS = re.compile(r"^\d+$")
 # How long a connect waits for the permission service to see the Secret it just wrote
 # (a mounted Secret takes the kubelet up to about a minute to appear in the pod).
 DATADOG_PROBE_TRIES = 12
@@ -162,6 +177,16 @@ def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> 
         site = identity.get("site", "").strip()
         if site and site not in DATADOG_SITES:
             raise ConnectRefused(f"{site!r} is not a Datadog site; one of {', '.join(sorted(DATADOG_SITES))}")
+    if auth == GITHUB_AUTH:
+        given = [identity.get("app_id", "").strip(), identity.get("installation_id", "").strip(),
+                 secrets.get(GITHUB_PRIVATE_KEY_FIELD, "").strip()]
+        if any(given) and not all(given):
+            raise ConnectRefused("GitHub needs the app id, the installation id and the private key together, "
+                                 "or all three blank to use the room's own GitHub App")
+        if given[0] and not (_DIGITS.match(given[0]) and _DIGITS.match(given[1])):
+            raise ConnectRefused("the GitHub App id and installation id are numbers")
+        if given[2] and not given[2].startswith("-----BEGIN"):
+            raise ConnectRefused("the GitHub App private key is the PEM text, starting with -----BEGIN")
 
 
 class ConnectRefused(ValueError):
@@ -245,6 +270,29 @@ def datadog_target_spec(row: AdminIntegration) -> dict[str, Any]:
     }
 
 
+def github_target_spec(row: AdminIntegration) -> dict[str, Any]:
+    """The target for GitHub's hosted MCP server (kobo#338), as the admin
+    plane takes it: untrusted, flagged, one session per persona, and
+    `service-token` auth, so each agent's call carries the installation token
+    the permission service leased it. Read-only on every request; the catalog
+    fetch carries the gateway's own long-lived bearer from its env."""
+    spec = row.spec or {}
+    return {
+        "transport": "http",
+        "address": spec.get("address") or GITHUB_MCP_ADDRESS,
+        "trust": "untrusted",
+        "on_untrusted": "flag",
+        "identity": "none",
+        "session": "per-persona",
+        "auth_method": "service-token",
+        "credential_key": "GITHUB_TOKEN",
+        "required_scope": GITHUB_MCP_SCOPE,
+        "client_name": "liminal-gateway",
+        "headers": {"X-MCP-Readonly": "true"},
+        "catalog_headers_env": {"Authorization": GITHUB_MCP_CATALOG_AUTH_ENV},
+    }
+
+
 def live_target_spec(row: AdminIntegration) -> dict[str, Any] | None:
     """The spec the admin plane takes for this row, or None for a kind that
     only goes by pull request (AWS is a registry entry, the other key kinds
@@ -252,6 +300,8 @@ def live_target_spec(row: AdminIntegration) -> dict[str, Any] | None:
     auth = (row.spec or {}).get("auth", "token")
     if auth == DATADOG_AUTH:
         return datadog_target_spec(row)
+    if auth == GITHUB_AUTH:
+        return github_target_spec(row)
     if auth == "token":
         return target_spec(row)
     return None
@@ -304,6 +354,14 @@ def datadog_target_stanza(row: AdminIntegration) -> str:
     return _render_stanza(row, mcp_target_name(row.id), datadog_target_spec(row))
 
 
+def github_target_stanza(row: AdminIntegration) -> str:
+    """`github_target_spec` as the `[[target]]` the pull request writes."""
+    return _render_stanza(row, mcp_target_name(row.id), github_target_spec(row))
+
+
+MCP_AUTHS = frozenset({DATADOG_AUTH, GITHUB_AUTH})
+
+
 def aws_roles_stanza(row: AdminIntegration) -> str:
     """The trust-registry table the gateway's `aws` handler reads for this
     account: the role to assume and the audience its trust policy expects."""
@@ -344,7 +402,7 @@ def _without_stanza(text: str, target_name: str) -> str:
 def gateway_target_name(row: AdminIntegration) -> str:
     """What the gateway calls this row's target: the MCP name for a Datadog
     connection through the permission service, the row id otherwise."""
-    return mcp_target_name(row.id) if (row.spec or {}).get("auth") == DATADOG_AUTH else row.id
+    return mcp_target_name(row.id) if (row.spec or {}).get("auth") in MCP_AUTHS else row.id
 
 
 def _admin(clients: Clients | None):
@@ -445,6 +503,7 @@ def _gateway_pr(
 
     aws = (row.spec or {}).get("auth") == "aws_role"
     datadog = (row.spec or {}).get("auth") == DATADOG_AUTH
+    github_app = (row.spec or {}).get("auth") == GITHUB_AUTH
     target_name = gateway_target_name(row)
 
     def edit(workdir: Path) -> bool:
@@ -455,7 +514,7 @@ def _gateway_pr(
             updated = stripped if remove else stripped.rstrip("\n") + "\n" + aws_roles_stanza(row)
         else:
             stripped = _without_stanza(current, target_name)
-            stanza = datadog_target_stanza(row) if datadog else target_stanza(row)
+            stanza = datadog_target_stanza(row) if datadog else github_target_stanza(row) if github_app else target_stanza(row)
             updated = stripped if remove else stripped.rstrip("\n") + "\n" + stanza
         if updated == current:
             return False
@@ -476,6 +535,15 @@ def _gateway_pr(
             f"Each agent\'s calls carry its own application key leased from the permission service "
             f"(`[target.credential_headers]`); the catalog fetch uses the gateway\'s shared Datadog key from its env "
             f"(`[target.catalog_headers_env]`, DD_API_KEY / DD_APP_KEY). Needs the gateway on liminal 0.8.0 or later. "
+            f"Serves after this merges and the gateway rolls."
+        )
+    elif github_app:
+        what = "target"
+        added = (
+            f"Adds the `{target_name}` target: GitHub\'s hosted MCP server at {(row.spec or {}).get('address') or GITHUB_MCP_ADDRESS}. "
+            f"Each agent\'s calls carry its own installation token leased from the permission service "
+            f"(`service-token`, `GITHUB_TOKEN`), read-only on every request; the catalog fetch uses the gateway\'s "
+            f"own bearer from its env (`{GITHUB_MCP_CATALOG_AUTH_ENV}`). Needs the gateway on liminal 0.8.0 or later. "
             f"Serves after this merges and the gateway rolls."
         )
     else:
@@ -521,6 +589,157 @@ def datadog_secret_literals(identity: dict[str, str], secrets: dict[str, str]) -
         "DD_MGMT_APP_KEY": secrets["MGMT_APP_KEY"],
         "DD_SERVICE_ACCOUNT_ID": identity["service_account_id"],
     }
+
+
+def github_secret_literals(identity: dict[str, str], secrets: dict[str, str]) -> dict[str, str]:
+    """The env variables the permission service's GitHub minter reads, as the
+    Secret `bab-github` carries them."""
+    out = {
+        "GITHUB_APP_ID": identity["app_id"],
+        "GITHUB_APP_INSTALLATION_ID": identity["installation_id"],
+        "GITHUB_APP_PRIVATE_KEY": secrets[GITHUB_PRIVATE_KEY_FIELD],
+    }
+    if identity.get("api_url"):
+        out["GITHUB_API_URL"] = identity["api_url"]
+    return out
+
+
+def _attach_mcp_target(
+    session: Session, clients: Clients | None, config: Config, row: AdminIntegration, *,
+    detail: str, waiting: bool, actor: str, label: str,
+) -> AdminIntegration:
+    """The gateway's half of a connection through the permission service
+    (kobo#327): the vendor's `<id>-mcp` target. Live through the admin plane
+    when the room holds one; a pull request on the gateway's config repository
+    otherwise. Independent of the Secret restart, so a waiting row gets it too."""
+    live, fallback = _target_live_or_fallback(session, row, clients, detail)
+    if live is None and fallback is None:
+        return row  # the gateway refused the spec; the row says so
+    if live:
+        row.spec = {**dict(row.spec or {}), "gateway": GATEWAY_LIVE}
+        admin_store.set_integration_state(
+            session, row.id, state=admin_store.STATE_PENDING if waiting else admin_store.STATE_APPLIED, detail=f"{detail}; {live}",
+        )
+        return row
+    github = getattr(clients, "github", None) if clients is not None else None
+    pr: str | None = None
+    if github is not None and config.gateway_config_repo:
+        try:
+            pr = _gateway_pr(github, config, row, remove=False, actor=actor)
+        except (ClientError, OSError) as exc:
+            admin_store.set_integration_state(
+                session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the gateway pull request failed: {exc}",
+            )
+            return row
+    if pr:
+        detail += f"{fallback} {pr}; agents reach {label} after it merges and the gateway rolls"
+        row.spec = {**dict(row.spec or {}), "pull_request": pr}
+        state = admin_store.STATE_PENDING
+    elif config.gateway_config_repo:
+        detail += f"; the gateway already carries the {mcp_target_name(row.id)} target"
+        state = admin_store.STATE_PENDING if waiting else admin_store.STATE_APPLIED
+    else:
+        detail += f"; no gateway config repository is set, so add the {mcp_target_name(row.id)} target by hand"
+        state = admin_store.STATE_PENDING if waiting else admin_store.STATE_APPLIED
+    admin_store.set_integration_state(session, row.id, state=state, detail=detail)
+    return row
+
+
+def _probe_through_secret(bab, kubectl, config: Config, *, secret: str, literals: dict[str, str], probe, undo_hint: str) -> bool:
+    """Write the permission service's Secret and probe until the service has read
+    it. True when the row must wait (the service has not read the Secret yet);
+    any other refusal takes the Secret back and raises with the vendor's sentence."""
+    where = f"the Secret {secret} in the {config.bab_namespace} namespace, read by the permission service"
+    try:
+        kubectl.apply_secret(config.bab_namespace, secret, literals)
+    except ClientError as exc:
+        raise ConnectRefused(f"{where} could not be written: {exc}; nothing was connected") from exc
+    for attempt in range(DATADOG_PROBE_TRIES):
+        try:
+            probe()
+            return False
+        except ClientError as exc:
+            # The permission service reads the Secret from a mount, and the kubelet takes
+            # up to a minute to project a Secret just written; until then the probe answers
+            # "not configured" (or, on an older service, "cannot mint for ... yet").
+            text = str(exc).lower()
+            if "not configured" in text or "cannot mint for" in text:
+                if attempt < DATADOG_PROBE_TRIES - 1:
+                    _sleep(DATADOG_PROBE_PAUSE_S)
+                continue
+            try:
+                kubectl.delete_secret(config.bab_namespace, secret)
+            except ClientError as undo:
+                log.warning("connect refused and %s was left behind: %s", secret, undo)
+            raise ConnectRefused(f"{exc}; {undo_hint}") from exc
+    return True
+
+
+def _connect_github(
+    session: Session, clients: Clients | None, config: Config, bab, *, vendor: str, name: str, base_access: str,
+    address: str, trust: str, actor: str, identity: dict[str, str], secrets: dict[str, str],
+) -> AdminIntegration:
+    """GitHub through the permission service (kobo#338): the room's own GitHub
+    App unless one is pasted, written to the service's Secret and probed; then
+    the `github-mcp` target on the gateway."""
+    if bab is None:
+        raise ConnectRefused("GitHub through a GitHub App needs the permission service; turn Access on first")
+    kubectl = getattr(clients, "kubectl", None) if clients is not None else None
+    if kubectl is None:
+        raise ConnectRefused("this room cannot write the permission service's Secret; nothing was connected")
+    source = "pasted"
+    if not identity.get("app_id"):
+        room = getattr(clients, "room_services", None) if clients is not None else None
+        app = room.github_app() if room is not None else None
+        if app is None:
+            raise ConnectRefused("this room holds no GitHub App yet: set up GitHub under Integrations first, "
+                                 "or paste an app id, installation id and private key here")
+        try:
+            pem = app.pem()
+        except ClientError as exc:
+            raise ConnectRefused(f"the room's GitHub App key could not be read: {exc}") from exc
+        identity["app_id"], identity["installation_id"] = str(app.app_id), str(app.installation_id)
+        secrets[GITHUB_PRIVATE_KEY_FIELD] = pem
+        source = "room"
+    repositories = sorted({r.strip() for r in identity.get("repositories", "").split(",") if r.strip()})
+    inst = identity["installation_id"]
+    where = f"the Secret {GITHUB_SECRET} in the {config.bab_namespace} namespace, read by the permission service"
+    probed: dict[str, Any] = {}
+
+    def probe() -> None:
+        probed.update(bab.probe_github(inst, actor) or {})
+
+    waiting = _probe_through_secret(
+        bab, kubectl, config, secret=GITHUB_SECRET, literals=github_secret_literals(identity, secrets), probe=probe,
+        undo_hint="check the app id, the installation id and the private key and connect again",
+    )
+    account = str(probed.get("account") or "")
+    spec: dict[str, Any] = {
+        "address": _mcp_address(address, GITHUB_MCP_ADDRESS),
+        "trust": trust if trust in ("trusted", "untrusted") else "untrusted",
+        "auth": GITHUB_AUTH,
+        "identity": {"app_id": identity["app_id"], "installation_id": inst, "source": source,
+                     **({"account": account} if account else {}), **({"repositories": repositories} if repositories else {})},
+        "secret_keys": [],
+    }
+    row = admin_store.put_integration(
+        session, vendor=vendor, name=name, base_access=base_access, spec=spec, credential_ref=None, actor=actor,
+    )
+    if waiting:
+        detail = (f"the permission service has not read {where} yet; it does within a minute or two, "
+                  "so remove this row and add GitHub again to check the app")
+    else:
+        detail = (f"GitHub agreed: the permission service read installation {inst}"
+                  + (f" on {account}" if account else "") + f" and minted a probe token that sees "
+                  f"{probed.get('repositories', 0)} repositories; the app is in {where}")
+    spec_for_bab = {"installation_id": inst, "repositories": repositories, "name": name, **({"account": account} if account else {})}
+    try:
+        bab.put_integration(row.id, vendor, spec_for_bab, bab_mod.read_permissions(bab, vendor, actor), actor)
+    except ClientError as exc:
+        admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the permission service refused: {exc}")
+        return row
+    detail += "; connected in the permission service, agents may ask for its read permissions"
+    return _attach_mcp_target(session, clients, config, row, detail=detail, waiting=waiting, actor=actor, label="GitHub\'s MCP server")
 
 
 def _connect_datadog(
@@ -589,40 +808,7 @@ def _connect_datadog(
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the permission service refused: {exc}")
         return row
     detail += "; connected in the permission service, agents may ask for its read permissions"
-    # The gateway's half (kobo#327): the `datadog-mcp` target. Live through the admin
-    # plane when the room holds one; a pull request on the gateway's config repository
-    # otherwise. Independent of the Secret restart, so a waiting row gets it too.
-    live, fallback = _target_live_or_fallback(session, row, clients, detail)
-    if live is None and fallback is None:
-        return row  # the gateway refused the spec; the row says so
-    if live:
-        row.spec = {**dict(row.spec or {}), "gateway": GATEWAY_LIVE}
-        admin_store.set_integration_state(
-            session, row.id, state=admin_store.STATE_PENDING if waiting else admin_store.STATE_APPLIED, detail=f"{detail}; {live}",
-        )
-        return row
-    github = getattr(clients, "github", None) if clients is not None else None
-    pr: str | None = None
-    if github is not None and config.gateway_config_repo:
-        try:
-            pr = _gateway_pr(github, config, row, remove=False, actor=actor)
-        except (ClientError, OSError) as exc:
-            admin_store.set_integration_state(
-                session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the gateway pull request failed: {exc}",
-            )
-            return row
-    if pr:
-        detail += f"{fallback} {pr}; agents reach Datadog\'s MCP server after it merges and the gateway rolls"
-        row.spec = {**dict(row.spec or {}), "pull_request": pr}
-        state = admin_store.STATE_PENDING
-    elif config.gateway_config_repo:
-        detail += f"; the gateway already carries the {mcp_target_name(row.id)} target"
-        state = admin_store.STATE_PENDING if waiting else admin_store.STATE_APPLIED
-    else:
-        detail += f"; no gateway config repository is set, so add the {mcp_target_name(row.id)} target by hand"
-        state = admin_store.STATE_PENDING if waiting else admin_store.STATE_APPLIED
-    admin_store.set_integration_state(session, row.id, state=state, detail=detail)
-    return row
+    return _attach_mcp_target(session, clients, config, row, detail=detail, waiting=waiting, actor=actor, label="Datadog\'s MCP server")
 
 
 def _org_or_refused(bab, parent: str, actor: str) -> dict:
@@ -774,6 +960,9 @@ def connect(
     if auth == DATADOG_AUTH:
         return _connect_datadog(session, clients, config, bab, vendor=vendor, name=name, base_access=base_access,
                                 address=address, trust=trust, actor=actor, identity=identity, secrets=secrets)
+    if auth == GITHUB_AUTH:
+        return _connect_github(session, clients, config, bab, vendor=vendor, name=name, base_access=base_access,
+                               address=address, trust=trust, actor=actor, identity=identity, secrets=secrets)
     probe: dict[str, str] | None = None
     hub_role_arn: str | None = None
     if auth in ("aws_hub", "aws_spoke") and bab is None:
@@ -1014,13 +1203,13 @@ def disconnect(session: Session, clients: Clients | None, config: Config, *, int
             outcome["access"] = f"removed; {out.get('grants_revoked', 0)} grant(s) revoked"
         except ClientError as exc:
             outcome["access"] = f"left: {exc}"
-    if (row.spec or {}).get("auth") == DATADOG_AUTH:
+    if (row.spec or {}).get("auth") in MCP_AUTHS:
         # The keys live in the permission service's Secret, never in the add-on or the gateway.
         kubectl = getattr(clients, "kubectl", None) if clients is not None else None
         try:
             if kubectl is None:
                 raise ClientError("this room cannot reach the permission service's namespace")
-            kubectl.delete_secret(config.bab_namespace, DATADOG_SECRET)
+            kubectl.delete_secret(config.bab_namespace, DATADOG_SECRET if (row.spec or {}).get("auth") == DATADOG_AUTH else GITHUB_SECRET)
             outcome["secret"] = "removed"
         except ClientError as exc:
             outcome["secret"] = f"left: {exc}"

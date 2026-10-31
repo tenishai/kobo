@@ -1176,7 +1176,7 @@ export type AdminIntegration = {
 export type AdminConnectIntegration = {
   vendor: string;
   name: string;
-  auth?: "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "azure_federated" | "datadog_service_account";
+  auth?: "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "azure_federated" | "datadog_service_account" | "github_app";
   identity?: Record<string, string>;
   secrets?: Record<string, string>;
   base_access: "read" | "write";

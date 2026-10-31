@@ -52,6 +52,7 @@ class Lane(NamedTuple):
 # vendor -> the lane an agent granted that vendor needs.
 GATEWAY_LANES: dict[str, Lane] = {
     "datadog": Lane(scopes=("datadog:read",), handlers=("datadog", "datadog-mcp"), allow=("datadog.*", "datadog-mcp.*")),
+    "github": Lane(scopes=("github:read",), handlers=("github", "github-mcp"), allow=("github.*", "github-mcp.*")),
 }
 MANAGED_SCOPES: frozenset[str] = frozenset(s for lane in GATEWAY_LANES.values() for s in lane.scopes)
 MANAGED_HANDLERS: frozenset[str] = frozenset(h for lane in GATEWAY_LANES.values() for h in lane.handlers)
