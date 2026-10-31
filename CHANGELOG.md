@@ -6,6 +6,16 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.26] - 2026-10-31
+
+### Changed
+
+- **The GitHub MCP catalog authenticates with a token the gateway mints, not a stored one** (#360).
+  The `github-mcp` target names `catalog_token_provider = "github-app"` (liminal 0.9.2) instead of
+  a catalog `Authorization` header liminal refuses; the gateway mints its own App installation
+  token before every catalog fetch, so no personal token is stored or rotated. The vendor
+  checklist records the rule. Needs the gateway on liminal 0.9.2.
+
 ## [0.3.25] - 2026-10-31
 
 ## [0.3.24] - 2026-10-31
