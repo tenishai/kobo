@@ -1,4 +1,30 @@
 <script lang="ts">
+  import {
+    Brain,
+    CheckCircle,
+    ClockCounterClockwise,
+    Cpu,
+    IdentificationCard,
+    Key,
+    Lightbulb,
+    Lightning,
+    UserCircle,
+    WarningCircle,
+    Wrench,
+  } from "phosphor-svelte";
+
+  // One icon per Harness section, in the order of the list.
+  const SECTION_ICONS = {
+    runtime: Cpu,
+    identity: IdentificationCard,
+    persona: UserCircle,
+    skills: Lightning,
+    tooling: Wrench,
+    memory: Brain,
+    learnings: Lightbulb,
+    permissions: Key,
+    activity: ClockCounterClockwise,
+  } as const;
   import type { AgentIdentity } from "../lib/api";
   // The Harness tab (harness wave, 2026-09-23): what runs the agent.
   //
@@ -275,6 +301,7 @@
 <div class="harness">
   <nav class="harness__nav" aria-label="Harness sections">
     {#each sections as id (id)}
+      {@const Icon = SECTION_ICONS[id]}
       <button
         type="button"
         class="harness__item"
@@ -282,7 +309,10 @@
         aria-controls={`harness-${id}`}
         onclick={() => (section = id)}
       >
-        <span>{HARNESS_SECTION_LABELS[id]}</span>
+        <span class="harness__item-label">
+          <Icon class="harness__icon" size={17} aria-hidden="true" />
+          {HARNESS_SECTION_LABELS[id]}
+        </span>
         {#if id === "learnings" && pendingLearnings > 0}
           <span class="harness__badge">{pendingLearnings}</span>
         {/if}
@@ -314,7 +344,7 @@
                     </select>
                     <button
                       type="button"
-                      class="btn btn--quiet"
+                      class="btn"
                       disabled={frozen || updateModel.isPending || modelChoice === model}
                       onclick={handleChangeModel}
                     >
@@ -346,7 +376,7 @@
                       </select>
                       <button
                         type="button"
-                        class="btn btn--quiet"
+                        class="btn"
                         disabled={frozen ||
                           updateColleagueMode.isPending ||
                           colleagueModeChoice === colleagueMode}
@@ -367,7 +397,8 @@
             {#if runtimeKnown && roomRuntimeImage}
               {#if behind}
                 <div class="harness__state">
-                  <p class="panel__note">
+                  <p class="harness__status harness__status--warn">
+                    <WarningCircle size={15} weight="fill" aria-hidden="true" />
                     Behind: the room now builds on {versionOf(roomRuntimeImage)}
                   </p>
                   {#if canUpdateRuntime}
@@ -382,7 +413,10 @@
                   {/if}
                 </div>
               {:else}
-                <p class="panel__note">Current</p>
+                <p class="harness__status">
+                  <CheckCircle size={15} weight="fill" aria-hidden="true" />
+                  Runtime is up to date
+                </p>
               {/if}
             {/if}
             {#if connected}
@@ -495,88 +529,99 @@
     font-size: 0.95rem;
   }
 
-  /* The list down the left, the section beside it. One column at narrow
-     widths, where a 10rem gutter would leave the panels too cramped to
-     read. */
+  /* The list down the left in a card of its own, the section beside it.
+     One column at narrow widths. */
   .harness {
     display: grid;
-    grid-template-columns: 10rem minmax(0, 1fr);
+    grid-template-columns: 13rem minmax(0, 1fr);
     gap: var(--space-lg);
+    align-items: start;
   }
 
-  @media (max-width: 44rem) {
+  @media (max-width: 52rem) {
     .harness {
       grid-template-columns: minmax(0, 1fr);
     }
   }
 
   .harness__nav {
+    position: sticky;
+    top: var(--space-md);
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-2xs);
+    padding: var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel);
   }
 
-  @media (max-width: 44rem) {
+  @media (max-width: 52rem) {
     .harness__nav {
+      position: static;
       flex-direction: row;
       flex-wrap: wrap;
     }
   }
 
-  /* Small caps, quiet: the list names the sections, it does not compete
-     with the panel beside it. */
   .harness__item {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-2xs);
-    padding: var(--space-2xs) var(--space-xs);
+    gap: var(--space-xs);
+    min-height: 2.6rem;
+    padding: 0 var(--space-sm);
     border: none;
-    border-left: 2px solid transparent;
-    border-radius: 0;
+    border-radius: var(--radius-sm);
     background: none;
     color: var(--muted);
     font: inherit;
-    font-size: 0.72rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
+    font-size: 0.875rem;
+    font-weight: 500;
     text-align: left;
-    text-transform: uppercase;
     cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
   }
 
   .harness__item:hover {
+    background: var(--accent-soft);
     color: var(--ink);
   }
 
   .harness__item[aria-current="true"] {
-    border-left-color: var(--accent);
+    background: var(--accent-soft);
     color: var(--ink);
+    box-shadow: inset 2px 0 0 var(--accent);
   }
 
-  @media (max-width: 44rem) {
-    .harness__item {
-      border-bottom: 2px solid transparent;
-      border-left: none;
-    }
+  .harness__item-label {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
 
-    .harness__item[aria-current="true"] {
-      border-bottom-color: var(--accent);
-    }
+  .harness__item :global(.harness__icon) {
+    flex-shrink: 0;
+    opacity: 0.8;
+  }
+
+  .harness__item[aria-current="true"] :global(.harness__icon) {
+    opacity: 1;
   }
 
   .harness__badge {
-    display: inline-block;
-    min-width: 1.2em;
-    padding: 0 0.35em;
+    display: inline-flex;
+    min-width: 1.15rem;
+    height: 1.15rem;
+    align-items: center;
+    justify-content: center;
+    padding: 0 0.3rem;
     border-radius: 999px;
     background: var(--accent);
     color: var(--accent-ink);
-    font-size: 0.7rem;
+    font-family: var(--font-display-mono);
+    font-size: 0.65rem;
     font-weight: 600;
-    letter-spacing: 0;
-    line-height: 1.5;
-    text-align: center;
   }
 
   .harness__body {
@@ -597,29 +642,63 @@
     display: none;
   }
 
-  /* Two columns: the fact's name, then the fact. */
+  /* Each fact is a row: its name on the left, the value or control on
+     the right, a hairline between rows. */
   .harness__facts {
     display: grid;
-    grid-template-columns: 7rem minmax(0, 1fr);
-    gap: var(--space-2xs) var(--space-sm);
+    grid-template-columns: 11rem minmax(0, 1fr);
     margin: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .harness__facts dt,
+  .harness__facts dd {
+    padding: var(--space-md) 0;
+    border-bottom: 1px solid var(--border);
   }
 
   .harness__facts dt {
+    padding-right: var(--space-md);
     color: var(--muted);
-    font-size: 0.8rem;
+    font-size: 0.85rem;
+    line-height: 2.25rem;
   }
 
   .harness__facts dd {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    justify-content: center;
+    gap: var(--space-xs);
     margin: 0;
     overflow-wrap: anywhere;
     color: var(--ink);
+    font-size: 0.875rem;
+    min-height: 2.25rem;
+  }
+
+  .harness__facts dd :global(.panel__note) {
+    max-width: 40rem;
+    line-height: 1.55;
+  }
+
+  .harness__status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0;
+    color: var(--ok);
     font-size: 0.85rem;
+    font-weight: 500;
+  }
+
+  .harness__status--warn {
+    color: var(--warn);
   }
 
   .harness__ref {
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
+    font-family: var(--font-display-mono);
+    font-size: 0.8rem;
   }
 
   .harness__state {

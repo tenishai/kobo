@@ -151,7 +151,7 @@
     gap: var(--space-2xs);
     padding: 0.1rem 0.5rem;
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     font-size: 0.8rem;
   }
 

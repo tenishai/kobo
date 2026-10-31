@@ -6,6 +6,44 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The room's look: the shadcn-svelte foundation, on the room's own tokens.** Tailwind v4 and
+  shadcn-svelte (style Vega, Stone palette, Geist headings, Public Sans body, Geist Mono for
+  names and labels, Phosphor icons) are wired in; `ui/src/lib/shadcn.css` maps shadcn's tokens
+  onto app.css's, so the room still has one palette in one file and dark mode still follows
+  the operating system. No production screen imports a shadcn component yet; the restyle below
+  is the room's own CSS on the new tokens, and Tailwind's preflight is deliberately off until
+  the hand-rolled components are gone.
+- **Shell.** White page, a floating dark rail with the dot-matrix KOBO wordmark (the hammer
+  lives on as the favicon), Phosphor icons, and the main content in a warm grey frame.
+- **Dashboard.** Cards carry a portrait (or the agent's initial), a two-line description, an
+  inset facts tile, and a Health button that opens the agent's dashboard. The filter bar is one
+  row (Group, a new Status filter, Search). "Made by" reads "Author:"; a failed or waiting card
+  shows the real age and author instead of "Open for details".
+- **Agent page.** A header card (portrait is the portrait menu; Repository, Health and Edit
+  details as buttons; labelled facts row), a back button to the cards, underline tabs with
+  icons, the first reply as the chat's opening message, an inline composer, Shared thread and
+  Colleague conversations side by side. Slack, Access and the Harness sections read as settings
+  rows; permission lists and vendor rows line up; "Convert..." and "Destroy..." lost their
+  ellipses; "Add someone" is "Add person".
+- **Getting started.** One top bar (section picker, previous/next, a progress track) instead of
+  a second side list; the section in a centred reading card with previous/next at the bottom.
+- **Admin.** A page header, an icon navigation card, Overview as status cards, Review as
+  Waiting/Everything tabs with a selection bar, the integration catalog as alphabetical vendor
+  cards with logos, Audit's filters in one panel with Export beside the title, and the role
+  editor as settings rows. Every native dropdown and field in the room shares one style.
+- **Account menu** no longer lists the guide; the rail's Getting started entry is the one way in.
+
+### Added
+
+- `make -C api lab`: a local room over the test fakes with seeded agents in every state the UI
+  draws, for working on the UI without a cluster (`api/scripts/ui_lab.py`).
+
+### Removed
+
+- The `FirstReply` component (its content moved into the chat log).
+
 ## [0.3.26] - 2026-10-31
 
 ### Changed

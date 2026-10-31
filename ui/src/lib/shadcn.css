@@ -1,0 +1,151 @@
+/* Tailwind + shadcn-svelte, wired to the room's own tokens.
+
+   Preset: shadcn-svelte.com/create code b3Z3jRlt1E (style Maia, base and
+   theme Stone, chart colour Blue, heading Geist, body Inter (since replaced by Public Sans), icons
+   Phosphor, radius default, menu default/solid, accent subtle). Applied
+   2026-10-31 with `npx shadcn-svelte@latest apply b3Z3jRlt1E`; the palette
+   it generated was moved INTO app.css's tokens rather than kept here, so
+   the room still has one palette in one file.
+
+   app.css stays the source of truth for colour, type and spacing: the
+   shadcn theme below is a MAPPING onto those tokens (--bg, --panel, --ink,
+   --muted, --accent, --border, --ok, --fail, --warn), never a second
+   palette. Dark mode therefore follows app.css's prefers-color-scheme block
+   automatically, and re-theming the room is still a one-file job.
+
+   Two deliberate deviations from the stock install:
+
+   1. No preflight (yet). Tailwind's reset would restyle every heading,
+      list, button and paragraph the existing hand-rolled components rely
+      on. A scoped reset below covers shadcn's own markup (everything it
+      renders carries a data-slot attribute). When the last hand-rolled
+      component is gone, replace the three @import lines with
+      `@import "tailwindcss";` and delete the scoped reset.
+
+   2. The theme's colour and radius tokens point straight at app.css
+      variables (`@theme inline`), so shadcn's own names (--muted,
+      --accent) are never declared at :root, where they would collide
+      with the room's tokens of the same name but different meaning. */
+
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "tw-animate-css";
+@import "shadcn-svelte/tailwind.css";
+@import "@fontsource-variable/public-sans";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+/* The dark variant follows the operating system, like the rest of the
+   room (there is no toggle). */
+@custom-variant dark {
+  @media (prefers-color-scheme: dark) {
+    @slot;
+  }
+}
+
+/* shadcn-svelte/tailwind.css (imported above) defines the data-open,
+   data-checked and data-disabled variants the components use, bridging
+   bits-ui's data-state attributes. Nothing to add here. */
+
+@theme inline {
+  /* The same stacks app.css declares. */
+  --font-sans: var(--font-sans-stack);
+  --font-heading: var(--font-heading-stack);
+  --font-mono: var(--font-mono-stack);
+
+  /* app.css: --radius is the card radius, --radius-sm the control radius.
+     These land on the same numbers. */
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  --color-background: var(--bg);
+  --color-foreground: var(--ink);
+  --color-card: var(--panel);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--panel);
+  --color-popover-foreground: var(--ink);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-ink);
+  --color-secondary: var(--accent-soft);
+  --color-secondary-foreground: var(--ink);
+  --color-muted: var(--accent-soft);
+  --color-muted-foreground: var(--muted);
+  --color-accent: var(--accent-soft);
+  --color-accent-foreground: var(--ink);
+  --color-destructive: var(--fail);
+  --color-destructive-foreground: var(--accent-ink);
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--ring);
+
+  /* The preset's chart scale (blue), lightest to darkest. */
+  --color-chart-1: oklch(0.809 0.105 251.813);
+  --color-chart-2: oklch(0.623 0.214 259.815);
+  --color-chart-3: oklch(0.546 0.245 262.881);
+  --color-chart-4: oklch(0.488 0.243 264.376);
+  --color-chart-5: oklch(0.424 0.199 265.638);
+
+  --color-sidebar: var(--bg);
+  --color-sidebar-foreground: var(--ink);
+  --color-sidebar-primary: var(--accent);
+  --color-sidebar-primary-foreground: var(--accent-ink);
+  --color-sidebar-accent: var(--panel);
+  --color-sidebar-accent-foreground: var(--ink);
+  --color-sidebar-border: var(--border);
+  --color-sidebar-ring: var(--ring);
+}
+
+/* The part of Tailwind's preflight shadcn's components assume, applied
+   only to the markup shadcn renders. Utilities (a later layer) still win
+   over everything here. */
+@layer base {
+  :where([data-slot], [data-slot] *),
+  :where([data-slot], [data-slot] *)::before,
+  :where([data-slot], [data-slot] *)::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0 solid var(--border);
+    outline-color: color-mix(in oklab, var(--ring) 50%, transparent);
+  }
+
+  :where([data-slot]):is(button, input, select, textarea),
+  :where([data-slot]) :is(button, input, select, textarea) {
+    font: inherit;
+    color: inherit;
+    background-color: transparent;
+    letter-spacing: inherit;
+  }
+
+  :where([data-slot]):is(button, [role="button"]),
+  :where([data-slot]) :is(button, [role="button"]) {
+    cursor: pointer;
+  }
+
+  :where([data-slot]) :is(img, svg, video) {
+    display: block;
+    vertical-align: middle;
+  }
+
+  :where([data-slot]):is(ul, ol, menu),
+  :where([data-slot]) :is(ul, ol, menu) {
+    list-style: none;
+  }
+
+  :where([data-slot]) :is(h1, h2, h3, h4, h5, h6) {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+
+  :where([data-slot]):is(a),
+  :where([data-slot]) a {
+    color: inherit;
+    text-decoration: inherit;
+  }
+}

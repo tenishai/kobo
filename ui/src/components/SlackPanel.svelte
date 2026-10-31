@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Hash, Plus, X } from "phosphor-svelte";
   // Slack, per agent (first-run wave, 2026-09-23) -- the one-time ceremony
   // that creates the Slack app, and the channels the agent answers in.
   //
@@ -155,8 +156,16 @@
   };
 
   const chipText = $derived(connect.isPending ? "Connecting" : CHIP[slack.state]);
+  // Green when connected, red when not connected at all, grey while it is
+  // on its way (connecting or waiting to connect).
   const chipTone = $derived(
-    slack.state === "connected" && !connect.isPending ? "ok" : "muted",
+    connect.isPending
+      ? "muted"
+      : slack.state === "connected"
+        ? "ok"
+        : slack.state === "idle"
+          ? "fail"
+          : "muted",
   );
 
   /** The one line under the heading while the app is on its way to the
@@ -658,94 +667,85 @@
   </li>
 {/snippet}
 
-{#snippet wakeChoice()}
+{#snippet wakeChoice(inSection = false)}
   <fieldset class="slack-panel__wake" disabled={frozen || saveWake.isPending}>
-    <legend class="field__label">Wakes on</legend>
-    {#each WAKE_OPTIONS as option (option.value)}
-      <label class="slack-panel__wake-option">
-        <input
-          type="radio"
-          name="slack-panel-wake"
-          value={option.value}
-          checked={wake === option.value}
-          disabled={frozen || saveWake.isPending}
-          onchange={() => handleWake(option.value)}
-        />
-        <span class="slack-panel__wake-text">
-          <span class="slack-panel__wake-label">{option.label}</span>
-          <span class="field__help">{option.help}</span>
-        </span>
-      </label>
-    {/each}
+    <legend class={inSection ? "panel__sr" : "field__label"}>Wakes on</legend>
+    <div class="slack-panel__wake-options">
+      {#each WAKE_OPTIONS as option (option.value)}
+        <label class="slack-panel__wake-option" class:slack-panel__wake-option--on={wake === option.value}>
+          <input
+            type="radio"
+            name="slack-panel-wake"
+            value={option.value}
+            checked={wake === option.value}
+            disabled={frozen || saveWake.isPending}
+            onchange={() => handleWake(option.value)}
+          />
+          <span class="slack-panel__wake-text">
+            <span class="slack-panel__wake-label">{option.label}</span>
+            <span class="field__help">{option.help}</span>
+          </span>
+        </label>
+      {/each}
+    </div>
     {#if wakeError}
       <p class="panel__note panel__note--fail" role="alert">{wakeError}</p>
     {:else if wakeNote}
       <p class="panel__note" role="status">{wakeNote}</p>
-    {:else}
+    {:else if !inSection}
       <p class="field__help">A direct message always reaches the agent.</p>
     {/if}
   </fieldset>
 {/snippet}
 
-{#snippet channels()}
+{#snippet channels(inSection = false)}
   <div class="slack-panel__channels">
-    <p class="panel__note">{channelsNote}</p>
-    <div class="panel__toolbar">
+    {#if !inSection}
+      <p class="panel__note">{channelsNote}</p>
+    {/if}
+    <ul class="slack-panel__channel-list">
+      {#if rows.length === 0}
+        <li class="slack-panel__channel-empty">No channels yet.</li>
+      {/if}
+      {#each rows as row, index (row.id)}
+        <li class="slack-panel__channel">
+          <Hash class="slack-panel__channel-hash" size={14} aria-hidden="true" />
+          <input
+            class="slack-panel__cell-input"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="C0123456789"
+            aria-label={`Channel ${index + 1}`}
+            bind:value={row.value}
+            disabled={frozen}
+            use:focusOnMount={row.id === focusId}
+          />
+          <button
+            type="button"
+            class="slack-panel__remove"
+            aria-label={row.value.trim().length > 0
+              ? `Remove ${row.value.trim()}`
+              : `Remove row ${index + 1}`}
+            disabled={frozen}
+            onclick={() => removeRow(row.id)}
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        </li>
+      {/each}
+    </ul>
+    <div>
       <button
         type="button"
-        class="btn"
+        class="btn slack-panel__add"
         disabled={frozen || rows.length >= MAX_CHANNELS}
         onclick={addRow}
       >
-        + Channel
+        <Plus size={13} weight="bold" aria-hidden="true" />
+        Add channel
       </button>
     </div>
-    <table class="panel__table slack-panel__table">
-      <thead>
-        <tr>
-          <th scope="col">Channel ID</th>
-          <th scope="col" class="slack-panel__col-remove">
-            <span class="panel__sr">Remove</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {#if rows.length === 0}
-          <tr>
-            <td class="panel__empty" colspan="2">No channels yet.</td>
-          </tr>
-        {/if}
-        {#each rows as row, index (row.id)}
-          <tr>
-            <td>
-              <input
-                class="slack-panel__cell-input"
-                type="text"
-                autocomplete="off"
-                spellcheck="false"
-                aria-label={`Channel ${index + 1}`}
-                bind:value={row.value}
-                disabled={frozen}
-                use:focusOnMount={row.id === focusId}
-              />
-            </td>
-            <td class="panel__cell--right">
-              <button
-                type="button"
-                class="slack-panel__remove"
-                aria-label={row.value.trim().length > 0
-                  ? `Remove ${row.value.trim()}`
-                  : `Remove row ${index + 1}`}
-                disabled={frozen}
-                onclick={() => removeRow(row.id)}
-              >
-                <span aria-hidden="true">✕</span>
-              </button>
-            </td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
   </div>
 {/snippet}
 
@@ -784,25 +784,52 @@
       {@render valuesStep()}
     </ol>
   {:else}
-    {@render channels()}
-    {@render wakeChoice()}
+    <!-- Connected (2026-10-31): three settings, each a row with what it
+         is on the left and the control on the right. -->
+    <div class="slack-panel__sections">
+      <div class="slack-panel__section">
+        <div class="slack-panel__section-head">
+          <h3 class="slack-panel__section-title">Channels</h3>
+          <p class="slack-panel__section-help">{channelsNote}</p>
+        </div>
+        <div class="slack-panel__section-body">{@render channels(true)}</div>
+      </div>
 
-    <div class="slack-panel__reconnect">
-      <button
-        type="button"
-        class="btn btn--quiet"
-        aria-expanded={reconnectOpen}
-        aria-controls="slack-panel-reconnect"
-        onclick={() => (reconnectOpen = !reconnectOpen)}
-      >
-        Reconnect the Slack app
-      </button>
-      {#if reconnectOpen}
-        <ol class="slack-panel__steps" id="slack-panel-reconnect">
-          {@render manifestStep()}
-          {@render valuesStep()}
-        </ol>
-      {/if}
+      <div class="slack-panel__section">
+        <div class="slack-panel__section-head">
+          <h3 class="slack-panel__section-title">Wakes on</h3>
+          <p class="slack-panel__section-help">
+            Which channel messages reach the agent. A direct message always does.
+          </p>
+        </div>
+        <div class="slack-panel__section-body">{@render wakeChoice(true)}</div>
+      </div>
+
+      <div class="slack-panel__section">
+        <div class="slack-panel__section-head">
+          <h3 class="slack-panel__section-title">Slack app</h3>
+          <p class="slack-panel__section-help">
+            Rotate its tokens or move it to another workspace.
+          </p>
+        </div>
+        <div class="slack-panel__section-body slack-panel__reconnect">
+          <button
+            type="button"
+            class="btn"
+            aria-expanded={reconnectOpen}
+            aria-controls="slack-panel-reconnect"
+            onclick={() => (reconnectOpen = !reconnectOpen)}
+          >
+            Reconnect the Slack app
+          </button>
+          {#if reconnectOpen}
+            <ol class="slack-panel__steps" id="slack-panel-reconnect">
+              {@render manifestStep()}
+              {@render valuesStep()}
+            </ol>
+          {/if}
+        </div>
+      </div>
     </div>
   {/if}
 
@@ -871,27 +898,104 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
+    min-width: 0;
     margin: 0;
     padding: 0;
     border: 0;
-    min-width: 0;
   }
+
+  /* Each choice is a card; the chosen one is outlined in ink. */
+  .slack-panel__wake-options {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
   .slack-panel__wake-option {
     display: grid;
     grid-template-columns: auto 1fr;
-    align-items: baseline;
-    column-gap: var(--space-xs);
+    align-items: start;
+    column-gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
     cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
   }
+
+  .slack-panel__wake-option:hover {
+    border-color: var(--ring);
+  }
+
+  .slack-panel__wake-option--on {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .slack-panel__wake-option input {
+    margin: 0.2rem 0 0;
+    accent-color: var(--accent);
+  }
+
   .slack-panel__wake-text {
     display: flex;
-    flex-direction: column;
     min-width: 0;
+    flex-direction: column;
+    gap: 0.1rem;
   }
+
   .slack-panel__wake-label {
     color: var(--ink);
     font-size: 0.9rem;
+    font-weight: 500;
   }
+
+  /* The connected view's settings rows. */
+  .slack-panel__sections {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .slack-panel__section {
+    display: grid;
+    grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+    gap: var(--space-xl);
+    padding: var(--space-lg) 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .slack-panel__section-head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .slack-panel__section-title {
+    margin: 0;
+    color: var(--ink);
+    font-size: 0.92rem;
+    font-weight: 600;
+  }
+
+  .slack-panel__section-help {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.5;
+  }
+
+  .slack-panel__section-body {
+    min-width: 0;
+  }
+
+  @media (max-width: 52rem) {
+    .slack-panel__section {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--space-sm);
+    }
+  }
+
   .slack-panel__title {
     display: flex;
     flex-wrap: wrap;
@@ -902,7 +1006,7 @@
   .slack-panel__chip {
     padding: 0 var(--space-xs);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--muted);
     font-size: 0.7rem;
     line-height: 1.6;
@@ -914,12 +1018,18 @@
     color: var(--ok);
   }
 
+  .slack-panel__chip--fail {
+    border-color: color-mix(in srgb, var(--fail) 45%, transparent);
+    background: color-mix(in srgb, var(--fail) 8%, transparent);
+    color: var(--fail);
+  }
+
   /* The stepper. Numbered down the left, one step per row, so the order is
      the layout rather than something the copy has to claim. */
   .slack-panel__steps {
     display: flex;
     flex-direction: column;
-    gap: var(--space-md);
+    gap: var(--space-xl);
     margin: 0;
     padding: 0;
     list-style: none;
@@ -930,9 +1040,14 @@
     display: grid;
     grid-template-columns: 1.5rem 1fr;
     align-items: baseline;
-    column-gap: var(--space-xs);
-    row-gap: var(--space-xs);
+    column-gap: var(--space-sm);
+    row-gap: var(--space-sm);
     counter-increment: ceremony-step;
+  }
+
+  .slack-panel__step + .slack-panel__step {
+    padding-top: var(--space-xl);
+    border-top: 1px solid var(--border);
   }
 
   .slack-panel__step::before {
@@ -960,7 +1075,7 @@
     display: flex;
     flex-direction: column;
     grid-column: 2;
-    gap: var(--space-xs);
+    gap: var(--space-lg);
     min-width: 0;
   }
 
@@ -1021,53 +1136,80 @@
   .slack-panel__channels {
     display: flex;
     flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  .slack-panel__channel-list {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    list-style: none;
+  }
+
+  .slack-panel__channel,
+  .slack-panel__channel-empty {
+    display: flex;
+    align-items: center;
     gap: var(--space-xs);
+    min-height: 2.6rem;
+    padding: 0 var(--space-xs) 0 var(--space-sm);
   }
 
-  .slack-panel__table {
-    table-layout: fixed;
+  .slack-panel__channel + .slack-panel__channel {
+    border-top: 1px solid var(--border);
   }
 
-  .slack-panel__col-remove {
-    width: 2.25rem;
+  .slack-panel__channel-empty {
+    color: var(--muted);
+    font-size: 0.85rem;
   }
 
-  /* A field that lives in a table cell: no frame of its own until it is
-     reached for, so a list of eight reads as a list and not as a form. */
+  .slack-panel__channel :global(.slack-panel__channel-hash) {
+    flex-shrink: 0;
+    color: var(--muted);
+  }
+
   .slack-panel__cell-input {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     padding: var(--space-2xs) var(--space-xs);
     border: 1px solid transparent;
-    border-radius: var(--radius-sm);
+    border-radius: 0.35rem;
     background: transparent;
     color: var(--ink);
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
+    font-family: var(--font-display-mono);
+    font-size: 0.82rem;
   }
 
   .slack-panel__cell-input:hover:not(:disabled) {
-    border-color: var(--border);
+    background: var(--bg);
   }
 
   .slack-panel__cell-input:focus-visible {
-    border-color: transparent;
     background: var(--bg);
-    outline: 2px solid var(--accent);
-    outline-offset: -1px;
+    outline: none;
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 40%, transparent);
   }
 
   .slack-panel__remove {
-    padding: 0 var(--space-2xs);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
     border: none;
+    border-radius: 0.35rem;
     background: transparent;
     color: var(--muted);
-    font: inherit;
-    font-size: 0.85rem;
-    line-height: 1;
     cursor: pointer;
   }
 
   .slack-panel__remove:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--fail) 10%, transparent);
     color: var(--fail);
   }
 
@@ -1076,13 +1218,17 @@
     cursor: not-allowed;
   }
 
+  .slack-panel__add {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
   .slack-panel__reconnect {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
     gap: var(--space-sm);
-    padding-top: var(--space-sm);
-    border-top: 1px solid var(--border);
   }
 
   .slack-panel__reconnect .slack-panel__steps {

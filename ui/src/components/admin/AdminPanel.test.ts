@@ -216,7 +216,7 @@ describe("AdminPanel", () => {
     }
     expect(screen.queryByText("PagerDuty")).toBeNull();
     // AWS is its own sheet: what agents may read, the role three ways, paste the ARN. No key anywhere.
-    await fireEvent.click(screen.getAllByRole("button", { name: "Add" })[3]);
+    await fireEvent.click(screen.getByRole("button", { name: "Add AWS" }));
     expect(await screen.findByRole("heading", { name: "Connect an AWS organization" })).toBeTruthy();
     expect(await screen.findByText("1234567890")).toBeTruthy();
     // The method comes first and the sheet shows only that method's content (#276).

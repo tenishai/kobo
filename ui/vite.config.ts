@@ -1,10 +1,17 @@
 /// <reference types="vitest/config" />
+import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
+import tailwindcss from "@tailwindcss/vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { svelteTesting } from "@testing-library/svelte/vite";
 
 export default defineConfig({
-  plugins: [svelte(), svelteTesting()],
+  plugins: [tailwindcss(), svelte(), svelteTesting()],
+  resolve: {
+    alias: {
+      $lib: fileURLToPath(new URL("./src/lib", import.meta.url)),
+    },
+  },
   server: {
     proxy: {
       "/api": "http://127.0.0.1:8100",

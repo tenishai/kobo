@@ -24,6 +24,7 @@
   // above it (see its own `position: relative` below) so it stays
   // independently clickable rather than swallowed by the stretched anchor
   // underneath.
+  import { ArrowUpRight } from "phosphor-svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import { KIND_CONNECTED } from "../lib/api";
@@ -78,14 +79,19 @@
           src={`/api/agents/${encodeURIComponent(agent.name)}/avatar`}
           alt=""
         />
+      {:else}
+        <!-- No portrait yet: the initial, so every card has a face. -->
+        <span class="agent-card__avatar agent-card__avatar--initial" aria-hidden="true">
+          {agent.name.slice(0, 1).toUpperCase()}
+        </span>
       {/if}
       <span class="agent-card__name" title={agent.name}>{agent.name}</span>
     </span>
     <StatusBadge status={agent.status} health={agent.health} />
   </div>
 
-  <!-- One line, always: a card that says "No description yet." is still the
-       same height as the one beside it. The whole sentence rides on the
+  <!-- Two lines, always: a card that says "No description yet." is still
+       the same height as the one beside it. The whole sentence rides on the
        title for anyone who wants the rest of it. -->
   <p
     class="agent-card__desc"
@@ -116,56 +122,50 @@
     </div>
   {/if}
 
+  {#snippet facts()}
+    <p class="agent-card__meta">
+      <span>{relativeTime(agent.created_at)}</span>
+      <span class="agent-card__sep" aria-hidden="true">·</span>
+      <!-- Agents made before the room recorded who made them have no
+           author; say so rather than leave a hole in the row. -->
+      <span class="agent-card__owner" title={agent.created_by ?? undefined}>Author: {agent.created_by ?? "Unknown"}</span>
+    </p>
+  {/snippet}
+
   <div class="agent-card__footer">
+    <div class="agent-card__facts">
     {#if failed}
-      <!-- The list route carries no error text, so the card says the one
-           true thing it knows and points at the page that has the rest. -->
-      <p class="agent-card__error">
-        <span class="agent-card__error-line">Something went wrong.</span>
-        <span class="agent-card__error-tail">Open for details.</span>
-      </p>
+      <!-- What happened on the first line, where a ready card shows its
+           model; the same real facts as every card under it (age, author).
+           The list route carries no error text: the agent's page has it. -->
+      <p class="agent-card__status-line agent-card__status-line--fail agent-card__error">Something went wrong</p>
+      {@render facts()}
     {:else if waiting}
-      <p class="agent-card__waiting">
-        <span class="agent-card__error-line">Waiting on a pull request.</span>
-        <span class="agent-card__error-tail">Open for details.</span>
-      </p>
+      <p class="agent-card__status-line agent-card__waiting">Waiting on a pull request</p>
+      {@render facts()}
     {:else}
       <!-- The model gets a line of its own (2026-10-01): sharing one line
            with the age, the byline and the Observability link cut every
            label short. Two rows, always, so every card is the same height. -->
       <p class="agent-card__model" title={agent.model}>{agent.model_label}</p>
-      <p class="agent-card__meta">
-        <span>{relativeTime(agent.created_at)}</span>
-        {#if agent.created_by}
-          <span class="agent-card__sep" aria-hidden="true">·</span>
-          <span class="agent-card__owner">Made by {agent.created_by}</span>
-        {/if}
-      </p>
+      {@render facts()}
     {/if}
 
+    </div>
+
+  <!-- A way out to another site, not a fact about the agent: a button in
+       a fixed place at the right of the facts tile, beside the two lines,
+       so a long run of tags never moves it. -->
     {#if dashboardUrl}
       <a
         class="agent-card__observability"
         href={dashboardUrl}
         target="_blank"
         rel="noreferrer"
-        title="Observability"
+        title={`Open ${agent.name}'s health dashboard in a new tab`}
       >
-        <svg
-          class="agent-card__icon"
-          viewBox="0 0 16 16"
-          aria-hidden="true"
-          focusable="false"
-        >
-          <path
-            d="M2 13V9m4 4V4m4 9V7m4 6V3"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.6"
-            stroke-linecap="round"
-          />
-        </svg>
-        <span class="agent-card__observability-label">Observability</span>
+        <span class="agent-card__observability-label">Health</span>
+        <ArrowUpRight class="agent-card__icon" size={12} weight="bold" aria-hidden="true" />
       </a>
     {/if}
   </div>
@@ -177,11 +177,12 @@
     display: flex;
     height: 100%;
     flex-direction: column;
-    gap: var(--space-xs);
-    padding: var(--space-md);
+    gap: var(--space-sm);
+    padding: var(--space-lg);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--panel);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
     color: inherit;
     transition:
       border-color 0.15s ease,
@@ -237,24 +238,44 @@
     object-fit: cover;
   }
 
+  .agent-card__avatar--initial {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent-soft);
+    color: var(--ink);
+    font-family: var(--font-display-mono);
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+
   /* The agent's name is the one identifier on the card: mono, and heavier
      than anything under it. */
   .agent-card__name {
     overflow: hidden;
     color: var(--ink);
-    font-family: var(--font-mono);
+    font-family: var(--font-display-mono);
+    font-size: 1.05rem;
     font-weight: 600;
+    letter-spacing: -0.01em;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  /* Two lines, always: a short description still reserves the second
+     line, so every card in a row lines its tags and facts up. Anything
+     longer is clipped with an ellipsis and rides on the title. */
   .agent-card__desc {
+    display: -webkit-box;
+    min-height: calc(2 * 1.45em);
     margin: 0;
     overflow: hidden;
-    color: var(--ink);
-    font-size: 0.85rem;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.45;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
 
   .agent-card__desc--empty {
@@ -264,6 +285,7 @@
   .agent-card__tags {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: var(--space-2xs);
   }
 
@@ -272,11 +294,13 @@
   .agent-card__tag {
     display: inline-flex;
     flex-shrink: 0;
-    padding: 0.1rem var(--space-xs);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    color: var(--muted);
-    font-size: 0.7rem;
+    padding: 0.15rem var(--space-xs);
+    border: 1px solid transparent;
+    border-radius: var(--radius-pill);
+    background: var(--accent-soft);
+    color: var(--ink);
+    font-size: 0.72rem;
+    font-weight: 500;
     white-space: nowrap;
   }
 
@@ -286,19 +310,36 @@
 
   /* Pushed to the bottom, so two cards with different amounts to say still
      agree on where the quiet line sits. */
+  /* Two rows: the first line (model, or what went wrong) with the Health
+     button beside it, then the age and author across the full width, so
+     the author's email is not cut short by the button. */
   .agent-card__footer {
-    display: flex;
+    display: grid;
     min-width: 0;
-    flex-wrap: wrap;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: var(--space-2xs) var(--space-xs);
     margin-top: auto;
-    padding-top: var(--space-2xs);
+    padding: var(--space-sm) var(--space-md);
+    border-radius: 0;
+    background: var(--accent-soft);
   }
 
-  .agent-card__meta,
-  .agent-card__error,
-  .agent-card__waiting {
+  .agent-card__facts {
+    display: contents;
+  }
+
+  .agent-card__footer > .agent-card__facts > :global(:first-child) {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .agent-card__footer :global(.agent-card__meta) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .agent-card__meta {
     display: flex;
     min-width: 0;
     flex: 1;
@@ -309,6 +350,23 @@
     color: var(--muted);
     font-size: 0.8rem;
     white-space: nowrap;
+  }
+
+  /* A failed or waiting card's one sentence: a full line of its own, in the
+     place a ready card shows its model. */
+  .agent-card__status-line {
+    flex: 1 0 100%;
+    margin: 0;
+    overflow: hidden;
+    color: var(--ink);
+    font-size: 0.8rem;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-card__status-line--fail {
+    color: var(--fail);
   }
 
   /* The byline is the one fact that gives way: it is the longest and the
@@ -335,52 +393,51 @@
     flex-shrink: 0;
   }
 
-  .agent-card__error {
-    color: var(--fail);
-  }
-
-  .agent-card__error-line {
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  /* Not a link, and not in the failure colour: it is the way out, not part
-     of what went wrong. */
-  .agent-card__error-tail {
-    flex-shrink: 0;
-    color: var(--muted);
-  }
-
   /* Positioned (not static) so it paints above the stretched link that
      precedes it in the DOM (see the module doc comment above) while staying
      in normal flow. A labelled link, not a bare icon: the operator could
      not tell what the icon was for, and a link nobody recognises is not a
      link. Quiet by default, link-coloured on hover so it still defers to
      the card's one primary click. */
+  /* Positioned (not static) so it paints above the stretched link that
+     precedes it in the DOM while staying in normal flow. An outline pill
+     at the right end of the tag row: it leaves the room, so it looks like
+     a button and carries an arrow out, not a status colour. */
+  /* Positioned (not static) so it paints above the stretched link that
+     precedes it in the DOM. A quiet secondary button: white on the grey
+     facts tile with a thin border, so it is findable without pulling the
+     eye away from the agent's name and status. */
   .agent-card__observability {
     position: relative;
     display: inline-flex;
     flex-shrink: 0;
     align-items: center;
+    grid-column: 2;
+    grid-row: 1;
     gap: 0.3rem;
-    margin-left: auto;
-    padding: var(--space-2xs) var(--space-xs);
-    border-radius: var(--radius-sm);
-    color: var(--link);
-    font-size: 0.8rem;
+    padding: 0.2rem var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    background: var(--panel);
+    color: var(--ink);
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: var(--label-tracking);
+    text-transform: var(--label-case);
     text-decoration: none;
     white-space: nowrap;
+    transition: background 0.15s ease, border-color 0.15s ease;
   }
 
   .agent-card__observability:hover,
   .agent-card__observability:focus-visible {
+    border-color: var(--ring);
     background: var(--accent-soft);
-    text-decoration: underline;
   }
 
-  .agent-card__icon {
-    width: 1rem;
-    height: 1rem;
+  .agent-card__observability :global(.agent-card__icon) {
+    flex-shrink: 0;
   }
+
 
 </style>

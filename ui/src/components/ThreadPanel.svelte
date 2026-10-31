@@ -468,11 +468,12 @@
 
   .thread-panel__heading {
     margin: 0;
-    color: var(--muted);
-    font-size: 0.8rem;
+    color: var(--ink);
+    font-family: var(--font-heading);
+    font-size: var(--title-size);
     font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    letter-spacing: var(--title-tracking);
+    text-transform: var(--label-case);
   }
 
   .thread-panel__sr-only {
@@ -528,7 +529,7 @@
   .thread-panel__chip {
     padding: 0.15rem var(--space-sm);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--ink);
     font-size: 0.8rem;
     font-weight: 600;

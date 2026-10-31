@@ -1,9 +1,11 @@
 <script lang="ts">
   // The sidebar's account menu: the signed-in email as a button, and a small
-  // list above it when opened. Admin shows only when the room has the admin
+  // list above it when opened. The guide is not here: it has its own entry
+  // in the rail. Admin shows only when the room has the admin
   // panel on and the server says this caller is an admin; Log out shows only
   // when the deployment names a sign-out path. Both are the server's call
   // (`/api/whoami`), never derived here.
+  import { CaretUpDown, Gear, SignOut } from "phosphor-svelte";
   import type { Whoami } from "../lib/api";
   import { formatHash } from "../lib/router.svelte";
 
@@ -40,7 +42,7 @@
               aria-current={active === "admin" ? "page" : undefined}
               onclick={close}
             >
-              <span class="account__glyph" aria-hidden="true">⚙</span>
+              <Gear class="account__glyph" size={16} aria-hidden="true" />
               Admin
               {#if whoami.pending_group_requests}
                 <span class="account__badge">{whoami.pending_group_requests}</span>
@@ -48,16 +50,10 @@
             </a>
           </li>
         {/if}
-        <li>
-          <a role="menuitem" class="account__item" href={formatHash({ page: "getting-started" })} onclick={close}>
-            <span class="account__glyph" aria-hidden="true">?</span>
-            Guide
-          </a>
-        </li>
         {#if whoami.logout_url}
           <li class="account__divider">
             <a role="menuitem" class="account__item" href={whoami.logout_url}>
-              <span class="account__glyph" aria-hidden="true">⇥</span>
+              <SignOut class="account__glyph" size={16} aria-hidden="true" />
               Log out
             </a>
           </li>
@@ -76,7 +72,7 @@
   >
     <span class="account__avatar" aria-hidden="true">{(whoami.email ?? "?").slice(0, 1).toUpperCase()}</span>
     <span class="account__trigger-email">{whoami.email}</span>
-    <span class="account__chevron" aria-hidden="true">{open ? "▾" : "▴"}</span>
+    <CaretUpDown class="account__chevron" size={14} aria-hidden="true" />
   </button>
 </div>
 
@@ -93,20 +89,20 @@
     align-items: center;
     gap: var(--space-xs);
     width: 100%;
-    padding: var(--space-2xs) var(--space-xs);
+    padding: var(--space-xs);
     border: none;
     border-radius: var(--radius-sm);
     background: none;
     color: var(--muted);
     font: inherit;
-    font-size: 0.75rem;
+    font-size: 0.8rem;
     text-align: left;
     cursor: pointer;
   }
 
   .account__trigger:hover,
   .account__trigger[aria-expanded="true"] {
-    background: var(--surface-2, rgba(127, 127, 127, 0.08));
+    background: color-mix(in oklab, var(--rail-raised) 60%, transparent);
     color: var(--ink);
   }
 
@@ -114,11 +110,11 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.5rem;
-    height: 1.5rem;
+    width: 1.75rem;
+    height: 1.75rem;
     border-radius: 50%;
     background: var(--accent);
-    color: var(--bg);
+    color: var(--accent-ink);
     font-size: 0.7rem;
     font-weight: 600;
     flex-shrink: 0;
@@ -132,8 +128,9 @@
     white-space: nowrap;
   }
 
-  .account__chevron {
-    font-size: 0.7rem;
+  .account :global(.account__chevron) {
+    flex-shrink: 0;
+    opacity: 0.7;
   }
 
   .account__scrim {
@@ -189,16 +186,15 @@
     background: var(--surface-2, rgba(127, 127, 127, 0.08));
   }
 
-  .account__glyph {
-    width: 1rem;
+  .account :global(.account__glyph) {
+    flex-shrink: 0;
     color: var(--muted);
-    text-align: center;
   }
 
   .account__badge {
     margin-left: auto;
     padding: 0 0.4rem;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--fail);
     color: var(--bg);
     font-size: 0.7rem;
@@ -213,7 +209,7 @@
 
   @media (max-width: 40rem) {
     .account__trigger-email,
-    .account__chevron {
+    .account :global(.account__chevron) {
       display: none;
     }
   }

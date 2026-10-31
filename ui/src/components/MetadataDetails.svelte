@@ -477,7 +477,7 @@
     gap: var(--space-xs);
     padding: var(--space-2xs) var(--space-sm);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--muted);
     font-size: 0.85rem;
   }

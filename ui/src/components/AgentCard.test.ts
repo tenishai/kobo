@@ -69,16 +69,15 @@ describe("AgentCard — the facts a card carries (card wave 2026-09-23)", () => 
 });
 
 describe("AgentCard — a failed agent (card wave 2026-09-23)", () => {
-  it("replaces the footer facts with the failure, and says where to look", () => {
+  it("puts the failure where the model goes, and keeps the age and author", () => {
     const { container } = render(AgentCard, {
       agent: { ...BASE_AGENT, status: "failed", created_by: "owner@example.com" },
     });
 
     expect(container.querySelector(".agent-card__error")).not.toBeNull();
-    expect(screen.getByText(/Open for details/)).not.toBeNull();
-    // The meta run is gone -- one failure reads louder than three facts.
-    expect(container.querySelector(".agent-card__meta")).toBeNull();
-    expect(screen.queryByText("Made by owner@example.com")).toBeNull();
+    expect(container.querySelector(".agent-card__model")).toBeNull();
+    expect(screen.getByText("Author: owner@example.com")).not.toBeNull();
+    expect(screen.queryByText(/Open for details/)).toBeNull();
   });
 
   it("says what a waiting agent waits on, not just that it waits", () => {
@@ -87,10 +86,9 @@ describe("AgentCard — a failed agent (card wave 2026-09-23)", () => {
     });
 
     expect(container.querySelector(".agent-card__waiting")).not.toBeNull();
-    expect(screen.getByText("Waiting on a pull request.")).not.toBeNull();
-    expect(screen.getByText(/Open for details/)).not.toBeNull();
+    expect(screen.getByText("Waiting on a pull request")).not.toBeNull();
+    expect(screen.getByText("Author: owner@example.com")).not.toBeNull();
     expect(container.querySelector(".agent-card__error")).toBeNull();
-    expect(container.querySelector(".agent-card__meta")).toBeNull();
   });
 
   it("flags a ready agent with no purpose tags (issue #147)", () => {
@@ -119,7 +117,7 @@ describe("AgentCard — a failed agent (card wave 2026-09-23)", () => {
 });
 
 describe("AgentCard — the observability link (card wave 2026-09-23)", () => {
-  it("is an icon with a hidden label, not a coloured text link", async () => {
+  it("is a labelled button that opens the dashboard in a new tab", async () => {
     vi.unstubAllGlobals();
     stubFetch({
       "/api/catalog/observability": {
@@ -130,7 +128,8 @@ describe("AgentCard — the observability link (card wave 2026-09-23)", () => {
     });
     const { container } = render(AgentCard, { agent: BASE_AGENT });
 
-    const link = await screen.findByTitle("Observability");
+    const link = await screen.findByRole("link", { name: /Health/ });
+    expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("href")).toBe(
       "https://noto.example.com/projects/agents/dashboards/warden-agent-health",
     );
@@ -140,7 +139,7 @@ describe("AgentCard — the observability link (card wave 2026-09-23)", () => {
     const label = container.querySelector(
       ".agent-card__observability .agent-card__observability-label",
     );
-    expect(label?.textContent).toBe("Observability");
+    expect(label?.textContent).toBe("Health");
     expect(container.querySelector(".agent-card__observability .agent-card__sr")).toBeNull();
   });
 });

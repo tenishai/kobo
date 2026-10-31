@@ -15,7 +15,7 @@ Kobo is one piece of a set of sibling projects. Each owns one job, and the room 
 - **cabal** (optional, but most of the room needs it). The switchboard. With it, chat and teaching reach the agent in seconds, the nightly learnings pass runs, agents can ask each other, the agent directory exists, and the room can mint its own token for the tool gateway. Without it, the room talks to agents directly and agents have no colleagues.
 - **liminal** (optional). The tool gateway agents call for real tools: cloud accounts, vendors, other MCP servers. An agent with no grant there sees no tools. With the gateway's admin plane wired too, grants apply at once and the Activity view can read what each agent did.
 - **sero** (optional). The secrets service. With it, secrets you add to an agent are stored there and delivered to the agent. Without it, you can still set plain variables, but the room cannot store new secrets for you.
-- **noto** (optional). Dashboards. When wired, an agent's page carries an **Observability** link.
+- **noto** (optional). Dashboards. When wired, an agent's page and its card carry a **Health** link.
 
 ## What it can do for you
 

@@ -1212,7 +1212,7 @@
     display: inline-flex;
     padding: 0.1rem var(--space-2xs);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--muted);
     font-size: 0.7rem;
     white-space: nowrap;
@@ -1293,7 +1293,7 @@
     margin-left: var(--space-xs);
     padding: 0 var(--space-xs);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--muted);
     font-size: 0.75rem;
     line-height: 1.5;
@@ -1327,7 +1327,7 @@
     gap: var(--space-xs);
     padding: var(--space-2xs) var(--space-sm);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--muted);
     font-size: 0.85rem;
   }

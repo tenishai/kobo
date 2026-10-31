@@ -22,3 +22,7 @@ run:
 
 bootstrap:
 	venv/bin/python -m kobo_api.bootstrap
+
+# A local room for UI work: real routes, fake platforms, seeded agents (:8100).
+lab:
+	.venv/bin/python scripts/ui_lab.py

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { DownloadSimple, MagnifyingGlass } from "phosphor-svelte";
   // The room's audit log (issue #316): everything the room saw a person,
   // the room or an agent do, newest first, the way an organization's audit
   // log reads. A search box over actor, action, target and sentence;
@@ -81,63 +82,70 @@
 </script>
 
 <section class="panel page" aria-labelledby="audit-heading">
-  <div class="page__header">
-    <h2 id="audit-heading" class="page__title">Audit</h2>
-    <p class="page__lead">What people, the room and agents did here, newest first. Kept for the room's retention window.</p>
+  <div class="audit__head">
+    <div class="page__header">
+      <h2 id="audit-heading" class="page__title">Audit</h2>
+      <p class="page__lead">What people, the room and agents did here, newest first. Kept for the room's retention window.</p>
+    </div>
+    <div class="audit__export" role="group" aria-label="Export">
+      <a class="btn" href={auditExportUrl(filters, "csv")} download><DownloadSimple size={14} aria-hidden="true" />CSV</a>
+      <a class="btn" href={auditExportUrl(filters, "json")} download><DownloadSimple size={14} aria-hidden="true" />JSON</a>
+    </div>
   </div>
 
-  <div class="toolbar">
-    <input
-      class="search"
-      type="search"
-      placeholder="Search actor, action, target or sentence"
-      aria-label="Search the audit log"
-      value={typed}
-      oninput={onType}
-    />
-    <label class="pick"><span>Actor</span>
-      <select bind:value={actor}>
-        <option value="">any</option>
-        {#if actor && !(page.data?.actors ?? []).includes(actor)}<option value={actor}>{actor}</option>{/if}
-        {#each page.data?.actors ?? [] as a (a)}<option value={a}>{a}</option>{/each}
-      </select>
-    </label>
-    <label class="pick"><span>Action</span>
-      <select bind:value={action}>
-        <option value="">any</option>
-        {#if action && !(page.data?.families ?? []).includes(action)}<option value={action}>{action}</option>{/if}
-        {#each page.data?.families ?? [] as f (f)}<option value={f}>{f}</option>{/each}
-      </select>
-    </label>
-    <label class="pick"><span>Agent</span>
-      <select bind:value={agent}>
-        <option value="">any</option>
-        {#if agent && !(page.data?.agents ?? []).includes(agent)}<option value={agent}>{agent}</option>{/if}
-        {#each page.data?.agents ?? [] as a (a)}<option value={a}>{a}</option>{/each}
-      </select>
-    </label>
-    <label class="pick"><span>Outcome</span>
-      <select bind:value={outcome}>
-        <option value="">any</option>
-        <option value="ok">ok</option>
-        <option value="failed">failed</option>
-        <option value="refused">refused</option>
-      </select>
-    </label>
-    <label class="pick"><span>From</span><input type="date" bind:value={since} aria-label="From date" /></label>
-    <label class="pick"><span>To</span><input type="date" bind:value={until} aria-label="To date" /></label>
-    {#if hasFilter}<button type="button" class="btn btn--quiet" onclick={clear}>Clear</button>{/if}
+  <!-- The filters, together in one panel: search across the top, then one
+       labelled control per field in a grid. -->
+  <div class="audit__filters">
+    <div class="audit__search">
+      <MagnifyingGlass class="audit__search-icon" size={15} aria-hidden="true" />
+      <input
+        type="search"
+        placeholder="Search actor, action, target or sentence"
+        aria-label="Search the audit log"
+        value={typed}
+        oninput={onType}
+      />
+    </div>
+    <div class="audit__grid">
+      <label class="audit__field"><span>Actor</span>
+        <select bind:value={actor}>
+          <option value="">Any</option>
+          {#if actor && !(page.data?.actors ?? []).includes(actor)}<option value={actor}>{actor}</option>{/if}
+          {#each page.data?.actors ?? [] as a (a)}<option value={a}>{a}</option>{/each}
+        </select>
+      </label>
+      <label class="audit__field"><span>Action</span>
+        <select bind:value={action}>
+          <option value="">Any</option>
+          {#if action && !(page.data?.families ?? []).includes(action)}<option value={action}>{action}</option>{/if}
+          {#each page.data?.families ?? [] as f (f)}<option value={f}>{f}</option>{/each}
+        </select>
+      </label>
+      <label class="audit__field"><span>Agent</span>
+        <select bind:value={agent}>
+          <option value="">Any</option>
+          {#if agent && !(page.data?.agents ?? []).includes(agent)}<option value={agent}>{agent}</option>{/if}
+          {#each page.data?.agents ?? [] as a (a)}<option value={a}>{a}</option>{/each}
+        </select>
+      </label>
+      <label class="audit__field"><span>Outcome</span>
+        <select bind:value={outcome}>
+          <option value="">Any</option>
+          <option value="ok">ok</option>
+          <option value="failed">failed</option>
+          <option value="refused">refused</option>
+        </select>
+      </label>
+      <label class="audit__field"><span>From</span><input type="date" bind:value={since} aria-label="From date" /></label>
+      <label class="audit__field"><span>To</span><input type="date" bind:value={until} aria-label="To date" /></label>
+    </div>
   </div>
 
-  <div class="toolbar toolbar--below">
+  <div class="audit__meta">
     <span class="count">
       {#if page.isPending && rows.length === 0}Reading the log…{:else}{total} {total === 1 ? "row" : "rows"}{hasFilter ? " match" : ""}{/if}
     </span>
-    <span class="export">
-      <span class="quiet">Export</span>
-      <a class="btn btn--quiet" href={auditExportUrl(filters, "csv")} download>CSV</a>
-      <a class="btn btn--quiet" href={auditExportUrl(filters, "json")} download>JSON</a>
-    </span>
+    {#if hasFilter}<button type="button" class="btn btn--quiet" onclick={clear}>Clear filters</button>{/if}
   </div>
 
   {#if page.isError}
@@ -172,53 +180,100 @@
 </section>
 
 <style>
-  .toolbar {
+  .audit__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-md);
+  }
+
+  .audit__head > :global(.page__header) {
+    flex: 1 1 24rem;
+    min-width: 0;
+  }
+
+  .audit__export {
+    display: inline-flex;
+    flex-shrink: 0;
+    gap: var(--space-xs);
+  }
+
+  .audit__export :global(.btn) {
+    gap: 0.35rem;
+  }
+
+  .audit__filters {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    padding: var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+  }
+
+  .audit__search {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: var(--space-sm);
-    margin: 0 0 var(--space-sm);
-    flex-wrap: wrap;
   }
 
-  .toolbar--below {
-    margin-bottom: var(--space-sm);
+  .audit__search input {
+    width: 100%;
+    padding-left: 2.1rem;
   }
 
-  .search {
-    flex: 1 1 16rem;
-    min-width: 12rem;
-    font: inherit;
-    padding: 0.35rem 0.6rem;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm, 6px);
-    background: var(--surface);
-    color: var(--ink);
-  }
-
-  .pick {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
+  .audit__search :global(.audit__search-icon) {
+    position: absolute;
+    left: 0.75rem;
     color: var(--muted);
-    font-size: 0.9rem;
+    pointer-events: none;
   }
 
-  .pick select,
-  .pick input {
-    font: inherit;
-    color: var(--ink);
+  /* Six filters: one row of six when there is room, two rows of three
+     when there is not, never five and a stray. */
+  .audit__grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: var(--space-sm) var(--space-md);
+  }
+
+  @media (max-width: 90rem) {
+    .audit__grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  .audit__field {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  .audit__field > span {
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 500;
+  }
+
+  .audit__field select,
+  .audit__field input {
+    width: 100%;
+  }
+
+  .audit__meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    min-height: 2rem;
   }
 
   .count {
     color: var(--muted);
     font-size: 0.85rem;
-  }
-
-  .export {
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
   }
 
   .quiet {

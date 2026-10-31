@@ -14,13 +14,15 @@
   // verbatim, above the grid rather than replacing it — a degraded list is
   // still a real list, not an error state.
   import { createQuery } from "@tanstack/svelte-query";
+  import { CaretDown, MagnifyingGlass } from "phosphor-svelte";
   import AgentCard from "../components/AgentCard.svelte";
   import EmptyState from "../components/EmptyState.svelte";
   import ErrorState from "../components/ErrorState.svelte";
   import GroupRequestsCard from "../components/GroupRequestsCard.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import { errorMessage } from "../lib/api";
-  import { CONTROLS_OVER, agentGroups, filterAgents } from "../lib/agents";
+  import { CONTROLS_OVER, STATUS_FILTERS, agentGroups, filterAgents } from "../lib/agents";
+  import type { StatusFilter } from "../lib/agents";
   import { agentsQuery } from "../lib/queries";
 
   const agents = createQuery(() => (agentsQuery()));
@@ -31,13 +33,14 @@
   // why. Both reset the moment the page is left.
   let query = $state("");
   let group = $state("");
+  let status = $state<StatusFilter>("");
 
   let all = $derived(agents.data?.agents ?? []);
   // Six cards fit on a screen; the seventh is when looking becomes
   // searching. Below that the controls are not hidden, they do not exist.
   let controls = $derived(all.length > CONTROLS_OVER);
   let groups = $derived(agentGroups(all));
-  let shown = $derived(controls ? filterAgents(all, query, group) : all);
+  let shown = $derived(controls ? filterAgents(all, query, group, status) : all);
 </script>
 
 <!-- Shared-group + group-requests wave: the least-invasive existing home
@@ -75,25 +78,38 @@
     <EmptyState message="No agents yet. Create your first." />
   {:else}
     {#if controls}
+      <!-- One row, no visible labels: each picker's first option already
+           says what it filters ("All groups", "All statuses"), and the
+           search box carries its icon. The labels stay for screen readers. -->
       <div class="dashboard-controls">
-        <label class="dashboard-controls__field">
-          <span class="dashboard-controls__label">Search agents</span>
-          <input
-            class="dashboard-controls__input"
-            type="search"
-            placeholder="Name, group, what it does"
-            bind:value={query}
-          />
-        </label>
-        <label class="dashboard-controls__field">
-          <span class="dashboard-controls__label">Group</span>
-          <select class="dashboard-controls__input" bind:value={group}>
+        <div class="dashboard-controls__select">
+          <select class="dashboard-controls__input" aria-label="Group" bind:value={group}>
             <option value="">All groups</option>
             {#each groups as name (name)}
               <option value={name}>{name}</option>
             {/each}
           </select>
-        </label>
+          <CaretDown class="dashboard-controls__caret" size={14} aria-hidden="true" />
+        </div>
+        <div class="dashboard-controls__select">
+          <select class="dashboard-controls__input" aria-label="Status" bind:value={status}>
+            <option value="">All statuses</option>
+            {#each STATUS_FILTERS as choice (choice.value)}
+              <option value={choice.value}>{choice.label}</option>
+            {/each}
+          </select>
+          <CaretDown class="dashboard-controls__caret" size={14} aria-hidden="true" />
+        </div>
+        <div class="dashboard-controls__search">
+          <MagnifyingGlass class="dashboard-controls__glass" size={16} aria-hidden="true" />
+          <input
+            class="dashboard-controls__input"
+            type="search"
+            aria-label="Search agents"
+            placeholder="Search"
+            bind:value={query}
+          />
+        </div>
       </div>
     {/if}
     {#if shown.length === 0}
@@ -119,41 +135,78 @@
     gap: var(--space-md);
   }
 
+  /* Top right, above the grid: filters first, search last, one row. */
   .dashboard-controls {
     display: flex;
     flex-wrap: wrap;
-    align-items: flex-end;
-    gap: var(--space-sm);
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-xs);
     margin-bottom: var(--space-md);
   }
 
-  .dashboard-controls__field {
+  .dashboard-controls__select,
+  .dashboard-controls__search {
+    position: relative;
     display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
-  .dashboard-controls__label {
-    color: var(--muted);
-    font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    align-items: center;
   }
 
   .dashboard-controls__input {
-    min-width: 14rem;
-    padding: var(--space-2xs) var(--space-sm);
+    box-sizing: border-box;
+    height: 2.25rem;
+    padding: 0 var(--space-sm);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--panel);
     color: var(--ink);
     font: inherit;
-    font-size: 0.9rem;
+    /* Geist Mono, the same face as the agent names on the cards below. */
+    font-family: var(--font-display-mono);
+    font-size: 0.8rem;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
 
+  .dashboard-controls__input:hover {
+    border-color: var(--ring);
+  }
+
+  .dashboard-controls__input:focus-visible {
+    border-color: var(--ring);
+    outline: none;
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 30%, transparent);
+  }
+
+  /* The selects draw their own caret, so they match the room's controls
+     instead of the operating system's. */
   .dashboard-controls select.dashboard-controls__input {
-    min-width: 10rem;
+    min-width: 9.5rem;
+    padding-right: 2rem;
+    appearance: none;
+    cursor: pointer;
+  }
+
+  .dashboard-controls__select :global(.dashboard-controls__caret) {
+    position: absolute;
+    right: 0.7rem;
+    color: var(--muted);
+    pointer-events: none;
+  }
+
+  .dashboard-controls__search input.dashboard-controls__input {
+    width: 20rem;
+    padding-left: 2.1rem;
+  }
+
+  .dashboard-controls__search input.dashboard-controls__input::placeholder {
+    color: var(--muted);
+  }
+
+  .dashboard-controls__search :global(.dashboard-controls__glass) {
+    position: absolute;
+    left: 0.7rem;
+    color: var(--muted);
+    pointer-events: none;
   }
 
   .skeleton-card {

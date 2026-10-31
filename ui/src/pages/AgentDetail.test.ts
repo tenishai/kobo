@@ -72,12 +72,11 @@ class NoopEventSource {
   close(): void {}
 }
 
-/** Opens the header's one overflow menu (page-shell wave, 2026-09-23).
- * Every portrait action and Edit details is an item inside it now, so a
- * test that reaches for one of those opens the menu first -- the items are
- * not in the DOM at all until then. */
+/** Opens the portrait menu (agent-page redesign, 2026-10-31): the avatar is
+ * its trigger, and the portrait actions are not in the DOM until it opens.
+ * Edit details is a button of its own in the header now. */
 async function openHeaderMenu(): Promise<void> {
-  await fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+  await fireEvent.click(screen.getByRole("button", { name: "Change portrait" }));
 }
 
 /** One item in the Harness tab's own section list. Matched inside its nav
@@ -194,7 +193,7 @@ describe("AgentDetail tabs", () => {
       },
     });
     renderWithClient(AgentDetail);
-    const destroy = await screen.findByRole("button", { name: "Destroy..." });
+    const destroy = await screen.findByRole("button", { name: "Destroy" });
     expect(destroy.closest('[role="tabpanel"]')).toBeNull();
     expect((screen.getByRole("tab", { name: "Settings" }) as HTMLButtonElement).disabled).toBe(
       true,
@@ -240,7 +239,7 @@ describe("AgentDetail tabs", () => {
     });
     renderWithClient(AgentDetail);
     await screen.findByRole("button", { name: "Retry" });
-    expect(screen.queryByRole("button", { name: "Destroy..." })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Destroy" })).toBeNull();
   });
 
   it("offers no destroy while an agent is still being built", async () => {
@@ -251,7 +250,7 @@ describe("AgentDetail tabs", () => {
     });
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Settings" });
-    expect(screen.queryByRole("button", { name: "Destroy..." })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Destroy" })).toBeNull();
   });
 
   it("disables every tab trigger while provisioning, so a click can't dead-end into a 409", async () => {
@@ -372,7 +371,7 @@ describe("AgentDetail tabs", () => {
       await screen.findByText(/^Updating: the changes you made are on their way/);
       // The chat box answers for the whole page: it rests on `frozen` alone.
       expect(
-        (screen.getByPlaceholderText("Say something…") as HTMLTextAreaElement).disabled,
+        (screen.getByLabelText("Your message") as HTMLTextAreaElement).disabled,
       ).toBe(true);
       expect(
         (screen.getByRole("button", { name: "Start a shared thread" }) as HTMLButtonElement)
@@ -389,7 +388,7 @@ describe("AgentDetail tabs", () => {
     }
     await waitFor(() => {
       expect(
-        (screen.getByPlaceholderText("Say something…") as HTMLTextAreaElement).disabled,
+        (screen.getByLabelText("Your message") as HTMLTextAreaElement).disabled,
       ).toBe(false);
     });
   });
@@ -923,7 +922,7 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
     const settings = await openSettings();
 
     expect(within(settings).getByText("Convert to connected")).not.toBeNull();
-    expect(within(settings).getByRole("button", { name: "Convert..." })).not.toBeNull();
+    expect(within(settings).getByRole("button", { name: "Convert" })).not.toBeNull();
   });
 
   it("keeps the action out of every other tab, where it used to render", async () => {
@@ -937,7 +936,7 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
   it("asks no run mode question, since a composed agent already serves web traffic", async () => {
     renderWithClient(AgentDetail);
     await openSettings();
-    await fireEvent.click(screen.getByRole("button", { name: "Convert..." }));
+    await fireEvent.click(screen.getByRole("button", { name: "Convert" }));
 
     expect(screen.queryByRole("radio")).toBeNull();
     expect(

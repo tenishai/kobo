@@ -39,3 +39,6 @@ api/venv/
 
 scratch*.txt
 CLAUDE.local.md
+
+# The UI lab's throwaway room (api/scripts/ui_lab.py)
+/api/.lab/
