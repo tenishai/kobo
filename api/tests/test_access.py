@@ -6161,7 +6161,7 @@ def test_a_github_connect_uses_the_rooms_app_writes_the_secret_and_puts_the_gith
     assert target == expected
     assert target["auth_method"] == "service-token" and target["credential_key"] == "GITHUB_TOKEN"
     assert target["required_scope"] == "github:read" and target["headers"] == {"X-MCP-Readonly": "true"}
-    assert target["catalog_headers_env"] == {"Authorization": "GITHUB_MCP_CATALOG_AUTHORIZATION"}
+    assert target["catalog_token_provider"] == "github-app" and "catalog_headers_env" not in target
     assert target["address"] == "https://api.githubcopilot.com" and "abc" not in str(target)
     out = client.delete(f"/api/admin/integrations/{row['id']}", headers=headers).json()
     assert out["gateway"] == "removed from the gateway" and "github-mcp" not in admin.targets
