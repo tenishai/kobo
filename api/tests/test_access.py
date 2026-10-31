@@ -5981,9 +5981,16 @@ def test_the_gateway_lane_follows_the_datadog_permission(tmp_path, fake_storage)
     """Gate (authorization): approving an agent's first Datadog permission opens its lane on the
     gateway (scope `datadog:read`, handlers `datadog` and `datadog-mcp`) beside what its grant
     already held; revoking the last one closes it and leaves the rest alone (kobo#327)."""
+    import yaml as _yaml
+
     bab = FakeBab(integrations=[{"integration": "datadog", "vendor": "datadog", "ceiling": ["datadog_monitors_read"],
                                  "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"}])
-    c, h = _room(tmp_path, fake_storage, bab=bab)
+    bare = ("name: ledger\ncard: agent-card.json\npersona: persona.md\n"
+            "transports:\n  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
+            "tools: {provider: colleagues, liminal: {url: http://liminal.test, token_env: CABAL_COLLEAGUE_TOKEN, exchange_url: http://cabal.test}, "
+            "allow: [colleagues.list_colleagues]}\nmemory: {personal: techne, home: /techne}\n")
+    github = FakeGitHub(existing_repos={"example-org/agent-ledger"}, extra_clone_files={"bundle/agent.yaml": bare}, track_pushed_content=True)
+    c, h = _room(tmp_path, fake_storage, bab=bab, github=github)
     admin = FakeLiminalAdmin([GatewayGrant(issuer="cabal-core", persona="ledger", scopes=("x:read",), allowed_handlers=("scratchpad",))])
     c.app.state.clients.liminal_admin = admin
     rid = c.post("/api/agents/ledger/access/requests", headers=h,
@@ -5995,11 +6002,27 @@ def test_the_gateway_lane_follows_the_datadog_permission(tmp_path, fake_storage)
     lane = admin.grants[("cabal-core", "ledger")]
     assert set(lane.scopes) == {"x:read", "datadog:read"}
     assert set(lane.allowed_handlers) == {"scratchpad", "datadog", "datadog-mcp"}
+    # The approve also opens the bundle: the runtime offers a gateway tool only when the
+    # allow list matches it, so the vendor's patterns are pushed once (one restart).
+    pushed = _yaml.safe_load(github.pushed_file("bundle/agent.yaml"))
+    assert pushed["tools"]["allow"] == ["colleagues.list_colleagues", "datadog-mcp.*", "datadog.*"], pushed["tools"]
+    assert github.pushes[-1][1] == "kobo: allow the datadog tools"
     (grant,) = bab.grants("ledger", "x")
     assert c.delete(f"/api/agents/ledger/access/grants/{grant['id']}", headers=h).status_code == 200
     lane = admin.grants[("cabal-core", "ledger")]
     assert set(lane.scopes) == {"x:read"} and set(lane.allowed_handlers) == {"scratchpad"}
     assert c.post("/api/admin/access/sync", headers=h).json()["gateway_lanes"] == {"set": 0, "unchanged": 1, "failed": 0}
+    # A bundle that already admits the vendor's tools is left alone on a later approve.
+    already = bare.replace("allow: [colleagues.list_colleagues]", "allow: [colleagues.list_colleagues, datadog.*, datadog-mcp.*]")
+    github3 = FakeGitHub(existing_repos={"example-org/agent-ledger"}, extra_clone_files={"bundle/agent.yaml": already}, track_pushed_content=True)
+    bab3 = FakeBab(integrations=[{"integration": "datadog", "vendor": "datadog", "ceiling": ["datadog_monitors_read"],
+                                  "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"}])
+    c3, h3 = _room(tmp_path / "three", fake_storage, bab=bab3, github=github3)
+    c3.app.state.clients.liminal_admin = FakeLiminalAdmin([])
+    rid3 = c3.post("/api/agents/ledger/access/requests", headers=h3,
+                   json={"integration": "datadog", "permissions": ["datadog_monitors_read"], "note": "monitors"}).json()["id"]
+    c3.post("/api/admin/access/decide", headers=h3, json={"ids": [rid3], "verdict": "approve"})
+    assert github3.push_count == 0
 
 
 # --- from test_composer.py ---
