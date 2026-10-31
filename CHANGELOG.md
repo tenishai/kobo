@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.27] - 2026-10-31
+
 ### Changed
 
 - **The room's look: the shadcn-svelte foundation, on the room's own tokens.** Tailwind v4 and
