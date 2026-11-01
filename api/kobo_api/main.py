@@ -9190,9 +9190,14 @@ def create_app(
             # match. Commit-only — no secret delivery, no reprovision, see
             # kobo_api.slack_setup.rewire_slack_channels's own docstring.
             clients = app.state.clients
+            # A room-made app (issue #371, the relay row is the sign) answers
+            # in every channel it is invited to until channels are listed, so
+            # clearing the list writes that open entry back; an empty list on
+            # an app from the Slack tab's paste flow disconnects, as before.
+            room_made = app.state.config.slack_relay and _relay_row(session, agent) is not None
             try:
                 sha = rewire_slack_channels(
-                    clients.github, repo=agent.repo_full_name, channels=cleaned
+                    clients.github, repo=agent.repo_full_name, channels=cleaned, every_channel=room_made
                 )
             except ClientError as exc:
                 log.warning("slack rewire failed: %s", exc)

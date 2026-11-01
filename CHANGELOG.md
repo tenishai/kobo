@@ -6,6 +6,18 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A room-made Slack app answers wherever it is invited.** The Slack row on the Access tab
+  now says so: invite the agent to any channel and it answers there; the channel list only
+  narrows it, and the empty list reads "Answers in every channel it is invited to." Clearing
+  the list on a room-made app writes the open entry back into the agent's files, so it keeps
+  answering instead of going silent (`PUT /api/agents/{name}/slack/channels`). After
+  **Install to Slack** the person lands on the Access tab with the Slack row scrolled into
+  view and lit for a moment (`?vendor=slack`, read once and dropped), and an install that did
+  not finish says so on the row itself. The guide's Slack section says the same. The Slack
+  tab's own allowlist wording is unchanged.
+
 ## [0.3.32] - 2026-11-01
 
 ### Changed

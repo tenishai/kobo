@@ -7,7 +7,7 @@ If the room itself has no Slack integration yet, the tab is a greyed box with on
 
 ## When the room makes the app for you
 
-In some rooms Slack is a row on the **Access** tab instead, with the other vendors. There is nothing to copy or paste: pick **Wakes on**, press **Create Slack app**, then **Install to Slack**. Slack asks you to allow the app in your workspace and sends you straight back to the agent's page, now showing the workspace, the channel list and **Wakes on**. Until you pick channels the agent answers in every channel it is invited to. Changing **Wakes on** later applies on its own, and **Remove** takes the app out of Slack. An agent connected the older way, from the Slack tab, keeps that tab and keeps working. The rest of this section describes the Slack tab.
+In some rooms Slack is a row on the **Access** tab instead, with the other vendors. There is nothing to copy or paste: pick **Wakes on**, press **Create Slack app**, then **Install to Slack**. Slack asks you to allow the app in your workspace and sends you straight back to the agent's page, with the Slack row in view: the workspace, the channel list and **Wakes on**. Invite the agent to any channel in Slack and it answers there; no channel ID is needed to get started. The channel list only narrows it: list channels and it answers in those alone, clear the list and it answers wherever it is invited again. Changing **Wakes on** later applies on its own, and **Remove** takes the app out of Slack. An agent connected the older way, from the Slack tab, keeps that tab and keeps working. The rest of this section describes the Slack tab.
 
 ## 1. Where it answers
 

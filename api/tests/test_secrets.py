@@ -1512,7 +1512,7 @@ def test_install_callback_stores_the_bot_token_through_the_lane_and_redirects(
     response = client.get(f"/slack/oauth/callback?code=fake-code&state={state}", follow_redirects=False)
 
     assert response.status_code == 302
-    assert response.headers["location"] == f"/#/agents/{AGENT_NAME}/access"
+    assert response.headers["location"] == f"/#/agents/{AGENT_NAME}/access?vendor=slack"
     assert slack.oauth_calls == [{"client_id": "fake-client-id", "code": "fake-code",
                                   "redirect_uri": "http://testserver/slack/oauth/callback"}]
     assert sero.puts == [(OPERATOR_EMAIL, f"apps/{AGENT_NAME}/slack", {"SLACK_BOT_TOKEN": "xoxb-fake-bot-token"})]

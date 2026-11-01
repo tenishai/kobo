@@ -9,8 +9,10 @@
   //   so it is picked before the app exists), then Create Slack app;
   // - created: the app exists at Slack; Install to Slack opens Slack's own
   //   install page in this tab and Slack sends the person back here;
-  // - installed: the workspace and app, the channels the agent answers in
-  //   (the editor the Slack tab has), Wakes on, and Remove.
+  // - installed: the workspace and app, the channels (the editor the Slack
+  //   tab has, but with the open default: a room-made app is wired at Create
+  //   to answer in every channel it is invited to, and the list only narrows
+  //   it; clearing the list opens it again), Wakes on, and Remove.
   //
   // Renders nothing unless the room makes Slack apps itself (the agent's
   // `slack.relay`); an agent with an app from the Slack tab's paste flow
@@ -26,7 +28,7 @@
     setSlackWakeMutation,
     slackAppQuery,
   } from "../lib/queries";
-  import { hashQuery } from "../lib/router.svelte";
+  import { clearHashQuery, hashQuery } from "../lib/router.svelte";
   import VendorMark from "./VendorMark.svelte";
 
   let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
@@ -52,9 +54,27 @@
   ];
   const MAX_CHANNELS = 8;
 
-  // Slack sends the person back with `slack=failed` in the hash when an
-  // install did not finish; read once at mount, the way the router does.
-  const installFailed = typeof window !== "undefined" && hashQuery(window.location.hash).slack === "failed";
+  // Slack sends the person back here after Install to Slack with
+  // `vendor=slack` in the hash, plus `slack=failed` when the install did not
+  // finish. Both are read once at mount, the way the router's panes do: the
+  // section scrolls into view and lights up for a moment, the failure
+  // sentence sits on the row itself, and the query is dropped so a reload
+  // or a copied link does not replay it.
+  const arrival = typeof window !== "undefined" ? hashQuery(window.location.hash) : {};
+  const installFailed = arrival.slack === "failed";
+  const arrived = arrival.vendor === "slack" || installFailed;
+  let highlight = $state(false);
+  let sectionEl = $state<HTMLElement | null>(null);
+  let brought = false;
+  $effect(() => {
+    if (!arrived || brought || !sectionEl) return;
+    brought = true;
+    sectionEl.scrollIntoView({ block: "start", behavior: "smooth" });
+    clearHashQuery();
+    highlight = true;
+    const timer = setTimeout(() => (highlight = false), 2500);
+    return () => clearTimeout(timer);
+  });
 
   // --- Wakes on: local before the app exists, saved on pick after ----------
   let wake = $state<SlackWake | null>(null);
@@ -155,7 +175,10 @@
       const result = await saveChannels.mutateAsync([...cleaned]);
       baseChannels = [...(result.channels ?? [])];
       rows = baseChannels.map((value) => ({ id: nextRowId++, value }));
-      saveNote = "Saved. The agent answers in these channels once it has picked the change up.";
+      saveNote =
+        baseChannels.length > 0
+          ? "Saved. The agent answers in these channels once it has picked the change up."
+          : "Saved. The agent answers in every channel it is invited to once it has picked the change up.";
     } catch (err) {
       saveError = errorMessage(err, "Couldn't save the channels. Try again.");
     }
@@ -204,11 +227,11 @@
 {#snippet channelsEditor()}
   <div class="channels">
     <p class="copy">
-      Add each channel's ID, then invite @{agentName} to it in Slack. The agent answers only in channels listed here.
+      Invite @{agentName} to any channel in Slack and it answers there. To limit it to certain channels, list them here.
     </p>
     <ul class="channel-list">
       {#if rows.length === 0}
-        <li class="channel-empty">No channels yet.</li>
+        <li class="channel-empty">Answers in every channel it is invited to.</li>
       {/if}
       {#each rows as row, index (row.id)}
         <li class="channel">
@@ -258,7 +281,7 @@
 
 {#if relayOn && view.data}
   {@const data = view.data}
-  <section class="vendor" aria-label="Slack">
+  <section class="vendor" class:vendor--arrived={highlight} aria-label="Slack" bind:this={sectionEl}>
     <div class="vendor__head">
       <VendorMark id="slack" name="Slack" size={18} />
       <span class="vendor__name">Slack</span>
@@ -343,7 +366,8 @@
 {/if}
 
 <style>
-  .vendor { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
+  .vendor { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; transition: border-color 0.6s ease, box-shadow 0.6s ease; }
+  .vendor--arrived { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
   .vendor__head { display: flex; align-items: center; gap: var(--space-sm); width: 100%; padding: var(--space-sm) var(--space-md); border-bottom: 1px solid var(--border); background: var(--bg); color: var(--ink); text-align: left; }
   .vendor__name { font-size: 0.95rem; font-weight: 600; }
   .vendor__note { flex: 1; min-width: 0; color: var(--muted); font-size: 0.82rem; }
@@ -370,7 +394,7 @@
   .channel-list { display: flex; flex-direction: column; margin: 0; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-sm); list-style: none; }
   .channel, .channel-empty { display: flex; align-items: center; gap: var(--space-xs); min-height: 2.6rem; padding: 0 var(--space-xs) 0 var(--space-sm); }
   .channel + .channel { border-top: 1px solid var(--border); }
-  .channel-empty { color: var(--muted); font-size: 0.85rem; }
+  .channel-empty { color: var(--ink); font-size: 0.85rem; }
   .channel :global(.channel__hash) { flex-shrink: 0; color: var(--muted); }
   .channel__input { flex: 1; min-width: 0; padding: var(--space-2xs) var(--space-xs); border: 1px solid transparent; border-radius: 0.35rem; background: transparent; color: var(--ink); font-family: var(--font-display-mono); font-size: 0.82rem; }
   .channel__input:hover:not(:disabled) { background: var(--bg); }

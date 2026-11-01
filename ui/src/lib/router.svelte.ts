@@ -171,18 +171,41 @@ function sync(): void {
   route.section = next.section;
 }
 
+/** The hash without the query a pane reads for itself (`hashQuery`). */
+function hashPath(hash: string): string {
+  return hash.split("?")[0];
+}
+
 /** Navigate to `to` by updating `location.hash` (which drives `route` via `hashchange`). */
 export function navigate(to: Route): void {
   if (typeof location === "undefined") {
     return;
   }
   const hash = formatHash(to);
-  if (location.hash === hash) {
-    // Setting an unchanged hash doesn't fire `hashchange` — sync directly.
+  if (hashPath(location.hash) === hash) {
+    // The same route is already showing. Setting an unchanged hash doesn't
+    // fire `hashchange`, so sync directly; and a query riding on it
+    // (`#/agents/clio/access?vendor=slack`, the Slack install's way back)
+    // is the pane's to read and clear (`clearHashQuery`), never the
+    // router's to drop on the way past.
     sync();
     return;
   }
   location.hash = hash;
+}
+
+/** Drop the query from the hash once the pane that reads it is done, so a
+ * reload or a copied link does not replay it. No history entry and no route
+ * change: the path stays exactly what it was. */
+export function clearHashQuery(): void {
+  if (typeof location === "undefined" || typeof history === "undefined") {
+    return;
+  }
+  const path = hashPath(location.hash);
+  if (path === location.hash) {
+    return;
+  }
+  history.replaceState(history.state, "", `${location.pathname}${location.search}${path}`);
 }
 
 if (typeof window !== "undefined") {

@@ -20,8 +20,9 @@ room's OAuth server and MCP surface (`kobo_api.iap.EXEMPT_PREFIXES`):
   `oauth.v2.access` using the app's client pair, the bot token goes through
   the agent's secrets lane exactly as the paste flow's does, the workspace
   and app name are recorded, the agent is restarted, and the person lands
-  back on the agent's Access tab. Any failure lands there too, with
-  `slack=failed` in the hash and nothing else.
+  back on the agent's Access tab with the Slack row in view (`vendor=slack`
+  in the hash). Any failure lands there too, with `slack=failed` added and
+  nothing else.
 
 Both routes answer 404 while the org's `slack_relay` switch is off, so a
 room that has not turned the flow on has nothing public here.
@@ -94,6 +95,9 @@ FORWARD_TIMEOUT_S = 10.0
 SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
 # The one sentence the failed redirect carries, as a hash query value.
 FAILED_QUERY = "slack=failed"
+# The Access tab scrolls to the Slack row and highlights it once when the
+# hash carries this; the page clears it after reading.
+VENDOR_QUERY = "vendor=slack"
 
 
 # --- ids, secrets and urls ------------------------------------------------------
@@ -365,13 +369,13 @@ async def relay(
 
 
 def _agent_page(name: str | None, *, failed: bool) -> str:
-    """Where the callback sends the person: the agent's Access tab, or the
-    agent list when the state named no agent."""
+    """Where the callback sends the person: the agent's Access tab with the
+    Slack row brought into view (`?vendor=slack`, which the page reads once),
+    or the agent list when the state named no agent."""
     if name:
-        path = f"/#/agents/{quote(name)}/access"
-    else:
-        path = "/#/agents"
-    return f"{path}?{FAILED_QUERY}" if failed else path
+        path = f"/#/agents/{quote(name)}/access?{VENDOR_QUERY}"
+        return f"{path}&{FAILED_QUERY}" if failed else path
+    return f"/#/agents?{FAILED_QUERY}" if failed else "/#/agents"
 
 
 def _failed(name: str | None) -> RedirectResponse:
