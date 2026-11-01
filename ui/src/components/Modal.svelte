@@ -23,6 +23,7 @@
   let {
     open,
     title,
+    description,
     size = "default",
     onclose,
     children,
@@ -30,6 +31,8 @@
   }: {
     open: boolean;
     title?: string;
+    /** One sentence under the title saying what the dialog asks for. */
+    description?: string;
     /** 28rem for a confirm, 36rem for a form, 44rem for a picker. */
     size?: "narrow" | "default" | "wide";
     onclose: () => void;
@@ -109,10 +112,13 @@
     document.body.style.overflow = "hidden";
 
     // Wait for the {#if open} block below to mount before looking for
-    // something inside it to focus.
+    // something inside it to focus. A dialog that wants focus to land on
+    // one field marks it `data-autofocus`; otherwise the first focusable
+    // thing (the close button) takes it.
     tick().then(() => {
+      const preferred = dialogEl?.querySelector<HTMLElement>("[data-autofocus]") ?? null;
       const [first] = focusables();
-      (first ?? dialogEl)?.focus();
+      (preferred ?? first ?? dialogEl)?.focus();
     });
 
     return () => {
@@ -134,13 +140,19 @@
       role="dialog"
       aria-modal="true"
       aria-labelledby={title ? "modal-title" : undefined}
+      aria-describedby={description ? "modal-description" : undefined}
       tabindex="-1"
       bind:this={dialogEl}
       onkeydown={handleKeydown}
     >
       <div class="modal__header">
         {#if title}
-          <h2 id="modal-title" class="modal__title">{title}</h2>
+          <div class="modal__heading">
+            <h2 id="modal-title" class="modal__title">{title}</h2>
+            {#if description}
+              <p id="modal-description" class="modal__description">{description}</p>
+            {/if}
+          </div>
         {/if}
         <button
           type="button"

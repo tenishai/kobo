@@ -101,6 +101,8 @@ describe("CreateModal — the persona list (plain-form wave)", () => {
     const link = screen.getByRole("button", { name: "Build your own persona" });
     expect(link.closest(".field__label-row")?.querySelector(".field__label")?.textContent)
       .toBe("Persona");
+    // A button on the header row, not a link in the copy.
+    expect(link.tagName).toBe("BUTTON");
 
     await fireEvent.click(link);
 
@@ -116,6 +118,21 @@ describe("CreateModal — the persona list (plain-form wave)", () => {
       container.querySelector(".modal__body")?.nextElementSibling,
     ).toBeNull();
     expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
+  });
+
+  it("draws a persona row as the name in plain text beside its one line, never as code", async () => {
+    // Contract: the restyle of 2026-11-01. The name reads in ink at text
+    // weight; a code element would bring the monospace back.
+    stubCreateModalCatalogs({ "/api/personas/search": { results: [HELPER] } });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+
+    const radio = await screen.findByRole("radio", { name: /Helper/i });
+    const row = radio.closest("label") as HTMLElement;
+    expect(row.querySelector("code, pre, kbd")).toBeNull();
+    const name = row.querySelector(".list__name") as HTMLElement;
+    expect(name.tagName).toBe("SPAN");
+    expect(name.textContent).toBe("Helper");
+    expect(row.querySelector(".list__desc")?.textContent?.trim()).toBe("Helps with things.");
   });
 });
 
@@ -730,9 +747,11 @@ describe("CreateModal — models from the connected clouds (kobo#390)", () => {
     await findFormReady();
     await pickHelperAndName();
 
-    expect(
-      screen.getByText(/Connect a cloud with models under Admin, Integrations, before creating an agent\./),
-    ).not.toBeNull();
+    const gate = screen.getByText(
+      /Connect a cloud with models under Admin, Integrations, before creating an agent\./,
+    );
+    // Contract: the gate sits directly under the list it is about.
+    expect(gate.previousElementSibling).toBe(screen.getByRole("radiogroup", { name: "Model" }));
     const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
   });

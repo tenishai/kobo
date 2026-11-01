@@ -101,56 +101,71 @@
 </div>
 
 <style>
+  /* Drawn like the persona list beside it: hairline-divided rows, a group
+     label in small caps grey over each run, the name in ink and the reason
+     a row is off in grey on the same line. */
   .models {
     display: flex;
     flex-direction: column;
-    gap: 2px;
     max-height: 13rem;
+    min-width: 0;
     overflow-y: auto;
-    padding: var(--space-xs);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--panel);
   }
   .models__group {
-    margin: var(--space-xs) 0 2px;
+    margin: 0;
+    padding: var(--space-xs) var(--space-sm) var(--space-2xs);
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
     font-size: 0.72rem;
     font-weight: 600;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: var(--muted);
-  }
-  .models__group:first-child {
-    margin-top: 0;
   }
   .model-row {
     display: flex;
-    align-items: flex-start;
+    min-height: 2.5rem;
+    align-items: center;
     gap: var(--space-xs);
-    padding: 4px var(--space-xs);
-    border-radius: var(--radius-sm);
+    padding: var(--space-2xs) var(--space-sm);
+    border-bottom: 1px solid var(--border);
     color: var(--ink);
     cursor: pointer;
   }
-  .model-row:hover {
-    background: var(--bg);
+  .model-row:last-child {
+    border-bottom: none;
   }
+  .model-row:hover {
+    background: var(--accent-soft);
+  }
+  /* Dimmed, still readable: the name stays ink, the reason says why. */
   .model-row--off {
+    opacity: 0.7;
     cursor: default;
   }
+  .model-row--off:hover {
+    background: none;
+  }
   .model-row input {
-    margin-top: 3px;
+    flex: none;
+    margin: 0;
   }
   .model-row__text {
     display: flex;
-    flex-direction: column;
-    font-size: 0.9rem;
+    flex: 1;
+    min-width: 0;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--space-xs);
+    font-size: 0.875rem;
   }
   .model-row__name {
     color: var(--ink);
   }
   .model-row__reason {
-    font-size: 0.78rem;
     color: var(--muted);
+    font-size: 0.8rem;
   }
 </style>
