@@ -174,14 +174,21 @@ export type AgentDetail = AgentSummary & {
    * by the decide gate (destroy_visible precedent): the panel hides its
    * verdict buttons off this; the route stays the real enforcement. */
   can_decide_learnings: boolean;
-  /** The image this agent runs on (harness wave, 2026-09-23). Already
-   * resolved server-side: an agent that never moved off the org default
-   * carries no image of its own, and the read route answers with the
-   * room's rather than nothing. Absent on an older server. */
+  /** The runtime this agent runs on (harness wave, 2026-09-23): what its
+   * files say it is built on when the room has read them, else the room's
+   * default resolved server-side. Absent on an older server. */
   runtime_image?: string;
-  /** The image the room builds on today. The Harness tab's state line is
-   * the comparison of the two: equal is "Current", different is "Behind".
-   * Absent on an older server. */
+  /** What the agent is built on right now, as the room read it from the
+   * agent's files (2026-11-01). Null until the room has read them once
+   * after boot; the Harness tab then says it is checking. The state line
+   * compares THIS with `room_runtime_image`, never the resolved
+   * `runtime_image`, which for an agent that follows the room is the
+   * room's own pin and so always read "up to date". */
+  built_runtime_image?: string | null;
+  /** Whether the agent deliberately holds a runtime of its own instead of
+   * following the room (2026-11-01). */
+  runtime_pinned?: boolean;
+  /** The runtime the room builds on today. Absent on an older server. */
   room_runtime_image?: string;
   /** Whether the agent may consult its colleagues (issue #131): `default`,
    * `roster-only` or `none`. Absent on an older server. */

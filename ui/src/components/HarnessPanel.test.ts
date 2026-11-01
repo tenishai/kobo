@@ -28,6 +28,8 @@ const BASE_PROPS = {
   model: "claude-x",
   modelLabel: "Claude X",
   runtimeImage: ROOM_RUNTIME,
+  builtRuntimeImage: ROOM_RUNTIME,
+  runtimePinned: false,
   roomRuntimeImage: ROOM_RUNTIME,
   canUpdateRuntime: false,
   pendingLearnings: 0,
@@ -106,23 +108,73 @@ describe("HarnessPanel model and runtime", () => {
     renderWithClient(HarnessPanel, {
       ...BASE_PROPS,
       runtimeImage: OLD_RUNTIME,
+      builtRuntimeImage: OLD_RUNTIME,
       roomRuntimeImage: `${ROOM_RUNTIME}@${digest}`,
     });
 
-    const behind = within(body("runtime")).getByText(/Behind/);
+    const behind = within(body("runtime")).getByText(/Runs on/);
     expect(behind.textContent).toContain("v10");
     expect(behind.textContent).not.toContain("sha256");
+  });
+
+  it("reads behind from what the agent is built on, not from the resolved runtime (2026-11-01)", async () => {
+    // The bug: an agent that follows the room has no runtime of its own, so
+    // the resolved value IS the room's pin and the old comparison always
+    // said current. The built fact says what it really runs on.
+    renderWithClient(HarnessPanel, {
+      ...BASE_PROPS,
+      runtimeImage: OLD_RUNTIME,
+      builtRuntimeImage: OLD_RUNTIME,
+      runtimePinned: false,
+      canUpdateRuntime: true,
+    });
+
+    const runtime = body("runtime");
+    const line = within(runtime).getByText(/Runs on/);
+    expect(line.textContent).toContain("v9");
+    expect(line.textContent).toContain("v10");
+    expect(within(runtime).queryByText("Runtime is up to date")).toBeNull();
+    expect(within(runtime).getByRole("button", { name: "Update to current" })).not.toBeNull();
+  });
+
+  it("says Pinned, with the move button, for an agent held on a runtime of its own", async () => {
+    renderWithClient(HarnessPanel, {
+      ...BASE_PROPS,
+      runtimeImage: OLD_RUNTIME,
+      builtRuntimeImage: OLD_RUNTIME,
+      runtimePinned: true,
+      canUpdateRuntime: true,
+    });
+
+    const runtime = body("runtime");
+    expect(within(runtime).getByText(/Pinned to v9/)).not.toBeNull();
+    expect(within(runtime).queryByRole("button", { name: "Update to current" })).toBeNull();
+    expect(within(runtime).getByRole("button", { name: "Move to the room's runtime" })).not.toBeNull();
+  });
+
+  it("says it is checking, and offers nothing, until the room has read what the agent runs on", async () => {
+    renderWithClient(HarnessPanel, {
+      ...BASE_PROPS,
+      builtRuntimeImage: null,
+      canUpdateRuntime: true,
+    });
+
+    const runtime = body("runtime");
+    expect(within(runtime).getByText("Checking what it runs on.")).not.toBeNull();
+    expect(within(runtime).queryByText(/up to date/)).toBeNull();
+    expect(within(runtime).queryByRole("button", { name: "Update to current" })).toBeNull();
   });
 
   it("offers the update only to an operator", async () => {
     renderWithClient(HarnessPanel, {
       ...BASE_PROPS,
       runtimeImage: OLD_RUNTIME,
+      builtRuntimeImage: OLD_RUNTIME,
       canUpdateRuntime: false,
     });
 
     const runtime = body("runtime");
-    expect(within(runtime).getByText(/Behind/)).not.toBeNull();
+    expect(within(runtime).getByText(/Runs on/)).not.toBeNull();
     expect(
       within(runtime).queryByRole("button", { name: "Update to current" }),
     ).toBeNull();
@@ -140,6 +192,7 @@ describe("HarnessPanel model and runtime", () => {
     renderWithClient(HarnessPanel, {
       ...BASE_PROPS,
       runtimeImage: OLD_RUNTIME,
+      builtRuntimeImage: OLD_RUNTIME,
       canUpdateRuntime: true,
     });
 
@@ -234,6 +287,8 @@ describe("HarnessPanel for a connected agent", () => {
         "This agent brings its own harness. The room shows what it runs on and nothing more.",
       ),
     ).not.toBeNull();
+    // Its own runtime is never behind the room's: no state line, no button.
+    expect(within(body("runtime")).queryByText(/up to date|Runs on|Checking/)).toBeNull();
   });
 
   it("mounts none of the bundle-backed panels, so none of them asks for a bundle", async () => {

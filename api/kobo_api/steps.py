@@ -972,6 +972,10 @@ class RepoStep:
         # crash came before the create), the branch above falls through and
         # the create runs now.
         agent.repo_full_name = repo
+        # The fact beside the intent (2026-11-01): the Dockerfile this
+        # compose wrote carries `spec.runtime_image` on its FROM line, and
+        # the Harness page compares that fact with the room's pin.
+        agent.built_runtime_image = spec.runtime_image
         ctx.session.commit()
         github.create_repo_from_dir(repo, compose_dir)
         return f"created {repo}"
@@ -1053,6 +1057,8 @@ class ComposeDirectoryStep:
             os.replace(target, previous)
         os.replace(incoming, target)
         shutil.rmtree(previous, ignore_errors=True)
+        # Same fact RepoStep records: what the composed Dockerfile builds on.
+        agent.built_runtime_image = spec.runtime_image
         return f"composed into {target}"
 
 

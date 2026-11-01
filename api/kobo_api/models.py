@@ -95,6 +95,16 @@ class Agent(Base):
     # DB -- apply manually there (fresh DBs get it free via create_all):
     #   ALTER TABLE agents ADD COLUMN runtime_image VARCHAR;
     runtime_image: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # What the agent is built on right now (2026-11-01): the ref its
+    # repository's Dockerfile `FROM` line carries, recorded by every path
+    # that writes that line (compose at create, the fast-lane re-pins, the
+    # runtime route) and backfilled at boot from the file itself
+    # (`kobo_api.runtime_truth`). Distinct from `runtime_image` above, which
+    # is the CHOICE (NULL = follow the room); this is the FACT. The Harness
+    # page compares this, not the choice, with the room's pin, so an agent
+    # that followed the room onto an older runtime reads as behind once the
+    # room moves. NULL means the room has not read the file yet.
+    built_runtime_image: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # Archetype marker (team-guide spec 2026-09-14): the create-time recipe
     # this agent was born from (`kobo_api.archetypes.ARCHETYPE_TEAM_GUIDE`),
     # or None for an ordinary agent. Recorded on the row rather than inferred
