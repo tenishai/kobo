@@ -176,6 +176,7 @@ import {
   fetchAdminRoles,
   fetchAdminRoom,
   fetchAgentAccess,
+  fetchGithubRepositories,
   fetchAgentLeases,
   fetchColleagueFeed,
   fetchDeliveryState,
@@ -241,6 +242,7 @@ import {
   removeGrant,
   type RequestableAgent,
   type RequestableResult,
+  putGithubRepositories,
   requestAgentAccess,
   requestGroup,
   restartAgent,
@@ -625,7 +627,7 @@ export function putRoomServiceMutation(queryClient: QueryClient) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "room-services"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
-      // The Slack tab and the Repositories card read the room's state too.
+      // The Slack tab reads the room's state too.
       queryClient.invalidateQueries({ queryKey: ["agents"] });
     },
   };
@@ -776,6 +778,29 @@ export function requestAgentAccessMutation(queryClient: QueryClient, name: strin
       // requestable list and into "already".
       queryClient.invalidateQueries({ queryKey: ["agents", name, "requestable"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "access"] });
+    },
+  };
+}
+
+/** The room's GitHub installation's repositories, with this agent's set
+ * marked (issue #365). Read only while the picker is on GitHub. */
+export function githubRepositoriesQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "github", "repositories"] as const,
+    queryFn: () => fetchGithubRepositories(name),
+    staleTime: 15_000,
+    retry: shouldRetry,
+  });
+}
+
+export function putGithubRepositoriesMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (repositories: string[]) => putGithubRepositories(name, repositories),
+    onSuccess: () => {
+      // The access view's GitHub account is now the child (or a new set on
+      // it), and the list's `selected` moved with it.
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "access"] });
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "github", "repositories"] });
     },
   };
 }

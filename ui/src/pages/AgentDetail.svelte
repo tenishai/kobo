@@ -52,7 +52,6 @@
   import AccessPanel from "../components/AccessPanel.svelte";
   import BuildLogCard from "../components/BuildLogCard.svelte";
   import DangerZone from "../components/DangerZone.svelte";
-  import RepoAccessCard from "../components/RepoAccessCard.svelte";
   import ChatPanel from "../components/ChatPanel.svelte";
   import ColleagueConversations from "../components/ColleagueConversations.svelte";
   import ErrorState from "../components/ErrorState.svelte";
@@ -972,12 +971,16 @@
               frozen={frozen}
             />
           {:else}
+            <!-- Who can reach this agent, and what it can reach (issue #365):
+                 the permissions it holds at each vendor moved here from the
+                 Harness, and the GitHub repository set replaced the
+                 Repositories card. -->
             <AccessPanel
               agentName={data.name}
               groupName={data.group_name}
               frozen={frozen}
+              identity={data.identity ?? null}
             />
-            <RepoAccessCard agentName={data.name} frozen={frozen} />
           {/if}
         </div>
       {/each}

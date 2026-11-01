@@ -174,6 +174,15 @@
                   </ul>
                   {#if r.note}<p class="quiet">“{r.note}”</p>{/if}
                 </details>
+                {#if r.repositories && r.repositories.length > 0}
+                  <!-- A GitHub request (issue #365) is for a repository set: the reviewer sees which. -->
+                  <details class="repos">
+                    <summary>{r.repositories.length} repositor{r.repositories.length === 1 ? "y" : "ies"}</summary>
+                    <ul class="perms">
+                      {#each r.repositories as repo (repo)}<li><code>{repo}</code></li>{/each}
+                    </ul>
+                  </details>
+                {/if}
               </td>
               <td class="quiet nowrap">{when(r.created_at)}</td>
               <td>

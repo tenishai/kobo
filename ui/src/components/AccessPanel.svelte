@@ -1,10 +1,13 @@
 <script lang="ts">
   // The Access tab (access-control arc, Task C2, refined by the access-tab
   // refinement wave, reshaped to the shared panel idiom, split in two by
-  // issue #309): one line about visibility, then two sections with their
-  // own heading, sentence and toolbar. People: who can see or manage this
-  // agent besides its owner and the operators, each with a role. Other
-  // agents: which agents this one may ask for help.
+  // issue #309, given its second half by issue #365): one line about
+  // visibility, then two halves. Who can reach this agent: People (who can
+  // see or manage it besides its owner and the operators, each with a role)
+  // and Other agents (which agents this one may ask for help). What this
+  // agent can reach: the permissions it holds at each vendor and the picker
+  // that asks for more (PermissionsPanel, which lived in the Harness until
+  // that wave). Every part is a settings row (app.css `.settings-row`).
   // Mounted by AgentDetail only once its own probe of
   // `GET /api/agents/{name}/invites` has already succeeded (see tabs.ts's
   // `visibleTabs` doc comment) — this component never re-derives that
@@ -32,7 +35,7 @@
   // with `via: "grant"`. With it off (the access route is 404) the picker
   // sends the invite it always did.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { errorMessage, type GrantRole, type Person } from "../lib/api";
+  import { errorMessage, type AgentIdentity, type GrantRole, type Person } from "../lib/api";
   import { debounced } from "../lib/debounce";
   import {
     acceptInviteMutation,
@@ -50,16 +53,21 @@
     revokeInviteMutation,
   } from "../lib/queries";
   import ErrorState from "./ErrorState.svelte";
+  import PermissionsPanel from "./PermissionsPanel.svelte";
   import Skeleton from "./Skeleton.svelte";
 
   let {
     agentName,
     groupName,
     frozen = false,
+    identity = null,
   }: {
     agentName: string;
     groupName: string | null;
     frozen?: boolean;
+    /** The identity the agent runs as, named on the Held row; absent on an
+     * older server. */
+    identity?: AgentIdentity | null;
   } = $props();
 
   const queryClient = useQueryClient();
@@ -318,9 +326,11 @@
        form, they never change anything. Every control inside them is
        disabled while frozen, which is where the freeze actually bites. -->
 
-  <section class="access-panel__section" aria-labelledby="access-people-heading">
-    <div class="panel__header access-panel__head">
-      <h3 id="access-people-heading" class="panel__subheading">People</h3>
+  <h3 class="panel__subheading access-panel__half">Who can reach this agent</h3>
+
+  <section class="settings-row" aria-labelledby="access-people-heading">
+    <div class="panel__header settings-row__head">
+      <h4 id="access-people-heading" class="panel__subheading">People</h4>
       <p class="panel__lead">
         Who can see and manage this agent besides its owner and the room's operators.
       </p>
@@ -336,7 +346,7 @@
       </div>
     </div>
 
-    <div class="access-panel__body">
+    <div class="settings-row__body">
 
       {#if grantOpen}
         <form class="panel__drawer access-panel__grant" onsubmit={handleAddGrant}>
@@ -449,9 +459,9 @@
     </div>
   </section>
 
-  <section class="access-panel__section" aria-labelledby="access-agents-heading">
-    <div class="panel__header access-panel__head">
-      <h3 id="access-agents-heading" class="panel__subheading">Other agents</h3>
+  <section class="settings-row" aria-labelledby="access-agents-heading">
+    <div class="panel__header settings-row__head">
+      <h4 id="access-agents-heading" class="panel__subheading">Other agents</h4>
       <p class="panel__lead">Agents this one may ask for help, across teams.</p>
       <div class="panel__tools">
           <button
@@ -465,7 +475,7 @@
       </div>
     </div>
 
-    <div class="access-panel__body">
+    <div class="settings-row__body">
 
       {#if pickerOpen}
         <div class="panel__drawer access-panel__picker">
@@ -649,85 +659,23 @@
       {/if}
     </div>
   </section>
+
+  <h3 class="panel__subheading access-panel__half">What this agent can reach</h3>
+
+  <PermissionsPanel {agentName} {identity} />
 </section>
 
 <style>
-  /* One section per thing the tab governs (issue #309): its own heading,
-     sentence, toolbar and table, stacked with the panel's own rhythm. */
-  /* Each part of Access is a settings row (2026-10-31): what it is and its
-     action on the left, the list itself on the right, a rule between rows. */
-  .access-panel__section {
-    display: grid;
-    grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
-    gap: var(--space-xl);
-    width: 100%;
-    padding: var(--space-lg) 0 var(--space-sm);
-    border-top: 1px solid var(--border);
+  /* The two halves of the tab (issue #365), each a run of settings rows
+     (app.css). The half's own label is the muted uppercase subheading the
+     panel idiom already has; the rows under it carry the ink headings. */
+  .access-panel__half {
+    margin-top: var(--space-md);
   }
 
-  .access-panel__head {
-    align-content: start;
-    gap: var(--space-xs);
-  }
-
-  .access-panel__head :global(.panel__subheading) {
-    color: var(--ink);
-    font-size: 0.92rem;
-    font-weight: 600;
-    letter-spacing: normal;
-    text-transform: none;
-  }
-
-  .access-panel__head :global(.panel__lead) {
-    font-size: 0.82rem;
-    line-height: 1.5;
-  }
-
-  .access-panel__head :global(.panel__tools) {
-    margin-top: var(--space-xs);
-  }
-
-  .access-panel__body {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-
-  /* The lists sit in a bordered card with a tinted header row. */
-  .access-panel__body :global(.panel__table) {
-    overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    border-collapse: separate;
-    border-spacing: 0;
-  }
-
-  .access-panel__body :global(.panel__table th) {
-    height: 2.4rem;
-    padding: 0 var(--space-md);
-    background: var(--bg);
-    vertical-align: middle;
-  }
-
-  .access-panel__body :global(.panel__table td) {
-    height: 3rem;
-    padding: var(--space-2xs) var(--space-md);
-  }
-
-  .access-panel__body :global(.panel__table tbody tr:last-child td) {
-    border-bottom: none;
-  }
-
-  .access-panel__body :global(.panel__empty) {
-    padding: var(--space-lg) var(--space-md);
-  }
-
-  @media (max-width: 52rem) {
-    .access-panel__section {
-      grid-template-columns: minmax(0, 1fr);
-      gap: var(--space-sm);
-    }
+  .access-panel__half + :global(.settings-row) {
+    border-top: none;
+    padding-top: var(--space-sm);
   }
 
   .access-panel__grant,

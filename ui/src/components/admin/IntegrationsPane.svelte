@@ -71,7 +71,7 @@
     {
       id: "github",
       name: "GitHub",
-      summary: "Opens agents' pull requests, scoped to the repositories you approve.",
+      summary: "Opens the room's own pull requests: skills and tooling. What each agent may reach on GitHub is picked on its Access tab.",
       where: "App ID and the private key come from the app's settings page on GitHub (Developer settings, GitHub Apps); the installation ID is the number at the end of the installation's URL under Install App.",
       fields: [
         { key: "app_id", label: "App ID", secret: false, placeholder: "123456" },
@@ -584,7 +584,7 @@
     {#if removingService === "slack"}
       The room forgets its Slack config tokens. Agents keep the Slack apps they already have, but no new app can be connected until a pair is set again, or the deployment config carries one; every agent's Slack tab greys out until then.
     {:else}
-      The room forgets the GitHub app. Agents can't open pull requests until an app is set again, or the deployment config carries one; every agent's Repositories card greys out until then.
+      The room forgets the GitHub app. The room's own pull requests (skills, tooling) stop until an app is set again, or the deployment config carries one.
     {/if}
   </p>
   {#snippet footer()}

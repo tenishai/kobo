@@ -104,6 +104,48 @@ describe("AccessPanel", () => {
     expect(body).toEqual({ email: "lead@example.com", role: "manage" });
   });
 
+  it("is two halves: who can reach this agent, then what it can reach (issue #365)", async () => {
+    // The permissions moved here from the Harness: the Held row names the
+    // identity the agent runs as, and the picker lists the room's vendors.
+    stubFetch({
+      "/api/agents/warden/invites": EMPTY_INVITES,
+      "/api/agents/warden/grants": EMPTY_GRANTS,
+      "/api/agents/warden/requestable": EMPTY_REQUESTABLE,
+      "/api/agents/warden/access": {
+        agent: "warden",
+        team: "growth",
+        grants: [],
+        pending: [],
+        vendors: [
+          { id: "datadog", kind: "service", label: "Datadog", account_noun: null, organizations: [],
+            accounts: [{ id: "datadog", name: "datadog", connected: true, ceiling: ["datadog_monitors_read"], organization: null, account_id: null, repositories: [], has_repo_set: false }],
+            groups: [{ name: "Monitors", permissions: [{ name: "datadog_monitors_read", tier: "read", description: "Monitors", label: null }] }], tiers: [] },
+        ],
+        can_request: true,
+        can_decide: false,
+      },
+    });
+    renderWithClient(AccessPanel, {
+      agentName: "warden",
+      groupName: "growth",
+      identity: { service_account: "agent-warden", gsa_email: "agent-warden@example-project.iam.gserviceaccount.com", project: "example-project" },
+    });
+
+    await screen.findByRole("heading", { name: "Held" });
+    const headings = screen.getAllByRole("heading").map((h) => h.textContent?.trim());
+    expect(headings).toEqual([
+      "Access",
+      "Who can reach this agent",
+      "People",
+      "Other agents",
+      "What this agent can reach",
+      "Held",
+      "Ask for more",
+    ]);
+    expect(screen.getByText("agent-warden@example-project.iam.gserviceaccount.com")).not.toBeNull();
+    expect(await screen.findByRole("button", { name: /Datadog/ })).not.toBeNull();
+  });
+
   // --- People section --------------------------------------------------
 
   it("renders the grants list and lets an owner remove a grant", async () => {

@@ -70,13 +70,12 @@ describe("harnessSections", () => {
       "tooling",
       "memory",
       "learnings",
-      "permissions",
       "activity",
     ]);
   });
 
   it("is model and runtime alone for a connected agent: there is no bundle behind the rest", () => {
-    expect(harnessSections("connected")).toEqual(["runtime", "identity", "permissions", "activity"]);
+    expect(harnessSections("connected")).toEqual(["runtime", "identity", "activity"]);
   });
 
   it("treats an unknown kind as composed", () => {
@@ -108,7 +107,9 @@ describe("isTabId / isHarnessSection", () => {
     for (const section of ["runtime", "persona", "skills", "tooling", "memory", "learnings"]) {
       expect(isHarnessSection(section)).toBe(true);
     }
-    for (const junk of ["chat", "secrets", "", null]) {
+    // Permissions moved to the Access tab (issue #365): a stale bookmark to
+    // the old section reads as no opinion, like any other unknown segment.
+    for (const junk of ["chat", "secrets", "permissions", "", null]) {
       expect(isHarnessSection(junk)).toBe(false);
     }
   });
