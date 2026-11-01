@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from kobo_api import admin_connections as admin_connections_flow
 from kobo_api import admin_integrations as admin_integrations_flow
 from kobo_api import admin_roles as admin_roles_catalogue
-from kobo_api import admin_store, audit, gateway_lane, gateway_prs
+from kobo_api import admin_store, audit, gateway_lane, gateway_prs, github_access
 from kobo_api import room_services as room_services_store
 from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
@@ -80,6 +80,7 @@ from kobo_api.bab import ROOM_ACTOR as BAB_ROOM_ACTOR
 from kobo_api.bab import active_leases as bab_active_leases
 from kobo_api.bab import actor_for as bab_actor_for
 from kobo_api.bab import build_bab
+from kobo_api.bab import child_repositories as github_access_child_repositories
 from kobo_api.bab import ensure_agent_integrations as bab_ensure_agent_integrations
 from kobo_api.bab import picker as bab_picker
 from kobo_api.bab import push_topology as bab_push_topology
@@ -173,10 +174,6 @@ from kobo_api.models import (
     LEARNING_DENIED,
     LEARNING_PENDING,
     LEARNING_STATUSES,
-    REPO_ACCESS_APPROVED,
-    REPO_ACCESS_REQUESTED,
-    REPO_ACCESS_REVOKED,
-    REPO_ACCESS_STATUSES,
     A2AInvite,
     Agent,
     AgentLearning,
@@ -185,7 +182,6 @@ from kobo_api.models import (
     AgentUserGrant,
     GroupRequest,
     MCPRevocation,
-    RepoAccess,
     Thread,
     ThreadParticipant,
 )
@@ -217,7 +213,7 @@ from kobo_api.personas import (
 from kobo_api.personas import (
     read_index as personas_read_index,
 )
-from kobo_api.pr_broker import BrokerAuthError, mint_scoped_token, verify_agent_token
+from kobo_api.pr_broker import BrokerAuthError, verify_agent_token
 from kobo_api.provisioner import (
     STEP_LABELS,
     drain_pipelines,
@@ -628,29 +624,6 @@ class IntakeUploadPayload(BaseModel):
 
     filename: str
     content: str
-
-
-class RepoAccessRequest(BaseModel):
-    """POST .../repo-access body: the owner's batch of repositories (agent
-    PR broker spec, ruling 1 -- many at once, never one-at-a-time-only).
-    Each entry must be "owner/name"."""
-
-    repositories: list[str] = Field(min_length=1, max_length=50)
-
-    @field_validator("repositories")
-    @classmethod
-    def _owner_slash_name(cls, v: list[str]) -> list[str]:
-        for repo in v:
-            if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
-                raise ValueError(f"not an owner/name repository: {repo!r}")
-        return v
-
-
-class RepoAccessDecision(BaseModel):
-    """POST /api/repo-access/decide body: the operator's BATCH decision."""
-
-    ids: list[int] = Field(min_length=1, max_length=200)
-    decision: Literal["approved", "revoked"]
 
 
 class TeachPayload(BaseModel):
@@ -2392,24 +2365,6 @@ def _is_reader(request: Request) -> bool:
     return bool(set(raw) & set(cfg.reader_groups))
 
 
-def _repo_access_operator_block(request: Request, config: Config) -> JSONResponse | None:
-    """None when the caller may decide repo-access requests (agent PR broker
-    spec, 2026-08-27 ruling 1: the room's operator set -- the kobo owner
-    group -- approves, in batch); a 403 body otherwise. Same semantics
-    family as `_operator_block`/`_admin_operator_block` above, kept as its
-    own function for the same reason those are: the copy names its own
-    action."""
-    if not config.operators and not config.admin_groups:
-        return None
-    if not config.iap_audience:
-        return None
-    if _is_admin(request):
-        return None
-    return JSONResponse(
-        {"error": "Deciding repo access is operator-only on this room"}, status_code=403
-    )
-
-
 def _owner_or_operator_or_403(
     agent: Agent, request: Request, *, managers: bool = True
 ) -> JSONResponse | None:
@@ -2615,29 +2570,6 @@ def _visible_agents(session: Session, request: Request) -> tuple[list[Agent], bo
         or (agent.group_name is not None and agent.group_name in group_set)
     ]
     return visible, False
-
-
-def _no_approved_repo_access(name: str, rows: list[RepoAccess]) -> str:
-    """Why the GitHub token broker has nothing to mint for `name`, and the
-    remedy, from its repo-access rows (none approved)."""
-    pending = [r.repository for r in rows if r.status == REPO_ACCESS_REQUESTED]
-    if pending:
-        return (
-            f"agent {name!r} has no approved repository access: "
-            f"{', '.join(pending)} requested, waiting for an operator to approve "
-            "(POST /api/repo-access/decide)."
-        )
-    if rows:
-        return (
-            f"agent {name!r} has no approved repository access: "
-            f"{', '.join(r.repository for r in rows)} revoked. An owner can request "
-            f"it again with POST /api/agents/{name}/repo-access."
-        )
-    return (
-        f"agent {name!r} has no repository access: none has been requested. An "
-        f"owner requests it with POST /api/agents/{name}/repo-access, and an "
-        "operator approves it with POST /api/repo-access/decide."
-    )
 
 
 def _visible_agent_or_404(session: Session, request: Request, name: str) -> Agent | JSONResponse:
@@ -3278,6 +3210,21 @@ class AccessRequestBody(BaseModel):
     note: str | None = Field(default=None, max_length=2000)
 
 
+class GitHubRepositoriesBody(BaseModel):
+    """PUT .../github/repositories: the agent's one repository set (kobo#365),
+    each "owner/name", one to two hundred, all from the room App's installation."""
+
+    repositories: list[str] = Field(min_length=1, max_length=github_access.MAX_REPOSITORIES)
+
+    @field_validator("repositories")
+    @classmethod
+    def _owner_slash_name(cls, v: list[str]) -> list[str]:
+        for repo in v:
+            if not github_access.REPOSITORY_RE.fullmatch(repo):
+                raise ValueError(f"not an owner/name repository: {repo!r}")
+        return v
+
+
 class AccessDecideBody(BaseModel):
     """A reviewer deciding requests in bulk (Review pane)."""
 
@@ -3289,13 +3236,23 @@ class AccessDecideBody(BaseModel):
 def _bab_boot_push(app: FastAPI) -> None:
     """Tell the permission service which agents exist, once per boot, on a
     daemon thread (a blocking HTTP call). A failure is logged and the next
-    create or destroy pushes again."""
+    create or destroy pushes again. The same thread then moves the retired
+    pull request broker's approved repository rows onto each agent's GitHub
+    child (kobo#365, `github_access.migrate_repo_access`): idempotent, and
+    rows that find no GitHub connection wait for the next boot."""
     clients = app.state.clients
     bab = getattr(clients, "bab", None) if clients is not None else None
     if bab is None:
         return
     with app.state.session_factory() as session:
         bab_push_topology(bab, session.query(Agent).all(), BAB_ROOM_ACTOR)
+        try:
+            out = github_access.migrate_repo_access(session, clients, bab)
+        except Exception:  # a boot thread never dies loudly; the rows wait
+            log.exception("repository access migration failed; the rows wait for the next boot")
+        else:
+            if out.get("agents") or out.get("waiting"):
+                log.info("repository access migration: %s", out)
 
 
 def create_app(
@@ -3484,8 +3441,9 @@ def create_app(
             # Permissions (issue #292).
             "access_on": getattr(app.state.clients, "bab", None) is not None,
             # Whether the room holds a GitHub app for pull requests, from the
-            # room or the deployment config: the agent's Repositories card
-            # greys out until an admin adds the GitHub integration (#304).
+            # room or the deployment config (#304). The UI's Repositories
+            # card that read it retired with the broker (kobo#365); the
+            # flag stays for the Integrations row and older clients.
             "github_available": _github_app() is not None,
         }
         if is_admin:
@@ -3841,6 +3799,12 @@ def create_app(
     def _bab_refused(exc: ClientError) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=502)
 
+    def _github_children(bab, actor: str) -> dict[str, list[str]]:
+        """Every GitHub child in the permission service (an agent's repository set,
+        kobo#365) by id -> its repositories, for the Review pane's rows."""
+        return {i["integration"]: github_access_child_repositories(i) for i in bab.integrations(actor)
+                if i.get("vendor") == github_access.GITHUB_VENDOR and i.get("parent")}
+
     @app.get("/api/access/picker")
     def access_picker(request: Request) -> JSONResponse:
         """Every connected integration with its permission tree, for the picker."""
@@ -3869,7 +3833,9 @@ def create_app(
         try:
             grants = bab.grants(agent.name, actor)
             pending = [r for r in bab.requests("pending", agent.name, actor)]
-            vendors = bab_picker(bab, actor)
+            # Given the agent (kobo#365): GitHub shows as this agent's own repository
+            # set (its child), or the connection as a placeholder; never another's.
+            vendors = bab_picker(bab, actor, agent=agent.name)
         except ClientError as exc:
             return _bab_refused(exc)
         return JSONResponse({
@@ -3973,6 +3939,105 @@ def create_app(
         session.commit()
         return JSONResponse(out)
 
+    @app.get("/api/agents/{name}/github/repositories")
+    def agent_github_repositories(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """The repositories the agent may be given (the room App installation's,
+        through the room App) and the set it holds (its child's spec), for the
+        Access tab's GitHub step (kobo#365). Owner, manager or operator."""
+        bab, blocked = _bab_or_404()
+        if blocked is not None:
+            return blocked
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        block = _owner_or_operator_or_403(agent, request)
+        if block is not None:
+            return block
+        actor = _bab_actor(request)
+        try:
+            conn = github_access.connection(bab, actor, session)
+            child = github_access.child(bab, actor, conn.id, agent.name) if conn is not None else None
+        except ClientError as exc:
+            return _bab_refused(exc)
+        selected = github_access_child_repositories(child)
+        if conn is None:
+            return JSONResponse({"available": False, "repositories": [], "selected": selected,
+                                 "note": github_access.NO_CONNECTION})
+        try:
+            repos = github_access.installation_repositories(app.state.clients)
+        except ClientError as exc:
+            return JSONResponse({"available": False, "repositories": [], "selected": selected,
+                                 "note": f"the room could not list the installation's repositories: {exc}"})
+        return JSONResponse({
+            "available": True,
+            "repositories": [{"full_name": r.full_name, "private": r.private, "default_branch": r.default_branch or None}
+                             for r in repos],
+            "selected": selected,
+            "note": None,
+        })
+
+    @app.put("/api/agents/{name}/github/repositories")
+    def agent_set_github_repositories(
+        name: str, payload: GitHubRepositoriesBody, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Write or replace the agent's repository set: its child integration
+        under the room's GitHub connection in the permission service (kobo#365).
+        Revokes nothing by itself: the agent's grants stay on the child and the
+        next lease is narrowed to the new set (one already out runs its hour,
+        `github_access.LEASES_NOTE`). Owner or manager, as asking for a
+        permission is; 404 without a GitHub connection; 422 for a repository
+        the installation does not carry."""
+        bab, blocked = _bab_or_404()
+        if blocked is not None:
+            return blocked
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        block = _owner_or_operator_or_403(agent, request)
+        if block is not None:
+            return block
+        actor = _bab_actor(request)
+        wanted = sorted(set(payload.repositories))
+        try:
+            conn = github_access.connection(bab, actor, session)
+        except ClientError as exc:
+            return _bab_refused(exc)
+        if conn is None:
+            return JSONResponse({"error": github_access.NO_CONNECTION}, status_code=404)
+        try:
+            available = github_access.installation_repositories(app.state.clients)
+        except ClientError as exc:
+            return JSONResponse({"error": f"the room could not list the installation's repositories: {exc}"}, status_code=502)
+        strays = github_access.strays(wanted, available)
+        if strays:
+            return JSONResponse({"error": f"not in the GitHub App installation: {', '.join(strays)}", "strays": strays},
+                                status_code=422)
+        try:
+            integration, changed = github_access.write_child(bab, actor, conn, agent.name, wanted)
+            held = github_access.active_grants(bab, actor, agent.name, integration) if changed else []
+        except ClientError as exc:
+            audit.record(
+                session, request=request, action="access.repositories", target_kind="agent", target_id=agent.name,
+                agent_name=agent.name, outcome=audit.OUTCOME_REFUSED, detail={"repositories": wanted},
+                summary=f"{audit.who(request)} set {agent.name}'s repositories; the permission service refused",
+            )
+            session.commit()
+            return _bab_refused(exc)
+        detail: dict = {"integration": integration, "repositories": wanted, "changed": changed}
+        if changed and held:
+            detail["leases"] = github_access.end_open_leases(bab, actor, agent.name, integration)
+            detail["grants"] = sorted({str(g.get("permission")) for g in held})
+        audit.record(
+            session, request=request, action="access.repositories", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, detail=detail,
+            summary=f"{audit.who(request)} set {agent.name}'s repositories to {len(wanted)} on {conn.name}"
+            + ("" if changed else " (unchanged)"),
+        )
+        session.commit()
+        return JSONResponse({"integration": integration, "repositories": wanted, "changed": changed})
+
     @app.get("/api/agents/{name}/leases")
     def agent_leases(
         name: str, request: Request, days: int = 7, session: Session = Depends(get_session)  # noqa: B008
@@ -4004,6 +4069,7 @@ def create_app(
             return off
         try:
             rows = bab.requests("all" if status == "all" else "pending", None, _bab_actor(request))
+            children = _github_children(bab, _bab_actor(request))
         except ClientError as exc:
             return _bab_refused(exc)
         agents = {a.name: a for a in session.query(Agent).all()}
@@ -4011,6 +4077,10 @@ def create_app(
             a = agents.get(r.get("agent"))
             r["owner"] = a.created_by if a is not None else None
             r["team"] = a.team if a is not None else None
+            # A request on an agent's GitHub child carries its repository set, so
+            # Review sees what the level would open (kobo#365).
+            if r.get("integration") in children:
+                r["repositories"] = children[r["integration"]]
         return JSONResponse({"requests": rows})
 
     @app.post("/api/admin/access/decide")
@@ -4031,12 +4101,17 @@ def create_app(
             return JSONResponse({"error": "a denial needs a reason"}, status_code=422)
         try:
             pending = {r.get("id"): r for r in bab.requests("pending", None, _bab_actor(request))}
+            children = _github_children(bab, _bab_actor(request))
         except ClientError:
-            pending = {}
+            pending, children = {}, {}
         try:
             results = bab.decide(payload.ids, payload.verdict, payload.reason, _bab_actor(request))
         except ClientError as exc:
             return _bab_refused(exc)
+        for result in results:
+            integration = pending.get(result.get("id"), {}).get("integration")
+            if integration in children:
+                result["repositories"] = children[integration]
         verb = "Approved" if payload.verdict == "approve" else "Denied"
         # The gateway lane follows the permission (kobo#327): once per agent
         # whose request was approved, its gateway grant is brought in step.
@@ -6753,235 +6828,17 @@ def create_app(
         return agent.pass_minted_at if agent is not None else None
 
     def _github_app() -> room_services_store.GitHubAppCredentials | None:
-        """The GitHub app the pull request broker mints with: the one a room
-        admin set up as the GitHub integration (Admin > Integrations) first,
-        else the three pr_app_* config values (kobo_api.room_services,
-        issue #284). Resolved per request, so a paste needs no restart."""
+        """The room's GitHub app for pull requests (the one `/api/whoami`
+        reports as `github_available`): the one a room admin set up as the
+        GitHub integration (Admin > Integrations) first, else the three
+        pr_app_* config values (kobo_api.room_services, issue #284). Resolved
+        per request, so a paste needs no restart. The agent-facing token
+        broker that minted with it retired (kobo#365)."""
         clients = app.state.clients
         services = getattr(clients, "room_services", None) if clients is not None else None
         if services is not None:
             return services.github_app()
         return room_services_store.github_app_from_config(app.state.config)
-
-    def _pr_broker_off() -> JSONResponse | None:
-        """None when the room has a GitHub app for pull requests from either
-        source; the 503 body otherwise -- the same absent-equals-off
-        convention as cabal_url, answered before any gate so an unconfigured
-        room never leaks whether a given agent or repo exists on these
-        routes."""
-        if _github_app() is not None:
-            return None
-        return JSONResponse(
-            {"error": "the PR broker is not configured on this room"}, status_code=503
-        )
-
-    @app.post("/api/agents/{name}/repo-access")
-    def request_repo_access(
-        name: str,
-        payload: RepoAccessRequest,
-        request: Request,
-        session: Session = Depends(get_session),  # noqa: B008
-    ) -> JSONResponse:
-        off = _pr_broker_off()
-        if off is not None:
-            return off
-        agent = _visible_agent_or_404(session, request, name)
-        if isinstance(agent, JSONResponse):
-            return agent
-        gate = _owner_or_operator_or_403(agent, request)
-        if gate is not None:
-            return gate
-
-        email = (getattr(request.state, "iap_email", None) or "").lower()
-        rows = []
-        for repository in payload.repositories:
-            existing = (
-                session.query(RepoAccess)
-                .filter(
-                    RepoAccess.agent_name == agent.name,
-                    RepoAccess.repository == repository,
-                )
-                .one_or_none()
-            )
-            if existing is not None and existing.status == REPO_ACCESS_APPROVED:
-                # Already approved: asking again must never demote a live
-                # grant back to requested.
-                rows.append(existing)
-                continue
-            if existing is not None:
-                # Re-request (including a revoked row coming back): same
-                # row, fresh request stamp, decision cleared.
-                existing.status = REPO_ACCESS_REQUESTED
-                existing.requested_by = email
-                existing.requested_at = datetime.now(UTC)
-                existing.decided_by = None
-                existing.decided_at = None
-                rows.append(existing)
-                continue
-            row = RepoAccess(
-                agent_name=agent.name, repository=repository, requested_by=email
-            )
-            session.add(row)
-            rows.append(row)
-        session.commit()
-        return JSONResponse(
-            {
-                "requested": [
-                    {"id": r.id, "repository": r.repository, "status": r.status}
-                    for r in rows
-                ]
-            }
-        )
-
-    @app.get("/api/repo-access")
-    def list_repo_access(
-        request: Request,
-        status: str | None = None,
-        session: Session = Depends(get_session),  # noqa: B008
-    ) -> JSONResponse:
-        off = _pr_broker_off()
-        if off is not None:
-            return off
-        query = session.query(RepoAccess)
-        if status is not None:
-            if status not in REPO_ACCESS_STATUSES:
-                return JSONResponse(
-                    {"error": f"status must be one of {', '.join(REPO_ACCESS_STATUSES)}"},
-                    status_code=422,
-                )
-            query = query.filter(RepoAccess.status == status)
-        # Scoped to what the caller can see: rows for visible agents only,
-        # the same anti-enumeration discipline as the agent list itself.
-        visible_agents, _ = _visible_agents(session, request)
-        visible = {a.name for a in visible_agents}
-        rows = [r for r in query.order_by(RepoAccess.requested_at).all() if r.agent_name in visible]
-        return JSONResponse(
-            {
-                "results": [
-                    {
-                        "id": r.id,
-                        "agent": r.agent_name,
-                        "repository": r.repository,
-                        "status": r.status,
-                        "requested_by": r.requested_by,
-                        "decided_by": r.decided_by,
-                    }
-                    for r in rows
-                ]
-            }
-        )
-
-    @app.post("/api/repo-access/decide")
-    def decide_repo_access(
-        payload: RepoAccessDecision,
-        request: Request,
-        session: Session = Depends(get_session),  # noqa: B008
-    ) -> JSONResponse:
-        """The BATCH gate (2026-08-27 ruling 1): the operator set decides
-        many rows in one call -- approve and revoke both land here."""
-        off = _pr_broker_off()
-        if off is not None:
-            return off
-        gate = _repo_access_operator_block(request, app.state.config)
-        if gate is not None:
-            return gate
-
-        email = (getattr(request.state, "iap_email", None) or "").lower()
-        decided = []
-        for row_id in payload.ids:
-            row = session.get(RepoAccess, row_id)
-            if row is None:
-                return JSONResponse(
-                    {"error": f"no repo-access row {row_id}"}, status_code=404
-                )
-            row.status = (
-                REPO_ACCESS_APPROVED if payload.decision == "approved" else REPO_ACCESS_REVOKED
-            )
-            row.decided_by = email
-            row.decided_at = datetime.now(UTC)
-            decided.append(row)
-        session.commit()
-        return JSONResponse(
-            {
-                "decided": [
-                    {"id": r.id, "agent": r.agent_name, "repository": r.repository,
-                     "status": r.status}
-                    for r in decided
-                ]
-            }
-        )
-
-    @app.post("/broker/agents/{name}/github-token")
-    def mint_agent_github_token(
-        name: str,
-        request: Request,
-        session: Session = Depends(get_session),  # noqa: B008
-    ) -> JSONResponse:
-        """THE BROKER (2026-08-27 spec): the caller is the AGENT itself,
-        authenticated by its cabal-issued colleague JWT -- never a human
-        session. Wall 2: the minted token's `repositories` is pinned to
-        exactly this agent's APPROVED rows. 404 when it has none, the
-        status every agent route gives. The message is the truth, though:
-        once `verify_agent_token` passes, the caller is proven to be `name`,
-        so telling it which of its own requests are pending (or that none
-        were made) leaks nothing, where "no such agent" sent a responder
-        hunting a mapping fault that wasn't there (issue #11)."""
-        config: Config = app.state.config
-        off = _pr_broker_off()
-        if off is not None:
-            return off
-        if not config.cabal_url:
-            return JSONResponse(
-                {"error": "the PR broker requires the switchboard"}, status_code=503
-            )
-
-        authorization = request.headers.get("authorization", "")
-        bearer = authorization.removeprefix("Bearer ").strip()
-        if not bearer:
-            return JSONResponse({"error": "agent token required"}, status_code=401)
-        try:
-            verify_agent_token(config.cabal_url, bearer, name, not_before=_pass_not_before(session, name))
-        except BrokerAuthError:
-            return JSONResponse({"error": "agent token was not accepted"}, status_code=401)
-
-        approved = (
-            session.query(RepoAccess)
-            .filter(
-                RepoAccess.agent_name == name,
-                RepoAccess.status == REPO_ACCESS_APPROVED,
-            )
-            .order_by(RepoAccess.repository)
-            .all()
-        )
-        if not approved:
-            rows = (
-                session.query(RepoAccess)
-                .filter(RepoAccess.agent_name == name)
-                .order_by(RepoAccess.repository)
-                .all()
-            )
-            return JSONResponse(
-                {"error": _no_approved_repo_access(name, rows)}, status_code=404
-            )
-
-        try:
-            creds = _github_app()
-            if creds is None:
-                return JSONResponse(
-                    {"error": "the PR broker is not configured on this room"}, status_code=503
-                )
-            minted = mint_scoped_token(
-                app_id=creds.app_id,
-                installation_id=creds.installation_id,
-                private_key=creds.pem(),
-                repositories=[r.repository for r in approved],
-            )
-        except ClientError:
-            return JSONResponse(
-                {"error": "the token mint did not answer. Try again shortly."},
-                status_code=502,
-            )
-        return JSONResponse(minted)
 
     # --- Agent Jira read broker (2026-09-04, AREQ lane) -------------------------
 

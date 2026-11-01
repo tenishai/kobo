@@ -119,16 +119,14 @@ class BundleSpec:
     # (there is no such fuller check today -- the bucket name is the whole
     # contract).
     memory_replica_bucket: str = ""
-    # The room's own in-cluster base URL (org key broker_url) -- when set
-    # alongside cabal_url, the composed tools block gains the github
-    # sidecar (daedalus GitHubSpec: broker_url/token_env/self) and
-    # the github tools (open_pr and the read quartet) join the allow list.
-    # Empty = no github block at all.
-    broker_url: str = ""
     # The MCP gateway's data-plane URL (external-MCP arc). Empty = no
     # liminal block composed. The exchange rides cabal_url (the
-    # /auth/liminal-token route), so wiring is gated on BOTH coordinates,
-    # the same both-or-nothing rule the github block applies.
+    # /auth/liminal-token route), so wiring is gated on BOTH coordinates.
+    # (The `github` broker sidecar that used to ride beside it, keyed on the
+    # org's broker_url, retired with the pull request broker on 2026-11-01,
+    # kobo#365: an agent reaches GitHub through the gateway's github-mcp
+    # targets with a token the permission service leases it, narrowed to its
+    # own repository set.)
     liminal_url: str = ""
     # The create-time archetype this agent was born from (`kobo_api.models.
     # Agent.archetype`, threaded by `kobo_api.steps.RepoStep`), or None for
@@ -136,9 +134,9 @@ class BundleSpec:
     # construction across the test suite is, so the default keeps them all
     # composing byte-identical output. Read ONLY by `_tools_block` below,
     # and only to SUPPRESS: a team-guide kiosk composes with no action
-    # tools at all, because the github and liminal blocks come from org
-    # config (`broker_url`/`liminal_url`) and would otherwise reach every
-    # bundle the room composes -- `github.open_pr` included. Compared
+    # tools at all, because the liminal block comes from org config
+    # (`liminal_url`) and would otherwise reach every bundle the room
+    # composes. Compared
     # against the named archetype constant, never truth-tested, so a future
     # archetype composes the ordinary surface until it asks for its own.
     archetype: str | None = None
@@ -273,9 +271,9 @@ _SKILLS_LOAD_TOOL = "skills.load"
 #   human". For an agent whose job is a narrow evidence chain.
 # - none: no colleague tools and no colleagues.md.
 # Only the agent's OUTBOUND reach changes. Its a2a transport, its colleague
-# pass and the provider block stay, because the github and liminal
-# sidecars authenticate with that same pass, and other agents may still
-# ask it questions.
+# pass and the provider block stay, because the liminal sidecar
+# authenticates with that same pass, and other agents may still ask it
+# questions.
 COLLEAGUE_MODE_DEFAULT = "default"
 COLLEAGUE_MODE_ROSTER_ONLY = "roster-only"
 COLLEAGUE_MODE_NONE = "none"
@@ -333,44 +331,23 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
     # where the runtime reads it -- structurally: the kiosk returns before
     # either sidecar arm below ever runs, so a future org-config sidecar
     # cannot reach a kiosk just by forgetting its own `not never_act` check.
-    # Deliberately a suppression of the two action sidecars and nothing
-    # else: the colleagues provider, the colleague allow-list and the
-    # memory block above/below are untouched (the guide still talks and
-    # still remembers).
+    # Deliberately a suppression of the action sidecar and nothing else:
+    # the colleagues provider, the colleague allow-list and the memory
+    # block above/below are untouched (the guide still talks and still
+    # remembers).
     never_act = spec.archetype == ARCHETYPE_TEAM_GUIDE
     if never_act:
         block["allow"] = _FlowList(allow)   # colleagues trio (+ skills.load) only
         return block
-    # The github sidecar (agent PR broker spec): rides ALONGSIDE the
-    # colleagues provider (daedalus composes the two), gated on BOTH
-    # coordinates -- the broker route authenticates the agent by the same
-    # colleague JWT the cabal wiring issues, so a broker with no
-    # switchboard could never authenticate anyone.
-    if spec.broker_url:
-        # Explicit names, never a github.* glob -- the bundle's allow list is
-        # law, and a glob would silently grant every tool the provider grows
-        # later. open_pr is the one write (PR-only by ruling); the read
-        # quartet (2026-08-28, the schema-survey unblock) rides the
-        # same mint-per-call broker token.
-        allow.extend(
-            [
-                "github.open_pr",
-                "github.list_prs",
-                "github.get_pr",
-                "github.list_releases",
-                "github.read_file",
-            ]
-        )
-        block["github"] = _FlowDict(
-            broker_url=_DoubleQuoted(spec.broker_url),
-            token_env=CABAL_COLLEAGUE_TOKEN_ENV,
-            self=_DoubleQuoted(spec.name),
-        )
+    # No `github` sidecar since kobo#365 (2026-11-01): the pull request
+    # broker retired, and GitHub reaches an agent as gateway tools
+    # (`github-mcp.*`, `github-mcp-write.*`) its permission's lane admits
+    # after birth (kobo_api.gateway_lane), never as a composed default.
     # The liminal sidecar (external-MCP arc): the gateway block is a
     # BIRTHRIGHT, not a grant -- deny-by-default at the gateway means a
     # wired agent with no policy row sees zero tools, so wiring everyone
     # is safe and grants stay the control point. Gated on BOTH
-    # coordinates like github: the exchange (/auth/liminal-token) lives
+    # coordinates: the exchange (/auth/liminal-token) lives
     # at the switchboard, so a gateway with no switchboard could never
     # authenticate anyone. Deliberately NO allow entries here: which
     # gateway tools an agent may call arrives with its grant (K3), never
@@ -1240,8 +1217,8 @@ def update_agent_yaml_tools(
 
     The original version replaced the whole `tools:` line with a
     colleagues-only block. By the time real agents existed, their tools
-    blocks carried more: the github sidecar the composer itself adds,
-    hand-added lanes (cloudtrail, slack_read, jira, liminal), and the
+    blocks carried more: the github sidecar the composer added until
+    kobo#365, hand-added lanes (cloudtrail, slack_read, jira, liminal), and the
     allow entries that gate them -- a rewire silently dropped every one
     of them (and refused outright on a block-style file). This version
     merges instead of replacing:
@@ -1342,14 +1319,16 @@ def update_agent_yaml_colleague_mode(bundle_dir: Path, *, mode: str) -> bool:
     return True
 
 
-def update_agent_yaml_allow(bundle_dir: Path, *, entries: list[str]) -> bool:
+def update_agent_yaml_allow(bundle_dir: Path, *, entries: list[str], remove: list[str] | None = None) -> bool:
     """Make an already-composed `bundle_dir/agent.yaml`'s allow list admit
     every pattern in `entries`, appending the ones no existing pattern
     already covers (daedalus matches `tools.allow` with fnmatch, so
-    `datadog-mcp.*` is one entry for a whole target). Returns whether the
-    file changed; nothing else in the tools block moves. Raises
-    `ClientError` when the file is missing, does not parse, or has no tools
-    section.
+    `datadog-mcp.*` is one entry for a whole target), and drop every entry
+    named in `remove` (exact match: a pattern the room put there and the
+    agent no longer earns, kobo#365; never a glob over somebody else's
+    entries). Returns whether the file changed; nothing else in the tools
+    block moves. Raises `ClientError` when the file is missing, does not
+    parse, or has no tools section.
 
     Why: the gateway filters its catalog per grant, and the runtime offers a
     gateway tool only when the bundle's allow list matches it too, so a
@@ -1370,10 +1349,12 @@ def update_agent_yaml_allow(bundle_dir: Path, *, entries: list[str]) -> bool:
         raise ClientError(f"agent.yaml has no tools section to update: {agent_yaml_path}")
     tools = data["tools"]
     allow = list(tools.get("allow") or [])
-    missing = [e for e in entries if not any(fnmatch(e, str(pattern)) or e == pattern for pattern in allow)]
-    if not missing:
+    gone = set(remove or ())
+    kept = [p for p in allow if str(p) not in gone]
+    missing = [e for e in entries if not any(fnmatch(e, str(pattern)) or e == pattern for pattern in kept)]
+    if not missing and len(kept) == len(allow):
         return False
-    tools["allow"] = [*allow, *missing]
+    tools["allow"] = [*kept, *missing]
     _splice_tools_section(agent_yaml_path, text, tools)
     return True
 

@@ -930,10 +930,6 @@ class RepoStep:
             # emits no supervision at all in that case (see BundleSpec's own
             # field docstring).
             memory_replica_bucket=config.memory_replica_bucket,
-            # Agent PR broker (2026-08-27 spec): the room's own in-cluster
-            # URL, threaded the same way as every other org coordinate --
-            # empty means the composed bundle carries no github block.
-            broker_url=config.broker_url,
             liminal_url=config.liminal_url,
             # Archetype marker (team-guide spec 2026-09-14, Task 2b): the
             # row's own create-time recipe, threaded so the composer can
@@ -1033,7 +1029,6 @@ class ComposeDirectoryStep:
             capability=agent.capability,
             colleagues=_colleague_roster(ctx.session, agent),
             memory_replica_bucket=config.memory_replica_bucket,
-            broker_url=config.broker_url,
             liminal_url=config.liminal_url,
             archetype=agent.archetype,
             colleague_mode=effective_colleague_mode(agent.colleague_mode),

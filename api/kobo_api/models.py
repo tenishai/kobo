@@ -616,6 +616,13 @@ class RepoAccess(Base):
     Postdates every table in this file, so `Base.metadata.create_all`
     (`kobo_api.db.init_db`) creates it for free -- same no-ALTER-needed
     convention `MCPToolCallLog` documents above.
+
+    Retired with the broker (kobo#365, 2026-11-01): an agent's GitHub access
+    is now a repository set and a level in the permission service
+    (`kobo_api.github_access`). The rows stay as the record the boot-time
+    migration reads: `migrated_at` marks an approved row whose repository
+    has been moved onto the agent's child integration, so a boot never moves
+    it twice. Destroy still clears an agent's rows by name.
     """
 
     __tablename__ = "repo_access"
@@ -631,6 +638,7 @@ class RepoAccess(Base):
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    migrated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 REPO_ACCESS_REQUESTED = "requested"
