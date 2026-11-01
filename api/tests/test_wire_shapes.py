@@ -3973,6 +3973,52 @@ def test_agents_audit_export_carries_the_same_window(a2a_room):
 
 
 
+def test_the_access_tab_carries_each_vendors_last_failed_lease_until_a_newer_lease_clears_it(a2a_room):
+    """Wire shape (kobo#382, owner ask 2026-11-01): each vendor on `GET /api/agents/{name}/access`
+    carries `last_failure`, the newest failed or refused lease for THIS agent at THAT vendor
+    in the last day as `{at, kind, reason}`, so the owner reads why the agent's credential
+    did not resolve. Another agent's failure, one older than a day and a lease issued before
+    the failure leave it standing; a lease at the vendor issued after it clears it; and the
+    service's events being away leaves every vendor without one instead of failing the tab."""
+    from datetime import timedelta
+
+    c, h, bab = a2a_room.client, a2a_room.headers, a2a_room.bab
+    bab.put_integration("aws-prod", "aws", {"role_arn": "arn:aws:iam::111111111111:role/Access"}, ["aws_inventory_read"], "ops@example.com")
+    now = datetime.now(UTC)
+    def stamp(minutes: int) -> str:
+        return (now - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%S")
+    failed = {"agent": "asker", "integration": "aws-prod", "permissions": ["aws_inventory_read"],
+              "reason": "the vendor answered 422 for the narrowed token", "error": "422 Unprocessable Entity"}
+    bab._events.extend([
+        {"id": 1, "at": stamp(25 * 60), "kind": "lease.failed", "actor": "asker", "detail": {**failed, "reason": "yesterday's"}},
+        {"id": 2, "at": stamp(30), "kind": "lease.refused", "actor": "asker", "detail": {**failed, "reason": "not granted"}},
+        {"id": 3, "at": stamp(12), "kind": "lease.failed", "actor": "asker", "detail": failed},
+        {"id": 4, "at": stamp(1), "kind": "lease.failed", "actor": "oracle", "detail": {**failed, "agent": "oracle"}},
+    ])
+    bab._leases.append({"id": 7, "agent": "asker", "integration": "aws-prod", "permissions": ["aws_inventory_read"], "task": "before",
+                        "minter": "aws", "issued_at": stamp(20), "expires_at": stamp(-40)})
+
+    page = c.get("/api/agents/asker/access", headers=h).json()
+    by_id = {v["id"]: v for v in page["vendors"]}
+    assert by_id["aws"]["last_failure"] == {"at": stamp(12) + "Z", "kind": "lease.failed",
+                                            "reason": "the vendor answered 422 for the narrowed token"}
+    assert all(v["last_failure"] is None for vid, v in by_id.items() if vid != "aws")
+
+    bab._leases.append({"id": 8, "agent": "asker", "integration": "aws-prod", "permissions": ["aws_inventory_read"], "task": "after",
+                        "minter": "aws", "issued_at": stamp(5), "expires_at": stamp(-55)})
+    assert c.get("/api/agents/asker/access", headers=h).json()["vendors"][0]["last_failure"] is None
+
+    del bab._leases[-1]
+
+    def away(*_args, **_kwargs):
+        raise ClientError("the permission service is away")
+
+    bab.events = away
+    r = c.get("/api/agents/asker/access", headers=h)
+    assert r.status_code == 200 and all(v["last_failure"] is None for v in r.json()["vendors"])
+
+
+
 # --- the health block's `rolling` (2026-11-01) ---
 
 _SETTLED_STATUS = FAKE_DEPLOYMENT_STATUS_SETTLED["status"]
