@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.32] - 2026-11-01
+
 ### Changed
 
 - **Agent to agent picks by team.** On the Harness tab, **Request another team's agent**
