@@ -167,11 +167,6 @@ import {
   fetchAgentConnections,
   fetchActivity,
   fetchAdminAddons,
-  fetchRoomServices,
-  putRoomService,
-  removeRoomService,
-  type RoomServiceId,
-  type RoomServiceValues,
   type AuditAgentsFilters,
   type AuditFilters,
   fetchAdminAudit,
@@ -608,6 +603,8 @@ export function connectAdminIntegrationMutation(queryClient: QueryClient) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "integrations"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
+      // The Slack row on every agent's Access tab reads whether the room holds Slack (kobo#377).
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
     },
   };
 }
@@ -617,36 +614,6 @@ export function disconnectAdminIntegrationMutation(queryClient: QueryClient) {
     mutationFn: (id: string) => disconnectAdminIntegration(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "integrations"] });
-      queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
-    },
-  };
-}
-
-export function roomServicesQuery() {
-  return queryOptions({
-    queryKey: ["admin", "room-services"] as const,
-    queryFn: fetchRoomServices,
-    staleTime: 15_000,
-  });
-}
-
-export function putRoomServiceMutation(queryClient: QueryClient) {
-  return {
-    mutationFn: (input: { service: RoomServiceId; values: RoomServiceValues }) => putRoomService(input.service, input.values),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["admin", "room-services"] });
-      queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
-      // The Slack tab reads the room's state too.
-      queryClient.invalidateQueries({ queryKey: ["agents"] });
-    },
-  };
-}
-
-export function removeRoomServiceMutation(queryClient: QueryClient) {
-  return {
-    mutationFn: (service: RoomServiceId) => removeRoomService(service),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["admin", "room-services"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
       queryClient.invalidateQueries({ queryKey: ["agents"] });
     },

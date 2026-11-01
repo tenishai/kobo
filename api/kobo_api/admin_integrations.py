@@ -40,6 +40,19 @@ liminal 0.9.0) answers a plain 404, and the connect falls back to the pull
 request above; a gateway that refuses the spec fails the row, since a pull
 request would carry the same spec. Rows that went by pull request are
 removed by pull request.
+
+Slack and GitHub are the two vendors whose credential is also the room's own
+(kobo#377; `kobo_api.room_credentials`). Slack's connection is the
+app-configuration token pair the room creates agents' Slack apps with
+(`slack_config_token`): no permission service row, no gateway target, held
+in the room's own Secret and probed by the same dry-run write the boot probe
+does, since a pair the room cannot rotate fails twelve hours later. GitHub's
+connection is the App the room's own pull requests and agent repositories
+use: `_connect_github` holds it in the room's Secret first, and with the
+permission service on goes on to the service's Secret, the probe and the two
+MCP targets as before (`spec.room_only` marks a row made without it).
+Neither has a "service" row any more; both are added, replaced and removed
+like every other connection.
 """
 
 from __future__ import annotations
@@ -53,7 +66,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from . import admin_store, cloud_access
+from . import admin_store, cloud_access, room_credentials
 from . import bab as bab_mod
 from .agent_env import require_our_branch
 from .clients import ClientError, Clients, GitHubClient
@@ -96,15 +109,20 @@ AUTH_KINDS = {
     # account's API key and a management application key (scoped to
     # service_account_write) for the service, which mints a scoped key per agent.
     "datadog_service_account": "a Datadog service account the permission service mints scoped application keys from",
-    # GitHub through the permission service (kobo#338): the room holds a GitHub App (its
-    # own, or one pasted here) and the service mints an installation token per agent,
-    # narrowed to the granted level and the agent's own repository set (kobo#365: a
-    # child integration under this connection, written from the agent's Access tab).
-    "github_app": "a GitHub App the permission service mints narrowed installation tokens from",
+    # GitHub (kobo#338, kobo#377): the room's GitHub App, held by the room for its own
+    # pull requests and agent repositories; with the permission service on it also
+    # mints an installation token per agent, narrowed to the granted level and the
+    # agent's own repository set (kobo#365: a child integration under this connection,
+    # written from the agent's Access tab).
+    "github_app": "the room's GitHub App; with the permission service on, agents borrow narrowed installation tokens from it",
+    # Slack (kobo#377): the app-configuration token pair the room creates agents' Slack
+    # apps with. The room's own; never leased, never a gateway target.
+    "slack_config_token": "the app-configuration token pair the room makes agents' Slack apps with",
 }
 DATADOG_AUTH = "datadog_service_account"
-GITHUB_AUTH = "github_app"
-GITHUB_SECRET = "bab-github"
+GITHUB_AUTH = room_credentials.GITHUB_AUTH
+SLACK_AUTH = room_credentials.SLACK_AUTH
+GITHUB_SECRET = room_credentials.BAB_GITHUB_SECRET
 # GitHub's hosted MCP server: the gateway's client appends /mcp. Read lanes send
 # X-MCP-Readonly on every request (the server only honours it per request, not
 # per session). The server refuses an unauthenticated initialize and wants the
@@ -203,11 +221,16 @@ def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> 
                  secrets.get(GITHUB_PRIVATE_KEY_FIELD, "").strip()]
         if any(given) and not all(given):
             raise ConnectRefused("GitHub needs the app id, the installation id and the private key together, "
-                                 "or all three blank to use the room's own GitHub App")
+                                 "or all three blank to keep the app the room already holds")
         if given[0] and not (_DIGITS.match(given[0]) and _DIGITS.match(given[1])):
             raise ConnectRefused("the GitHub App id and installation id are numbers")
         if given[2] and not given[2].startswith("-----BEGIN"):
             raise ConnectRefused("the GitHub App private key is the PEM text, starting with -----BEGIN")
+    if auth == SLACK_AUTH:
+        try:
+            room_credentials.values_from_form(room_credentials.SLACK_VENDOR, identity, secrets)
+        except room_credentials.RoomServiceRefused as exc:
+            raise ConnectRefused(str(exc)) from None
 
 
 class ConnectRefused(ValueError):
@@ -740,55 +763,98 @@ def _connect_github(
     session: Session, clients: Clients | None, config: Config, bab, *, vendor: str, name: str, base_access: str,
     address: str, trust: str, actor: str, identity: dict[str, str], secrets: dict[str, str],
 ) -> AdminIntegration:
-    """GitHub through the permission service (kobo#338): the room's own GitHub
-    App unless one is pasted, written to the service's Secret and probed; then
-    the `github-mcp` and `github-mcp-write` targets on the gateway (kobo#365).
-    The connection carries no repository list of its own any more: each agent's
-    set is a child integration under it, written from the agent's Access tab
-    (`kobo_api.github_access`). An older row whose identity still names
-    `repositories` is read as it is and means nothing to the lease."""
-    if bab is None:
-        raise ConnectRefused("GitHub through a GitHub App needs the permission service; turn Access on first")
+    """GitHub (kobo#338, kobo#377): the one row for the room's GitHub App. The
+    pasted app (or, with the fields blank, the app the room already holds: the
+    row being replaced, or the deployment config's) is held in the room's own
+    Secret as this connection's credential, where the room's pull requests and
+    agent repositories read it (`kobo_api.room_credentials`). With the
+    permission service on, it is then written to the service's Secret and
+    probed, and the `github-mcp` and `github-mcp-write` targets go on the
+    gateway (kobo#365); a refusal there takes the room's copy back too, so a
+    bad app connects nothing. Without the service the row is `room_only`:
+    the room's own, nothing for agents to ask for. The connection carries no
+    repository list of its own: each agent's set is a child integration under
+    it, written from the agent's Access tab (`kobo_api.github_access`)."""
+    room = room_credentials.services(clients)
+    if room is None:
+        raise ConnectRefused(room_credentials.NOWHERE_TO_STORE)
     kubectl = getattr(clients, "kubectl", None) if clients is not None else None
-    if kubectl is None:
+    if bab is not None and kubectl is None:
         raise ConnectRefused("this room cannot write the permission service's Secret; nothing was connected")
-    source = "pasted"
     if not identity.get("app_id"):
-        room = getattr(clients, "room_services", None) if clients is not None else None
-        app = room.github_app() if room is not None else None
+        app = room_credentials.github_app(clients, config)
         if app is None:
-            raise ConnectRefused("this room holds no GitHub App yet: set up GitHub under Integrations first, "
-                                 "or paste an app id, installation id and private key here")
+            raise ConnectRefused("paste the app id, the installation id and the private key: "
+                                 "this room holds no GitHub App yet")
         try:
             pem = app.pem()
         except ClientError as exc:
             raise ConnectRefused(f"the room's GitHub App key could not be read: {exc}") from exc
         identity["app_id"], identity["installation_id"] = str(app.app_id), str(app.installation_id)
         secrets[GITHUB_PRIVATE_KEY_FIELD] = pem
-        source = "room"
     identity.pop("repositories", None)
+    try:
+        values = room_credentials.values_from_form(room_credentials.GITHUB_VENDOR, identity, secrets)
+    except room_credentials.RoomServiceRefused as exc:
+        raise ConnectRefused(str(exc)) from None
     inst = identity["installation_id"]
+    held_before = room.read(room_credentials.store.GITHUB, fresh=True)
+    try:
+        room_credentials.store_values(clients, room_credentials.GITHUB_VENDOR, values, actor=actor)
+    except ClientError as exc:
+        raise ConnectRefused(f"the room could not hold the app in its own secret store: {exc}; nothing was connected") from exc
+
+    def take_back() -> None:
+        """A refusal downstream: the room keeps what it held before, or nothing."""
+        try:
+            if held_before is not None:
+                room.put(room_credentials.store.GITHUB, held_before, actor=held_before.get("updated_by") or actor)
+            else:
+                room.delete(room_credentials.store.GITHUB)
+        except ClientError as undo:
+            log.warning("github connect refused and the room's copy was left behind: %s", undo)
+
+    ref = room_credentials.credential_ref(room, room_credentials.GITHUB_VENDOR)
+    base_spec: dict[str, Any] = {
+        "address": _mcp_address(address, GITHUB_MCP_ADDRESS),
+        "trust": trust if trust in ("trusted", "untrusted") else "untrusted",
+        "auth": GITHUB_AUTH,
+        "secret_keys": [],
+    }
+    if bab is None:
+        spec = {**base_spec, "identity": {"app_id": identity["app_id"], "installation_id": inst, "source": "room"},
+                "room_only": True}
+        row = admin_store.put_integration(
+            session, vendor=vendor, name=name, base_access=base_access, spec=spec, credential_ref=ref, actor=actor,
+        )
+        admin_store.set_integration_state(
+            session, row.id, state=admin_store.STATE_APPLIED,
+            detail="held by the room for its own pull requests and agent repositories; with the permission "
+                   "service off, agents cannot be granted GitHub",
+        )
+        return row
     where = f"the Secret {GITHUB_SECRET} in the {config.bab_namespace} namespace, read by the permission service"
     probed: dict[str, Any] = {}
 
     def probe() -> None:
         probed.update(bab.probe_github(inst, actor) or {})
 
-    waiting = _probe_through_secret(
-        bab, kubectl, config, secret=GITHUB_SECRET, literals=github_secret_literals(identity, secrets), probe=probe,
-        undo_hint="check the app id, the installation id and the private key and connect again",
-    )
+    try:
+        waiting = _probe_through_secret(
+            bab, kubectl, config, secret=GITHUB_SECRET, literals=github_secret_literals(identity, secrets), probe=probe,
+            undo_hint="check the app id, the installation id and the private key and connect again",
+        )
+    except ConnectRefused:
+        take_back()
+        raise
     account = str(probed.get("account") or "")
-    spec: dict[str, Any] = {
-        "address": _mcp_address(address, GITHUB_MCP_ADDRESS),
-        "trust": trust if trust in ("trusted", "untrusted") else "untrusted",
-        "auth": GITHUB_AUTH,
-        "identity": {"app_id": identity["app_id"], "installation_id": inst, "source": source,
+    spec = {
+        **base_spec,
+        "identity": {"app_id": identity["app_id"], "installation_id": inst, "source": "room",
                      **({"account": account} if account else {})},
-        "secret_keys": [],
     }
     row = admin_store.put_integration(
-        session, vendor=vendor, name=name, base_access=base_access, spec=spec, credential_ref=None, actor=actor,
+        session, vendor=vendor, name=name, base_access=base_access, spec=spec, credential_ref=ref, actor=actor,
     )
     if waiting:
         detail = (f"the permission service has not read {where} yet; it does within a minute or two, "
@@ -807,9 +873,59 @@ def _connect_github(
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the permission service refused: {exc}")
         return row
     detail += ("; connected in the permission service: each agent picks its repositories on its Access tab and asks "
-               "for a level (Read, Review pull requests, Open pull requests)")
+               "for a level (Read, Review pull requests, Open pull requests); the room's own pull requests use the same app")
     return _attach_mcp_target(session, clients, config, row, detail=detail, waiting=waiting, actor=actor,
                               label="GitHub\'s MCP server (the read and the write targets)")
+
+
+def _connect_slack(
+    session: Session, clients: Clients | None, *, vendor: str, name: str, base_access: str, trust: str, actor: str,
+    identity: dict[str, str], secrets: dict[str, str],
+) -> AdminIntegration:
+    """Slack (kobo#377): the app-configuration token pair, held in the room's own
+    Secret as this connection's credential, where the room reads it to make and
+    remove agents' Slack apps and writes each rotation back. The probe is the
+    boot probe's: a server dry-run of the write, so a room that could not keep
+    a rotated pair refuses now rather than twelve hours on. No permission
+    service row and no gateway target: agents never lease Slack."""
+    room = room_credentials.services(clients)
+    if room is None:
+        raise ConnectRefused(room_credentials.NOWHERE_TO_STORE)
+    try:
+        values = room_credentials.values_from_form(room_credentials.SLACK_VENDOR, identity, secrets)
+    except room_credentials.RoomServiceRefused as exc:
+        raise ConnectRefused(str(exc)) from None
+    held_before = room.read(room_credentials.store.SLACK, fresh=True)
+    try:
+        room_credentials.store_values(clients, room_credentials.SLACK_VENDOR, values, actor=actor)
+    except ClientError as exc:
+        raise ConnectRefused(f"the room could not hold the pair in its own secret store: {exc}; nothing was connected") from exc
+    try:
+        room_credentials.check_slack_writable(clients)
+    except ClientError as exc:
+        try:
+            if held_before is not None:
+                room.put(room_credentials.store.SLACK, held_before, actor=held_before.get("updated_by") or actor)
+            else:
+                room.delete(room_credentials.store.SLACK)
+        except ClientError as undo:
+            log.warning("slack connect refused and the room's copy was left behind: %s", undo)
+        raise ConnectRefused(f"the pair was stored but the room could not write it back the way a rotation will: {exc}; "
+                             "nothing was connected") from exc
+    spec: dict[str, Any] = {
+        "address": "", "trust": trust if trust in ("trusted", "untrusted") else "untrusted", "auth": SLACK_AUTH,
+        "identity": {}, "secret_keys": sorted(secrets), "room_only": True,
+    }
+    row = admin_store.put_integration(
+        session, vendor=vendor, name=name, base_access=base_access, spec=spec,
+        credential_ref=room_credentials.credential_ref(room, room_credentials.SLACK_VENDOR), actor=actor,
+        integration_id=room_credentials.SLACK_VENDOR,
+    )
+    admin_store.set_integration_state(
+        session, row.id, state=admin_store.STATE_APPLIED,
+        detail="held by the room; agents' Slack apps are made with it, and the pair rotates on its own",
+    )
+    return row
 
 
 def _connect_datadog(
@@ -1027,6 +1143,9 @@ def connect(
         secrets[SECRET_KEY] = credential.strip()
     check_auth(auth, identity, secrets)
     bab = _bab(clients)
+    if auth == SLACK_AUTH:
+        return _connect_slack(session, clients, vendor=vendor, name=name, base_access=base_access, trust=trust,
+                              actor=actor, identity=identity, secrets=secrets)
     if auth == DATADOG_AUTH:
         return _connect_datadog(session, clients, config, bab, vendor=vendor, name=name, base_access=base_access,
                                 address=address, trust=trust, actor=actor, identity=identity, secrets=secrets)
@@ -1267,22 +1386,33 @@ def disconnect(session: Session, clients: Clients | None, config: Config, *, int
                     "access": f"removed; {out.get('grants_revoked', 0)} grant(s) revoked"}
         raise ConnectRefused(f"no integration {integration_id!r}")
     outcome: dict[str, Any] = {"id": integration_id, "secret": "left", "gateway": "left"}
-    if bab is not None:
+    auth = (row.spec or {}).get("auth")
+    # Slack, and a GitHub row made without the permission service, are the room's own
+    # (kobo#377): nothing of theirs is in the service or on the gateway.
+    room_only = auth == SLACK_AUTH or bool((row.spec or {}).get("room_only"))
+    if bab is not None and not room_only:
         try:
             out = bab.delete_integration(integration_id, actor)
             outcome["access"] = f"removed; {out.get('grants_revoked', 0)} grant(s) revoked"
         except ClientError as exc:
             outcome["access"] = f"left: {exc}"
-    if (row.spec or {}).get("auth") in MCP_AUTHS:
-        # The keys live in the permission service's Secret, never in the add-on or the gateway.
+    if auth in MCP_AUTHS or auth == SLACK_AUTH:
+        # The keys live in the permission service's Secret and, for the room's own two
+        # vendors, in the room's; never in the add-on or the gateway.
         kubectl = getattr(clients, "kubectl", None) if clients is not None else None
+        gone: list[str] = []
         try:
-            if kubectl is None:
-                raise ClientError("this room cannot reach the permission service's namespace")
-            kubectl.delete_secret(config.bab_namespace, DATADOG_SECRET if (row.spec or {}).get("auth") == DATADOG_AUTH else GITHUB_SECRET)
+            if auth in MCP_AUTHS and not room_only:
+                if kubectl is None:
+                    raise ClientError("this room cannot reach the permission service's namespace")
+                kubectl.delete_secret(config.bab_namespace, DATADOG_SECRET if auth == DATADOG_AUTH else GITHUB_SECRET)
+                gone.append("the permission service's")
+            if auth in (GITHUB_AUTH, SLACK_AUTH):
+                room_credentials.remove_values(clients, row.vendor)
+                gone.append("the room's")
             outcome["secret"] = "removed"
         except ClientError as exc:
-            outcome["secret"] = f"left: {exc}"
+            outcome["secret"] = f"left: {exc}" + (f" (removed {' and '.join(gone)})" if gone else "")
     else:
         sero = clients.sero if clients is not None else None
         if sero is not None and row.credential_ref:
@@ -1294,7 +1424,7 @@ def disconnect(session: Session, clients: Clients | None, config: Config, *, int
             except ClientError as exc:
                 outcome["secret"] = f"left: {exc}"
     # The gateway's target goes the way it came: off the admin plane, or by pull request.
-    outcome["gateway"] = _remove_from_gateway(clients, config, row, actor=actor)
+    outcome["gateway"] = "nothing to remove" if room_only else _remove_from_gateway(clients, config, row, actor=actor)
     went_wrong = any(str(v).startswith("left:") for v in outcome.values())
     admin_store.remove_integration(
         session, integration_id, actor=actor,

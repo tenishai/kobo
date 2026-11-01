@@ -6125,12 +6125,18 @@ GITHUB_LEVELS = ["github_pulls_review", "github_pulls_write", "github_repos_read
 PEM = "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"
 
 
-def _room_github_app(client, app_id="4487276", installation_id="151256501"):
-    from types import SimpleNamespace
+def _room_store(client):
+    """The room's own Secret store (kobo#377), over the test client's kubectl."""
+    from kobo_api.room_services import RoomServices
+    store = RoomServices(client.app.state.clients.kubectl, "kobo", client.app.state.config)
+    client.app.state.clients.room_services = store
+    return store
 
-    from kobo_api.room_services import GitHubAppCredentials
-    client.app.state.clients.room_services = SimpleNamespace(
-        github_app=lambda: GitHubAppCredentials(app_id=app_id, installation_id=installation_id, private_key=PEM, source="room"))
+
+def _room_github_app(client, app_id="4487276", installation_id="151256501"):
+    """The app the room already holds (the deployment config's, or a row being replaced)."""
+    store = _room_store(client)
+    store.put("github", {"app_id": app_id, "installation_id": installation_id, "private_key": PEM}, actor="ops@example.com")
 
 
 def test_a_github_connect_uses_the_rooms_app_writes_the_secret_and_puts_the_github_mcp_target_live(tmp_path, fake_storage):
@@ -6160,6 +6166,9 @@ def test_a_github_connect_uses_the_rooms_app_writes_the_secret_and_puts_the_gith
     assert "picks its repositories on its Access tab" in row["state_detail"]
     assert row["spec"]["identity"] == {"app_id": "4487276", "installation_id": "151256501", "source": "room", "account": "acme"}
     assert row["spec"]["gateway"] == "live" and "pull_request" not in row["spec"] and row["spec"]["secret_keys"] == []
+    # The connection's credential is the room's own Secret (kobo#377): the room's pull requests read it there.
+    assert row["credential_ref"] == "secret:kobo/kobo-room-github-app"
+    assert kubectl.secrets[("kobo", "kobo-room-github-app")]["private_key"] == PEM
     assert github.open_pr_calls == []
     # The Secret the minter reads, the probe it answered, the integration it holds.
     assert kubectl.secrets[("bab", "bab-github")] == {"GITHUB_APP_ID": "4487276", "GITHUB_APP_INSTALLATION_ID": "151256501",
@@ -6188,21 +6197,21 @@ def test_a_github_connect_uses_the_rooms_app_writes_the_secret_and_puts_the_gith
     out = client.delete(f"/api/admin/integrations/{row['id']}", headers=headers).json()
     assert out["gateway"] == "removed from the gateway" and admin.targets == {}
     assert out["secret"] == "removed" and ("bab", "bab-github") not in kubectl.secrets
+    assert ("kobo", "kobo-room-github-app") not in kubectl.secrets
     assert github.open_pr_calls == []
 
 
 def test_a_github_connect_refuses_without_an_app_or_with_half_of_one_or_a_refused_installation(tmp_path, fake_storage):
     """Gate (authorization): no room app and nothing pasted is a refusal that says where to go;
     half an app is a refusal; an installation GitHub turns down takes the Secret back."""
-    from types import SimpleNamespace
     admin = FakeLiminalAdmin()
     bab = FakeBab(integrations=[])
     client, headers = _access_client(tmp_path, fake_storage, bab=bab)
     client.app.state.clients.liminal_admin = admin
-    client.app.state.clients.room_services = SimpleNamespace(github_app=lambda: None)
+    _room_store(client)
     kubectl = client.app.state.clients.kubectl
     r = client.post("/api/admin/integrations", json=GITHUB_APP_BODY, headers=headers)
-    assert r.status_code == 409 and "set up GitHub under Integrations first" in r.json()["error"]
+    assert r.status_code == 409 and "paste the app id" in r.json()["error"]
     half = {**GITHUB_APP_BODY, "identity": {"app_id": "1", "installation_id": "2"}}
     r = client.post("/api/admin/integrations", json=half, headers=headers)
     assert r.status_code == 409 and "together" in r.json()["error"]
@@ -6213,6 +6222,8 @@ def test_a_github_connect_refuses_without_an_app_or_with_half_of_one_or_a_refuse
     r = client.post("/api/admin/integrations", json=pasted, headers=headers)
     assert r.status_code == 409 and "connect again" in r.json()["error"], r.text
     assert ("bab", "bab-github") not in kubectl.secrets and ("bab", "bab-github") in {(ns, n) for ns, n, _ in kubectl.secrets_applied}
+    # The room's own copy is taken back with it: a refused app connects nothing anywhere.
+    assert ("kobo", "kobo-room-github-app") not in kubectl.secrets
     assert admin.targets == {} and bab._integrations == []
 
 

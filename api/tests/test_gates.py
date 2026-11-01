@@ -1977,13 +1977,6 @@ ADMIN_ROUTES = [
     ("GET", "/api/admin/mcp/revocations", {}),
     ("POST", "/api/admin/mcp/revocations", {"json": {"email": "someone@example.com"}}),
     ("POST", "/api/admin/org/reload", {}),
-    ("GET", "/api/admin/room-services", {}),
-    (
-        "PUT",
-        "/api/admin/room-services/slack",
-        {"json": {"config_token": "xoxe.xoxp-1-room-config", "refresh_token": "xoxe-1-room-refresh"}},
-    ),
-    ("DELETE", "/api/admin/room-services/slack", {}),
     ("GET", "/api/admin/access/requests", {}),
     ("POST", "/api/admin/access/decide", {"json": {"ids": [1], "verdict": "approve"}}),
     ("GET", "/api/admin/access/leases", {}),

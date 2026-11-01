@@ -2822,25 +2822,33 @@ def _config(tmp_path, **overrides) -> Config:
     return Config(**values)
 
 
+GITHUB_BODY = {"vendor": "github", "name": "GitHub", "base_access": "read", "auth": "github_app",
+               "identity": {"app_id": GITHUB_APP["app_id"], "installation_id": GITHUB_APP["installation_id"]},
+               "secrets": {"PRIVATE_KEY": GITHUB_APP["private_key"]}}
+
+
 def test_values_are_stored_in_the_rooms_secret_and_never_echoed(tmp_path):
-    """Secrets handling: Values are stored in the rooms secret and never echoed."""
+    """Secrets handling (kobo#377): the GitHub connection's app goes into the room's own
+    Secret and never comes back in the row, the listing or the audit log; a Slack pair of
+    the wrong shape is refused before anything is stored."""
     client, kubectl, headers = _client__api_room_services(tmp_path, _config(tmp_path), kubectl=None)
 
-    put = client.put("/api/admin/room-services/github", json=GITHUB_APP, headers=headers())
+    put = client.post("/api/admin/integrations", json=GITHUB_BODY, headers=headers())
 
-    assert put.status_code == 200, put.text
+    assert put.status_code == 201, put.text
     assert kubectl.secrets[("kobo", "kobo-room-github-app")]["private_key"] == GITHUB_APP["private_key"]
-    status = client.get("/api/admin/room-services", headers=headers()).json()
-    assert status["services"]["github"] == {
-        "configured": True, "source": "room", "updated_at": status["services"]["github"]["updated_at"], "updated_by": "ops@example.com",
-    }
+    assert put.json()["credential_ref"] == "secret:kobo/kobo-room-github-app"
+    listing = client.get("/api/admin/integrations", headers=headers()).json()
     audit = client.get("/api/admin/audit", headers=headers()).json()["rows"]
-    assert audit[0]["action"] == "room_service.set"
-    for text in (put.text, str(status), str(audit)):
-        assert "4741722" not in text and "BEGIN RSA" not in text
+    assert audit[0]["action"] == "integration.connect"
+    for text in (put.text, str(listing), str(audit)):
+        assert "BEGIN RSA" not in text
     # A shape that is not a Slack config token is refused before anything is stored.
-    bad = client.put("/api/admin/room-services/slack", json={**SLACK_PAIR, "config_token": "xoxb-bot"}, headers=headers())
-    assert bad.status_code == 400 and ("kobo", "kobo-room-slack") not in kubectl.secrets
+    bad_pair = {"vendor": "slack", "name": "Slack", "base_access": "read", "auth": "slack_config_token", "identity": {},
+                "secrets": {"CONFIG_TOKEN": "xoxb-bot", "REFRESH_TOKEN": SLACK_PAIR["refresh_token"]}}
+    bad = client.post("/api/admin/integrations", json=bad_pair, headers=headers())
+    assert bad.status_code == 409 and ("kobo", "kobo-room-slack") not in kubectl.secrets
+    assert "xoxb-bot" not in bad.text
 
 
 # --- from test_redact.py ---

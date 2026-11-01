@@ -1207,7 +1207,15 @@ export type AdminIntegration = {
   state: "pending" | "applied" | "failed";
   state_detail: string | null;
   credential_ref: string | null;
-  spec: { address?: string; trust?: string; pull_request?: string; source?: "access"; ceiling?: string[]; kind?: "org" | "account"; parent?: string; account_id?: string };
+  spec: {
+    address?: string; trust?: string; pull_request?: string; ceiling?: string[]; kind?: "org" | "account"; parent?: string; account_id?: string;
+    auth?: string; identity?: Record<string, string>;
+    /** `access`: held by the permission service, never made here. `deployment`: an older
+     * install's deployment config stands behind it (kobo#377); Replace moves it into the room. */
+    source?: "access" | "deployment";
+    /** The room's own (Slack, or GitHub without the permission service): nothing of it is leased. */
+    room_only?: boolean;
+  };
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -1216,7 +1224,7 @@ export type AdminIntegration = {
 export type AdminConnectIntegration = {
   vendor: string;
   name: string;
-  auth?: "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "azure_federated" | "datadog_service_account" | "github_app";
+  auth?: "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token";
   identity?: Record<string, string>;
   secrets?: Record<string, string>;
   base_access: "read" | "write";
@@ -1326,41 +1334,6 @@ export async function fetchOrgAccounts(integrationId: string): Promise<OrgAccoun
 export async function disconnectAdminIntegration(id: string): Promise<{ id: string; secret: string; gateway: string }> {
   const res = await fetch(`/api/admin/integrations/${encodeURIComponent(id)}`, { method: "DELETE" });
   return parse<{ id: string; secret: string; gateway: string }>(res);
-}
-
-/** Room services (#284): the room's own Slack config tokens and the GitHub
- * app for pull requests. Status only; a value is never sent back. */
-export type RoomServiceId = "slack" | "github";
-export type RoomServiceStatus = {
-  configured: boolean;
-  source: "room" | "deployment" | "none";
-  updated_at: string | null;
-  updated_by: string | null;
-};
-export type RoomServices = {
-  can_store: boolean;
-  note: string | null;
-  services: Record<RoomServiceId, RoomServiceStatus>;
-};
-export type RoomServiceValues = Partial<Record<"config_token" | "refresh_token" | "app_id" | "installation_id" | "private_key", string>>;
-
-export async function fetchRoomServices(): Promise<RoomServices> {
-  const res = await fetch("/api/admin/room-services");
-  return parse<RoomServices>(res);
-}
-
-export async function putRoomService(service: RoomServiceId, values: RoomServiceValues): Promise<RoomServices> {
-  const res = await fetch(`/api/admin/room-services/${service}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(values),
-  });
-  return parse<RoomServices>(res);
-}
-
-export async function removeRoomService(service: RoomServiceId): Promise<RoomServices> {
-  const res = await fetch(`/api/admin/room-services/${service}`, { method: "DELETE" });
-  return parse<RoomServices>(res);
 }
 
 /** A role as the server stores it, plus the catalogue the editor offers. */

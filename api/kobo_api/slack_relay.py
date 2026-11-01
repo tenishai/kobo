@@ -61,7 +61,7 @@ from kobo_api import audit
 from kobo_api.clients import ClientError
 from kobo_api.config import Config
 from kobo_api.models import Agent, SlackRelayApp
-from kobo_api.room_services import slack_client
+from kobo_api.room_credentials import slack_client
 from kobo_api.sero import deliver_secret
 from kobo_api.slack_setup import bot_scopes
 

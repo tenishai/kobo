@@ -52,6 +52,14 @@ beforeEach(() => {
 });
 
 describe("SlackVendor", () => {
+  it("asks for a kobo admin when the room has no Slack connection (kobo#377)", async () => {
+    room({ ...NONE, available: false });
+
+    expect(await screen.findByText(/Ask a kobo admin to add the Slack connection/)).toBeTruthy();
+    expect(screen.getByText("Not connected to the room")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Create Slack app" })).toBeNull();
+  });
+
   it("offers Wakes on and Create Slack app when the agent has no app", async () => {
     room(NONE);
 

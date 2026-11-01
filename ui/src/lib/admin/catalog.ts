@@ -6,8 +6,13 @@
 // permission service on, is a service account the service mints a scoped
 // application key per agent from (kobo#322); with it off, a key pair served
 // through the gateway (`DATADOG_GATEWAY`).
+// Slack and GitHub (kobo#377) connect like every vendor, with one difference: their
+// credential is also the room's own. Slack's is the app-configuration token pair the
+// room makes agents' Slack apps with; GitHub's is the App behind the room's pull
+// requests and agent repositories, and, with the permission service on, the one
+// agents borrow narrowed installation tokens from.
 // A vendor not on this list is still connectable as "Other" with a token.
-export type AuthKind = "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "azure_federated" | "datadog_service_account" | "github_app";
+export type AuthKind = "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token";
 
 export type CatalogField = {
   key: string;
@@ -16,6 +21,8 @@ export type CatalogField = {
   secret: boolean;
   optional?: boolean;
   placeholder?: string;
+  /** A text area rather than one line (a PEM key). */
+  multiline?: boolean;
 };
 
 export type CatalogEntry = {
@@ -45,13 +52,21 @@ export const CATALOG: CatalogEntry[] = [
     note: "Make a service account for the room with a role that holds service_account_write and every Datadog read permission; the room mints a short-lived, scoped application key per agent from it. Agents also reach Datadog's MCP server through the gateway with that key.",
   },
   {
-    id: "github", name: "GitHub", summary: "Code, issues, pull requests and workflow runs.", auth: "github_app",
+    id: "github", name: "GitHub", summary: "The room's own pull requests and agent repositories; code, issues and pull requests for agents.", auth: "github_app",
     fields: [
-      { key: "app_id", label: "App id", secret: false, optional: true, placeholder: "leave blank to use the room's GitHub App" },
-      { key: "installation_id", label: "Installation id", secret: false, optional: true },
-      { key: "PRIVATE_KEY", label: "Private key (PEM)", secret: true, optional: true },
+      { key: "app_id", label: "App ID", secret: false, placeholder: "123456" },
+      { key: "installation_id", label: "Installation ID", secret: false, placeholder: "12345678" },
+      { key: "PRIVATE_KEY", label: "Private key (PEM)", secret: true, multiline: true, placeholder: "-----BEGIN RSA PRIVATE KEY-----" },
     ],
-    note: "Uses the room's own GitHub App (the one under Integrations that opens pull requests) unless you paste another. The app must hold every permission agents may be granted: metadata, contents, issues, pull requests, actions and checks, with pull requests and contents writable for the Review and Open levels. Each agent picks its own repositories on its Access tab; the room mints it a short-lived installation token narrowed to that set and its level. Agents also reach GitHub's MCP server through the gateway with that token.",
+    note: "The room's GitHub App. App ID and the private key come from the app's settings page on GitHub (Developer settings, GitHub Apps); the installation ID is the number at the end of the installation's URL under Install App. The room opens its own pull requests with it (skills, tooling) and, with the permission service on, mints each agent a short-lived installation token narrowed to the repositories its owner picks on its Access tab and its level; agents also reach GitHub's MCP server through the gateway with that token. For that the app must hold every permission agents may be granted: metadata, contents, issues, pull requests, actions and checks, with pull requests and contents writable for the Review and Open levels.",
+  },
+  {
+    id: "slack", name: "Slack", summary: "Lets the room create agents' Slack apps.", auth: "slack_config_token",
+    fields: [
+      { key: "CONFIG_TOKEN", label: "App configuration token", secret: true, placeholder: "xoxe.xoxp-..." },
+      { key: "REFRESH_TOKEN", label: "Refresh token", secret: true, placeholder: "xoxe-..." },
+    ],
+    note: "Both values come from api.slack.com/apps, under Your App Configuration Tokens: generate a token for your workspace and paste the pair. Every Slack app the room creates belongs to the account that generated the token, so use a dedicated kobo account rather than your own: create a Slack user for kobo in your workspace, sign in as it at api.slack.com/apps, generate the token there, and keep its sign-in with the room's operators. The token pair rotates on its own once pasted.",
   },
   {
     id: "gcp", name: "Google Cloud", summary: "Projects, resources and IAM.", auth: "gcp_identity",
@@ -97,10 +112,14 @@ export const DATADOG_GATEWAY: CatalogEntry = {
 };
 
 /** The catalog as this room offers it: Datadog's shape follows whether the permission
- * service is on, and GitHub (which only works through it) is offered only then. */
+ * service is on. Slack and GitHub are offered either way: the room's own needs ride
+ * their credential (kobo#377), whatever agents may be granted. */
 export function catalogFor(accessOn: boolean): CatalogEntry[] {
-  return accessOn ? CATALOG : CATALOG.filter((c) => c.id !== "github").map((c) => (c.id === "datadog" ? DATADOG_GATEWAY : c));
+  return accessOn ? CATALOG : CATALOG.map((c) => (c.id === "datadog" ? DATADOG_GATEWAY : c));
 }
+
+/** The vendors whose credential is also the room's own (kobo#377). */
+export const ROOM_VENDORS = new Set(["slack", "github"]);
 
 export function catalogEntry(id: string): CatalogEntry | undefined {
   return CATALOG.find((c) => c.id === id);

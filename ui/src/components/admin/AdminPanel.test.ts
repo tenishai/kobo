@@ -46,13 +46,12 @@ describe("AdminPanel", () => {
     live: true,
     gateway_repo: true,
   };
-  const ROOM_SERVICES = {
-    can_store: true,
-    note: null,
-    services: {
-      slack: { configured: false, source: "none", updated_at: null, updated_by: null },
-      github: { configured: true, source: "deployment", updated_at: null, updated_by: null },
-    },
+  // GitHub as an older install's deployment config carries it (kobo#377): a row like the
+  // rest, marked from the deployment config, with Replace and no Remove.
+  const GITHUB_FROM_DEPLOYMENT = {
+    id: "github", vendor: "github", name: "GitHub", base_access: "read", state: "applied",
+    state_detail: "set in the deployment config; Replace to hold it in the room", credential_ref: null,
+    spec: { auth: "github_app", source: "deployment", identity: {}, secret_keys: [] }, created_by: "", created_at: "", updated_at: "",
   };
   const PEOPLE = {
     admin_groups: ["platform-admins"],
@@ -128,12 +127,10 @@ describe("AdminPanel", () => {
     stubFetch({
       "/api/whoami": ADMIN_WHOAMI,
       "/api/admin/addons": ADDONS,
-      // Listed before "/api/admin/room": the stub matches by substring, first wins.
-      "/api/admin/room-services": ROOM_SERVICES,
       "/api/admin/room": { org_repo: "example/kobo-config", runtime_image: "registry/daedalus-runtime@sha256:789b43aa", cluster: "agents-dev", delivery_backend: "deployed" },
       // Listed before the integrations list: the stub matches by substring, first wins.
       "/api/admin/integrations/aws/setup": AWS_SETUP,
-      "/api/admin/integrations": { integrations: [] },
+      "/api/admin/integrations": { integrations: [GITHUB_FROM_DEPLOYMENT] },
       "/api/admin/roles": ROLES,
       "/api/admin/connections": CONNECTIONS,
       "/api/admin/people": PEOPLE,
@@ -182,7 +179,6 @@ describe("AdminPanel", () => {
     stubFetch({
       "/api/whoami": ADMIN_WHOAMI,
       "/api/admin/addons": { addons: [{ id: "access", name: "Access", summary: "", state: "on", detail: "", keys: [], owner: "" }] },
-      "/api/admin/room-services": ROOM_SERVICES,
       "/api/admin/room": { org_repo: "example/kobo-config", runtime_image: "r", cluster: "c", delivery_backend: "deployed" },
       "/api/admin/integrations": { integrations: [] },
       "/api/admin/roles": ROLES,
@@ -229,7 +225,6 @@ describe("AdminPanel", () => {
     stubFetch({
       "/api/whoami": ADMIN_WHOAMI,
       "/api/admin/addons": { addons: [{ id: "access", name: "Access", summary: "", state: "on", detail: "", keys: [], owner: "" }] },
-      "/api/admin/room-services": ROOM_SERVICES,
       "/api/admin/room": { org_repo: "example/kobo-config", runtime_image: "r", cluster: "c", delivery_backend: "deployed" },
       "/api/admin/access/agents": { agents: [{ name: "janus", team: null, status: "ready", vendors: [] }], fetched_at: "2026-11-01T10:00:00Z" },
     });
@@ -242,30 +237,32 @@ describe("AdminPanel", () => {
     expect(screen.getByText("No agent holds anything yet.")).toBeTruthy();
   });
 
-  it("Integrations starts empty and offers the catalog", async () => {
+  it("Integrations is one kind of row, with Slack and GitHub connected through the catalog", async () => {
     navigate({ page: "admin", pane: "integrations" });
     renderWithClient(AdminPanel);
     expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
-    // Slack and GitHub are rows of the one table, never "added" (#304): the
-    // unset one offers Set up, the one the deployment config carries reads Connected with Replace.
-    expect(screen.queryByRole("heading", { name: "Room services" })).toBeNull();
-    expect(await screen.findByText("Not set up")).toBeTruthy();
-    expect(screen.getAllByText("service")).toHaveLength(2);
+    // No service kind and no rows that are always there (kobo#377): the one row is the
+    // GitHub app the deployment config carries, a connection like any other.
+    expect(await screen.findByText("GitHub")).toBeTruthy();
+    expect(screen.queryByText("service")).toBeNull();
+    expect(screen.queryByText("Not set up")).toBeNull();
+    expect(screen.getAllByText("connection")).toHaveLength(1);
     // Each row carries its vendor's mark beside the name (issue #368).
-    expect(document.querySelectorAll("table .vendor-mark").length).toBe(2);
-    expect(screen.getByRole("button", { name: "Set up" })).toBeTruthy();
+    expect(document.querySelectorAll("table .vendor-mark").length).toBe(1);
     // A value the deployment config carries reads Connected like any other row, with the
-    // provenance as a note and Replace to move it into the room (#337).
+    // provenance as a note and Replace to move it into the room (#337); nothing to Remove.
     expect((await screen.findAllByText("Connected")).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("set in the deployment config").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole("button", { name: "Replace" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
-    expect(await screen.findByText(/Nothing connected yet/)).toBeTruthy();
     await fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
     expect(await screen.findByRole("heading", { name: "Add an integration" })).toBeTruthy();
-    // The catalog is this room's vendors, one line each.
-    for (const vendor of ["Atlassian", "Datadog", "Google Cloud", "AWS", "Azure", "Wiz", "Fastly", "Okta"]) {
+    // The catalog is this room's vendors, one line each; Slack is one of them and GitHub,
+    // already connected, is not offered twice.
+    for (const vendor of ["Atlassian", "Datadog", "Google Cloud", "AWS", "Azure", "Wiz", "Fastly", "Okta", "Slack"]) {
       expect(screen.getByText(vendor)).toBeTruthy();
     }
+    expect(screen.queryByRole("button", { name: "Add GitHub" })).toBeNull();
     expect(screen.queryByText("PagerDuty")).toBeNull();
     // AWS is its own sheet: what agents may read, the role three ways, paste the ARN. No key anywhere.
     await fireEvent.click(screen.getByRole("button", { name: "Add AWS" }));
