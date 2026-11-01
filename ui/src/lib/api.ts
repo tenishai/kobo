@@ -110,6 +110,28 @@ export type AgentSlack = {
   /** False when the room has no Slack config-token store, so no app can
    * be created or reconnected from here (issue #262). */
   available: boolean;
+  /** Whether this room makes Slack apps itself (issue #371): Slack then
+   * lives on the Access tab and the Slack tab shows only for `legacy`. */
+  relay: boolean;
+  /** This agent has a Slack app from the Slack tab's paste flow (an
+   * app-level token), so its Slack tab stays whatever `relay` says. */
+  legacy: boolean;
+};
+
+/** The Access tab's Slack section (issue #371), `GET /api/agents/{name}/slack`:
+ * `state` is `none` (no app yet), `created` (the app exists at Slack and
+ * `install_url` is where the owner installs it) or `installed`. */
+export type SlackAppView = {
+  enabled: boolean;
+  available: boolean;
+  state: "none" | "created" | "installed";
+  app_id: string | null;
+  install_url: string | null;
+  workspace: string | null;
+  app_name: string | null;
+  channels: string[];
+  wake: SlackWake;
+  legacy: boolean;
 };
 
 export type AgentDetail = AgentSummary & {
@@ -2391,6 +2413,36 @@ export async function setSlackWake(
     manifest_changed: boolean;
     wiring: string;
   }>(res);
+}
+
+/** `GET /api/agents/{name}/slack`: the Access tab's Slack section. */
+export async function fetchSlackApp(name: string): Promise<SlackAppView> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/slack`);
+  return parse<SlackAppView>(res);
+}
+
+/**
+ * `POST /api/agents/{name}/slack/app` (issue #371): the room creates the
+ * agent's Slack app with the Wakes on choice it is born with, and answers
+ * with the install link; the owner opens it in the same tab.
+ */
+export async function createSlackApp(
+  name: string,
+  wake: SlackWake,
+): Promise<{ app_id: string; install_url: string }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/slack/app`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wake }),
+  });
+  return parse<{ app_id: string; install_url: string }>(res);
+}
+
+/** `DELETE /api/agents/{name}/slack/app`: the app at Slack, its values and
+ * the relay row go; the agent restarts. Channels stay saved. */
+export async function removeSlackApp(name: string): Promise<{ removed: boolean }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/slack/app`, { method: "DELETE" });
+  return parse<{ removed: boolean }>(res);
 }
 
 /** The three directory fields an Edit details save/Regenerate hands back,

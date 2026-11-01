@@ -470,6 +470,13 @@ class Config(BaseModel):
     # so the account menu shows the Admin entry only when it is on and the
     # caller is an admin. The server gates the panel's routes on its own.
     admin_panel: bool = False
+    # Slack as a vendor on the Access tab (issue #371, phase 2 of #304): the
+    # room creates an agent's Slack app itself, Slack posts events to the
+    # room's public relay (`kobo_api.slack_relay`) and the room forwards
+    # them to the agent, so no app-level token is ever made. Off by default
+    # until proven on one room; off means the Slack tab and its paste flow
+    # are exactly what they were, and the relay routes answer 404.
+    slack_relay: bool = False
     # Where the account menu's "Log out" goes: the identity proxy's sign-out
     # path (for Google's proxy, `/_gcp_iap/clear_login_cookie`). None hides
     # the item, since the room itself holds no session to end.

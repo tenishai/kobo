@@ -67,7 +67,14 @@ EXEMPT_PATHS = frozenset({"/api/healthz", "/metrics"})
 # Matched on a segment boundary (exact, or prefix + "/") so "/oauth" never
 # exempts a lookalike like "/oauthx" -- the same boundary discipline the
 # OAuth redirect-URI allowlist uses.
-EXEMPT_PREFIXES = ("/mcp", "/oauth", "/.well-known", "/broker")
+# /slack/relay and /slack/oauth (issue #371) are the Slack relay and its
+# install callback (kobo_api.slack_relay): Slack posts events to the first
+# and sends a person back through the second, neither with an identity
+# assertion. The relay verifies Slack's own signature per request; the
+# callback trusts only the single-use state the room minted. Both answer
+# 404 while the org's `slack_relay` switch is off, so exempting them in a
+# room that has not turned the flow on exposes nothing.
+EXEMPT_PREFIXES = ("/mcp", "/oauth", "/.well-known", "/broker", "/slack/relay", "/slack/oauth")
 
 
 def _normalize(path: str) -> str:
@@ -111,7 +118,7 @@ FORWARDED_PROTO_HEADER = "x-forwarded-proto"
 # with no TLS and no X-Forwarded-Proto, and that lane must keep working.
 # Matched with the same normalize-then-segment-boundary discipline
 # `_is_exempt` uses, so "/oauthx" is never treated as the OAuth surface.
-HTTPS_ONLY_PREFIXES = ("/mcp", "/oauth", "/.well-known")
+HTTPS_ONLY_PREFIXES = ("/mcp", "/oauth", "/.well-known", "/slack/relay", "/slack/oauth")
 
 # Plain-language 400 body, verbatim, for a non-idempotent request that
 # arrived over plain http.

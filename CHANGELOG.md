@@ -6,6 +6,24 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Slack as a vendor on Access (#371, phase 2 of #304), behind `slack_relay`.** With the
+  org key on, the Access tab gains a Slack section: pick **Wakes on**, **Create Slack app**
+  (the room creates the app from the manifest with its config token, pointing Slack's events
+  at the room's relay instead of Socket Mode, so no app-level token is ever made), then
+  **Install to Slack** (Slack's own install page; the callback stores the bot token through
+  the agent's secrets lane and restarts the agent). Installed: workspace, channels editor,
+  Wakes on (applied with `apps.manifest.update`), Remove. Two public routes, `POST
+  /slack/relay/{relay_id}` (signature verified with the app's signing secret inside a five
+  minute window, challenge answered for a pending id, `event_id` dedupe, 200 at once, forward
+  in the background with `X-Kobo-Relay-Secret`, token bucket per id) and `GET
+  /slack/oauth/callback` (single-use state), exempt from the identity proxy like `/oauth`. New
+  table `slack_relay_apps` (migration `b4d8e2f6a1c3`) holds the relay id, app id and the
+  signing, relay and client secrets plain, the way the room's other held tokens are; the bot
+  token never lands there. The Slack tab shows only for an agent with a paste-flow app
+  (`slack.legacy`) or when the switch is off; with the switch off nothing changes.
+
 ## [0.3.30] - 2026-11-01
 
 ### Added

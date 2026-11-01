@@ -2571,10 +2571,46 @@ _SLACK_AUTH_ERRORS = frozenset({"token_expired", "invalid_auth"})
 _SLACK_ALREADY_GONE_ERRORS = frozenset({"app_not_found", "invalid_app_id"})
 
 
+@dataclass(frozen=True)
+class SlackAppCredentials:
+    """What `apps.manifest.create` hands back besides the app id (the relay
+    flow, issue #371): the OAuth client pair the install exchange needs and
+    the signing secret the relay verifies events with. Never logged; the
+    caller stores each where it belongs (`kobo_api.main`'s slack/app route
+    says where)."""
+
+    app_id: str
+    client_id: str
+    client_secret: str
+    signing_secret: str
+
+
 @runtime_checkable
 class SlackClient(Protocol):
     def create_app(self, manifest: dict) -> str:
         """Create a Slack app from `manifest`; return its app_id."""
+        ...
+
+    def create_app_with_credentials(self, manifest: dict) -> SlackAppCredentials:
+        """Create a Slack app from `manifest` and return its id with the
+        credentials Slack issues at creation (the relay flow, issue #371):
+        the same call as `create_app`, keeping what that one drops."""
+        ...
+
+    def update_app(self, app_id: str, manifest: dict) -> None:
+        """Replace the app's manifest via apps.manifest.update (the owner's
+        Wakes on change on a room-made app, issue #371). Raises
+        `SlackApiError` on any `ok: false` other than an expired config
+        token, which rotates and retries once like `create_app`."""
+        ...
+
+    def oauth_access(
+        self, *, client_id: str, client_secret: str, code: str, redirect_uri: str
+    ) -> dict:
+        """Exchange an install code with oauth.v2.access (issue #371). The
+        client pair goes in the form body, never a bearer header; the answer
+        is Slack's own body (`access_token`, `team`, `app_id`, ...), handed
+        back whole and never logged. Raises `SlackApiError` on `ok: false`."""
         ...
 
     def delete_app(self, app_id: str) -> bool:
@@ -2928,10 +2964,15 @@ class HttpxSlackClient:
         return self._store
 
     def create_app(self, manifest: dict) -> str:
+        return self.create_app_with_credentials(manifest).app_id
+
+    def create_app_with_credentials(self, manifest: dict) -> SlackAppCredentials:
         config_token, _ = self._store.read()
         return self._create_app(manifest, config_token, retried=False)
 
-    def _create_app(self, manifest: dict, config_token: str, *, retried: bool) -> str:
+    def _create_app(
+        self, manifest: dict, config_token: str, *, retried: bool
+    ) -> SlackAppCredentials:
         resp = self._client.post(
             f"{_SLACK_API_BASE}/apps.manifest.create",
             data={"manifest": json.dumps(manifest)},
@@ -2939,7 +2980,16 @@ class HttpxSlackClient:
         )
         body = resp.json()
         if body.get("ok"):
-            return body["app_id"]
+            # Slack answers `credentials` with the client pair, the signing
+            # secret and a verification token nobody uses any more; only the
+            # three the relay flow needs leave this method.
+            credentials = body.get("credentials") or {}
+            return SlackAppCredentials(
+                app_id=body["app_id"],
+                client_id=str(credentials.get("client_id") or ""),
+                client_secret=str(credentials.get("client_secret") or ""),
+                signing_secret=str(credentials.get("signing_secret") or ""),
+            )
 
         error = body.get("error", "unknown_error")
         if error in _SLACK_AUTH_ERRORS and not retried:
@@ -2949,6 +2999,49 @@ class HttpxSlackClient:
         # Never include `manifest` or any token material here — just Slack's
         # own error code.
         raise SlackApiError(f"slack app creation failed: {error}")
+
+    def update_app(self, app_id: str, manifest: dict) -> None:
+        config_token, _ = self._store.read()
+        self._update_app(app_id, manifest, config_token, retried=False)
+
+    def _update_app(
+        self, app_id: str, manifest: dict, config_token: str, *, retried: bool
+    ) -> None:
+        resp = self._client.post(
+            f"{_SLACK_API_BASE}/apps.manifest.update",
+            data={"app_id": app_id, "manifest": json.dumps(manifest)},
+            headers={"Authorization": f"Bearer {config_token}"},
+        )
+        body = resp.json()
+        if body.get("ok"):
+            return
+        error = body.get("error", "unknown_error")
+        if error in _SLACK_AUTH_ERRORS and not retried:
+            new_config_token = self._rotate(config_token)
+            self._update_app(app_id, manifest, new_config_token, retried=True)
+            return
+        raise SlackApiError(f"slack app update failed: {error}")
+
+    def oauth_access(
+        self, *, client_id: str, client_secret: str, code: str, redirect_uri: str
+    ) -> dict:
+        # No config token here: oauth.v2.access authenticates with the app's
+        # own client pair, in the form body, the way Slack documents it.
+        resp = self._client.post(
+            f"{_SLACK_API_BASE}/oauth.v2.access",
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": code,
+                "redirect_uri": redirect_uri,
+            },
+        )
+        body = resp.json()
+        if body.get("ok"):
+            return body
+        # Slack's error code only; the body can carry nothing else of ours
+        # and the code and secret must never reach a log line.
+        raise SlackApiError(f"slack install failed: {body.get('error', 'unknown_error')}")
 
     def _rotate(self, failed_config_token: str) -> str:
         """Rotate the config-token pair via `tooling.tokens.rotate` and

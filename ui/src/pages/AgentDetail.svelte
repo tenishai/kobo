@@ -271,7 +271,10 @@
     if (!data) {
       return;
     }
-    const visible = primaryTabs(invites.isSuccess, data.kind);
+    const visible = primaryTabs(invites.isSuccess, data.kind, {
+      slackRelay: data.slack.relay,
+      slackLegacy: data.slack.legacy,
+    });
     const named = tabDisabled ? null : tabFromHash(route.tab);
     const fromHash = named !== null && visible.includes(named) ? named : null;
     if (fromHash !== null) {
@@ -910,7 +913,7 @@
       </div>
     {/if}
 
-    {@const primary = primaryTabs(invites.isSuccess, data.kind)}
+    {@const primary = primaryTabs(invites.isSuccess, data.kind, { slackRelay: data.slack.relay, slackLegacy: data.slack.legacy })}
     <div class="detail-tabs">
       <div class="detail-tabs__bar">
         <div class="detail-tabs__list" role="tablist" aria-label="Agent sections">

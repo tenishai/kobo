@@ -20,6 +20,7 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -1433,6 +1434,98 @@ def test_connect_slack_through_the_secrets_platform_records_the_caller(
     ]
     # Never both writers for one Secret name.
     assert kubectl.secrets_applied == []
+
+
+def test_create_slack_app_writes_the_five_values_through_the_lane_and_returns_the_install_link(
+    session_factory__api_slack, config__api_slack
+):
+    """Secrets handling: the room-made Slack app (issue #371) stores the app
+    id, client pair, signing secret and relay secret through the agent's
+    secrets lane against the verified caller, never directly; the answer
+    carries the install link and none of the values."""
+    from kobo_api.models import SlackRelayApp
+
+    private_key, jwk = _generate_jwk()
+    relay_config = config__api_slack.model_copy(
+        update={"iap_audience": IAP_AUDIENCE, "slack_relay": True, "operators": [OPERATOR_EMAIL]}
+    )
+    sero, kubectl, slack = FakeSero(), FakeKubectl(), FakeSlack(app_id="A0MADE")
+    gojira, app_id = _onboarded_gojira__api_slack()
+    client = _make_client(
+        session_factory__api_slack, relay_config, github=(github := _CapturingGitHub__api_slack()), kubectl=kubectl,
+        gojira=gojira, sero=sero, slack=slack, iap_jwks_fetcher=_fetcher(jwk),
+    )
+    _seed_agent(session_factory__api_slack, relay_config, gojira_app_id=app_id, created_by=OPERATOR_EMAIL)
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"},
+        headers={ASSERTION_HEADER: _sign(private_key, email=OPERATOR_EMAIL)},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    with session_factory__api_slack() as s:
+        row = s.query(SlackRelayApp).filter_by(agent_name=AGENT_NAME).one()
+    assert body["app_id"] == "A0MADE"
+    assert body["install_url"].startswith("https://slack.com/oauth/v2/authorize?")
+    assert f"state={row.relay_id}." in body["install_url"]
+    assert "fake-signing-secret" not in response.text and row.relay_secret not in response.text
+    assert sero.puts == [(
+        OPERATOR_EMAIL, f"apps/{AGENT_NAME}/slack",
+        {"SLACK_APP_ID": "A0MADE", "SLACK_CLIENT_ID": "fake-client-id", "SLACK_CLIENT_SECRET": "fake-client-secret",
+         "SLACK_SIGNING_SECRET": "fake-signing-secret", "SLACK_RELAY_SECRET": row.relay_secret},
+    )]
+    assert kubectl.secrets_applied == []
+    manifest = slack.manifests[0]
+    assert manifest["settings"]["socket_mode_enabled"] is False
+    assert manifest["settings"]["event_subscriptions"]["request_url"].endswith(f"/slack/relay/{row.relay_id}")
+    assert "message.channels" in manifest["settings"]["event_subscriptions"]["bot_events"]
+    # No channel picked yet: one open slack block, so the agent's events route
+    # exists from its first start and it answers wherever it is invited.
+    written = yaml.safe_load(github.captured_agent_yaml)["transports"]
+    assert [t for t in written if t.get("kind") == "slack"] == [{"kind": "slack"}]
+
+
+def test_install_callback_stores_the_bot_token_through_the_lane_and_redirects(
+    session_factory__api_slack, config__api_slack
+):
+    """Secrets handling: the install callback (issue #371) exchanges the code
+    with the stored client pair, stores SLACK_BOT_TOKEN through the agent's
+    lane against the person who created the app, restarts the agent and
+    sends the person back to the Access tab; the state is spent once."""
+    from kobo_api import slack_relay
+    from kobo_api.models import SlackRelayApp
+
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    sero, kubectl, slack = FakeSero(), FakeKubectl(), FakeSlack()
+    client = _make_client(session_factory__api_slack, relay_config, kubectl=kubectl, sero=sero, slack=slack)
+    _seed_agent(session_factory__api_slack, relay_config, slack_app_id="A0FAKE", created_by=OPERATOR_EMAIL)
+    with session_factory__api_slack() as s:
+        row = SlackRelayApp(relay_id="relay-id-for-clio-0000", agent_name=AGENT_NAME, app_id="A0FAKE",
+                            client_id="fake-client-id", client_secret="fake-client-secret",
+                            signing_secret="fake-signing-secret", relay_secret="fake-relay-secret",
+                            created_by=OPERATOR_EMAIL, created_at=datetime(2026, 11, 1))
+        s.add(row)
+        state = slack_relay.mint_state(row)
+        s.commit()
+
+    response = client.get(f"/slack/oauth/callback?code=fake-code&state={state}", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers["location"] == f"/#/agents/{AGENT_NAME}/access"
+    assert slack.oauth_calls == [{"client_id": "fake-client-id", "code": "fake-code",
+                                  "redirect_uri": "http://testserver/slack/oauth/callback"}]
+    assert sero.puts == [(OPERATOR_EMAIL, f"apps/{AGENT_NAME}/slack", {"SLACK_BOT_TOKEN": "xoxb-fake-bot-token"})]
+    assert kubectl.secrets_applied == []
+    assert kubectl.restarts == [(AGENT_NAME, AGENT_NAME)]
+    with session_factory__api_slack() as s:
+        saved = s.query(SlackRelayApp).filter_by(agent_name=AGENT_NAME).one()
+        assert saved.installed_at is not None and saved.workspace_name == "Fake Workspace"
+        assert saved.oauth_state is None
+    # The same link again finishes nothing: the nonce is gone.
+    again = client.get(f"/slack/oauth/callback?code=fake-code&state={state}", follow_redirects=False)
+    assert again.headers["location"] == "/#/agents?slack=failed"
+    assert len(sero.puts) == 1
 
 
 def test_connect_slack_with_nobody_to_record_the_write_against_is_a_409(

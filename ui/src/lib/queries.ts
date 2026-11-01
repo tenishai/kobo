@@ -18,6 +18,8 @@
 //   ["agents", name, "slack", "manifest"]           - an agent's rendered
 //                                                      Slack manifest (fetched
 //                                                      lazily, once opened)
+//   ["agents", name, "slack", "app"]                - the Access tab's Slack
+//                                                      section (issue #371)
 //   ["agents", name, "invites"]                     - an agent's cross-group
 //                                                      colleagueship invites,
 //                                                      incoming + outgoing
@@ -139,6 +141,7 @@ import {
   connectAgent,
   type ConnectAgentBody,
   connectSlack,
+  createSlackApp,
   convertToConnected,
   createAgent,
   createInvite,
@@ -194,6 +197,7 @@ import {
   fetchPersona,
   fetchRecommendedSkills,
   fetchRequestable,
+  fetchSlackApp,
   fetchSlackManifest,
   fetchTeamOptions,
   fetchTeams,
@@ -257,6 +261,7 @@ import {
   saveAgentSecrets,
   saveKnowledgeFile,
   saveLocalSkill,
+  removeSlackApp,
   saveSlackChannels,
   type ScanFinding,
   scanRepo,
@@ -1595,6 +1600,38 @@ export function saveSlackChannelsMutation(
 export function setSlackWakeMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (wake: SlackWake) => setSlackWake(name, wake),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
+}
+
+/** The Access tab's Slack section (issue #371): no polling, the section's
+ * own actions invalidate it, and the page lands back here after Install. */
+export function slackAppQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "slack", "app"] as const,
+    queryFn: () => fetchSlackApp(name),
+    staleTime: 15_000,
+    retry: shouldRetry,
+  });
+}
+
+/** Create the agent's Slack app at Slack (issue #371); the agent detail
+ * follows (`slack.app_id`) and so does the section. */
+export function createSlackAppMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (wake: SlackWake) => createSlackApp(name, wake),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
+}
+
+/** Remove the agent's room-made Slack app (issue #371). */
+export function removeSlackAppMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: () => removeSlackApp(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name] });
     },

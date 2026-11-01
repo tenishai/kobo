@@ -327,6 +327,55 @@ def test_slack_create_app_request_shape_and_auth_header(tmp_path):
     assert captured["manifest"] == json.dumps(manifest)
 
 
+def test_slack_oauth_access_sends_the_client_pair_in_the_form_and_no_bearer(tmp_path):
+    """Wire shape: oauth.v2.access (issue #371) carries the client pair, the
+    code and the redirect in the form body and no config token."""
+    tokens_path = _write_slack_tokens_file(
+        tmp_path, config_token="xoxe.xoxp-1-fake-config-token", refresh_token="xoxe-1-fake-refresh-token"
+    )
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        captured["form"] = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+        return httpx.Response(200, json={"ok": True, "access_token": "xoxb-fake", "team": {"name": "Fake"}})
+
+    client = HttpxSlackClient(tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    answer = client.oauth_access(
+        client_id="fake-client-id", client_secret="fake-client-secret", code="fake-code",
+        redirect_uri="https://room.example/slack/oauth/callback",
+    )
+
+    assert answer["access_token"] == "xoxb-fake"
+    assert captured["url"] == "https://slack.com/api/oauth.v2.access"
+    assert captured["auth"] is None
+    assert captured["form"] == {"client_id": "fake-client-id", "client_secret": "fake-client-secret",
+                                "code": "fake-code", "redirect_uri": "https://room.example/slack/oauth/callback"}
+
+
+def test_slack_update_app_request_shape_and_auth_header(tmp_path):
+    """Wire shape: apps.manifest.update (issue #371) carries the app id and
+    the manifest as JSON text under the config token."""
+    tokens_path = _write_slack_tokens_file(
+        tmp_path, config_token="xoxe.xoxp-1-fake-config-token", refresh_token="xoxe-1-fake-refresh-token"
+    )
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        captured["form"] = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+        return httpx.Response(200, json={"ok": True})
+
+    client = HttpxSlackClient(tokens_path, http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    client.update_app("A0FAKE", {"display_information": {"name": "clio"}})
+
+    assert captured["url"] == "https://slack.com/api/apps.manifest.update"
+    assert captured["auth"] == "Bearer xoxe.xoxp-1-fake-config-token"
+    assert captured["form"] == {"app_id": "A0FAKE", "manifest": json.dumps({"display_information": {"name": "clio"}})}
+
+
 def test_cabal_graduate_request_shape_body_and_auth_header():
     """Wire shape: Cabal graduate request shape body and auth header."""
     captured = {}

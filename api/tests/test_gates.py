@@ -156,6 +156,9 @@ def config__web_ownership_gate(tmp_path):
         workdir=tmp_path / "work",
         operators=[OPERATOR_EMAIL],
         iap_audience=AUDIENCE,
+        # The room-made Slack app routes (issue #371) exist only with the
+        # switch on; off they are a 404 before any gate.
+        slack_relay=True,
     )
 
 
@@ -382,6 +385,14 @@ def _set_slack_wake(client, headers):
     return client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "thread"}, headers=headers)
 
 
+def _create_slack_app(client, headers):
+    return client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"}, headers=headers)
+
+
+def _remove_slack_app(client, headers):
+    return client.delete(f"/api/agents/{AGENT_NAME}/slack/app", headers=headers)
+
+
 def _set_colleague_mode(client, headers):
     return client.put(
         f"/api/agents/{AGENT_NAME}/colleague-mode", json={"mode": "roster-only"}, headers=headers
@@ -479,6 +490,8 @@ SMOKE_ROUTES = [
     ("runtime", _set_runtime),
     ("model", _set_model),
     ("slack-wake", _set_slack_wake),
+    ("slack-app-create", _create_slack_app),
+    ("slack-app-remove", _remove_slack_app),
     ("colleague-mode", _set_colleague_mode),
     ("knowledge-delete", _delete_knowledge),
     ("retry", _retry),
@@ -708,6 +721,8 @@ READY_GATED_ROUTES = [
     ),
     ("PUT", f"/api/agents/{AGENT_NAME}/slack/channels", {"json": {"channels": ["C01234567"]}}),
     ("PUT", f"/api/agents/{AGENT_NAME}/slack/wake", {"json": {"wake": "thread"}}),
+    ("POST", f"/api/agents/{AGENT_NAME}/slack/app", {"json": {"wake": "thread"}}),
+    ("DELETE", f"/api/agents/{AGENT_NAME}/slack/app", {}),
     ("PUT", f"/api/agents/{AGENT_NAME}/persona", {"json": {"persona": PERSONA}}),
     ("PATCH", f"/api/agents/{AGENT_NAME}/model", {"json": {"model": "vertex_ai/claude-sonnet-4-5"}}),
     ("POST", f"/api/agents/{AGENT_NAME}/restart", {}),
@@ -950,6 +965,7 @@ GUARDED_ROUTES = [
     # chat relay are the room's hand on a bundle it does not own.
     ("PUT", f"/api/agents/{AGENT_NAME}/colleague-mode", {"json": {"mode": "roster-only"}}),
     ("POST", f"/api/agents/{AGENT_NAME}/chat", {"json": {"messages": [{"role": "user", "text": "hi"}]}}),
+    ("POST", f"/api/agents/{AGENT_NAME}/slack/app", {"json": {"wake": "thread"}}),
 ]
 
 
@@ -982,6 +998,7 @@ def config__web_connected_guard(tmp_path, fake_storage):
         personas_bucket="personas-bucket",
         cabal_url="http://cabal.internal",
         agent_endpoint_template="http://agent-{name}.default.svc.cluster.local",
+        slack_relay=True,
     )
 
 
