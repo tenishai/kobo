@@ -12,8 +12,11 @@
 // room makes agents' Slack apps with; GitHub's is the App behind the room's pull
 // requests and agent repositories, and, with the permission service on, the one
 // agents borrow narrowed installation tokens from.
+// Self-hosted models (kobo#390) is the one kind that is only models: an OpenAI-compatible
+// endpoint the person runs, named by them, one row per endpoint; the room probes it and
+// serves its models through the model gateway. Nothing is leased.
 // A vendor not on this list is still connectable as "Other" with a token.
-export type AuthKind = "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "gcp_parent" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token";
+export type AuthKind = "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "gcp_parent" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token" | "self_hosted_endpoint";
 
 export type CatalogField = {
   key: string;
@@ -39,6 +42,11 @@ export type CatalogEntry = {
 };
 
 const TOKEN: CatalogField[] = [{ key: "TOKEN", label: "API token", secret: true }];
+
+/** The one kind that is only models (kobo#390); a room may hold many rows of it. */
+export const SELF_HOSTED = "self-hosted";
+export const SELF_HOSTED_AUTH = "self_hosted_endpoint";
+export const SELF_HOSTED_SUMMARY = "Models you run yourself, on your own machines or clusters, at an address you give the room.";
 
 export const CATALOG: CatalogEntry[] = [
   { id: "atlassian", name: "Atlassian", summary: "Jira issues and Confluence pages.", auth: "token", fields: TOKEN, address: "https://mcp.atlassian.com/v1/mcp" },
@@ -101,6 +109,16 @@ export const CATALOG: CatalogEntry[] = [
   },
   { id: "fastly", name: "Fastly", summary: "Services, configs and purges.", auth: "token", fields: TOKEN },
   { id: "okta", name: "Okta", summary: "Users, groups and apps.", auth: "token", fields: TOKEN },
+  {
+    id: SELF_HOSTED, name: "Self-hosted models", summary: SELF_HOSTED_SUMMARY, auth: "self_hosted_endpoint",
+    fields: [
+      { key: "base_url", label: "Base address", secret: false, placeholder: "http://10.0.0.5 or https://models.example.internal/v1" },
+      { key: "api_key", label: "API key", secret: true, optional: true },
+      { key: "models", label: "Models it serves, one per line", secret: false, multiline: true, placeholder: "qwen3-32b = Qwen3 32B\nllama-3-70b" },
+      { key: "options", label: "Request options for every model", secret: false, optional: true, multiline: true, placeholder: "chat_template_kwargs: {enable_thinking: false}" },
+    ],
+    note: "The address is the root the server answers /v1/models at; the room adds /v1 when it is missing. On connect the room lists the models there and asks each one you named for a short answer, so an entry nothing stands behind is marked rather than offered. The options block, written as in the example, is sent with every request to every model of this row.",
+  },
 ];
 
 export const OTHER: CatalogEntry = { id: "", name: "", summary: "A vendor not on this list.", auth: "token", fields: TOKEN };

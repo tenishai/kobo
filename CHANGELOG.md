@@ -6,6 +6,25 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Self-hosted models (kobo#390).** A fourth kind under Admin, Integrations, and the one that is
+  only models: models you run yourself, on your own machines or clusters, at an address you give
+  the room (vendor `self-hosted`, auth kind `self_hosted_endpoint`, `kobo_api.self_hosted`). One
+  row per endpoint, named by the person; the form takes the base address (the room appends `/v1`
+  when it is missing), an optional key, the models it serves one per line (`name` or
+  `name = label`) and one optional block of request options (YAML or JSON) sent with every call to
+  every model of the row, such as `chat_template_kwargs: {enable_thinking: false}`. On connect the
+  room itself lists the models at the address and asks each named model for a short answer
+  (`max_tokens: 8`, with the options); a model that fails is marked on the row with the server's
+  sentence ("2 of 3 models answer; `old-model` failed: ...") and is not registered, and the row
+  connects as long as one answers. **Check models** on the row runs the probe again. The key is
+  held in the room's own Secret (`self-hosted-<row id>`), never echoed. With the model gateway on,
+  each answering model is one deployment (`<row slug>-<model slug>`, LiteLLM's `openai/` route at
+  the endpoint, the options as `extra_body`), the catalogue lists them under the row's name and the
+  pickers group them there; the org's `models:` list is untouched. Nothing of this touches the
+  permission service or the tool gateway: nothing is leased.
+
 ### Changed
 
 - **The Create agent dialog in the room's look.** The dialog now wears the room's restyle: a title with one sentence under it, the persona list as hairline rows with the name and its line in ink under small-caps group labels and **Build your own persona** as a button on the header row, Name, Group and Model each the whole width with the model list's reasons beside the names and the no-model sentence under the list, Cancel and Create agent on the right of the footer. Focus lands on the persona search and Enter in Name creates. Phone width gets 16px gutters.

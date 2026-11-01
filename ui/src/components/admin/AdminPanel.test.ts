@@ -325,6 +325,85 @@ describe("AdminPanel", () => {
     expect(body.secrets).toEqual({});
   });
 
+  it("Self-hosted models is a form with the address, an optional key, the models and the options, and a row with its host, count, failures and Check models", async () => {
+    // kobo#390. The form submits under `self_hosted_endpoint` with the key as the one secret;
+    // the row shows the host alone (never the key), how many models answer and which failed,
+    // and Check models runs the probe again.
+    const LAB = {
+      id: "lab-gpu-pool", vendor: "self-hosted", name: "Lab GPU pool", base_access: "read", state: "applied",
+      state_detail: "10.0.0.5 answers; 2 of 3 models answer; `old-model` failed: HTTP 404: model 'old-model' does not exist",
+      credential_ref: "secret:kobo/self-hosted-lab-gpu-pool",
+      spec: {
+        auth: "self_hosted_endpoint", base_url: "http://10.0.0.5/v1", options: { chat_template_kwargs: { enable_thinking: false } },
+        models: [
+          { name: "qwen3-32b", label: "Qwen3 32B", ok: true, reason: null },
+          { name: "llama-3-70b", label: "llama-3-70b", ok: true, reason: null },
+          { name: "old-model", label: "old-model", ok: false, reason: "HTTP 404: model 'old-model' does not exist" },
+        ],
+      },
+      created_by: "k", created_at: "2026-11-01T10:00:00Z", updated_at: "2026-11-01T10:00:00Z",
+    };
+    vi.unstubAllGlobals();
+    stubFetch({
+      "/api/whoami": ADMIN_WHOAMI,
+      "/api/admin/addons": ADDONS,
+      "/api/admin/room": { org_repo: "example/kobo-config", runtime_image: "r", cluster: "c", delivery_backend: "deployed" },
+      "/api/admin/integrations/lab-gpu-pool/models/check": { id: "lab-gpu-pool", models: LAB.spec.models, answering: 2, total: 3, state: "applied", detail: LAB.state_detail },
+      "/api/admin/integrations": { integrations: [LAB] },
+      "/api/admin/roles": ROLES,
+      "/api/admin/connections": CONNECTIONS,
+      "/api/admin/people": PEOPLE,
+      "/api/admin/audit": AUDIT,
+      "/api/group-requests": { requests: REQUESTS },
+    });
+    navigate({ page: "admin", pane: "integrations" });
+    renderWithClient(AdminPanel);
+    expect(await screen.findByText("Lab GPU pool")).toBeTruthy();
+    expect(screen.getByText("10.0.0.5")).toBeTruthy();
+    expect(screen.getByText("2 of 3 models answer")).toBeTruthy();
+    expect(screen.getByText(/old-model failed: HTTP 404/)).toBeTruthy();
+    expect(screen.getByText("models")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("self-hosted-lab-gpu-pool");
+    await fireEvent.click(screen.getByRole("button", { name: "Check models" }));
+    const check = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url).endsWith("/api/admin/integrations/lab-gpu-pool/models/check") && init?.method === "POST");
+    expect(check).toBeTruthy();
+    // A second endpoint is a second row: the kind stays addable.
+    await fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
+    // The description is on the row and on the catalog card.
+    expect(await screen.findAllByText("Models you run yourself, on your own machines or clusters, at an address you give the room.")).toHaveLength(2);
+    await fireEvent.click(screen.getByRole("button", { name: "Add Self-hosted models" }));
+    expect(await screen.findByRole("heading", { name: "Connect self-hosted models" })).toBeTruthy();
+    const key = screen.getByLabelText(/API key/) as HTMLInputElement;
+    expect(key.type).toBe("password");
+    expect(key.required).toBe(false);
+    expect(screen.getByLabelText("Base address")).toBeTruthy();
+    expect(screen.getByLabelText("Models it serves, one per line").tagName).toBe("TEXTAREA");
+    const options = screen.getByLabelText(/Request options for every model/) as HTMLTextAreaElement;
+    expect(options.tagName).toBe("TEXTAREA");
+    expect(options.placeholder).toContain("enable_thinking");
+    // Only models: no MCP address, no read/write choice.
+    expect(screen.queryByLabelText(/MCP address/)).toBeNull();
+    expect(screen.queryByText("Agents may")).toBeNull();
+    await fireEvent.input(screen.getByLabelText("Name for this endpoint"), { target: { value: "Second pool" } });
+    await fireEvent.input(screen.getByLabelText("Base address"), { target: { value: "https://models.example.internal/v1" } });
+    await fireEvent.input(key, { target: { value: "sk-second" } });
+    await fireEvent.input(screen.getByLabelText("Models it serves, one per line"), { target: { value: "qwen3-32b = Qwen3 32B\nllama-3-70b" } });
+    await fireEvent.input(options, { target: { value: "chat_template_kwargs: {enable_thinking: false}" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    const post = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url) === "/api/admin/integrations" && init?.method === "POST");
+    expect(post).toBeTruthy();
+    const body = JSON.parse(String(post?.[1]?.body));
+    expect(body.vendor).toBe("self-hosted");
+    expect(body.name).toBe("Second pool");
+    expect(body.auth).toBe("self_hosted_endpoint");
+    expect(body.identity).toEqual({
+      base_url: "https://models.example.internal/v1",
+      models: "qwen3-32b = Qwen3 32B\nllama-3-70b",
+      options: "chat_template_kwargs: {enable_thinking: false}",
+    });
+    expect(body.secrets).toEqual({ api_key: "sk-second" });
+  });
+
   it("People reads the real lists and the real queue", async () => {
     navigate({ page: "admin", pane: "people" });
     renderWithClient(AdminPanel);

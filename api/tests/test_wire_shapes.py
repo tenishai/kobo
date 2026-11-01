@@ -4171,6 +4171,39 @@ def test_catalog_models_answers_from_the_providers_with_available_and_reason(tmp
     assert {m["reason"] for m in down["models"]} == {REASON_GATEWAY_DOWN}
 
 
+def test_catalog_models_lists_a_self_hosted_rows_answering_models_under_its_name(tmp_path):
+    """Wire shape (kobo#390): a Self-hosted models row adds its answering
+    models to the catalogue under the row's own name as `provider_label`,
+    provider `self-hosted`, id `self-hosted/<row>/<name>`, available while
+    the gateway answers; a model the probe marked failed is not offered,
+    and the org's own list is untouched."""
+    gateway = FakeModelsGateway()
+    client, headers, session_factory = _models_room(tmp_path, gateway=gateway)
+    with session_factory() as session:
+        admin_store.put_integration(
+            session, vendor="self-hosted", name="Lab GPU pool", base_access="read", integration_id="lab-gpu-pool",
+            spec={"auth": "self_hosted_endpoint", "base_url": "http://10.0.0.5/v1", "options": {},
+                  "models": [{"name": "qwen3-32b", "label": "Qwen3 32B", "ok": True, "reason": None},
+                             {"name": "old-model", "label": "old-model", "ok": False, "reason": "HTTP 404"}]},
+            credential_ref=None, actor="ops@example.com",
+        )
+        admin_store.set_integration_state(session, "lab-gpu-pool", state=admin_store.STATE_APPLIED, detail="connected")
+        session.commit()
+
+    body = client.get("/api/catalog/models", headers=headers).json()
+
+    assert [m["id"] for m in body["models"]] == [
+        "vertex_ai/claude-sonnet-4-5", "vertex_ai/gemini-2.5-flash", "self-hosted/lab-gpu-pool/qwen3-32b"]
+    own = body["models"][2]
+    assert own == {
+        "id": "self-hosted/lab-gpu-pool/qwen3-32b", "label": "Qwen3 32B", "family": None, "tier": None,
+        "provider": "self-hosted", "provider_label": "Lab GPU pool", "gateway_model": "lab-gpu-pool-qwen3-32b",
+        "available": True, "reason": None}
+    assert body["default"] == "self-hosted/lab-gpu-pool/qwen3-32b"
+    gateway.up = False
+    assert client.get("/api/catalog/models", headers=headers).json()["models"][2]["reason"] == REASON_GATEWAY_DOWN
+
+
 def test_catalog_models_is_unchanged_with_the_gateway_off(tmp_path):
     """Wire shape (kobo#390): an install that has not set `models_gateway_url`
     gets exactly the payload it always did, so nothing moves until it does."""

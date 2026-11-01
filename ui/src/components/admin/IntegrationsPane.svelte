@@ -15,15 +15,17 @@
     errorMessage,
     type AdminIntegration,
     type OrgAccountsCheck,
+    type SelfHostedModel,
   } from "../../lib/api";
   import { toast } from "../../lib/toast.svelte";
   import {
     adminIntegrationsQuery,
     checkOrgAccountsMutation,
+    checkSelfHostedModelsMutation,
     connectAdminIntegrationMutation,
     disconnectAdminIntegrationMutation,
   } from "../../lib/queries";
-  import { OTHER, ROOM_VENDORS, catalogFor, type CatalogEntry } from "../../lib/admin/catalog";
+  import { OTHER, ROOM_VENDORS, SELF_HOSTED, SELF_HOSTED_AUTH, SELF_HOSTED_SUMMARY, catalogFor, type CatalogEntry } from "../../lib/admin/catalog";
   import { whenDay } from "../../lib/time";
 
   // `accessOn`: the permission service is on, so Datadog connects as a service account
@@ -41,6 +43,10 @@
   const check = createMutation(() => (checkOrgAccountsMutation(queryClient)));
   let checked = $state<Record<string, OrgAccountsCheck>>({});
   let checking = $state<string | null>(null);
+  // Check models (kobo#390): a Self-hosted row's connect probe again, one short answer
+  // asked of each named model; the row's verdict per model and the gateway follow.
+  const checkModels = createMutation(() => (checkSelfHostedModelsMutation(queryClient)));
+  let checkingModels = $state<string | null>(null);
 
   // Slack and GitHub are rows like the rest (kobo#377): added through the catalog,
   // replaced by an Add with new values, removed like any connection. The room's own
@@ -54,10 +60,11 @@
   const childrenOf = $derived((org: AdminIntegration) => all.filter((i) => i.spec.parent === org.id));
   const visibleRoots = $derived(roots.filter((r) => matches(r) || childrenOf(r).some(matches)));
   const connected = $derived(new Set(all.map((i) => i.vendor)));
-  // A second AWS organization, or a second Google Cloud project, is a second row, so both stay addable.
+  // A second AWS organization, a second Google Cloud project or a second self-hosted
+  // endpoint is a second row, so those stay addable.
   const addable = $derived(
     catalog
-      .filter((c) => c.id === "aws" || c.id === "gcp" || !connected.has(c.id))
+      .filter((c) => c.id === "aws" || c.id === "gcp" || c.id === SELF_HOSTED || !connected.has(c.id))
       .slice()
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })),
   );
@@ -131,7 +138,7 @@
       mode: replacing ? "replace" : entry.id === "aws" ? "org" : entry.id === "gcp" ? "gcp" : "other",
       parent: null,
       vendor: entry.id,
-      name: replacing?.name || (entry.id === "aws" || entry.id === "gcp" ? "" : entry.name),
+      name: replacing?.name || (entry.id === "aws" || entry.id === "gcp" || entry.id === SELF_HOSTED ? "" : entry.name),
       address: entry.address ?? "",
       base_access: "read",
       trust: "untrusted",
@@ -164,6 +171,21 @@
       },
       onError: (err: unknown) => toast.error(`Could not check the ${noun}s`, errorMessage(err, "Try again.")),
       onSettled: () => (checking = null),
+    });
+  }
+
+  function handleCheckModels(row: AdminIntegration): void {
+    checkingModels = row.id;
+    checkModels.mutate(row.id, {
+      onSuccess: (out) => {
+        const failed = out.models.filter((m) => !m.ok);
+        toast[out.answering ? "success" : "error"](
+          `${out.answering} of ${out.total} model${out.total === 1 ? "" : "s"} answer`,
+          failed.length ? failed.map((m) => `${m.name} failed: ${m.reason ?? "no answer"}`).join("; ") : "Every model you named answered.",
+        );
+      },
+      onError: (err: unknown) => toast.error("Could not check the models", errorMessage(err, "Try again.")),
+      onSettled: () => (checkingModels = null),
     });
   }
 
@@ -248,12 +270,32 @@
       return i.spec.parent_resource?.startsWith("organizations/") ? "organization" : "folder";
     }
     if (i.spec.kind === "account" || i.spec.parent) return childNoun(i);
+    if (i.vendor === SELF_HOSTED) return "models";
     return i.vendor === "aws" || i.vendor === "gcp" ? childNoun(i) : "connection";
   }
   const modelsLabel = (i: AdminIntegration): string | null =>
-    i.spec.models ? `Models: ${i.spec.models.provider === "vertex_ai" ? "Vertex AI" : i.spec.models.provider}, ${i.spec.models.location}` : null;
+    i.spec.models && !Array.isArray(i.spec.models)
+      ? `Models: ${i.spec.models.provider === "vertex_ai" ? "Vertex AI" : i.spec.models.provider}, ${i.spec.models.location}`
+      : null;
+  // A Self-hosted row (kobo#390): the host alone (never the key, never the path), how many
+  // of its models answer, and the ones that did not, each with the server's sentence.
+  const selfHosted = (i: AdminIntegration): boolean => i.spec.auth === SELF_HOSTED_AUTH;
+  const ownModels = (i: AdminIntegration): SelfHostedModel[] => (Array.isArray(i.spec.models) ? i.spec.models : []);
+  function hostOf(url: string | undefined): string {
+    try {
+      return url ? new URL(url).host : "";
+    } catch {
+      return url ?? "";
+    }
+  }
+  function modelsCount(i: AdminIntegration): string {
+    const models = ownModels(i);
+    const ok = models.filter((m) => m.ok).length;
+    const noun = `model${models.length === 1 ? "" : "s"}`;
+    return ok === models.length ? `${models.length} ${noun}` : `${ok} of ${models.length} ${noun} answer`;
+  }
   const formTitle = $derived(
-    !form ? "" : form.mode === "org" ? "Connect an AWS organization" : form.mode === "gcp" ? "Connect Google Cloud" : form.mode === "replace" ? `Replace ${form.name}` : `Add ${form.name || "an integration"}`,
+    !form ? "" : form.mode === "org" ? "Connect an AWS organization" : form.mode === "gcp" ? "Connect Google Cloud" : form.mode === "replace" ? `Replace ${form.name}` : form.entry.id === SELF_HOSTED ? "Connect self-hosted models" : `Add ${form.name || "an integration"}`,
   );
   const fromDeployment = (i: AdminIntegration): boolean => i.spec.source === "deployment";
   const roomOwn = (i: AdminIntegration): boolean => ROOM_VENDORS.has(i.vendor) && i.spec.source !== "access";
@@ -300,6 +342,14 @@
                     {#if i.spec.project}<span class="quiet addr">{i.spec.project}</span>{/if}
                     {#if i.spec.parent_resource}<span class="quiet addr">{i.spec.parent_resource}</span>{/if}
                     {#if modelsLabel(i)}<span class="addr">{modelsLabel(i)}</span>{/if}
+                    {#if selfHosted(i)}
+                      <span class="addr">{SELF_HOSTED_SUMMARY}</span>
+                      <span class="quiet addr">{hostOf(i.spec.base_url)}</span>
+                      <span class="addr">{modelsCount(i)}</span>
+                      {#each ownModels(i).filter((m) => !m.ok) as m (m.name)}
+                        <span class="addr fail">{m.name} failed{m.reason ? `: ${m.reason}` : ""}</span>
+                      {/each}
+                    {/if}
                     {#if i.vendor === "slack"}<span class="quiet addr">Lets the room create agents' Slack apps.</span>{/if}
                     {#if i.vendor === "github" && i.spec.source !== "access"}<span class="quiet addr">The room's own pull requests and agent repositories{i.spec.room_only ? "" : "; what each agent may reach is picked on its Access tab"}.</span>{/if}
                     {#if i.spec.source === "access" && i.spec.kind !== "org"}<span class="quiet addr">in the permission service{i.spec.ceiling?.length ? `, ${i.spec.ceiling.length} permission${i.spec.ceiling.length === 1 ? "" : "s"} agents may ask for` : ""}</span>{/if}
@@ -323,6 +373,11 @@
                 {#if i.spec.kind === "org"}
                   <button type="button" class="btn btn--quiet" disabled={checking !== null} onclick={() => handleCheck(i)}>
                     {checking === i.id ? "Checking…" : `Check ${childNoun(i)}s`}
+                  </button>
+                {/if}
+                {#if selfHosted(i)}
+                  <button type="button" class="btn btn--quiet" disabled={checkingModels !== null} onclick={() => handleCheckModels(i)}>
+                    {checkingModels === i.id ? "Checking…" : "Check models"}
                   </button>
                 {/if}
                 {#if i.spec.pull_request}
@@ -402,7 +457,7 @@
 </section>
 
 <Modal open={catalogOpen} title="Add an integration" size="wide" onclose={() => (catalogOpen = false)}>
-  <p class="catalog__lead">Pick a vendor. The room holds one connection to it and lends agents only what you grant under Permissions.</p>
+  <p class="catalog__lead">Pick a vendor. The room holds one connection to it and lends agents only what you grant under Permissions. Self-hosted models is the one that is only models: name an endpoint you run and its models join the pickers.</p>
   <div class="catalog">
     {#each addable as c (c.id)}
       <div class="catalog__card">
@@ -452,8 +507,8 @@
   {:else if form}
     <form id="integration-form" class="form" onsubmit={submitConnect}>
       <label class="field">
-        <span>Name</span>
-        <input id="integration-name" type="text" bind:value={form.name} required />
+        <span>{form.entry.id === SELF_HOSTED ? "Name for this endpoint" : "Name"}</span>
+        <input id="integration-name" type="text" bind:value={form.name} placeholder={form.entry.id === SELF_HOSTED ? "e.g. lab-gpu-pool" : ""} required autocomplete="off" />
       </label>
       {#each form.entry.fields as f (f.key)}
         <label class="field">
@@ -475,6 +530,8 @@
       {#if form.entry.note}<p class="page__foot">{form.entry.note}</p>{/if}
       {#if form.entry.auth === SLACK_AUTH}
         <!-- Nothing for the gateway and no read/write choice: the pair is the room's own. -->
+      {:else if form.entry.auth === SELF_HOSTED_AUTH}
+        <!-- Only models: nothing is leased, so no address for the gateway and no read/write choice. -->
       {:else if form.entry.auth === DATADOG_AUTH}
         <label class="field">
           <span>Datadog MCP server</span>
@@ -504,13 +561,16 @@
       {#if connect.isPending}
         <p class="page__foot busy" role="status"><span class="spin" aria-hidden="true"></span>
           {#if form.entry.auth === SLACK_AUTH}Checking the room can keep the pair, then saving it.
+          {:else if form.entry.auth === SELF_HOSTED_AUTH}Listing the models at the address, then asking each one you named for a short answer.
           {:else if form.entry.auth === GITHUB_AUTH && !accessOn}Saving the app for the room.
           {:else if SERVICE_AUTHS.has(form.entry.auth)}Checking with {VENDOR_OF_AUTH[form.entry.auth]}, then adding its MCP server to the gateway. This can take up to a minute.
           {:else if form.vendor === "aws"}Checking the role with AWS.
           {:else}Storing the credential and adding the target to the gateway. This can take a moment.{/if}
         </p>
       {/if}
-      {#if ROOM_AUTHS.has(form.entry.auth)}
+      {#if form.entry.auth === SELF_HOSTED_AUTH}
+        <p class="page__foot">The key, if you give one, is kept by the room itself and never shown again. The row connects as long as one model answers; the ones that do not are marked on it, and Check models asks again.</p>
+      {:else if ROOM_AUTHS.has(form.entry.auth)}
         <p class="page__foot">The values are kept by the room itself and never shown again{#if form.entry.auth === GITHUB_AUTH && accessOn}; the permission service checks the app with GitHub before anything is saved{/if}.</p>
       {:else if SERVICE_AUTHS.has(form.entry.auth)}
         <p class="page__foot">The keys are kept for the permission service alone and never shown again; it checks them with {VENDOR_OF_AUTH[form.entry.auth]} before anything is saved.</p>
@@ -522,8 +582,8 @@
   {#snippet footer()}
     <button type="button" class="btn" onclick={() => (form = null)}>Cancel</button>
     <button type="submit" form="integration-form" class="btn btn--primary" disabled={connect.isPending}>
-      {#if connect.isPending}<span class="spin spin--btn" aria-hidden="true"></span>{form?.vendor === "aws" ? "Checking with AWS…" : form?.vendor === "gcp" ? "Checking with Google Cloud…" : form && SERVICE_AUTHS.has(form.entry.auth) && (form.entry.auth !== GITHUB_AUTH || accessOn) ? `Checking with ${VENDOR_OF_AUTH[form.entry.auth]}…` : "Saving…"}
-      {:else}{form?.vendor === "aws" || form?.vendor === "gcp" ? "Connect" : form?.mode === "replace" ? "Replace" : "Add"}{/if}
+      {#if connect.isPending}<span class="spin spin--btn" aria-hidden="true"></span>{form?.vendor === "aws" ? "Checking with AWS…" : form?.vendor === "gcp" ? "Checking with Google Cloud…" : form?.vendor === SELF_HOSTED ? "Checking the models…" : form && SERVICE_AUTHS.has(form.entry.auth) && (form.entry.auth !== GITHUB_AUTH || accessOn) ? `Checking with ${VENDOR_OF_AUTH[form.entry.auth]}…` : "Saving…"}
+      {:else}{form?.vendor === "aws" || form?.vendor === "gcp" || form?.vendor === SELF_HOSTED ? "Connect" : form?.mode === "replace" ? "Replace" : "Add"}{/if}
     </button>
   {/snippet}
 </Modal>
@@ -534,6 +594,8 @@
       The folder or organization is removed from the permission service. Its projects must be removed first.
     {:else if removing?.spec.kind === "org"}
       The organization is removed from the permission service. Its accounts must be removed first.
+    {:else if removing && selfHosted(removing)}
+      Its models come off the New agent and Change model lists and off the model gateway; agents already on one of them keep their setting until their model is changed. The key, if there was one, is forgotten.
     {:else if removing?.vendor === "slack"}
       The room forgets its Slack config tokens. Agents keep the Slack apps they already have, but no new app can be connected until Slack is added again, or the deployment config carries a pair; every agent's Slack row greys out until then.
     {:else if removing?.vendor === "github" && removing.spec.source !== "access"}

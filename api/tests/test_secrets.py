@@ -36,6 +36,7 @@ from mcp.shared.context import RequestContext
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from kobo_api import admin_integrations, admin_store, self_hosted
 from kobo_api import audit as room_audit
 from kobo_api.agent_env import (
     CONTAINER_SETS_THIS_ONE,
@@ -87,6 +88,7 @@ from tests.fakes import (
     FakeGojira,
     FakeImage,
     FakeKubectl,
+    FakeModelsGateway,
     FakeSero,
     FakeSlack,
     FakeStorage,
@@ -2998,3 +3000,54 @@ def test_audit_detail_never_stores_a_key_named_like_a_secret(tmp_path):
         assert live not in flat
     assert row.detail["channels"] == ["#ops"]
     assert len(row.detail["note"]) <= room_audit.MAX_VALUE_CHARS
+
+
+# --- a self-hosted endpoint's key (kobo#390) ---------------------------------
+
+
+def test_self_hosted_key_travels_only_to_the_endpoint_and_the_gateway(session_factory, tmp_path, monkeypatch):
+    """A self-hosted endpoint's key (kobo#390) goes on the probe's
+    Authorization header and into the gateway's deployment, and nowhere a
+    person reads: not the row, not its line, not the audit body, not the
+    connect answer. It lives in the room's own Secret, which the filler and
+    Check models read back; Remove takes the Secret with the row."""
+    key = "sk-lab-very-secret-0001"
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "qwen3-32b"}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
+
+    monkeypatch.setattr(self_hosted, "http_client", lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    config = Config(workdir=tmp_path / "work", models_gateway_url="http://models-gateway.models.svc", room_namespace="kobo")
+    gateway, kubectl = FakeModelsGateway(), FakeKubectl()
+    clients = Clients(github=None, gojira=None, cloud=None, agent=None, kubectl=kubectl, models_gateway=gateway)
+    session = session_factory()
+
+    row = admin_integrations.connect(
+        session, clients, config, vendor="self-hosted", name="Lab", base_access="read", credential="", address="",
+        trust="untrusted", actor="ops@example.com", auth="self_hosted_endpoint",
+        identity={"base_url": "http://10.0.0.5", "models": "qwen3-32b"}, secrets={"api_key": key},
+    )
+    session.commit()
+
+    assert all(r.headers["authorization"] == f"Bearer {key}" for r in seen)
+    assert kubectl.secrets[("kobo", "self-hosted-lab")] == {"API_KEY": key}
+    assert row.credential_ref == "secret:kobo/self-hosted-lab"
+    assert gateway.models["lab:qwen3-32b"]["litellm_params"]["api_key"] == key
+    shown = json.dumps(admin_store.integration_dict(row)) + (row.state_detail or "")
+    shown += json.dumps([admin_store.event_dict(e) for e in admin_store.audit_events(session)], default=str)
+    assert key not in shown
+
+    # Check models reads the key back from the Secret, never from the row.
+    out = admin_integrations.check_models(session, clients, config, integration_id="lab", actor="ops@example.com")
+    assert out["answering"] == 1 and key not in json.dumps(out)
+    assert seen[-1].headers["authorization"] == f"Bearer {key}"
+
+    outcome = admin_integrations.disconnect(session, clients, config, integration_id="lab", actor="ops@example.com")
+    session.commit()
+    assert outcome["secret"] == "removed" and ("kobo", "self-hosted-lab") in kubectl.secrets_deleted
+    assert gateway.models == {}
+    session.close()

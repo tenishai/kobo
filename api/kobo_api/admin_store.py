@@ -140,7 +140,8 @@ def summary(action: str, object_type: str, object_id: str, before: dict[str, Any
     the row for the quiet second line."""
     body = after if after is not None else before
     if object_type == "integration":
-        verb = {"integration.connect": "Connected", "integration.update": "Updated", "integration.disconnect": "Disconnected"}.get(action)
+        verb = {"integration.connect": "Connected", "integration.update": "Updated", "integration.disconnect": "Disconnected",
+                "integration.check_models": "Checked the models of"}.get(action)
         if verb:
             return f"{verb} {_integration_phrase(body, object_id)}"
     if object_type == "room_service":

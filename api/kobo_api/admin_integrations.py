@@ -65,6 +65,15 @@ nothing goes to the gateway. A project may also serve the room's models: with
 the Vertex AI box ticked the row's spec carries `models = {provider:
 "vertex_ai", location}` and the probe checks the identity reaches Vertex AI
 there; the room's model gateway (the next lane) reads that spec.
+
+Self-hosted models (kobo#390, `kobo_api.self_hosted`) is the provider that is
+only models: an OpenAI-compatible endpoint the person runs, named by them,
+one row per endpoint. The room probes it itself (`GET /v1/models`, then one
+tiny chat completion per named model with the row's options) and connects
+as long as one model answers, marking the ones that did not on the row;
+the key, when there is one, goes into the room's own Secret so the gateway
+filler can read it back. Nothing reaches the permission service or the
+tool gateway: nothing is leased. Check models runs the probe again.
 """
 
 from __future__ import annotations
@@ -78,7 +87,14 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from . import admin_store, cloud_access, model_providers, room_credentials
+from . import (
+    admin_store,
+    cloud_access,
+    model_providers,
+    room_credentials,
+    room_services,
+    self_hosted,
+)
 from . import bab as bab_mod
 from .agent_env import require_our_branch
 from .clients import ClientError, Clients, GitHubClient
@@ -131,6 +147,9 @@ AUTH_KINDS = {
     # agent's own repository set (kobo#365: a child integration under this connection,
     # written from the agent's Access tab).
     "github_app": "the room's GitHub App; with the permission service on, agents borrow narrowed installation tokens from it",
+    # Self-hosted models (kobo#390): an OpenAI-compatible endpoint the person runs, with an
+    # optional key held in the room's own Secret. Only models; nothing is leased.
+    self_hosted.AUTH: "an OpenAI-compatible endpoint you run yourself, serving the models you name",
     # Slack (kobo#377): the app-configuration token pair the room creates agents' Slack
     # apps with. The room's own; never leased, never a gateway target.
     "slack_config_token": "the app-configuration token pair the room makes agents' Slack apps with",
@@ -209,6 +228,7 @@ _GCP_LOCATION = re.compile(r"^(global|[a-z]+-[a-z]+\d+)$")
 MODELS_PROVIDER_VERTEX = "vertex_ai"
 VERTEX_DEFAULT_LOCATION = "us-east5"
 VERTEX_GLOBAL = "global"
+SELF_HOSTED_AUTH = self_hosted.AUTH
 
 
 def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> None:
@@ -271,6 +291,13 @@ def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> 
         try:
             room_credentials.values_from_form(room_credentials.SLACK_VENDOR, identity, secrets)
         except room_credentials.RoomServiceRefused as exc:
+            raise ConnectRefused(str(exc)) from None
+    if auth == SELF_HOSTED_AUTH:
+        try:
+            self_hosted.normalize_base_url(identity.get("base_url", ""))
+            self_hosted.parse_models(identity.get("models", ""))
+            self_hosted.parse_options(identity.get("options", ""))
+        except self_hosted.EndpointRefused as exc:
             raise ConnectRefused(str(exc)) from None
 
 
@@ -1303,6 +1330,89 @@ def _connect_gcp(
     return row
 
 
+def _self_hosted_probe(base_url: str, api_key: str | None, models: list[dict[str, str]], options: dict[str, Any]) -> self_hosted.ProbeResult:
+    """The room's own probe of a self-hosted endpoint, as one sentence when it
+    refuses. Not through the permission service: nothing is leased here."""
+    try:
+        return self_hosted.probe(base_url, api_key, models, options, client=self_hosted.http_client())
+    except self_hosted.EndpointRefused as exc:
+        raise ConnectRefused(str(exc)) from None
+
+
+def _connect_self_hosted(
+    session: Session, clients: Clients | None, config: Config, *, vendor: str, name: str, base_access: str,
+    trust: str, actor: str, identity: dict[str, str], secrets: dict[str, str],
+) -> AdminIntegration:
+    """Self-hosted models (kobo#390): probe the endpoint and each named model
+    first, write nothing until at least one answers; then the key, when
+    there is one, into the room's own Secret, and the row with the probe's
+    verdict per model. The gateway filler runs after (`connect`)."""
+    base_url = self_hosted.normalize_base_url(identity.get("base_url", ""))
+    models = self_hosted.parse_models(identity.get("models", ""))
+    options = self_hosted.parse_options(identity.get("options", ""))
+    api_key = secrets.get(self_hosted.KEY_FIELD) or None
+    kubectl = getattr(clients, "kubectl", None) if clients is not None else None
+    namespace = room_services.room_namespace(config) if api_key else ""
+    if api_key and (not namespace or kubectl is None):
+        raise ConnectRefused(f"the endpoint's key has nowhere to live: {room_services.NOWHERE_TO_STORE}")
+    probe = _self_hosted_probe(base_url, api_key, models, options)
+    if not probe.answering:
+        raise ConnectRefused(f"none of the models answered at {self_hosted.host_of(base_url)}: {probe.sentence()}")
+    row_id = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")[:64]
+    if not row_id:
+        raise ConnectRefused("name this endpoint with letters or digits")
+    spec: dict[str, Any] = {
+        "address": "", "trust": trust if trust in ("trusted", "untrusted") else "untrusted", "auth": SELF_HOSTED_AUTH,
+        "secret_keys": [self_hosted.KEY_FIELD] if api_key else [], "identity": {},
+        "base_url": base_url, "options": options, "models": probe.models, "listed": probe.listed,
+    }
+    credential_ref = self_hosted.credential_ref(namespace, row_id) if api_key else None
+    row = admin_store.put_integration(
+        session, vendor=vendor, name=name, base_access=base_access, spec=spec, credential_ref=credential_ref, actor=actor,
+        integration_id=row_id,
+    )
+    if api_key:
+        try:
+            kubectl.apply_secret(namespace, self_hosted.secret_name(row_id), {self_hosted.KEY_FIELD: api_key})
+        except ClientError as exc:
+            admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED,
+                                              detail=f"the room could not keep the key: {exc}")
+            return row
+    detail = f"{self_hosted.host_of(base_url)} answers; {probe.sentence()}"
+    admin_store.set_integration_state(session, row.id, state=admin_store.STATE_APPLIED, detail=detail)
+    return row
+
+
+def check_models(session: Session, clients: Clients | None, config: Config, *, integration_id: str, actor: str) -> dict[str, Any]:
+    """Check models on a Self-hosted row (kobo#390): the connect probe again,
+    with the row's key read back from the room's Secret; the verdict per
+    model replaces the row's, the gateway filler follows, and a row whose
+    models all stopped answering reads Failed until one answers again."""
+    row = session.get(AdminIntegration, integration_id)
+    if row is None or (row.spec or {}).get("auth") != SELF_HOSTED_AUTH:
+        raise ConnectRefused(f"no self-hosted endpoint {integration_id!r}")
+    spec = dict(row.spec or {})
+    kubectl = getattr(clients, "kubectl", None) if clients is not None else None
+    try:
+        api_key = self_hosted.read_key(kubectl, row.credential_ref)
+    except ClientError as exc:
+        raise ConnectRefused(f"the endpoint's key could not be read back: {exc}") from None
+    named = [{"name": str(m.get("name")), "label": str(m.get("label") or m.get("name"))}
+             for m in spec.get("models") or [] if isinstance(m, dict) and m.get("name")]
+    probe = _self_hosted_probe(str(spec.get("base_url") or ""), api_key, named, dict(spec.get("options") or {}))
+    before = admin_store.integration_dict(row)
+    row.spec = {**spec, "models": probe.models, "listed": probe.listed}
+    session.flush()
+    admin_store.record(session, actor=actor, action="integration.check_models", object_type="integration",
+                       object_id=row.id, before=before, after=admin_store.integration_dict(row))
+    detail = f"{self_hosted.host_of(str(spec.get('base_url') or ''))} answers; {probe.sentence()}"
+    state = admin_store.STATE_APPLIED if probe.answering else admin_store.STATE_FAILED
+    admin_store.set_integration_state(session, row.id, state=state, detail=detail)
+    _fill_models_gateway(session, clients, config, row)
+    return {"id": row.id, "models": probe.models, "answering": len(probe.answering), "total": len(probe.models),
+            "state": state, "detail": row.state_detail}
+
+
 def _fill_models_gateway(session: Session, clients: Clients | None, config: Config, row: AdminIntegration | None) -> None:
     """After a connect or a disconnect that touches a provider (kobo#390):
     run the gateway filler. A gateway that did not take the models leaves
@@ -1354,6 +1464,11 @@ def connect(
     if auth in GCP_AUTHS:
         row = _connect_gcp(session, clients, config, bab, vendor=vendor, name=name, base_access=base_access,
                            trust=trust, actor=actor, auth=auth, identity=identity)
+        _fill_models_gateway(session, clients, config, row)
+        return row
+    if auth == SELF_HOSTED_AUTH:
+        row = _connect_self_hosted(session, clients, config, vendor=vendor, name=name, base_access=base_access,
+                                   trust=trust, actor=actor, identity=identity, secrets=secrets)
         _fill_models_gateway(session, clients, config, row)
         return row
     probe: dict[str, str] | None = None
@@ -1638,7 +1753,7 @@ def disconnect(session: Session, clients: Clients | None, config: Config, *, int
     auth = (row.spec or {}).get("auth")
     # Slack, and a GitHub row made without the permission service, are the room's own
     # (kobo#377): nothing of theirs is in the service or on the gateway.
-    room_only = auth == SLACK_AUTH or bool((row.spec or {}).get("room_only"))
+    room_only = auth in (SLACK_AUTH, SELF_HOSTED_AUTH) or bool((row.spec or {}).get("room_only"))
     if bab is not None and not room_only:
         try:
             out = bab.delete_integration(integration_id, actor)
@@ -1662,6 +1777,20 @@ def disconnect(session: Session, clients: Clients | None, config: Config, *, int
             outcome["secret"] = "removed"
         except ClientError as exc:
             outcome["secret"] = f"left: {exc}" + (f" (removed {' and '.join(gone)})" if gone else "")
+    elif auth == SELF_HOSTED_AUTH:
+        # The key lives in the room's own Secret (kobo_api.self_hosted); a row without one has nothing to take back.
+        kubectl = getattr(clients, "kubectl", None) if clients is not None else None
+        if not row.credential_ref:
+            outcome["secret"] = "none"
+        elif kubectl is None:
+            outcome["secret"] = "left: this room cannot reach its own Secrets"
+        else:
+            namespace, _, name = row.credential_ref[len(self_hosted.CREDENTIAL_REF_PREFIX):].partition("/")
+            try:
+                kubectl.delete_secret(namespace, name)
+                outcome["secret"] = "removed"
+            except ClientError as exc:
+                outcome["secret"] = f"left: {exc}"
     else:
         sero = clients.sero if clients is not None else None
         if sero is not None and row.credential_ref:
