@@ -24,12 +24,16 @@
   //      went with them are gone -- the route itself (`nameSuggestionsQuery`
   //      / `POST /api/agents/name-suggestions`) is untouched, this dialog
   //      just stopped calling it.
-  //   3. Group, 4. Model: the same two selects as before, sharing one line
-  //      so five fields still fit a 70vh body on a laptop without the
-  //      dialog scrolling. Group takes the whole width on its own in a room
-  //      with no configured groups.
-  //   5. Purpose tags: folded away behind a disclosure, because most agents
-  //      are created without any.
+  //   3. Group, 4. Model: each the whole width, one under the other (the
+  //      restyle of 2026-11-01 undid the shared line: the model list needs
+  //      the room to say why a row is off, and squeezed into half a dialog
+  //      it wrapped three deep). The body scrolls when it has to.
+  //
+  // The dialog is the room's shell (Modal.svelte) with the shared field
+  // primitives inside it: a title with one sentence under it, a body that
+  // scrolls, Cancel and Create agent on the right of the footer. Focus
+  // lands on the persona search; Enter in Name creates when the form is
+  // complete; Escape closes.
   //
   // Name availability is still the one field with a network round trip
   // attached: every keystroke gets instant client-side validation
@@ -53,6 +57,9 @@
   // field either -- that's earned after first contact.
   import { tick } from "svelte";
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import { Input } from "$lib/components/ui/input/index.js";
+  import { Label } from "$lib/components/ui/label/index.js";
   import EmptyState from "./EmptyState.svelte";
   import ErrorState from "./ErrorState.svelte";
   import Modal from "./Modal.svelte";
@@ -512,6 +519,18 @@
             : null,
   );
 
+  /** Enter in the Name field creates the agent once the form is complete.
+   * The form has two text fields and its submit button sits in the footer,
+   * outside it, so the browser's own implicit submission never fires here;
+   * this is the one key that stands in for it. */
+  function handleNameKeydown(event: KeyboardEvent): void {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    handleSubmit();
+  }
+
   /** Called by the form's own submit (Enter in a field) and by the footer's
    * Create button, which sits outside the form element the modal shell puts
    * in its body -- so it asks for the submit directly rather than relying on
@@ -586,12 +605,10 @@
         ? HOVER_CARD_ID
         : undefined}
     />
+    <!-- The name in ink, then the one line about it, cut off rather than
+         wrapped. The heading over the run already says Built-in or names
+         the group, so the row carries no tag of its own. -->
     <span class="list__name">{persona.name}</span>
-    <!-- A built-in's heading already says Built-in; only a team
-         persona carries a tag naming its team. -->
-    {#if !persona.builtin}
-      <span class="list__tag">{persona.team}</span>
-    {/if}
     <!-- No `title`: the hover card is the answer now, and two
          tooltips over the same row fight each other. -->
     <span class="list__desc">
@@ -605,26 +622,23 @@
      are never on screen at once. -->
 {#snippet createFooter()}
   <div class="modal__actions">
-    <button type="button" class="btn btn--quiet" onclick={onclose}>Cancel</button>
-    <button
-      type="button"
-      class="btn btn--primary"
-      disabled={!canSubmit}
-      onclick={handleSubmit}
-    >
+    <Button type="button" variant="ghost" onclick={onclose}>Cancel</Button>
+    <Button type="button" disabled={!canSubmit} onclick={handleSubmit}>
       {mutation.isPending ? "Creating…" : "Create agent"}
-    </button>
+    </Button>
   </div>
 {/snippet}
 
 <Modal
   {open}
   title="Create agent"
+  description="Pick who it is, name it, and choose the group that may use it."
+  size="wide"
   {onclose}
   footer={builderOpen || readingPersona !== null ? undefined : createFooter}
 >
   <form
-    class="modal__form"
+    class="modal__form create-form"
     onsubmit={(event) => {
       event.preventDefault();
       handleSubmit();
@@ -649,24 +663,23 @@
       <div class="field">
         <div class="field__label-row">
           <span class="field__label" id="create-persona-label">Persona</span>
-          <span class="field__label-actions">
-            <button
-              type="button"
-              class="btn--link btn--link-strong"
-              onclick={() => (builderOpen = true)}
-            >
-              Build your own persona
-            </button>
-          </span>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onclick={() => (builderOpen = true)}
+          >
+            Build your own persona
+          </Button>
         </div>
-        <input
+        <Input
           id="create-persona-search"
-          class="field__input"
           type="text"
           bind:value={personaQ}
           placeholder="Search personas"
           aria-label="Search personas"
           autocomplete="off"
+          data-autofocus
         />
         <!-- The shell only exists to carry the fade: a `::after` on the
              scrolling box itself would scroll away with the rows. -->
@@ -721,6 +734,10 @@
             {/if}
             {#if selectedPersonaTeam !== null}
               {#if teamPersonas.length > 0}
+                <!-- The pressed group's run gets its own heading, the way
+                     the built-ins do, so the rows under it say whose they
+                     are without a tag on each one. -->
+                <div class="list__group" role="presentation">{selectedPersonaTeam}</div>
                 {#each teamPersonas as persona (persona.id)}
                   {@render personaRow(persona)}
                 {/each}
@@ -746,10 +763,9 @@
 
       <!-- 2. Name -->
       <div class="field">
-        <label class="field__label" for="create-name">Name</label>
-        <input
+        <Label class="field__label" for="create-name">Name</Label>
+        <Input
           id="create-name"
-          class="field__input"
           type="text"
           bind:value={name}
           placeholder="e.g. release-notes"
@@ -757,6 +773,7 @@
           spellcheck="false"
           aria-describedby="create-name-status"
           aria-invalid={nameError !== null || availability.status === "unavailable"}
+          onkeydown={handleNameKeydown}
         />
         <!-- The rule and the verdict on one line. A local error REPLACES the
              rule rather than sitting under it: the two say the same thing,
@@ -792,119 +809,118 @@
         </div>
       </div>
 
-      <!-- 3. Group and 4. Model: two one-line answers, so they share a line.
-           Stacked, the five fields ran past a 70vh body on a laptop and the
-           dialog started scrolling for the sake of two selects. -->
-      <div class="field-pair">
-        {#if groupOptionsAvailable}
-          <div class="field">
-            <label class="field__label" for="create-group">Group</label>
-            <select
-              id="create-group"
-              class="field__input"
-              required
-              value={groupValue}
-              onchange={(event) =>
-                handleGroupSelect((event.currentTarget as HTMLSelectElement).value)}
-            >
-              <option value="" disabled>Choose a group</option>
-              <option value={GROUP_NOT_LISTED}>My group is not listed...</option>
-              {#if nonEngineeringGroupOptions.length > 0}
-                <optgroup label="Non-engineering groups">
-                  {#each nonEngineeringGroupOptions as group (group.name)}
-                    <option value={group.name}>{group.name}</option>
-                  {/each}
-                </optgroup>
-              {/if}
-              {#if engineeringGroupOptions.length > 0}
-                <optgroup label="Engineering groups">
-                  {#each engineeringGroupOptions as group (group.name)}
-                    <option value={group.name}>{group.name}</option>
-                  {/each}
-                </optgroup>
-              {/if}
-              <!-- No Shared entry (2026-09-29): an agent belongs to a team.
-                   The commons still exists for an operator to move an agent
-                   into; it is not a place to create one. -->
-            </select>
-            <p class="field__help">Who can see and use this agent.</p>
-
-            {#if groupRequestConfirmed}
-              <p class="field__status field__status--ok" role="status">
-                Requested. A room admin will add it, and you can create the
-                agent once it is listed.
-              </p>
-            {:else if groupValue === GROUP_NOT_LISTED}
-              <div class="create-form__request">
-                <label class="field__label" for="group-request-name">
-                  Your group's name
-                </label>
-                <input
-                  id="group-request-name"
-                  class="field__input"
-                  type="text"
-                  bind:value={groupRequestName}
-                  autocomplete="off"
-                />
-                <label class="field__label" for="group-request-note">
-                  Note (optional)
-                </label>
-                <input
-                  id="group-request-note"
-                  class="field__input"
-                  type="text"
-                  bind:value={groupRequestNote}
-                  autocomplete="off"
-                />
-                {#if groupRequestError}
-                  <p class="field__status field__status--error" role="alert">
-                    {groupRequestError}
-                  </p>
-                {/if}
-                <button
-                  type="button"
-                  class="btn"
-                  disabled={groupRequestName.trim().length === 0 || requestGroup.isPending}
-                  onclick={handleGroupRequestSubmit}
-                >
-                  {requestGroup.isPending ? "Requesting…" : "Request it"}
-                </button>
-              </div>
-            {/if}
-          </div>
-        {/if}
-
+      <!-- 3. Group -->
+      {#if groupOptionsAvailable}
         <div class="field">
-          <span class="field__label" id="create-model-label">Model</span>
-          {#if models.isPending}
-            <Skeleton rows={1} />
-          {:else if models.isError}
-            <ErrorState
-              message={errorMessage(models.error, "Couldn't load models.")}
-              onretry={() => models.refetch()}
-            />
-          {:else}
-            <ModelPicker
-              models={models.data.models ?? []}
-              value={selectedModel}
-              name="create-model"
-              onchange={(id) => (modelOverride = id)}
-            />
+          <Label class="field__label" for="create-group">Group</Label>
+          <select
+            id="create-group"
+            class="create-form__select"
+            required
+            value={groupValue}
+            onchange={(event) =>
+              handleGroupSelect((event.currentTarget as HTMLSelectElement).value)}
+          >
+            <option value="" disabled>Choose a group</option>
+            <option value={GROUP_NOT_LISTED}>My group is not listed...</option>
+            {#if nonEngineeringGroupOptions.length > 0}
+              <optgroup label="Non-engineering groups">
+                {#each nonEngineeringGroupOptions as group (group.name)}
+                  <option value={group.name}>{group.name}</option>
+                {/each}
+              </optgroup>
+            {/if}
+            {#if engineeringGroupOptions.length > 0}
+              <optgroup label="Engineering groups">
+                {#each engineeringGroupOptions as group (group.name)}
+                  <option value={group.name}>{group.name}</option>
+                {/each}
+              </optgroup>
+            {/if}
+            <!-- No Shared entry (2026-09-29): an agent belongs to a team.
+                 The commons still exists for an operator to move an agent
+                 into; it is not a place to create one. -->
+          </select>
+          <p class="field__help">Who can see and use this agent.</p>
+
+          {#if groupRequestConfirmed}
+            <p class="field__status field__status--ok" role="status">
+              Requested. A room admin will add it, and you can create the
+              agent once it is listed.
+            </p>
+          {:else if groupValue === GROUP_NOT_LISTED}
+            <div class="create-form__request">
+              <Label class="field__label" for="group-request-name">
+                Your group's name
+              </Label>
+              <Input
+                id="group-request-name"
+                type="text"
+                bind:value={groupRequestName}
+                autocomplete="off"
+              />
+              <Label class="field__label" for="group-request-note">
+                Note (optional)
+              </Label>
+              <Input
+                id="group-request-note"
+                type="text"
+                bind:value={groupRequestNote}
+                autocomplete="off"
+              />
+              {#if groupRequestError}
+                <p class="field__status field__status--error" role="alert">
+                  {groupRequestError}
+                </p>
+              {/if}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={groupRequestName.trim().length === 0 || requestGroup.isPending}
+                onclick={handleGroupRequestSubmit}
+              >
+                {requestGroup.isPending ? "Requesting…" : "Request it"}
+              </Button>
+            </div>
           {/if}
         </div>
+      {/if}
+
+      <!-- 4. Model -->
+      <div class="field">
+        <span class="field__label" id="create-model-label">Model</span>
+        {#if models.isPending}
+          <Skeleton rows={1} />
+        {:else if models.isError}
+          <ErrorState
+            message={errorMessage(models.error, "Couldn't load models.")}
+            onretry={() => models.refetch()}
+          />
+        {:else}
+          <ModelPicker
+            models={models.data.models ?? []}
+            value={selectedModel}
+            name="create-model"
+            onchange={(id) => (modelOverride = id)}
+          />
+          <!-- The gate sits under the list it is about. Only a room admin
+               gets the link; the sentence is the same for everyone. -->
+          {#if noModelAvailable}
+            <p class="field__help field__help--warn" role="alert">
+              {#if isAdmin}
+                Connect a cloud with models under <a href="#/admin/integrations">Admin, Integrations</a>, before creating an agent.
+              {:else}
+                Connect a cloud with models under Admin, Integrations, before creating an agent.
+              {/if}
+            </p>
+          {/if}
+        {/if}
       </div>
 
       {#if submitError}
         <p class="field__status field__status--error" role="alert">
           {submitError}
-        </p>
-      {:else if noModelAvailable}
-        <p class="field__help" role="alert">
-          {#if isAdmin}
-            Connect a cloud with models under <a href="#/admin/integrations">Admin, Integrations</a>, before creating an agent.
-          {:else}
-            Connect a cloud with models under Admin, Integrations, before creating an agent.
-          {/if}
         </p>
       {:else if missingStep}
         <p class="field__help">{missingStep}</p>
@@ -914,8 +930,17 @@
 </Modal>
 
 <style>
+  /* The group select is the one native control left in this form; the
+     room's shared control look dresses it, this only gives it the width
+     the fields beside it have. */
+  .create-form__select {
+    width: 100%;
+  }
+
+  /* The group pills, drawn as one row of the list under their heading. */
   .persona-teams {
-    padding: var(--space-2xs) var(--space-sm) var(--space-xs);
+    padding: var(--space-xs) var(--space-sm);
+    border-bottom: 1px solid var(--border);
   }
 
   /* The "my group isn't listed" mini-form: the one thing in this dialog

@@ -25,6 +25,10 @@ All notable changes to kobo are documented here. The format follows
   pickers group them there; the org's `models:` list is untouched. Nothing of this touches the
   permission service or the tool gateway: nothing is leased.
 
+### Changed
+
+- **The Create agent dialog in the room's look.** The dialog now wears the room's restyle: a title with one sentence under it, the persona list as hairline rows with the name and its line in ink under small-caps group labels and **Build your own persona** as a button on the header row, Name, Group and Model each the whole width with the model list's reasons beside the names and the no-model sentence under the list, Cancel and Create agent on the right of the footer. Focus lands on the persona search and Enter in Name creates. Phone width gets 16px gutters.
+
 ## [0.3.38] - 2026-11-01
 
 ## [0.3.37] - 2026-11-01
