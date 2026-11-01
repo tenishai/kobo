@@ -3600,6 +3600,52 @@ def test_asking_another_teams_agent_is_a_permission_request_on_the_target_not_an
     assert c.get("/api/agents/asker/requestable", headers=h).json()["already"] == [{"name": "oracle", "status": "accepted"}]
 
 
+GITHUB_LEVELS__connections = ["github_pulls_review", "github_pulls_write", "github_repos_read"]
+
+
+def test_agent_connections_group_a_child_a_grant_and_a_lease_under_the_agent_and_its_vendor(a2a_room):
+    """Wire shape (kobo#371): `GET /api/admin/access/agents` lists every agent the room
+    knows, newest activity first; under the agent, by vendor, its own connection (the
+    GitHub child with its repositories), what it holds and what is leased right now; an
+    agent with nothing is still listed, with no vendors. The child never reaches the
+    Integrations table, which is the room's connections only."""
+    c, h, bab = a2a_room.client, a2a_room.headers, a2a_room.bab
+    bab.put_integration("github", "github", {"installation_id": "151256501", "name": "GitHub"}, GITHUB_LEVELS__connections, "x")
+    bab.put_integration("github-asker", "github", {"repositories": ["acme/web", "acme/infra"], "name": "GitHub for asker"},
+                        GITHUB_LEVELS__connections, "x", parent="github")
+    r = c.post("/api/agents/asker/access/requests", headers=h,
+               json={"integration": "github-asker", "permissions": ["github_repos_read"], "note": None})
+    assert r.status_code == 201, r.text
+    c.post("/api/admin/access/decide", headers=h, json={"ids": [r.json()["id"]], "verdict": "approve"})
+    bab._leases.extend([
+        {"id": 1, "agent": "asker", "integration": "github-asker", "permissions": ["github_repos_read"], "task": "list the open pull requests",
+         "minter": "github", "issued_at": "2099-01-01T00:00:00+00:00", "expires_at": "2099-01-01T01:00:00+00:00"},
+        {"id": 2, "agent": "asker", "integration": "github-asker", "permissions": ["github_repos_read"], "task": "old",
+         "minter": "github", "issued_at": "2020-01-01T00:00:00+00:00", "expires_at": "2020-01-01T01:00:00+00:00"},
+    ])
+
+    body = c.get("/api/admin/access/agents", headers=h).json()
+    assert body["fetched_at"]
+    assert [a["name"] for a in body["agents"]] == ["asker", "oracle"]
+    asker, oracle = body["agents"]
+    assert (asker["team"], asker["status"]) == (None, "ready")
+    (github,) = asker["vendors"]
+    assert (github["vendor"], github["label"]) == ("github", "GitHub")
+    assert github["connections"] == [{"id": "github-asker", "name": "GitHub for asker", "repositories": ["acme/infra", "acme/web"]}]
+    (grant,) = github["grants"]
+    assert (grant["integration"], grant["permission"], grant["tier"], grant["granted_by"], grant["state"]) == (
+        "github-asker", "github_repos_read", "read", "ops@example.com", "active")
+    assert set(grant) == {"id", "integration", "permission", "tier", "expires_at", "granted_by", "state"}
+    (lease,) = github["leases"]  # the run-out one is not "right now"
+    assert (lease["id"], lease["integration"], lease["permissions"], lease["task"], lease["via"]) == (
+        1, "github-asker", ["github_repos_read"], "list the open pull requests", "github")
+    assert set(lease) == {"id", "integration", "permissions", "task", "issued_at", "expires_at", "via"}
+    assert oracle["vendors"] == []
+
+    rows = c.get("/api/admin/integrations", headers=h).json()["integrations"]
+    assert [x["id"] for x in rows if x["vendor"] == "github"] == ["github"]
+
+
 def test_agents_entries_never_show_on_the_integrations_page(a2a_room):
     """Wire shape (kobo#310): the permission service's `agents` rows are plumbing behind
     Review and the Access tab; Admin > Integrations lists vendors only."""

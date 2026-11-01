@@ -432,7 +432,17 @@ def picker(bab: BabClient, actor: str, agent: str | None = None) -> list[dict]:
                 accounts.append({"id": vendor, "name": meta["label"], "connected": False, "ceiling": [],
                                  "organization": None, "account_id": None, "repositories": [], "has_repo_set": False})
         tree = _labelled(tree)
+        # Whether the ROOM is connected to this vendor (kobo#371): a cloud when at
+        # least one account row is connected; a service (GitHub included) when a
+        # parentless row exists. An agent's child alone is not a connection. The
+        # placeholder account for an unconnected service vendor stays for the
+        # callers that read it; the Access tab lists connected vendors only.
+        if meta["kind"] == "cloud":
+            is_connected = any(a["connected"] for a in accounts)
+        else:
+            is_connected = any(not row.get("parent") for row in connected.values())
         out.append({"id": vendor, "kind": meta["kind"], "label": meta.get("label") or vendor,
+                    "connected": is_connected,
                     "account_noun": meta.get("account") or ("account" if meta["kind"] == "cloud" else None),
                     "organizations": [{"id": o["integration"], "name": o.get("name") or o["integration"]} for o in orgs],
                     "accounts": accounts, "groups": tree.get("groups", []), "tiers": tree.get("tiers", [])})
@@ -481,9 +491,117 @@ def since_days(days: int, now: datetime | None = None) -> datetime:
     return (now or datetime.now(UTC)) - timedelta(days=max(1, min(int(days), 90)))
 
 
+# ---- the Agent connections pane (kobo#371) ----------------------------------
+
+AGENT_CONNECTIONS_WORKERS = 6
+"""How many permission-service calls the pane's builder has in flight at once."""
+
+
+def _child_agent(row: dict) -> str | None:
+    """The agent a child row belongs to, from the id convention `<parent>-<agent>`
+    (`child_id`); None for a row that is not a child or whose id does not follow it."""
+    parent, iid = row.get("parent"), row.get("integration") or ""
+    if not parent or not iid.startswith(f"{parent}-"):
+        return None
+    return iid[len(parent) + 1:] or None
+
+
+def agent_connections(bab: BabClient, agents: list[dict], actor: str, *, now: datetime | None = None,
+                      workers: int = AGENT_CONNECTIONS_WORKERS) -> dict:
+    """What every agent holds at every vendor right now, for Admin > Agent connections
+    (kobo#371): one entry per agent the room knows (`agents`: plain dicts with `name`,
+    `team`, `status`, read from the room's table and detached before this is called,
+    so no database session is open across the permission-service calls), newest
+    activity first, each with its vendors and under each vendor the agent's own
+    connections (its children, e.g. its GitHub repository set), its grants and its
+    unexpired leases. An agent with nothing anywhere is listed with an empty
+    `vendors`, so the pane is the whole truth.
+
+    Reads: one `integrations()` (children grouped by the agent suffix of their id and
+    their `parent`), one `vendors()` for the labels, one `all_leases()` filtered to
+    the unexpired, one `requests("all")` to learn which agents ever asked, then
+    `grants(agent)` for each agent that has a child, a request or a lease, fanned out
+    on a small thread pool. Agent-to-agent asks (`agents` vendor) are not vendors here."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    now = now or datetime.now(UTC)
+    integrations = [i for i in bab.integrations(actor) if i.get("vendor") != AGENTS_VENDOR]
+    by_id = {i["integration"]: i for i in integrations}
+    labels = {v["vendor"]: v.get("label") or v["vendor"] for v in bab.vendors(actor)}
+    leases = [lease for lease in active_leases(bab, actor, now)
+              if by_id.get(lease.get("integration"), {}).get("vendor") != AGENTS_VENDOR]
+    asked = {r.get("agent") for r in bab.requests("all", None, actor)}
+
+    names = [a["name"] for a in agents]
+    children: dict[str, list[dict]] = {n: [] for n in names}
+    for row in integrations:
+        owner = _child_agent(row)
+        if owner in children:
+            children[owner].append(row)
+    leased: dict[str, list[dict]] = {n: [] for n in names}
+    for lease in leases:
+        if lease.get("agent") in leased:
+            leased[lease["agent"]].append(lease)
+
+    busy = [n for n in names if children[n] or leased[n] or n in asked]
+    grants: dict[str, list[dict]] = {n: [] for n in names}
+    if busy:
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, len(busy)))) as pool:
+            for name, rows in zip(busy, pool.map(lambda n: bab.grants(n, actor), busy), strict=True):
+                grants[name] = [g for g in rows if g.get("permission") != A2A_ASK
+                                and by_id.get(g.get("integration"), {}).get("vendor") != AGENTS_VENDOR]
+
+    def vendor_of(integration: str | None) -> str:
+        row = by_id.get(integration or "")
+        return row["vendor"] if row else (integration or "unknown")
+
+    def label_of(vendor: str) -> str:
+        return labels.get(vendor) or CLOUD_LABELS.get(vendor) or vendor
+
+    out = []
+    for a in agents:
+        name = a["name"]
+        vendors: dict[str, dict] = {}
+
+        def at(vendor: str) -> dict:
+            return vendors.setdefault(vendor, {"vendor": vendor, "label": label_of(vendor),
+                                               "connections": [], "grants": [], "leases": []})
+
+        stamps: list[str] = []
+        for row in children[name]:
+            parent = by_id.get(row.get("parent") or "", {})
+            at(row["vendor"])["connections"].append({
+                "id": row["integration"], "name": row.get("name") or parent.get("name") or row["integration"],
+                "repositories": child_repositories(row)})
+            stamps.append(str(row.get("updated_at") or row.get("created_at") or ""))
+        for g in grants[name]:
+            at(vendor_of(g.get("integration")))["grants"].append({
+                "id": g.get("id"), "integration": g.get("integration"), "permission": g.get("permission"),
+                "tier": g.get("tier"), "expires_at": g.get("expires_at"), "granted_by": g.get("granted_by"),
+                "state": g.get("state")})
+            stamps.append(str(g.get("created_at") or ""))
+        for lease in leased[name]:
+            at(vendor_of(lease.get("integration")))["leases"].append({
+                "id": lease.get("id"), "integration": lease.get("integration"),
+                "permissions": list(lease.get("permissions") or []), "task": lease.get("task"),
+                "issued_at": lease.get("issued_at"), "expires_at": lease.get("expires_at"),
+                "via": lease.get("via") or lease.get("minter")})
+            stamps.append(str(lease.get("issued_at") or ""))
+        out.append({"name": name, "team": a.get("team"), "status": a.get("status"),
+                    "vendors": sorted(vendors.values(), key=lambda v: v["label"].lower()),
+                    "_latest": max((s for s in stamps if s), default="")})
+    # Newest activity first; the quiet agents after, by name.
+    active = sorted([e for e in out if e["_latest"]], key=lambda e: e["_latest"], reverse=True)
+    quiet = sorted([e for e in out if not e["_latest"]], key=lambda e: e["name"])
+    for e in out:
+        del e["_latest"]
+    return {"agents": active + quiet, "fetched_at": now.isoformat()}
+
+
 __all__ = [
     "A2A_ASK",
     "AGENTS_VENDOR",
+    "agent_connections",
     "ROOM_ACTOR",
     "TOKEN_ENV",
     "BabClient",

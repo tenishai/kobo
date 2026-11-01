@@ -79,6 +79,7 @@ from kobo_api.bab import AGENTS_VENDOR as BAB_AGENTS_VENDOR
 from kobo_api.bab import ROOM_ACTOR as BAB_ROOM_ACTOR
 from kobo_api.bab import active_leases as bab_active_leases
 from kobo_api.bab import actor_for as bab_actor_for
+from kobo_api.bab import agent_connections as bab_agent_connections
 from kobo_api.bab import build_bab
 from kobo_api.bab import child_repositories as github_access_child_repositories
 from kobo_api.bab import ensure_agent_integrations as bab_ensure_agent_integrations
@@ -4161,6 +4162,27 @@ def create_app(
         except ClientError as exc:
             return _bab_refused(exc)
 
+    @app.get("/api/admin/access/agents")
+    def admin_access_agents(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        """The Agent connections pane (kobo#371): every agent the room knows, newest
+        activity first, with what it holds at each vendor right now: its own
+        connections (a GitHub repository set), its grants and its unexpired leases.
+        The agent list is read from the room's table and the session closed BEFORE
+        the permission service is called (the 2026-10-01 pool incident: never hold
+        a database session across a fan-out)."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        bab, off = _bab_or_404()
+        if off is not None:
+            return off
+        agents = [{"name": a.name, "team": a.team, "status": a.status} for a in session.query(Agent).all()]
+        session.close()
+        try:
+            return JSONResponse(bab_agent_connections(bab, agents, _bab_actor(request)))
+        except ClientError as exc:
+            return _bab_refused(exc)
+
     @app.post("/api/admin/access/sync")
     def admin_access_sync(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
         """Push the room's agents to bab now (also done at boot, create and destroy)."""
@@ -4262,6 +4284,11 @@ def create_app(
                     # "may ask this agent" (kobo#310); it is plumbing behind Review and
                     # the Access tab, not something an operator connects here.
                     if i.get("vendor") == BAB_AGENTS_VENDOR:
+                        continue
+                    # An agent's child under a connection (its GitHub repository set,
+                    # kobo#365) is the agent's, not the room's: it lives on the Agent
+                    # connections pane (kobo#371). The table is the room's connections only.
+                    if i.get("parent"):
                         continue
                     rows.append({
                         "id": i["integration"], "vendor": i["vendor"], "name": i["integration"], "base_access": "read",

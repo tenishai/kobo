@@ -13,7 +13,7 @@ const ACCESS = {
   grants: [],
   pending: [],
   vendors: [
-    { id: "datadog", kind: "service", label: "Datadog", account_noun: null, organizations: [],
+    { id: "datadog", kind: "service", label: "Datadog", connected: true, account_noun: null, organizations: [],
       accounts: [{ id: "datadog", name: "datadog", connected: true, ceiling: ["datadog_monitors_read"], organization: null, account_id: null, repositories: [], has_repo_set: false }],
       groups: [{ name: "Monitors", permissions: [{ name: "datadog_monitors_read", tier: "read", description: "Monitors", label: null }] }], tiers: [] },
   ],

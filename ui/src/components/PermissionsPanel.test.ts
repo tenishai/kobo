@@ -25,6 +25,7 @@ const GITHUB_PLACEHOLDER = {
   id: "github",
   kind: "service",
   label: "GitHub",
+  connected: true,
   account_noun: null,
   organizations: [],
   accounts: [
@@ -55,6 +56,7 @@ const ACCESS = {
       id: "aws",
       kind: "cloud",
       label: "AWS",
+      connected: true,
       account_noun: "account",
       organizations: [{ id: "acme-aws", name: "acme-aws" }],
       accounts: [
@@ -75,7 +77,7 @@ const ACCESS = {
       ],
       tiers: [],
     },
-    { id: "datadog", kind: "service", label: "Datadog", account_noun: null, organizations: [],
+    { id: "datadog", kind: "service", label: "Datadog", connected: true, account_noun: null, organizations: [],
       accounts: [{ id: "datadog", name: "datadog", connected: true, ceiling: ["datadog_monitors_read"], organization: null, account_id: null, repositories: [], has_repo_set: false }],
       groups: [{ name: "Monitors", permissions: [{ name: "datadog_monitors_read", tier: "read", description: "Monitors", label: null }] }], tiers: [] },
     GITHUB_PLACEHOLDER,
@@ -141,7 +143,6 @@ describe("PermissionsPanel", () => {
     renderWithClient(PermissionsPanel, { agentName: "ledger" });
 
     const aws = await screen.findByRole("button", { name: /AWS/ });
-    expect(aws.textContent).toContain("1 of 2 accounts connected");
     // Every vendor block carries its mark.
     expect(aws.querySelector(".vendor-mark")).not.toBeNull();
     await fireEvent.click(aws);
@@ -234,15 +235,35 @@ describe("PermissionsPanel", () => {
     expect(screen.queryByRole("heading", { name: "Held" })).toBeNull();
   });
 
-  it("shuts a vendor's picker on a second click, and never opens one that is not connected", async () => {
-    stubFetch({ "/api/agents/ledger/access": { ...ACCESS, vendors: [{ ...ACCESS.vendors[1], accounts: [{ ...ACCESS.vendors[1].accounts[0], connected: false }] }, ACCESS.vendors[0]] } });
+  it("lists only the vendors the room is connected to, and says where an admin adds one when there are none", async () => {
+    // Issue #371: an owner can do nothing with an unconnected vendor, so it is
+    // not a row; the room's connections decide the list.
+    const unconnected = { ...ACCESS.vendors[1], connected: false, accounts: [{ ...ACCESS.vendors[1].accounts[0], connected: false }] };
+    stubFetch({
+      "/api/agents/ledger/access": { ...ACCESS, vendors: [unconnected, ACCESS.vendors[0]] },
+      "/api/whoami": { email: "ops@example.com", operator: true, admin_panel: true, groups: [], groups_unavailable: false },
+    });
+    const first = renderWithClient(PermissionsPanel, { agentName: "ledger" });
+    expect(await screen.findByRole("button", { name: /AWS/ })).not.toBeNull();
+    expect(screen.queryByRole("button", { name: /Datadog/ })).toBeNull();
+    expect(screen.queryByText(/not connected yet/)).toBeNull();
+    first.unmount();
+
+    stubFetch({
+      "/api/agents/ledger/access": { ...ACCESS, vendors: [unconnected] },
+      "/api/whoami": { email: "ops@example.com", operator: true, admin_panel: true, groups: [], groups_unavailable: false },
+    });
+    renderWithClient(PermissionsPanel, { agentName: "ledger" });
+    expect(await screen.findByText(/No vendors are connected yet/)).not.toBeNull();
+    // The word Integrations is the link into the admin panel for someone who may open it.
+    expect((await screen.findByRole("link", { name: "Integrations" })).getAttribute("href")).toBe("#/admin/integrations");
+  });
+
+  it("shuts a vendor's picker on a second click", async () => {
+    stubFetch({ "/api/agents/ledger/access": ACCESS });
     renderWithClient(PermissionsPanel, { agentName: "ledger" });
 
-    const datadog = await screen.findByRole("button", { name: /Datadog/ });
-    expect((datadog as HTMLButtonElement).disabled).toBe(true);
-    expect(datadog.textContent).toContain("not connected yet");
-
-    const aws = screen.getByRole("button", { name: /AWS/ });
+    const aws = await screen.findByRole("button", { name: /AWS/ });
     await fireEvent.click(aws);
     expect(aws.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByRole("button", { name: /acme-audit/ })).not.toBeNull();

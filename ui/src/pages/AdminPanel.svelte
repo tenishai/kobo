@@ -2,6 +2,7 @@
   // The admin panel: a list of pages on the left, one page on the right,
   // both driven by the hash (`#/admin/<pane>/<item>`), so a page and the
   // thing open inside it are a link someone can send.
+  import AgentConnectionsPane from "../components/admin/AgentConnectionsPane.svelte";
   import AuditPane from "../components/admin/AuditPane.svelte";
   import ConnectionsPane from "../components/admin/ConnectionsPane.svelte";
   import IntegrationsPane from "../components/admin/IntegrationsPane.svelte";
@@ -52,14 +53,20 @@
     { id: "audit", label: "Audit" },
   ];
 
-  // With the permission service on, agents hold permissions and borrow credentials; the
-  // gateway's lanes are the older model, so the Connections page steps aside for Review.
+  // The `connections` page is two pages under one id (issue #371). With the permission
+  // service on, agents hold permissions and borrow credentials, and the page is Agent
+  // connections: what every agent holds at every vendor right now. With it off, the
+  // gateway's lanes are the model, and the page is the older Connections.
   const addons = createQuery(() => ({ ...adminAddonsQuery(), enabled: allowed }));
   const accessOn = $derived((addons.data ?? []).some((a) => a.id === "access" && a.state === "on"));
-  // Until the add-ons have answered, Connections is neither shown nor hidden for sure;
-  // leaving it out until then stops it flashing on a hard refresh of a room with Access on.
+  // Until the add-ons have answered, which of the two it is cannot be known; leaving it
+  // out until then stops the label flipping on a hard refresh.
   const accessKnown = $derived(addons.data !== undefined || addons.isError);
-  const panes = $derived(PANES.filter((p) => p.id !== "connections" || (accessKnown && !accessOn)));
+  const panes = $derived(
+    PANES.filter((p) => p.id !== "connections" || accessKnown).map((p) =>
+      p.id === "connections" && accessOn ? { ...p, label: "Agent connections" } : p,
+    ),
+  );
 
   // "addons" and "platform" were earlier names of the Services page; old links still open it.
   const pane = $derived(
@@ -138,7 +145,11 @@
     {:else if pane === "integrations"}
       <IntegrationsPane {item} {accessOn} />
     {:else if pane === "connections"}
-      <ConnectionsPane {item} />
+      {#if accessOn}
+        <AgentConnectionsPane {item} />
+      {:else}
+        <ConnectionsPane {item} />
+      {/if}
     {:else if pane === "review"}
       <ReviewPane />
     {:else if pane === "roles"}

@@ -1554,6 +1554,10 @@ export type AccessVendor = {
   id: string;
   kind: "cloud" | "service" | string;
   label: string;
+  /** Whether the ROOM is connected to this vendor (issue #371): a cloud with at
+   * least one connected account, a service with a connection. The Access tab
+   * lists connected vendors only. */
+  connected: boolean;
   account_noun: string | null;
   organizations: { id: string; name: string }[];
   accounts: AccessAccount[];
@@ -1710,6 +1714,48 @@ export async function decideAccessRequests(
   });
   const body = await parse<{ results: AccessDecision[] }>(res);
   return body.results;
+}
+
+/** One agent's holdings at one vendor, for Admin > Agent connections (issue
+ * #371): its own connections there (a GitHub repository set), what it holds
+ * and what is leased right now. */
+export type AgentVendorHoldings = {
+  vendor: string;
+  label: string;
+  connections: { id: string; name: string; repositories: string[] }[];
+  grants: {
+    id: number;
+    integration: string;
+    permission: string;
+    tier: string | null;
+    expires_at: string | null;
+    granted_by: string;
+    state: "active" | "expired" | string;
+  }[];
+  leases: {
+    id: number;
+    integration: string;
+    permissions: string[];
+    task: string | null;
+    issued_at: string;
+    expires_at: string;
+    via: string | null;
+  }[];
+};
+
+export type AgentConnectionsEntry = {
+  name: string;
+  team: string | null;
+  status: string;
+  /** Empty for an agent that holds nothing anywhere; it is still listed. */
+  vendors: AgentVendorHoldings[];
+};
+
+export type AgentConnections = { agents: AgentConnectionsEntry[]; fetched_at: string };
+
+export async function fetchAgentConnections(): Promise<AgentConnections> {
+  const res = await fetch("/api/admin/access/agents");
+  return parse<AgentConnections>(res);
 }
 
 export async function fetchAccessLeases(): Promise<AccessLease[]> {
