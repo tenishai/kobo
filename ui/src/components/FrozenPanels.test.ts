@@ -2,6 +2,7 @@
 import { fireEvent, screen } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AccessPanel from "./AccessPanel.svelte";
+import AgentToAgentPanel from "./AgentToAgentPanel.svelte";
 import ChatPanel from "./ChatPanel.svelte";
 import MemoryPanel from "./MemoryPanel.svelte";
 import MetadataDetails from "./MetadataDetails.svelte";
@@ -53,7 +54,14 @@ const CASES: Array<[string, unknown, Record<string, unknown>, Reveal?]> = [
     "AccessPanel",
     AccessPanel,
     { agentName: "warden", groupName: "growth", frozen: true },
+    async () => {
+      // The vendors come from the access route: the one held grant below
+      // puts a Revoke on screen, and the vendor's own button is a
+      // disclosure (it opens the picker) that the freeze shuts.
+      expect(await screen.findByRole("button", { name: /Revoke now/ })).not.toBeNull();
+    },
   ],
+  ["AgentToAgentPanel", AgentToAgentPanel, { agentName: "warden", frozen: true }],
 ];
 
 describe("frozen panels disable every control", () => {
@@ -76,7 +84,35 @@ describe("frozen panels disable every control", () => {
         files: [],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
-      "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+      "/api/agents/warden/invites": {
+        incoming: [
+          {
+            id: 7, from_agent: "iris", to_agent: { name: "warden", group_name: "growth" }, status: "pending",
+            requested_by: "iris-owner@example.com", decided_by: null, created_at: "2026-08-20T00:00:00Z", decided_at: null,
+          },
+        ],
+        outgoing: [],
+        team_pairs: [],
+      },
+      "/api/agents/warden/requestable": {
+        requestable: [{ name: "payroll-bot", group: "payments-eng", team: null, capability: null, purpose_tags: [] }],
+        already: [],
+      },
+      "/api/agents/warden/access": {
+        agent: "warden",
+        team: "growth",
+        grants: [
+          { id: 1, agent: "warden", integration: "datadog", permission: "datadog_monitors_read", tier: "read", gated: false, expires_at: null, granted_by: "admin@example.com", created_at: "2026-10-30T10:00:00Z", request_id: 3, state: "active" },
+        ],
+        pending: [],
+        vendors: [
+          { id: "datadog", kind: "service", label: "Datadog", account_noun: null, organizations: [],
+            accounts: [{ id: "datadog", name: "datadog", connected: true, ceiling: ["datadog_monitors_read"], organization: null, account_id: null, repositories: [], has_repo_set: false }],
+            groups: [{ name: "Monitors", permissions: [{ name: "datadog_monitors_read", tier: "read", description: "Monitors", label: null }] }], tiers: [] },
+        ],
+        can_request: true,
+        can_decide: true,
+      },
       "/api/agents/warden/grants": { grants: [] },
       // SlackPanel's first run asks for the manifest as soon as it mounts
       // (step 1 is on screen from the start now), so it gets a real answer

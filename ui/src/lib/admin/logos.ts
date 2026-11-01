@@ -9,6 +9,7 @@ import {
   siGithub,
   siGooglecloud,
   siOkta,
+  siSlack,
 } from "simple-icons";
 
 export type VendorMark =
@@ -24,6 +25,7 @@ const PATHS: Record<string, { path: string; hex: string; title: string }> = {
   github: { ...siGithub, hex: "" },
   gcp: siGooglecloud,
   okta: siOkta,
+  slack: siSlack,
 };
 
 const INITIALS: Record<string, { text: string; hex: string }> = {
