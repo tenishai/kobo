@@ -92,6 +92,7 @@ from kobo_api.bab import agent_connections as bab_agent_connections
 from kobo_api.bab import build_bab
 from kobo_api.bab import child_repositories as github_access_child_repositories
 from kobo_api.bab import ensure_agent_integrations as bab_ensure_agent_integrations
+from kobo_api.bab import last_failures as bab_last_failures
 from kobo_api.bab import picker as bab_picker
 from kobo_api.bab import push_topology as bab_push_topology
 from kobo_api.bab import since_days as bab_since_days
@@ -3899,6 +3900,12 @@ def create_app(
             vendors = bab_picker(bab, actor, agent=agent.name)
         except ClientError as exc:
             return _bab_refused(exc)
+        # The vendor row's failure line (kobo#382): the newest failed or refused
+        # lease there in the last day, unless a lease landed since. Never a
+        # reason to fail the tab.
+        failures = bab_last_failures(bab, agent.name, vendors, actor)
+        for v in vendors:
+            v["last_failure"] = failures.get(v["id"])
         return JSONResponse({
             "agent": agent.name,
             "team": agent.team,

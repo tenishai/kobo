@@ -15,7 +15,7 @@
   //   inviting it in Slack is the only control. The legacy Slack tab keeps
   //   its own list and the channels route.
   //
-  // The row's header carries an honest state once installed: Live (the
+  // The row's one line carries an honest state once installed: Live (the
   // agent is ready and nothing is pending), Applying your change (a Wakes
   // on save restarts the agent; the state turns Live only when a health
   // check taken after the save finds it up and not restarting, and a
@@ -23,9 +23,17 @@
   // cluster says the agent is mid-restart for any reason), or the amber
   // note that a saved choice waits for the agent's next restart.
   //
+  // One row among the Access tab's vendors (VendorRow, issue #382), always
+  // the last. Whether it is open is PermissionsPanel's (one row at a time);
+  // this component asks to open while something is in flight (installing,
+  // applying a change) and to close once that reads Live, and otherwise
+  // reports the click. The install's way back (`?vendor=slack`, with
+  // `slack=failed` when it did not finish) is read by the panel too; the
+  // failure sentence arrives here as a prop and sits on the row.
+  //
   // Renders nothing unless the room makes Slack apps itself (the agent's
   // `slack.relay`); an agent with an app from the Slack tab's paste flow
-  // keeps that tab and this block says so instead of offering a second app.
+  // keeps that tab and this row says so instead of offering a second app.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { errorMessage, type SlackWake, type SlackWakeResult } from "../lib/api";
   import {
@@ -35,12 +43,29 @@
     setSlackWakeMutation,
     slackAppQuery,
   } from "../lib/queries";
-  import { clearHashQuery, hashQuery } from "../lib/router.svelte";
   import { beginRestart, endRestart } from "../lib/delivery.svelte";
   import { watchWakeLive } from "../lib/slackWake";
-  import VendorMark from "./VendorMark.svelte";
+  import VendorRow, { type Tone } from "./VendorRow.svelte";
 
-  let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
+  let {
+    agentName,
+    frozen = false,
+    open = false,
+    lit = false,
+    installFailed = false,
+    onOpenChange,
+  }: {
+    agentName: string;
+    frozen?: boolean;
+    /** Whether this row is the open one; the panel decides. */
+    open?: boolean;
+    /** Brought into view and lit for a moment: the install's way back. */
+    lit?: boolean;
+    /** The install did not finish (`slack=failed` on the way back). */
+    installFailed?: boolean;
+    /** The row asks to open or shut; the panel keeps one row open. */
+    onOpenChange?: (open: boolean) => void;
+  } = $props();
 
   const queryClient = useQueryClient();
   // agentName is read once: AgentDetail remounts the tab's panels on a
@@ -60,28 +85,6 @@
     { value: "thread", label: "Mentions, then the thread", help: "Mention it once at the top of a thread and every reply there reaches it." },
     { value: "channel", label: "Every message in the channel", help: "For an agent whose job is the channel. It hears everything." },
   ];
-
-  // Slack sends the person back here after Install to Slack with
-  // `vendor=slack` in the hash, plus `slack=failed` when the install did not
-  // finish. Both are read once at mount, the way the router's panes do: the
-  // section scrolls into view and lights up for a moment, the failure
-  // sentence sits on the row itself, and the query is dropped so a reload
-  // or a copied link does not replay it.
-  const arrival = typeof window !== "undefined" ? hashQuery(window.location.hash) : {};
-  const installFailed = arrival.slack === "failed";
-  const arrived = arrival.vendor === "slack" || installFailed;
-  let highlight = $state(false);
-  let sectionEl = $state<HTMLElement | null>(null);
-  let brought = false;
-  $effect(() => {
-    if (!arrived || brought || !sectionEl) return;
-    brought = true;
-    sectionEl.scrollIntoView({ block: "start", behavior: "smooth" });
-    clearHashQuery();
-    highlight = true;
-    const timer = setTimeout(() => (highlight = false), 2500);
-    return () => clearTimeout(timer);
-  });
 
   // --- Wakes on: local before the app exists, saved on pick after ----------
   //
@@ -167,19 +170,18 @@
     }
   }
 
-  // --- The header's state ----------------------------------------------------------
-  type Tone = "ok" | "warn" | "fail" | "quiet";
+  // --- The row's one line ------------------------------------------------------
   const headState = $derived.by((): { text: string; tone: Tone } => {
     const data = view.data;
-    if (!data) return { text: "", tone: "quiet" };
-    if (!data.available) return { text: "Not connected to the room", tone: "quiet" };
-    if (data.legacy) return { text: "Connected from the Slack tab", tone: "quiet" };
+    if (!data) return { text: "", tone: "ink" };
+    if (!data.available) return { text: "Not connected to the room", tone: "ink" };
+    if (data.legacy) return { text: "Connected from the Slack tab", tone: "ink" };
     if (data.state === "created") {
       return installing && !installFailed
         ? { text: "Installing", tone: "warn" }
-        : { text: "App made; install it to finish", tone: "quiet" };
+        : { text: "App made; install it to finish", tone: "ink" };
     }
-    if (data.state !== "installed") return { text: "Not connected for this agent", tone: "quiet" };
+    if (data.state !== "installed") return { text: "Not connected for this agent", tone: "ink" };
     if (wakeApplying) return { text: "Applying your change. Give it a minute.", tone: "warn" };
     if (wakeWaitsForRestart) return { text: "Saved. Takes effect when the agent next restarts.", tone: "warn" };
     const detail = agent.data;
@@ -188,6 +190,33 @@
     if (detail?.health?.state === "down") return { text: "Down", tone: "fail" };
     if (detail?.status === "ready") return { text: "Live", tone: "ok" };
     return { text: "Not ready yet", tone: "warn" };
+  });
+  /** The one action while closed: adding Slack, until the app is installed. */
+  const action = $derived(
+    view.data?.available && !view.data.legacy && (view.data.state === "none" || view.data.state === "created") ? "Add Slack" : null,
+  );
+
+  // Something is going in: the row opens itself so the person sees it land,
+  // and shuts again once it reads Live. A row the person opened and left
+  // alone is theirs to shut.
+  const inFlight = $derived(
+    wakeApplying || (installing && view.data?.state === "created") || Boolean(agent.data?.health?.rolling),
+  );
+  let selfOpened = false;
+  $effect(() => {
+    if (inFlight) {
+      if (!open) {
+        selfOpened = true;
+        onOpenChange?.(true);
+      } else if (!selfOpened) {
+        selfOpened = true;
+      }
+      return;
+    }
+    if (selfOpened && headState.tone === "ok") {
+      selfOpened = false;
+      if (open) onOpenChange?.(false);
+    }
   });
 </script>
 
@@ -222,18 +251,17 @@
 
 {#if relayOn && view.data}
   {@const data = view.data}
-  <section class="vendor" class:vendor--arrived={highlight} aria-label="Slack" bind:this={sectionEl}>
-    <div class="vendor__head">
-      <VendorMark id="slack" name="Slack" size={18} />
-      <span class="vendor__name">Slack</span>
-      <span class="vendor__state vendor__state--{headState.tone}" role="status">
-        {#if headState.tone !== "quiet"}
-          <span class="vendor__dot" aria-hidden="true"></span>
-        {/if}
-        {headState.text}
-      </span>
-    </div>
-
+  <VendorRow
+    id="slack"
+    label="Slack"
+    summary={headState.text}
+    tone={headState.tone}
+    live
+    {action}
+    {open}
+    {lit}
+    onToggle={() => onOpenChange?.(!open)}
+  >
     <div class="body">
       {#if installFailed && data.state !== "installed"}
         <p class="copy copy--fail" role="alert">Installing to Slack did not finish. Try Install to Slack again.</p>
@@ -302,21 +330,11 @@
         </div>
       {/if}
     </div>
-  </section>
+  </VendorRow>
 {/if}
 
 <style>
-  .vendor { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; transition: border-color 0.6s ease, box-shadow 0.6s ease; }
-  .vendor--arrived { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-  .vendor__head { display: flex; align-items: center; gap: var(--space-sm); width: 100%; padding: var(--space-sm) var(--space-md); border-bottom: 1px solid var(--border); background: var(--bg); color: var(--ink); text-align: left; }
-  .vendor__name { font-size: 0.95rem; font-weight: 600; }
-  .vendor__state { display: inline-flex; flex: 1; min-width: 0; align-items: center; gap: 0.4rem; color: var(--muted); font-size: 0.82rem; }
-  .vendor__state--ok, .vendor__state--warn, .vendor__state--fail { color: var(--ink); }
-  .vendor__dot { flex-shrink: 0; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--muted); }
-  .vendor__state--ok .vendor__dot { background: var(--ok); }
-  .vendor__state--warn .vendor__dot { background: var(--warn); }
-  .vendor__state--fail .vendor__dot { background: var(--fail); }
-  .body { display: flex; flex-direction: column; gap: var(--space-md); padding: var(--space-md); }
+  .body { display: flex; flex-direction: column; gap: var(--space-md); padding: var(--space-md) var(--space-md) 0; }
   .block { display: flex; flex-direction: column; gap: var(--space-sm); }
   .copy { margin: 0; color: var(--ink); font-size: 0.9rem; line-height: 1.5; }
   .copy--fail { color: var(--fail); }

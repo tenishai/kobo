@@ -6,6 +6,28 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The Access tab stays one screen as vendors multiply (#382).** Every vendor is one compact
+  row, closed by default: its logo, its name, one line on where things stand ("2 held, 1 waiting
+  for review", "Nothing held yet", or Slack's Live / Applying your change) and the one action
+  (Ask for more, or Add Slack). A row opens on click to show what it did before (the held table,
+  the pending rows, Revoke and the picker, unchanged); one row is open at a time, and the row
+  last opened stays open for the session. `?vendor=<id>` opens a row from a link (the Slack
+  install's way back keeps working), Slack opens itself while installing or applying a change
+  and shuts once it reads Live, rows with something held or waiting sort first and Slack is
+  always last. The heading is one sentence; the "Runs as" line stays.
+
+### Added
+
+- **A failed attempt is explained on the vendor's row.** When the permission service could not
+  mint or refused a credential for the agent in the last day, the vendor's row reads **Last
+  attempt failed 12 min ago: <the service's reason>** in the warn tone, the whole reason on
+  hover, so an owner no longer learns only "my credential did not resolve" from the agent. The
+  access payload carries it as `last_failure` per vendor (`{at, kind, reason}`), from one read of
+  the service's events; a lease at that vendor issued after the failure clears it, and the
+  service being away leaves every vendor without one rather than failing the tab.
+
 ## [0.3.35] - 2026-11-01
 
 ### Fixed

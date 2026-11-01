@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
-// What this agent can reach (issue #365, opened on the vendors by #368): one
-// block per vendor with its logo and what the agent holds there; the picker
-// opens under the vendor and walks account, then permissions; ticking a row
+// What this agent can reach (issue #365, opened on the vendors by #368,
+// compacted by #382): one closed row per vendor with its logo and one line
+// on what the agent holds there, or its last failed attempt; a row opens on
+// click, one at a time, from a link's `?vendor=` or from the session's
+// memory; the picker inside walks account, then permissions; ticking a row
 // must not move it (the first version's accordion closed on every tick).
 // GitHub stops at the agent's repository set first, saves it, and only then
 // offers the level; the request targets the set (the child integration),
@@ -135,7 +137,20 @@ function putCalls(): RequestInit[] {
     .map(([, init]) => init as RequestInit);
 }
 
-afterEach(() => vi.unstubAllGlobals());
+/** The rows in the order drawn, by their labels. */
+function rowLabels(): string[] {
+  return Array.from(document.querySelectorAll("section[aria-label]")).map((s) => s.getAttribute("aria-label") ?? "");
+}
+function expanded(name: RegExp): string | null {
+  return screen.getByRole("button", { name }).getAttribute("aria-expanded");
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  // The row last opened is remembered for the session; no test inherits another's.
+  sessionStorage.clear();
+  window.location.hash = "";
+});
 
 describe("PermissionsPanel", () => {
   it("walks vendor, account, permissions and keeps the view while ticking", async () => {
@@ -216,21 +231,24 @@ describe("PermissionsPanel", () => {
     });
     renderWithClient(PermissionsPanel, { agentName: "ledger" });
 
-    // Under GitHub, not in a Held table of their own: the grant, then the
-    // request waiting for review.
-    const github = within(await screen.findByRole("region", { name: "GitHub" }));
+    // Under GitHub, once its row is open, not in a Held table of their own:
+    // the grant, then the request waiting for review.
+    await fireEvent.click(await screen.findByRole("button", { name: /GitHub/ }));
+    const github = within(screen.getByRole("region", { name: "GitHub" }));
     expect(github.getByText("Read")).not.toBeNull();
     expect(github.getAllByText("ledger's repositories")).toHaveLength(2);
-    expect(github.getAllByText("2 repositories")).toHaveLength(2);
+    // The set's size on both table rows, and once more as the row's grey detail.
+    expect(within(github.getByRole("table")).getAllByText("2 repositories")).toHaveLength(2);
+    expect(github.getByRole("button", { name: /GitHub/ }).textContent).toContain("2 repositories");
     expect(github.getAllByText("acme-eng/billing")).toHaveLength(2);
     expect(github.getByText("Review pull requests")).not.toBeNull();
     expect(github.getByText("waiting for review")).not.toBeNull();
     expect(github.getByText(/asked by owner@example.com/)).not.toBeNull();
-    expect(github.getByRole("button", { name: /GitHub/ }).textContent).toContain("1 held");
-    // The other vendors hold nothing, and say so; the ask grant is a pair
-    // under Agent to agent, not a row here.
+    expect(github.getByRole("button", { name: /GitHub/ }).textContent).toContain("1 held, 1 waiting for review");
+    // The other vendors hold nothing, and their closed rows say so; the ask
+    // grant is a pair under Agent to agent, not a row here.
     const aws = within(screen.getByRole("region", { name: "AWS" }));
-    expect(aws.getByText("Nothing held yet.")).not.toBeNull();
+    expect(aws.getByText("Nothing held yet")).not.toBeNull();
     expect(screen.queryByText("auditor")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Held" })).toBeNull();
   });
@@ -270,6 +288,97 @@ describe("PermissionsPanel", () => {
     await fireEvent.click(aws);
     expect(aws.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("button", { name: /acme-audit/ })).toBeNull();
+  });
+});
+
+const HELD_ON_DATADOG = {
+  ...ACCESS,
+  grants: [
+    { id: 1, agent: "ledger", integration: "datadog", permission: "datadog_monitors_read", tier: "read", gated: false, expires_at: null, granted_by: "admin@example.com", created_at: "2026-10-30T10:00:00Z", request_id: 3, state: "active" },
+  ],
+};
+
+describe("PermissionsPanel: compact rows (issue #382)", () => {
+  it("draws every vendor as a closed row with its one line, and opens one at a time", async () => {
+    stubFetch({ "/api/agents/ledger/access": HELD_ON_DATADOG });
+    renderWithClient(PermissionsPanel, { agentName: "ledger" });
+
+    const datadog = await screen.findByRole("button", { name: /Datadog/ });
+    // Closed: no table, no picker, each row with its summary and its action.
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByLabelText("Find a permission")).toBeNull();
+    expect(document.querySelectorAll('[aria-expanded="true"]')).toHaveLength(0);
+    expect(datadog.textContent).toContain("1 held");
+    expect(datadog.textContent).toContain("Ask for more");
+    expect(screen.getByRole("button", { name: /AWS/ }).textContent).toContain("Nothing held yet");
+
+    await fireEvent.click(screen.getByRole("button", { name: /AWS/ }));
+    expect(expanded(/AWS/)).toBe("true");
+    expect(screen.getByRole("button", { name: /acme-audit/ })).not.toBeNull();
+    await fireEvent.click(datadog);
+    expect(expanded(/Datadog/)).toBe("true");
+    expect(expanded(/AWS/)).toBe("false");
+    expect(document.querySelectorAll('[aria-expanded="true"]')).toHaveLength(1);
+    expect(screen.getByRole("table")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Revoke now" })).not.toBeNull();
+  });
+
+  it("sorts the vendors with something held or waiting first", async () => {
+    stubFetch({ "/api/agents/ledger/access": HELD_ON_DATADOG });
+    renderWithClient(PermissionsPanel, { agentName: "ledger" });
+    await screen.findByRole("button", { name: /Datadog/ });
+    expect(rowLabels()).toEqual(["Datadog", "AWS", "GitHub"]);
+  });
+
+  it("opens the row a link names and drops the query from the hash", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    window.location.hash = "#/agents/ledger/access?vendor=datadog";
+    stubFetch({ "/api/agents/ledger/access": ACCESS });
+    renderWithClient(PermissionsPanel, { agentName: "ledger" });
+
+    expect(await screen.findByLabelText(/monitors/)).not.toBeNull();
+    expect(expanded(/Datadog/)).toBe("true");
+    expect(expanded(/AWS/)).toBe("false");
+    await vi.waitFor(() => expect(scroll).toHaveBeenCalled());
+    expect(window.location.hash).toBe("#/agents/ledger/access");
+  });
+
+  it("keeps the row last opened open for the session", async () => {
+    stubFetch({ "/api/agents/ledger/access": ACCESS });
+    const first = renderWithClient(PermissionsPanel, { agentName: "ledger" });
+    await fireEvent.click(await screen.findByRole("button", { name: /Datadog/ }));
+    first.unmount();
+
+    renderWithClient(PermissionsPanel, { agentName: "ledger" });
+    expect(await screen.findByLabelText(/monitors/)).not.toBeNull();
+    expect(expanded(/Datadog/)).toBe("true");
+  });
+
+  it("says the last failed attempt on the row, trimmed, with the whole reason on hover, until a lease clears it", async () => {
+    // Owner ask 2026-11-01: the agent only says its credential did not
+    // resolve; the owner reads the permission service's reason here. The
+    // route already drops a failure a newer lease cleared (`last_failure`
+    // null), so this panel reads one route and nothing else.
+    const reason = "The vendor answered 422 for the narrowed token: the installation does not allow pull requests write. Ask a room admin to widen the app.";
+    const twelveMinutesAgo = new Date(Date.now() - 12 * 60_000).toISOString();
+    const failed = { ...ACCESS.vendors[0], last_failure: { at: twelveMinutesAgo, kind: "lease.failed", reason } };
+    const fine = { ...ACCESS.vendors[1], last_failure: null };
+    stubFetch({ "/api/agents/ledger/access": { ...ACCESS, vendors: [fine, failed] } });
+    renderWithClient(PermissionsPanel, { agentName: "ledger" });
+
+    const aws = await screen.findByRole("button", { name: /AWS/ });
+    const line = aws.querySelector(".row__summary") as HTMLElement;
+    expect(line.textContent?.trim()).toBe(
+      "Last attempt failed 12 min ago: The vendor answered 422 for the narrowed token: the installation does not allow pull requests write.",
+    );
+    expect(line.getAttribute("title")).toBe(reason);
+    expect(line.className).toContain("row__summary--warn");
+    // A vendor with a failure has something to look at: it sorts first.
+    expect(rowLabels()).toEqual(["AWS", "Datadog"]);
+    expect(screen.getByRole("button", { name: /Datadog/ }).textContent).toContain("Nothing held yet");
+    // Only the access route is read: the clearing is the server's.
+    expect(vi.mocked(fetch).mock.calls.every(([url]) => String(url).includes("/access"))).toBe(true);
   });
 });
 

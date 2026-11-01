@@ -1,14 +1,22 @@
 <script lang="ts">
   // What this agent can reach (the Access tab, issue #365; opened on the
-  // vendors by issue #368). One block per vendor the room is connected to,
-  // with its logo: what the agent holds there (each grant with its tier,
-  // expiry, who granted it and Revoke) and what is waiting for review, then
-  // the picker to ask for more, opened in place under the vendor. The
-  // picker walks the way access is granted: for a cloud the account,
+  // vendors by issue #368; compacted by issue #382). One row per vendor the
+  // room is connected to (VendorRow), closed by default: the logo, the name,
+  // one line that says where things stand ("2 held, 1 waiting for review",
+  // "Nothing held yet", or the last failed attempt with its reason) and the
+  // one action. A row opens on click, one at a time, to show what the agent
+  // holds there (each grant with its tier, expiry, who granted it and
+  // Revoke), what is waiting for review, and the picker to ask for more.
+  // The picker walks the way access is granted: for a cloud the account,
   // project or subscription, then a searchable list of permissions. One
   // Confirm sends the request to the room's reviewers (Admin > Review).
   // Approved permissions are grants the agent borrows an hour of access
   // against; the decisions are the reviewers', never this page's.
+  //
+  // Rows with something held, waiting or failed sort first; Slack (its own
+  // component, the one vendor connected per agent) is always last. The row
+  // last opened stays open for the session, and `?vendor=<id>` on the hash
+  // opens a row from a link (the Slack install lands with `?vendor=slack`).
   //
   // GitHub is the one vendor with a step of its own. An agent reaches
   // GitHub through its own repository set (one set per agent, written here
@@ -19,13 +27,13 @@
   // room can see: the ones already picked come first, then the best matches
   // for what was typed, the way the connect-a-repo field works.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { errorMessage, type AccessAccount, type AccessGrant, type AccessPermission, type AccessRequest, type AccessVendor, type GithubRepository } from "../lib/api";
+  import { errorMessage, type AccessAccount, type AccessFailure, type AccessGrant, type AccessPermission, type AccessRequest, type AccessVendor, type GithubRepository } from "../lib/api";
   import { agentAccessQuery, githubRepositoriesQuery, putGithubRepositoriesMutation, requestAgentAccessMutation, revokeAgentAccessMutation, whoamiQuery } from "../lib/queries";
-  import { formatHash } from "../lib/router.svelte";
+  import { clearHashQuery, formatHash, hashQuery } from "../lib/router.svelte";
   import { serverDate } from "../lib/time";
   import { toast } from "../lib/toast.svelte";
   import SlackVendor from "./SlackVendor.svelte";
-  import VendorMark from "./VendorMark.svelte";
+  import VendorRow, { type Tone } from "./VendorRow.svelte";
 
   let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
 
@@ -36,6 +44,11 @@
   const ASK_PERMISSION = "a2a_ask";
   /** How many repository matches the picker draws at once. */
   const REPO_SHOWN = 40;
+  /** The two rows that are not permission vendors. */
+  const SLACK = "slack";
+  const ELSEWHERE = "elsewhere";
+  /** How long a failure's reason may run on the row; the full text is on hover. */
+  const REASON_MAX = 140;
 
   const queryClient = useQueryClient();
   // agentName is read once: AgentDetail remounts the tab's panels on a
@@ -49,10 +62,47 @@
   const whoami = createQuery(() => ({ ...whoamiQuery(), enabled: access.isSuccess && (access.data?.vendors ?? []).every((v) => !v.connected) }));
   const canOpenAdmin = $derived(Boolean(whoami.data?.operator && whoami.data?.admin_panel));
 
-  // Where the picker is: nothing (every vendor shut), a vendor (its
-  // accounts, or for GitHub its repositories), or an account (its
-  // permissions). Explicit state, so ticking a box changes nothing here.
-  let vendorId = $state<string | null>(null);
+  // --- Which row is open ------------------------------------------------------
+  // One at a time. A link's `?vendor=<id>` wins (read once, then dropped from
+  // the hash so a reload does not replay it; the Slack install also carries
+  // `slack=failed`, which is the Slack row's to show), then the row last
+  // opened in this session, else none. The remembered row is a convenience
+  // only: with no storage the tab opens closed.
+  const arrival = typeof window !== "undefined" ? hashQuery(window.location.hash) : {};
+  const installFailed = arrival.slack === "failed";
+  const arrivedAt = arrival.vendor ?? (installFailed ? SLACK : null);
+  const rememberKey = () => `kobo.access.open:${agentName}`;
+  function remembered(): string | null {
+    try {
+      return sessionStorage.getItem(rememberKey());
+    } catch {
+      return null;
+    }
+  }
+  function remember(id: string | null): void {
+    try {
+      if (id) sessionStorage.setItem(rememberKey(), id);
+      else sessionStorage.removeItem(rememberKey());
+    } catch {
+      // nothing to remember into
+    }
+  }
+  /** The row the tab should open once the vendors are known. */
+  let wanted: string | null = arrivedAt ?? remembered();
+  /** The row brought into view and lit for a moment, from a link. */
+  let lit = $state<string | null>(arrivedAt);
+  $effect(() => {
+    if (!arrivedAt) return;
+    clearHashQuery();
+    const timer = setTimeout(() => (lit = null), 2500);
+    return () => clearTimeout(timer);
+  });
+
+  // Where the picker is: nothing (every row shut), a vendor (its accounts,
+  // or for GitHub its repositories), or an account (its permissions).
+  // Explicit state, so ticking a box changes nothing here. `openId` is the
+  // open row, a permission vendor's id, "slack" or "elsewhere".
+  let openId = $state<string | null>(null);
   let accountId = $state<string | null>(null);
   let query = $state("");
   let picked = $state<string[]>([]);
@@ -66,7 +116,7 @@
   // can do nothing with an unconnected vendor, so it is not listed. As admins
   // connect more under Integrations, more appear here.
   const vendors = $derived((access.data?.vendors ?? []).filter((v) => v.connected));
-  const vendor = $derived(vendors.find((v) => v.id === vendorId) ?? null);
+  const vendor = $derived(vendors.find((v) => v.id === openId) ?? null);
   const account = $derived(vendor?.accounts.find((a) => a.id === accountId) ?? null);
   const isGithub = $derived(vendor?.id === GITHUB);
   /** GitHub's one account: the agent's repository set, or the placeholder
@@ -124,7 +174,7 @@
     return grants.filter((g) => g.state !== "expired" && g.integration === accountIdOrVendor).length;
   }
   function openVendor(v: AccessVendor): void {
-    vendorId = v.id;
+    openId = v.id;
     query = "";
     picked = [];
     repoDraft = null;
@@ -135,12 +185,34 @@
     accountId = v.kind === "service" && v.accounts.length === 1 && v.id !== GITHUB ? v.accounts[0].id : null;
   }
   function toggleVendor(v: AccessVendor): void {
-    if (vendorId === v.id) {
+    if (openId === v.id) {
       closePicker();
     } else {
       openVendor(v);
     }
   }
+  /** Open or shut one of the rows that are not permission vendors. */
+  function setOpen(id: string, open: boolean): void {
+    if (open) {
+      closePicker();
+      openId = id;
+    } else if (openId === id) {
+      openId = null;
+    }
+  }
+  // The remembered row, once the vendors are known; a vendor the room no
+  // longer lists is simply not opened.
+  $effect(() => {
+    if (!wanted || !access.data) return;
+    const id = wanted;
+    wanted = null;
+    const v = vendors.find((x) => x.id === id);
+    if (v) openVendor(v);
+    else if (id === SLACK || id === ELSEWHERE) openId = id;
+  });
+  $effect(() => {
+    remember(openId);
+  });
   function openAccount(a: AccessAccount): void {
     if (!a.connected) return;
     accountId = a.id;
@@ -152,14 +224,14 @@
       accountId = null;
     } else {
       accountId = null;
-      vendorId = null;
+      openId = null;
     }
     query = "";
     picked = [];
   }
   function closePicker(): void {
     accountId = null;
-    vendorId = null;
+    openId = null;
     picked = [];
     query = "";
     repoSaved = false;
@@ -346,6 +418,48 @@
       ? count(v.accounts[0].repositories.length, "repository", "repositories")
       : "no repositories picked yet";
   }
+
+  // --- The row's one line -------------------------------------------------------
+  /** "12 min ago", "3 hours ago": a failure is within the last day. */
+  function ago(iso: string): string {
+    const minutes = Math.floor((Date.now() - serverDate(iso).getTime()) / 60_000);
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
+  }
+  /** The permission service's sentence as it came, its first sentence only
+   * and no longer than the row allows; the whole text sits on hover. */
+  function oneSentence(reason: string): string {
+    const first = reason.trim().split(/(?<=[.!?])\s+/)[0] ?? "";
+    return first.length > REASON_MAX ? `${first.slice(0, REASON_MAX - 1).trimEnd()}…` : first;
+  }
+  function failureLine(f: AccessFailure): string {
+    const reason = oneSentence(f.reason);
+    return `Last attempt failed ${ago(f.at)}${reason ? `: ${reason}` : ""}`;
+  }
+  type Line = { text: string; tone: Tone; title: string | null };
+  function heldLine(rows: AccessGrant[], asked: AccessRequest[]): Line {
+    const held = rows.filter((g) => g.state !== "expired").length;
+    const parts: string[] = [];
+    if (held) parts.push(`${held} held`);
+    if (asked.length) parts.push(`${asked.length} waiting for review`);
+    return { text: parts.length ? parts.join(", ") : "Nothing held yet", tone: "ink", title: null };
+  }
+  /** What the row says while closed: the last failed attempt when there is
+   * one, else what is held and waiting. */
+  function lineOf(v: AccessVendor): Line {
+    const f = v.last_failure;
+    if (f) return { text: failureLine(f), tone: "warn", title: f.reason };
+    return heldLine(grantsAt(v), pendingAt(v));
+  }
+  /** Something to look at: held, waiting, or a failed attempt. */
+  function busy(v: AccessVendor): boolean {
+    return Boolean(v.last_failure) || grantsAt(v).some((g) => g.state !== "expired") || pendingAt(v).length > 0;
+  }
+  /** The rows in order: vendors with something first, the rest after, each
+   * part in the order the room lists them. */
+  const ordered = $derived([...vendors].sort((a, b) => Number(busy(b)) - Number(busy(a))));
 </script>
 
 {#snippet repoList(repositories: string[])}
@@ -412,14 +526,8 @@
     <div class="vendors__head">
       <h3 class="panel__subheading">What this agent can reach</h3>
       <p class="vendors__lead">
-        What this agent may do at each vendor. It holds no standing credential: when a task
-        needs one, it borrows an hour of access scoped to exactly these permissions, and the
-        vendor's audit trail names the agent.
-        {#if vendors.length > 0 && access.data.can_request}
-          Open a vendor to ask for more; one Confirm sends the request to the room's reviewers.
-        {:else if vendors.length > 0}
-          The agent's owner or a room operator asks for more; you can see what it holds.
-        {/if}
+        What this agent may do at each vendor: it holds no standing credential and borrows an
+        hour of access scoped to exactly these permissions when a task needs one.
       </p>
     </div>
 
@@ -430,33 +538,26 @@
       </p>
     {/if}
 
-    {#each vendors as v (v.id)}
-      {@const open = vendorId === v.id}
-      {@const canOpen = access.data.can_request}
-      {@const vendorNote = connectionNote(v)}
-      {@const heldCount = grantsAt(v).filter((g) => g.state !== "expired").length}
-      <section class="vendor" class:vendor--open={open} aria-label={v.label}>
-        <button
-          type="button"
-          class="vendor__head"
-          aria-expanded={canOpen ? open : undefined}
-          disabled={!canOpen || frozen}
-          onclick={() => toggleVendor(v)}
-        >
-          <VendorMark id={v.id} name={v.label} size={18} />
-          <span class="vendor__name">{v.label}</span>
-          <span class="vendor__note">
-            {#if vendorNote}{vendorNote}{/if}
-            {#if heldCount}{#if vendorNote} · {/if}{heldCount} held{/if}
-          </span>
-          {#if canOpen}
-            <span class="vendor__action">{open ? "Close" : "Ask for more"}</span>
-          {/if}
-        </button>
-
+    <div class="rows">
+    {#each ordered as v (v.id)}
+      {@const open = openId === v.id}
+      {@const canAsk = access.data.can_request && !frozen}
+      {@const line = lineOf(v)}
+      <VendorRow
+        id={v.id}
+        label={v.label}
+        summary={line.text}
+        tone={line.tone}
+        title={line.title}
+        meta={connectionNote(v)}
+        action={canAsk ? "Ask for more" : null}
+        {open}
+        lit={lit === v.id}
+        onToggle={() => toggleVendor(v)}
+      >
         {@render heldTable(grantsAt(v), pendingAt(v), access.data.can_decide)}
 
-        {#if open && vendor}
+        {#if open && vendor && canAsk}
           <div class="vendor__picker">
             {#if isGithub && !account}
               <!-- GitHub: the agent's repositories -->
@@ -588,22 +689,35 @@
             {/if}
           </div>
         {/if}
-      </section>
+      </VendorRow>
     {/each}
 
-    <!-- Slack (issue #371): the one vendor whose connection is per agent.
-         Renders nothing unless the room makes Slack apps itself. -->
-    <SlackVendor {agentName} {frozen} />
-
     {#if strayGrants.length > 0 || strayPending.length > 0}
-      <section class="vendor" aria-label="Elsewhere">
-        <div class="vendor__head vendor__head--plain">
-          <span class="vendor__name">Elsewhere</span>
-          <span class="vendor__note">on a connection the room no longer lists</span>
-        </div>
+      {@const line = heldLine(strayGrants, strayPending)}
+      <VendorRow
+        id={ELSEWHERE}
+        label="Elsewhere"
+        summary={line.text}
+        meta="on a connection the room no longer lists"
+        open={openId === ELSEWHERE}
+        onToggle={() => setOpen(ELSEWHERE, openId !== ELSEWHERE)}
+      >
         {@render heldTable(strayGrants, strayPending, access.data.can_decide)}
-      </section>
+      </VendorRow>
     {/if}
+
+    <!-- Slack (issue #371): the one vendor whose connection is per agent,
+         always the last row. Renders nothing unless the room makes Slack
+         apps itself. -->
+    <SlackVendor
+      {agentName}
+      {frozen}
+      open={openId === SLACK}
+      lit={lit === SLACK}
+      {installFailed}
+      onOpenChange={(o) => setOpen(SLACK, o)}
+    />
+    </div>
   </div>
 {/if}
 
@@ -611,22 +725,15 @@
   .vendors { display: flex; flex-direction: column; gap: var(--space-md); }
   .vendors__head { display: flex; flex-direction: column; gap: var(--space-2xs); }
   .vendors__lead { margin: 0; max-width: 60rem; color: var(--ink); font-size: 0.9rem; line-height: 1.5; }
-  .vendor { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
-  .vendor--open { border-color: var(--ring); }
-  .vendor__head { display: flex; align-items: center; gap: var(--space-sm); width: 100%; padding: var(--space-sm) var(--space-md); border: 0; border-bottom: 1px solid var(--border); background: var(--bg); color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
-  .vendor__head:hover:not(:disabled) { background: var(--accent-soft); }
-  .vendor__head:disabled { cursor: default; }
-  .vendor__head--plain { cursor: default; }
-  .vendor__name { font-size: 0.95rem; font-weight: 600; }
-  .vendor__note { flex: 1; min-width: 0; color: var(--muted); font-size: 0.82rem; }
-  .vendor__action { flex-shrink: 0; color: var(--accent, var(--ink)); font-size: 0.85rem; font-weight: 500; }
-  .vendor__none { margin: 0; padding: var(--space-sm) var(--space-md); color: var(--muted); font-size: 0.85rem; }
+  .rows { display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+  .vendor__none { margin: 0; padding: var(--space-sm) var(--space-md); color: var(--ink); font-size: 0.85rem; }
   .vendor__table { border: 0; }
   .vendor__table th { padding-left: var(--space-md); padding-right: var(--space-md); }
   .vendor__table td { padding-left: var(--space-md); padding-right: var(--space-md); }
   .vendor__table tbody tr:last-child td { border-bottom: none; }
   .vendor__waiting td { color: var(--ink); }
   .vendor__picker { display: flex; flex-direction: column; gap: var(--space-sm); padding: var(--space-md); border-top: 1px solid var(--border); }
+  .vendor__table { margin-bottom: 0; }
   .vendor__copy { margin: 0; color: var(--ink); font-size: 0.9rem; line-height: 1.5; }
   .vendor__saved { margin: 0; color: var(--ok); font-size: 0.85rem; font-weight: 500; }
   .perm { font-family: var(--font-mono); font-size: 0.85rem; font-weight: 600; }
@@ -671,6 +778,5 @@
   @media (max-width: 48rem) {
     .svc { grid-template-columns: auto minmax(0, 1fr); }
     .svc__desc, .svc__why { grid-column: 2; }
-    .vendor__head { flex-wrap: wrap; }
   }
 </style>
