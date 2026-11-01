@@ -545,6 +545,41 @@ def test_get_agent_reports_its_own_runtime_image_and_the_room_s(session_factory_
     assert body["room_runtime_image"] == config__api_runtime.runtime_image
     # The whole point of carrying both: this agent is behind.
     assert body["runtime_image"] != body["room_runtime_image"]
+    assert body["runtime_pinned"] is True
+
+
+def test_get_agent_reads_behind_from_what_it_is_built_on_not_from_its_choice(session_factory__api_runtime, config__api_runtime):
+    """Wire shape (2026-11-01): an agent that follows the room (no runtime of
+    its own) and was built on the runtime the room pinned yesterday reads as
+    behind once the room's pin moves: `runtime_image` is the built fact, not
+    the room's pin echoed back, so the two halves differ and the page can say
+    so. Before this the page compared the pin with itself."""
+    client = _make_client(session_factory__api_runtime, config__api_runtime)
+    _seed_agent__api_runtime(session_factory__api_runtime, config__api_runtime)
+    with session_factory__api_runtime() as session:
+        session.query(Agent).filter_by(name=AGENT_NAME).one().built_runtime_image = OTHER_RUNTIME
+        session.commit()
+
+    body = client.get(f"/api/agents/{AGENT_NAME}").json()
+
+    assert body["runtime_image"] == OTHER_RUNTIME
+    assert body["built_runtime_image"] == OTHER_RUNTIME
+    assert body["room_runtime_image"] == config__api_runtime.runtime_image
+    assert body["runtime_pinned"] is False
+
+
+def test_get_agent_says_its_runtime_is_unknown_until_the_room_has_read_it(session_factory__api_runtime, config__api_runtime):
+    """Wire shape (2026-11-01): a row the boot backfill has not reached serves
+    `built_runtime_image` null (the page says it is checking) and keeps the old
+    resolved value under `runtime_image` so nothing older breaks."""
+    client = _make_client(session_factory__api_runtime, config__api_runtime)
+    _seed_agent__api_runtime(session_factory__api_runtime, config__api_runtime)
+
+    body = client.get(f"/api/agents/{AGENT_NAME}").json()
+
+    assert body["built_runtime_image"] is None
+    assert body["runtime_image"] == config__api_runtime.runtime_image
+    assert body["runtime_pinned"] is False
 
 
 # --- from test_api_org_status.py ---

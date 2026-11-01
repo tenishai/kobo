@@ -1069,7 +1069,11 @@ def register(mcp: FastMCP, app: Any) -> None:
         to a bare digest: the agent's card takes its `version` from the tag,
         and a bare digest leaves it showing the digest's first 12 hex. There
         is no read tool listing what the room runs, so pass an image you
-        already know and read the rejection copy if it is refused. You must own `agent` (or be a room
+        already know and read the rejection copy if it is refused. Passing
+        the room's own current runtime means "follow the room": the agent
+        moves onto it and its hold is cleared, so the room's next move
+        carries it too; any other ref is a hold the agent keeps until asked
+        again. You must own `agent` (or be a room
         operator), and `agent` must be READY.
 
         NOT DESTRUCTIVE OF DATA, but it does roll the pod: landing the

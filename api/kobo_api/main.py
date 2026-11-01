@@ -253,6 +253,7 @@ from kobo_api.roles import (
     serves_requests,
 )
 from kobo_api.runtime import commit_runtime_image, validate_runtime_image
+from kobo_api.runtime_truth import backfill_built_runtime, record_built_runtime
 from kobo_api.search import (
     CATALOG_TTL_S,
     catalog_index_metadata,
@@ -2882,6 +2883,11 @@ async def _room_lifespan(app: FastAPI):
             threading.Thread(
                 target=_bab_boot_push, args=(app,), daemon=True, name="bab-topology"
             ).start()
+            # What each agent is built on, read once from its Dockerfile
+            # for the rows that predate the column (kobo_api.runtime_truth).
+            threading.Thread(
+                target=_backfill_built_runtime, args=(app,), daemon=True, name="runtime-truth"
+            ).start()
         try:
             yield
         finally:
@@ -3020,13 +3026,14 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
     """
     if not _room_may_commit_to_repo(app, repo):
         return
+    pin = _runtime_image_for_repo(app, repo)
     try:
         upload_intake_file(
             app.state.clients.github,
             repo,
             filename,
             note,
-            runtime_image=_runtime_image_for_repo(app, repo),
+            runtime_image=pin,
             archive_only=True,
             on_repin=_directory_resync(app, repo),
         )
@@ -3034,6 +3041,10 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
         log.warning(
             "teach archive commit failed for %s (%s): %s", repo, filename, exc
         )
+    else:
+        # The commit re-pinned the Dockerfile to `pin` (or found it there);
+        # the row's fact follows the file (kobo_api.runtime_truth).
+        record_built_runtime(app.state.session_factory, repo, pin)
 
 
 def _learning_dict(row: AgentLearning) -> dict:
@@ -3195,6 +3206,7 @@ def _decide_learning(
                 {"error": "couldn't deliver the approved learning. Try again."},
                 status_code=502,
             )
+        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
     row.status = LEARNING_APPROVED
     row.decided_by = email
     row.decided_at = datetime.now(UTC)
@@ -3271,6 +3283,25 @@ def _bab_boot_push(app: FastAPI) -> None:
         else:
             if out.get("agents") or out.get("waiting"):
                 log.info("repository access migration: %s", out)
+
+
+def _backfill_built_runtime(app: FastAPI) -> None:
+    """Fill `Agent.built_runtime_image` for the rows that have none, from
+    each agent repository's Dockerfile, once per boot on a daemon thread
+    (one blocking GitHub read per agent). One summary line; a failure is
+    logged and the rows wait for the next boot. Never on the request path:
+    the page says "Checking what it runs on." until this lands."""
+    clients = app.state.clients
+    github = getattr(clients, "github", None) if clients is not None else None
+    if github is None:
+        return
+    try:
+        with app.state.session_factory() as session:
+            out = backfill_built_runtime(session, github)
+    except Exception:  # a boot thread never dies loudly; the rows wait
+        log.exception("runtime backfill failed; the rows wait for the next boot")
+    else:
+        log.info("runtime backfill: %s", out)
 
 
 def create_app(
@@ -6620,18 +6651,23 @@ def create_app(
                 # sentence is the comparison: an agent is current or it is
                 # behind, and only the server knows either half.
                 #
-                # The fallback is the server's job for the same reason
-                # `_runtime_image_for_repo` does it: the column is NULL for
-                # every agent that never moved off the org default, which is
-                # nearly all of them, and a page reading the column raw
-                # would print nothing where the honest answer is the
-                # default. A row that names a runtime the room has since
-                # retired passes through verbatim -- that is precisely the
-                # agent whose page needs to say so.
+                # `runtime_image` is the FACT when the room has it
+                # (`built_runtime_image`, what the Dockerfile's FROM carries;
+                # kobo_api.runtime_truth, 2026-11-01) and the old resolved
+                # choice otherwise. Before the fact existed this served
+                # `agent.runtime_image or cfg.runtime_image`, which for the
+                # NULL (follow the room) rows that are nearly all of them is
+                # the room's pin itself, so the page compared the pin with
+                # itself and every agent read "up to date" through a room
+                # runtime move. `built_runtime_image` is served raw (NULL =
+                # not read yet, and the page says so); `runtime_pinned` says
+                # whether the agent deliberately holds a runtime of its own.
                 #
                 # Detail only: the list route serves one row per dashboard
                 # card and no card says what an agent runs on.
-                "runtime_image": agent.runtime_image or cfg.runtime_image,
+                "runtime_image": agent.built_runtime_image or agent.runtime_image or cfg.runtime_image,
+                "built_runtime_image": agent.built_runtime_image,
+                "runtime_pinned": agent.runtime_image is not None,
                 "room_runtime_image": cfg.runtime_image,
                 # The owner's colleague mode (issue #131), NULL read as
                 # `default` for the same reason as the runtime fallback above.
@@ -8036,6 +8072,10 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
+        # The commit re-pinned the Dockerfile to this value (or found it
+        # there already); the row's fact follows the file.
+        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        session.commit()
         return JSONResponse({"sha": sha, "mode": "archive"})
 
     @app.delete("/api/agents/{name}/intake/{filename}")
@@ -8207,6 +8247,7 @@ def create_app(
             return JSONResponse(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
+        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
 
         # The durable record behind the row the panel shows (issue #269):
         # recorded only once the note has landed on one lane or the other,
@@ -8424,19 +8465,22 @@ def create_app(
         missing until a later upload lands it."""
         if not _room_may_commit_to_repo(app, repo):
             return
+        pin = _runtime_image_for_repo(app, repo)
         try:
             upload_tooling_file(
                 app.state.clients.github,
                 repo,
                 filename,
                 content,
-                runtime_image=_runtime_image_for_repo(app, repo),
+                runtime_image=pin,
                 on_repin=_directory_resync(app, repo),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "tooling archive commit failed for %s (%s): %s", repo, filename, exc
             )
+        else:
+            record_built_runtime(app.state.session_factory, repo, pin)
 
     def _request_tool_restart(agent_name: str) -> None:
         """Ask the platform to roll the agent's Deployment so the
@@ -8621,6 +8665,7 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
+        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
         audit.record(
             session, request=request, action="tooling.upload", target_kind="tool", target_id=payload.filename,
             agent_name=agent.name, detail={"mode": "archive", "sha": sha},
@@ -8675,6 +8720,8 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
+        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        session.commit()
         return JSONResponse(result)
 
     @app.delete("/api/agents/{name}/tooling/{filename}")
@@ -8951,6 +8998,7 @@ def create_app(
             log.warning("slack app wiring failed for agent %s: %s", agent.name, type(exc).__name__)
             return JSONResponse({"error": "couldn't set up Slack. Try again."}, status_code=502)
         row.wired_at = datetime.now(UTC).replace(tzinfo=None)
+        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
         state_token = slack_relay.mint_state(row)
         audit.record(
             session, request=request, action="slack.app.create", target_kind="agent", target_id=agent.name,
@@ -9137,6 +9185,7 @@ def create_app(
         agent.slack_app_id = payload.app_id
         agent.slack_app_self_service = True
         agent.slack_wired = True
+        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
         audit.record(
             session, request=request, action="slack.connect", target_kind="agent", target_id=agent.name,
             agent_name=agent.name, summary=f"{audit.who(request)} connected agent {agent.name} to Slack",
@@ -10336,7 +10385,15 @@ def create_app(
         # the in-memory mutation, so a failed push leaves both stores at the
         # value they already agreed on.
         previous = agent.runtime_image
-        agent.runtime_image = runtime_image
+        # Both columns move (2026-11-01): the fact, because the commit below
+        # writes exactly this ref on the FROM line; and the choice. Asking
+        # for the room's own runtime means "follow the room" (the Harness
+        # page's Update to current and Move to the room's runtime both ask
+        # for it), so the choice clears and the next room move carries this
+        # agent on its next commit, instead of pinning it to today's pin for
+        # good. Any other ref is a deliberate hold and is kept.
+        agent.runtime_image = None if runtime_image == cfg.runtime_image else runtime_image
+        agent.built_runtime_image = runtime_image
         try:
             sha = commit_runtime_image(app.state.clients.github, agent.repo_full_name, runtime_image)
         except ClientError as exc:
@@ -10357,6 +10414,7 @@ def create_app(
             {
                 "runtime_image": runtime_image,
                 "previous_runtime_image": previous,
+                "runtime_pinned": agent.runtime_image is not None,
                 "sha": sha,
                 "directory": directory,
             }
