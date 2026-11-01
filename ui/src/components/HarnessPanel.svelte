@@ -4,6 +4,7 @@
     CheckCircle,
     ClockCounterClockwise,
     Cpu,
+    Handshake,
     IdentificationCard,
     Lightbulb,
     Lightning,
@@ -19,6 +20,7 @@
     persona: UserCircle,
     skills: Lightning,
     tooling: Wrench,
+    a2a: Handshake,
     memory: Brain,
     learnings: Lightbulb,
     activity: ClockCounterClockwise,
@@ -47,6 +49,7 @@
   import type { Snippet } from "svelte";
   import LearningsPanel from "./LearningsPanel.svelte";
   import ActivityPanel from "./ActivityPanel.svelte";
+  import AgentToAgentPanel from "./AgentToAgentPanel.svelte";
   import MemoryPanel from "./MemoryPanel.svelte";
   import SkillsPanel from "./SkillsPanel.svelte";
   import ToolingPanel from "./ToolingPanel.svelte";
@@ -81,6 +84,7 @@
     capability = null,
     purposeTags = [],
     identity = null,
+    canAdminister = false,
     section = $bindable(DEFAULT_HARNESS_SECTION),
     persona = undefined,
   }: {
@@ -111,6 +115,11 @@
     /** The identity the agent runs as (`AgentDetail.identity`); absent on an
      * older server, in which case the section says so. */
     identity?: AgentIdentity | null;
+    /** Whether the caller may administer the agent: the page's own probe of
+     * `GET /api/agents/{name}/invites` answered 200, the same gate the
+     * Access tab has. Agent to agent (issue #368) is shown only then, since
+     * the routes behind it answer nobody else. */
+    canAdminister?: boolean;
     /** Which section is showing. Bindable so the page can keep it in the
      * URL hash (`#/agents/<name>/harness/skills`) while a click in here
      * still moves it on its own. */
@@ -174,7 +183,7 @@
   // The permission service on means no Identity and access section (#292).
   const who = createQuery(() => (whoamiQuery()));
   const accessOn = $derived(who.data?.access_on === true);
-  const sections = $derived(harnessSections(kind, { accessOn }));
+  const sections = $derived(harnessSections(kind, { accessOn, canAdminister }));
 
   /** The version half of an image ref: the digest after an `@`, else the
    * tag after the last `:`, else (an untagged ref) the ref itself. Used
@@ -494,6 +503,8 @@
           />
         {:else if id === "tooling"}
           <ToolingPanel {agentName} {frozen} />
+        {:else if id === "a2a"}
+          <AgentToAgentPanel {agentName} {frozen} />
         {:else if id === "memory"}
           <MemoryPanel {agentName} {frozen} />
         {:else if id === "learnings"}

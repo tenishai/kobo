@@ -243,7 +243,7 @@
 
   .danger-zone__desc {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink);
     font-size: 0.8rem;
   }
 
@@ -253,7 +253,7 @@
 
   .danger-zone__copy {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink);
     font-size: 0.9rem;
   }
 

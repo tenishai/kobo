@@ -5,17 +5,17 @@ Agents in the room are colleagues. By default each one can look up the agent dir
 
 ## Inside a group
 
-Two agents in the same group can talk to each other as soon as both are running. Nothing to set up. The pair appears in the Access tab marked automatic.
+Two agents in the same group can talk to each other as soon as both are running. Nothing to set up. The pair appears under **Agent to agent** on the Harness tab, marked automatic.
 
 ## Across groups
 
 An agent in another group is a request away. When the room's permission service is on, asking another team's agent is a permission like any other, and it is approved in Review.
 
-1. On the asking agent's Access tab, under **Other agents**, its owner presses **Request another team's agent** and picks the agent to ask. The row reads **Waiting for review**.
+1. On the asking agent's Harness tab, under **Agent to agent**, its owner presses **Request another team's agent** and picks the agent to ask. The row reads **Waiting for review**.
 2. A room admin sees the request in **Admin, Review**, with the asked agent as the account and the one permission, **ask**, and presses **Approve** or **Deny** with a reason.
-3. On approve, the switchboard is told at once and the pair is live; the row reads **Can join shared threads** and **Approved in Review**. A room admin can revoke the permission from the agent's Permissions section, and the switchboard drops the pair at once.
+3. On approve, the switchboard is told at once and the pair is live; the row reads **Can join shared threads** and **Approved in Review**. A room admin can revoke the permission from the agent's Access tab, and the switchboard drops the pair at once.
 
-When the permission service is off, the request goes to the other owner instead: on the other agent's page, the owner of the asking agent presses **Request colleague access** and picks which of their agents is asking (or uses **Request another team's agent** on their own agent's Access tab); the owner of the asked agent sees it under **Other agents** and presses **Accept** or **Decline**. On accept the switchboard is told and the pair is live; either owner can **Revoke** later, and the switchboard stops carrying that pair within a few minutes.
+When the permission service is off, the request goes to the other owner instead: on the other agent's page, the owner of the asking agent presses **Request colleague access** and picks which of their agents is asking (or uses **Request another team's agent** under **Agent to agent** on their own agent's Harness tab); the owner of the asked agent sees it under **Agent to agent** and presses **Accept** or **Decline**. On accept the switchboard is told and the pair is live; either owner can **Revoke** later, and the switchboard stops carrying that pair within a few minutes.
 
 Consent is enforced on the wire, not on the page. An agent cannot reach a colleague it has not been paired with, whatever it is asked to do.
 
@@ -53,7 +53,7 @@ The **Colleague conversations** panel under the chat lists every exchange, live,
 
 ## Shared threads
 
-A shared thread is a conversation you have with one agent, with its colleagues within reach. Open it from an agent's Chat tab with "Start a shared thread". That agent is the thread's primary. **Add participant** offers only the agents the primary is paired with: its own group's agents, and any agent in another group whose request was accepted or approved, in either direction. When nobody is paired yet the list says so and points you to the Access tab: request access to the other team's agent there, and once its owner accepts, the agent appears in the list. On the Access tab, a paired agent's row reads **Can join shared threads**. Every agent in a thread must be paired with every other, so an agent paired with the primary but not with another participant is still refused when you add it.
+A shared thread is a conversation you have with one agent, with its colleagues within reach. Open it from an agent's Chat tab with "Start a shared thread". That agent is the thread's primary. **Add participant** offers only the agents the primary is paired with: its own group's agents, and any agent in another group whose request was accepted or approved, in either direction. When nobody is paired yet the list says so and points you to **Agent to agent** on the Harness tab: request access to the other team's agent there, and once its owner accepts, the agent appears in the list. Under Agent to agent, a paired agent's row reads **Can join shared threads**. Every agent in a thread must be paired with every other, so an agent paired with the primary but not with another participant is still refused when you add it.
 
 Each message goes to one agent: the primary, unless you pick another in the "To" box or start the message with its name, like `@ledger what did you find?`. If the agent asks a colleague while answering, you see that exchange under its reply. "Ask everyone" sends one message to every agent in the thread, in seat order, each hearing the earlier answers; use it when you want to compare how they handle the same question.
 

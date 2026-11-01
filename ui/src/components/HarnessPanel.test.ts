@@ -226,7 +226,8 @@ describe("HarnessPanel for a connected agent", () => {
       .getAllByRole("button")
       .map((b) => b.textContent?.trim());
     // Permissions is not here: what an agent may reach lives on its Access
-    // tab (issue #365), for both kinds of agent.
+    // tab (issue #365), for both kinds of agent. Agent to agent is not
+    // either: this caller may not administer the agent.
     expect(labels).toEqual(["Model and runtime", "Identity and access", "Activity"]);
     expect(
       screen.getByText(
@@ -247,6 +248,45 @@ describe("HarnessPanel for a connected agent", () => {
   });
 });
 
+
+describe("HarnessPanel agent to agent (issue #368)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    // Listed before the catch-all: the stub matches by substring, first wins.
+    stubFetch({
+      "/api/agents/warden/invites": { incoming: [], outgoing: [], team_pairs: [{ name: "relay", group: "growth" }] },
+      "/api/agents/warden/requestable": { requestable: [], already: [] },
+      ...BASE_ROUTES,
+    });
+  });
+
+  it("is a section after Tooling for a caller who may administer the agent, for both kinds", async () => {
+    renderWithClient(HarnessPanel, { ...BASE_PROPS, canAdminister: true, section: "a2a" });
+
+    const labels = within(nav()).getAllByRole("button").map((b) => b.textContent?.trim());
+    expect(labels.indexOf("Agent to agent")).toBe(labels.indexOf("Tooling") + 1);
+    expect(body("a2a").hasAttribute("hidden")).toBe(false);
+    // The block that was on the Access tab, with its one sentence.
+    expect(within(body("a2a")).getByText(/Agents in the same group need nothing here/)).not.toBeNull();
+    expect(await within(body("a2a")).findByText("relay")).not.toBeNull();
+    expect(within(body("a2a")).getByRole("button", { name: "Request another team's agent" })).not.toBeNull();
+  });
+
+  it("is there for a connected agent too, since pairs are about reaching agents, not a bundle", async () => {
+    renderWithClient(HarnessPanel, { ...BASE_PROPS, kind: "connected", canAdminister: true });
+
+    const labels = within(nav()).getAllByRole("button").map((b) => b.textContent?.trim());
+    expect(labels).toEqual(["Model and runtime", "Identity and access", "Agent to agent", "Activity"]);
+  });
+
+  it("is absent, not disabled, for a caller who may not administer the agent, and asks nothing of the invites route", async () => {
+    renderWithClient(HarnessPanel, { ...BASE_PROPS });
+
+    expect(within(nav()).queryByRole("button", { name: /Agent to agent/ })).toBeNull();
+    expect(body("a2a")).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/invites"))).toBe(false);
+  });
+});
 
 describe("HarnessPanel — identity and access (2026-09-29)", () => {
   beforeEach(() => {

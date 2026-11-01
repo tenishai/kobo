@@ -1204,7 +1204,7 @@
   }
 
   .catalog-row__description {
-    color: var(--muted);
+    color: var(--ink);
     font-size: 0.8rem;
   }
 

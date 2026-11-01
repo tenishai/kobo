@@ -123,7 +123,7 @@
   }
 
   .chooser__desc {
-    color: var(--muted);
+    color: var(--ink);
     font-size: 0.8rem;
     line-height: 1.4;
   }

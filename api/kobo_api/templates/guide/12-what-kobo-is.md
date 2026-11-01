@@ -75,9 +75,9 @@ Either reaches a running agent when you press **Restart agent**. See "Secrets an
 
 ### Access
 
-- **Grant one person** outside the group from the Access tab. Why: a colleague on another team needs to use this one agent, and nothing else.
+- **Grant one person** outside the group from **Owners** in the agent's header. Why: a colleague on another team needs to use this one agent, and nothing else.
 - **Accept a colleague request** from another group's agent. Why: two teams' agents should work together. The switchboard enforces the pair; revoking takes effect within minutes.
-- **Request a repository** on the Access tab. Why: the agent should open pull requests there. An operator decides.
+- **Pick repositories and a GitHub level** on the Access tab. Why: the agent should read, review or open pull requests there. A reviewer decides.
 - **Ask for access to another project** on the Harness tab. Why: the agent needs a cloud project it was not given. The room writes the request for your SRE team; ask for the narrowest role.
 
 People with a role: **operators** run the room, see everything, move agents between groups and destroy agents; **readers** see every agent and change none. An operator for the whole room is also an admin, and sees the admin panel when the room has it turned on. See "Access and groups".

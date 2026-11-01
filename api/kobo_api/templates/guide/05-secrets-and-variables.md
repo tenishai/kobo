@@ -1,7 +1,7 @@
 # Secrets and variables
 <!-- summary: Give the agent API keys and settings, and know at a glance that a secret is really set. Save applies the change. -->
 
-Open the **Settings** tab. **Secrets and environment** is one table with two kinds of row.
+Open the **Secrets** tab. **Secrets and environment** is one table with two kinds of row.
 
 - **Secret.** A value the agent needs and nobody should read again: an API key, a token, a password. Press **+ Secret**, type the name and the value, and press **Save**. The value is sent once and never shown again.
 - **Variable.** A plain setting that is not sensitive, like a region or a feature flag. Press **+ Variable**. Variables stay readable.

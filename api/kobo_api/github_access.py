@@ -90,9 +90,18 @@ def child(bab: BabClient, actor: str, connection_id: str, agent: str) -> dict | 
     return None
 
 
-def installation_repositories(clients) -> list[InstallationRepo]:
-    """Every repository the room App's installation can see, by name. Raises
-    `ClientError` when the room holds no GitHub client or GitHub refused."""
+def installation_repositories(clients, index=None) -> list[InstallationRepo]:
+    """Every repository the room App's installation can see, by name.
+
+    `index` is the room's warm listing (`repo_search.RepoIndex`, the five-minute
+    cache the connect form searches, filled by the warmer at boot and every
+    TTL). When the room keeps one it is the answer (kobo#368): the picker and
+    the save used to walk the installation a page at a time on every call.
+    Only a room without one (no GitHub client, or a test that built none) walks
+    the client itself. Raises `ClientError` when the room holds no GitHub
+    client or GitHub refused."""
+    if index is not None:
+        return sorted(index.listing(), key=lambda r: r.full_name)
     github = getattr(clients, "github", None) if clients is not None else None
     if github is None:
         raise ClientError("this room holds no GitHub client to list the installation with")

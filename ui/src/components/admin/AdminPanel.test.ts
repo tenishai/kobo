@@ -201,6 +201,8 @@ describe("AdminPanel", () => {
     expect(screen.queryByRole("heading", { name: "Room services" })).toBeNull();
     expect(await screen.findByText("Not set up")).toBeTruthy();
     expect(screen.getAllByText("service")).toHaveLength(2);
+    // Each row carries its vendor's mark beside the name (issue #368).
+    expect(document.querySelectorAll("table .vendor-mark").length).toBe(2);
     expect(screen.getByRole("button", { name: "Set up" })).toBeTruthy();
     // A value the deployment config carries reads Connected like any other row, with the
     // provenance as a note and Replace to move it into the room (#337).

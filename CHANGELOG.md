@@ -6,6 +6,24 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The repository picker reads the warm listing (#368).** `GET` and `PUT
+  /api/agents/{name}/github/repositories` read the five-minute listing the connect form
+  already keeps (`repo_search.RepoIndex.listing`, filled by the warmer at boot and every
+  TTL) instead of walking the installation a page at a time on every open and again on
+  every save; a room with no index still walks. The `GET` payload carries `total`, the
+  count of repositories the room can see, so the picker can show the best matches for what
+  is typed and still say how many there are.
+- **The agent page's shape (#368).** The Access tab opens on **What this agent can reach**:
+  the vendor list with logos, what the agent holds shown under each vendor, then pick a
+  vendor, pick the level, Confirm; the runs-as identity line stays. People moved to an
+  **Owners** button in the header beside Edit details (same sheet, same roles). Other agents
+  moved to a Harness section, **Agent to agent**. The Settings tab is now **Secrets** and
+  holds secrets and variables only; **Build log** is a header button beside Health;
+  **Destroy this agent** sits at the bottom of Edit details behind the same confirm. Tabs:
+  Chat, Slack, Access, Harness, Secrets. The guide's sections follow.
+
 ## [0.3.28] - 2026-11-01
 
 ### Changed

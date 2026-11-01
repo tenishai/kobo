@@ -3736,6 +3736,23 @@ def test_only_one_refresh_runs_at_a_time():
     assert answers == [["example-org/clio"]] * 5
 
 
+def test_the_whole_listing_is_read_from_the_cache_and_refreshed_when_stale():
+    """Data integrity (kobo#368): `listing` is the one warm snapshot the agent
+    page's repository picker and save read. A cold index reads GitHub once, a
+    listing inside its TTL is handed back without another read, and one past
+    its TTL is refreshed, so a repository granted to the App shows up within
+    one TTL and never costs a walk per open."""
+    github = StubGitHub([_repo__repo_search("example-org/clio")])
+    index = RepoIndex(github, ttl_s=10.0)
+
+    assert _names(index.listing(now=0.0)) == ["example-org/clio"]
+    github.repos.append(_repo__repo_search("example-org/ward"))
+    assert _names(index.listing(now=5.0)) == ["example-org/clio"]
+    assert github.calls == 1
+    assert _names(index.listing(now=11.0)) == ["example-org/clio", "example-org/ward"]
+    assert github.calls == 2
+
+
 # --- from test_feed_coalesce.py ---
 
 

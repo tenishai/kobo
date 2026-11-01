@@ -19,7 +19,10 @@
   --panel: oklch(1 0 0);
   --border: oklch(0.923 0.003 48.717);
   --ink: oklch(0.147 0.004 49.25);
-  --muted: oklch(0.553 0.013 58.071);
+  /* Secondary text (issue #368): dark enough to read as text on the cream
+     page (6.9:1 on --bg), kept for metadata only: dates, table headers,
+     counts, hints, placeholders. Descriptions read in ink. */
+  --muted: oklch(0.45 0.012 58);
   --ring: oklch(0.709 0.01 56.259);
 
   /* Near-black stone, not blue: what a primary button is filled with and
@@ -100,7 +103,7 @@
     --panel: oklch(0.216 0.006 56.043);
     --border: oklch(1 0 0 / 10%);
     --ink: oklch(0.985 0.001 106.423);
-    --muted: oklch(0.709 0.01 56.259);
+    --muted: oklch(0.78 0.01 56);
     --ring: oklch(0.553 0.013 58.071);
 
     /* The light-mode pair, inverted: a near-white fill under dark ink. */
@@ -328,6 +331,12 @@ kbd {
   margin: 0;
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+/* A lead explains the section under its heading, so it reads in ink; a note
+   is a hint beside a control and stays muted (issue #368). */
+.panel__lead {
+  color: var(--ink);
 }
 
 .panel__note--fail {
@@ -1201,7 +1210,7 @@ textarea.field__input {
 .page__lead {
   margin: 0;
   max-width: 60rem;
-  color: var(--muted);
+  color: var(--ink);
   font-size: 0.9rem;
 }
 

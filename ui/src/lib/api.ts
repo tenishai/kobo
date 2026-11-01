@@ -1637,6 +1637,10 @@ export type GithubRepositories = {
   repositories: GithubRepository[];
   selected: string[];
   note: string | null;
+  /** How many repositories the room can see in all (issue #368); the
+   * picker's search placeholder says it. Absent on an older server, where
+   * the list's own length is the answer. */
+  total?: number;
 };
 
 export async function fetchGithubRepositories(name: string): Promise<GithubRepositories> {

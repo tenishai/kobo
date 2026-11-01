@@ -18,7 +18,7 @@ When you create an agent the room:
 - deploys it and checks that it answers;
 - lists it in the agent directory so other agents can find it.
 
-You get a page for the agent with a chat, a Slack setup, an access list, and a Harness tab that shows everything the agent runs on. Anyone in your group sees it there too.
+You get a page for the agent with a chat, a Slack setup, an Access tab for what it may reach, a Harness tab that shows everything the agent runs on, and a Secrets tab. Anyone in your group sees it there too.
 
 ## Two kinds of agent
 

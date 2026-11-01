@@ -141,7 +141,7 @@
   .request-access__copy,
   .request-access__status {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink);
     font-size: 0.9rem;
   }
 

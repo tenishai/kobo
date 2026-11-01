@@ -131,6 +131,22 @@ class RepoIndex:
         somebody sees."""
         self._listing(self._now() if now is None else now)
 
+    def listing(self, now: float | None = None) -> list[InstallationRepo]:
+        """The whole warm listing, for a caller that wants every repository
+        rather than a search over them (the agent page's repository picker,
+        kobo#368: it filters in the browser and used to walk GitHub page by
+        page on every open and again on every save).
+
+        Refreshed exactly the way `search` is: a missing listing is read
+        now, so the first caller after boot still gets an answer; a stale
+        one is handed back as it stands while one caller refreshes it.
+        Archived repositories are not in it, same as for the search. The
+        list is the index's own; callers sort or filter a copy.
+
+        Raises whatever the client raises when a cold listing cannot be read.
+        """
+        return self._listing(self._now() if now is None else now)
+
     def search(self, query: str, now: float | None = None) -> RepoMatches:
         """The repositories matching `query`, best first, whether more
         matched than came back, and how many the room reaches in all.

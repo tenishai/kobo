@@ -191,7 +191,7 @@
   .admin__lead {
     margin: 0;
     max-width: 44rem;
-    color: var(--muted);
+    color: var(--ink);
     font-size: 0.92rem;
   }
 

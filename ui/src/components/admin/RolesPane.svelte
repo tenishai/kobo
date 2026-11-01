@@ -525,7 +525,7 @@
   }
 
   .perm__desc {
-    color: var(--muted);
+    color: var(--ink);
     font-size: 0.82rem;
     line-height: 1.5;
   }
