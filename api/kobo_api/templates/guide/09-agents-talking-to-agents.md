@@ -11,7 +11,7 @@ Two agents in the same group can talk to each other as soon as both are running.
 
 An agent in another group is a request away. When the room's permission service is on, asking another team's agent is a permission like any other, and it is approved in Review.
 
-1. On the asking agent's Harness tab, under **Agent to agent**, its owner presses **Request another team's agent** and picks the agent to ask. The row reads **Waiting for review**.
+1. On the asking agent's Harness tab, under **Agent to agent**, its owner presses **Request another team's agent**, opens the other team and ticks the agent to ask. The row reads **Waiting for review**.
 2. A room admin sees the request in **Admin, Review**, with the asked agent as the account and the one permission, **ask**, and presses **Approve** or **Deny** with a reason.
 3. On approve, the switchboard is told at once and the pair is live; the row reads **Can join shared threads** and **Approved in Review**. A room admin can revoke the permission from the agent's Access tab, and the switchboard drops the pair at once.
 

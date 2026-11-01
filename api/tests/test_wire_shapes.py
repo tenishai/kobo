@@ -1011,6 +1011,31 @@ def test_requestable_entry_shape_is_capped_to_five_fields(session_factory__api_r
     }
 
 
+def test_requestable_names_each_teams_group_and_the_one_it_leaves_out(session_factory__api_requestable, client__api_requestable):
+    """Wire shape: the picker groups by team, so an `already` row carries its
+    `group`, a not-ready colleague in the viewer's own group is left out like
+    a ready one, and `paired_group` names that group."""
+    c, key = client__api_requestable
+    _seed_agent__api_requestable(session_factory__api_requestable, name="a", created_by=OWNER_A_EMAIL, group_name="growth")
+    _seed_agent__api_requestable(session_factory__api_requestable, name="b", created_by=OWNER_B_EMAIL, group_name="payments-eng")
+    _seed_agent__api_requestable(
+        session_factory__api_requestable, name="c", created_by=OWNER_A_EMAIL, group_name="growth", status=AgentStatus.PROVISIONING
+    )
+    _seed_agent__api_requestable(
+        session_factory__api_requestable, name="d", created_by=OWNER_B_EMAIL, group_name="security", status=AgentStatus.PROVISIONING
+    )
+    session = session_factory__api_requestable()
+    session.add(A2AInvite(from_agent="a", to_agent="b", status="pending", requested_by=OWNER_A_EMAIL))
+    session.commit()
+    session.close()
+
+    body = c.get("/api/agents/a/requestable", headers=_headers(key, email=OWNER_A_EMAIL)).json()
+
+    assert body["already"] == [{"name": "b", "group": "payments-eng", "status": "pending"}]
+    assert [(e["name"], e["group"]) for e in body["not_ready"]] == [("d", "security")]
+    assert body["paired_group"] == "growth"
+
+
 # --- from test_api_threads.py ---
 
 
@@ -3630,12 +3655,12 @@ def test_asking_another_teams_agent_is_a_permission_request_on_the_target_not_an
     assert (target["integration"], target["vendor"], target["ceiling"]) == ("oracle", "agents", ["a2a_ask"])
     with a2a_room.session_factory() as s:
         assert s.query(A2AInvite).count() == 0
-    assert c.get("/api/agents/asker/requestable", headers=h).json()["already"] == [{"name": "oracle", "status": "pending"}]
+    assert c.get("/api/agents/asker/requestable", headers=h).json()["already"] == [{"name": "oracle", "group": "security", "status": "pending"}]
     assert c.get("/api/agents/asker/pairs", headers=h).json()["pairs"] == []
 
     c.post("/api/admin/access/decide", headers=h, json={"ids": [r.json()["id"]], "verdict": "approve"})
     assert c.get("/api/agents/asker/pairs", headers=h).json()["pairs"] == [{"name": "oracle", "group": "security", "via": "grant"}]
-    assert c.get("/api/agents/asker/requestable", headers=h).json()["already"] == [{"name": "oracle", "status": "accepted"}]
+    assert c.get("/api/agents/asker/requestable", headers=h).json()["already"] == [{"name": "oracle", "group": "security", "status": "accepted"}]
 
 
 GITHUB_LEVELS__connections = ["github_pulls_review", "github_pulls_write", "github_repos_read"]

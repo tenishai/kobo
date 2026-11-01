@@ -363,9 +363,10 @@ export type RequestableAgent = {
 };
 
 /** One agent the viewed agent already has a pending or accepted invite
- * toward -- surfaced instead of a `RequestableAgent` row so the picker can
- * render a status chip rather than silently omitting it. */
-export type AlreadyRequested = { name: string; status: string };
+ * toward -- surfaced instead of a `RequestableAgent` row, with its group,
+ * so the picker can show it in its team with its state rather than
+ * silently omitting it. */
+export type AlreadyRequested = { name: string; group: string | null; status: string };
 
 /** `GET /api/agents/{name}/requestable`'s response. */
 export type RequestableResult = {
@@ -373,6 +374,10 @@ export type RequestableResult = {
   already: AlreadyRequested[];
   /** Agents that exist but are not ready to be asked, with their state (#273). */
   not_ready?: { name: string; group: string | null; status: string }[];
+  /** The group whose agents are already paired with this one and never
+   * appear above: the team the picker leaves out. Null for an agent with no
+   * group or one in the commons. */
+  paired_group?: string | null;
 };
 
 /** One directory match (`GET /api/people/search`, access-tab refinement
