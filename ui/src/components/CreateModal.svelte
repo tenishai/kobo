@@ -56,6 +56,7 @@
   import EmptyState from "./EmptyState.svelte";
   import ErrorState from "./ErrorState.svelte";
   import Modal from "./Modal.svelte";
+  import ModelPicker from "./ModelPicker.svelte";
   import PersonaBuilder from "./PersonaBuilder.svelte";
   import PersonaSheet from "./PersonaSheet.svelte";
   import PersonaHoverCard from "./PersonaHoverCard.svelte";
@@ -74,6 +75,7 @@
     orgStatusQuery,
     personasSearchQuery,
     requestGroupMutation,
+    whoamiQuery,
   } from "../lib/queries";
   import { toast } from "../lib/toast.svelte";
   import { validateName } from "../lib/validate";
@@ -84,6 +86,8 @@
   const models = createQuery(() => (modelsQuery()));
   const groups = createQuery(() => (groupsQuery()));
   const orgStatus = createQuery(() => (orgStatusQuery()));
+  // Only to link the no-model sentence for a room admin; never a gate.
+  const whoami = createQuery(() => (whoamiQuery()));
   const mutation = createMutation(() => (createAgentMutation(queryClient)));
 
   let name = $state("");
@@ -154,38 +158,15 @@
 
   const nameSettled = $derived(nameLocallyValid && availability.status === "available");
 
-  // --- Model tiers (2026-09-29) --------------------------------------------
-  // The picker names a family and a tier, never a model number. When the
-  // room's config gives any model a tier, only tiered models are offered,
-  // grouped by family in the order the config lists them; a room without
-  // tiers keeps the flat list of labels.
-  const TIER_ORDER = ["best", "balanced", "fast"];
-  const TIER_LABELS: Record<string, string> = {
-    best: "Best (most expensive)",
-    balanced: "Balanced",
-    fast: "Fast (cheapest)",
-  };
-  function tierLabel(tier: string | null | undefined): string {
-    return tier ? (TIER_LABELS[tier] ?? tier) : "";
-  }
-  const tieredFamilies = $derived.by(() => {
-    const list = (models.data?.models ?? []).filter((m) => m.family && m.tier);
-    const families: { name: string; models: typeof list }[] = [];
-    for (const model of list) {
-      let family = families.find((f) => f.name === model.family);
-      if (!family) {
-        family = { name: model.family as string, models: [] };
-        families.push(family);
-      }
-      family.models.push(model);
-    }
-    for (const family of families) {
-      family.models.sort(
-        (a, b) => TIER_ORDER.indexOf(a.tier as string) - TIER_ORDER.indexOf(b.tier as string),
-      );
-    }
-    return families;
-  });
+  // --- Models (kobo#390) ----------------------------------------------------
+  // The list comes from the connected clouds when the room's model gateway
+  // is on, and `ModelPicker` groups and greys it. With no model available
+  // at all, New agent is disabled with one sentence naming the admin page.
+  const gatewayOn = $derived(models.data?.gateway === true);
+  const noModelAvailable = $derived(
+    gatewayOn && !(models.data?.models ?? []).some((m) => m.available !== false),
+  );
+  const isAdmin = $derived(Boolean(whoami.data?.operator && whoami.data?.admin_panel));
 
   // --- Persona search / builder -------------------------------------------
 
@@ -505,6 +486,7 @@
 
   const canSubmit = $derived(
     models.data !== undefined &&
+      !noModelAvailable &&
       nameSettled &&
       !personasUnwired &&
       selectedPersona !== "" &&
@@ -893,7 +875,7 @@
         {/if}
 
         <div class="field">
-          <label class="field__label" for="create-model">Model</label>
+          <span class="field__label" id="create-model-label">Model</span>
           {#if models.isPending}
             <Skeleton rows={1} />
           {:else if models.isError}
@@ -902,27 +884,12 @@
               onretry={() => models.refetch()}
             />
           {:else}
-            <select
-              id="create-model"
-              class="field__input"
+            <ModelPicker
+              models={models.data.models ?? []}
               value={selectedModel}
-              onchange={(event) =>
-                (modelOverride = (event.currentTarget as HTMLSelectElement).value)}
-            >
-              {#if tieredFamilies.length > 0}
-                {#each tieredFamilies as family (family.name)}
-                  <optgroup label={family.name}>
-                    {#each family.models as model (model.id)}
-                      <option value={model.id}>{tierLabel(model.tier)}</option>
-                    {/each}
-                  </optgroup>
-                {/each}
-              {:else}
-                {#each models.data.models ?? [] as model (model.id)}
-                  <option value={model.id}>{model.label}</option>
-                {/each}
-              {/if}
-            </select>
+              name="create-model"
+              onchange={(id) => (modelOverride = id)}
+            />
           {/if}
         </div>
       </div>
@@ -930,6 +897,14 @@
       {#if submitError}
         <p class="field__status field__status--error" role="alert">
           {submitError}
+        </p>
+      {:else if noModelAvailable}
+        <p class="field__help" role="alert">
+          {#if isAdmin}
+            Connect a cloud with models under <a href="#/admin/integrations">Admin, Integrations</a>, before creating an agent.
+          {:else}
+            Connect a cloud with models under Admin, Integrations, before creating an agent.
+          {/if}
         </p>
       {:else if missingStep}
         <p class="field__help">{missingStep}</p>

@@ -77,6 +77,7 @@ from tests.fakes import (
     FakeGojira,
     FakeImage,
     FakeKubectl,
+    FakeModelsGateway,
     FakeSero,
     FakeSlack,
     FakeStorage,
@@ -1126,14 +1127,17 @@ def test_run_destroy_releases_the_registry_slot_when_the_thread_fails_to_launch(
 
 def _sero_holding_everything(name: str = AGENT_NAME) -> FakeSero:
     sero = FakeSero()
-    for purpose in ("cabal", "slack", "env"):
+    for purpose in ("cabal", "slack", "env", "models"):
         sero.stored[f"apps/{name}/{purpose}"] = {"A_KEY": "not-a-real-value"}
     return sero
 
 
-def test_destroy_secrets_removes_all_three_paths_and_their_cluster_objects(
+def test_destroy_secrets_removes_every_path_and_their_cluster_objects(
     session_factory, config
 ):
+    """Destruction safety: the four purposes the room stores for an agent
+    (the colleague pass, the Slack values, the owner's environment and,
+    since kobo#390, the model gateway key) all go, with their Secrets."""
     session, agent = _make_ctx_agent(session_factory)
     agent.created_by = OWNER_EMAIL
     sero = _sero_holding_everything()
@@ -1144,11 +1148,13 @@ def test_destroy_secrets_removes_all_three_paths_and_their_cluster_objects(
         f"apps/{AGENT_NAME}/cabal",
         f"apps/{AGENT_NAME}/slack",
         f"apps/{AGENT_NAME}/env",
+        f"apps/{AGENT_NAME}/models",
     ]
     assert [name for *_, name in sero.unsyncs] == [
         f"{AGENT_NAME}-cabal",
         f"{AGENT_NAME}-slack",
         f"{AGENT_NAME}-env",
+        f"{AGENT_NAME}-models",
     ]
     assert sero.stored == {}
     assert "removed" in detail
@@ -1188,7 +1194,7 @@ def test_destroy_secrets_takes_the_identity_down_after_the_three_paths(
     assert sero.offboards == [(OWNER_EMAIL, AGENT_NAME, AGENT_NAME)]
     assert order[-1] == "offboard"
     assert all(step != "offboard" for step in order[:-1])
-    assert detail == "removed: cabal, slack, env, identity"
+    assert detail == "removed: cabal, slack, env, models, identity"
     session.close()
 
 
@@ -1243,7 +1249,7 @@ def test_destroy_secrets_revokes_the_agents_colleague_passes(
     detail = _destroy_secrets(_ctx(session, agent, cfg, sero=_sero_holding_everything(), cabal=cabal))
 
     assert cabal.revoke_colleague_calls == [AGENT_NAME]
-    assert detail == "removed: cabal, slack, env, identity, passes"
+    assert detail == "removed: cabal, slack, env, models, identity, passes"
     session.close()
 
 
@@ -1314,13 +1320,14 @@ def test_destroy_secrets_run_twice_is_the_same_answer(session_factory, config):
     assert first == second
     # The second run really did run: the lane's already-gone answer is a
     # success, so every call is made again and the step reports the same
-    # three purposes rather than short-circuiting on state it kept.
+    # four purposes rather than short-circuiting on state it kept.
     assert [path for _, path in sero.deletes] == [
         f"apps/{AGENT_NAME}/cabal",
         f"apps/{AGENT_NAME}/slack",
         f"apps/{AGENT_NAME}/env",
+        f"apps/{AGENT_NAME}/models",
     ] * 2
-    assert len(sero.unsyncs) == 6
+    assert len(sero.unsyncs) == 8
     assert sero.stored == {}
     session.close()
 
@@ -1385,7 +1392,7 @@ def test_a_full_destroy_run_removes_the_stored_secrets_too(session_factory, conf
     thread.join(timeout=JOIN_TIMEOUT)
 
     assert sero.stored == {}
-    assert len(sero.unsyncs) == 3
+    assert len(sero.unsyncs) == 4
 
 
 def test_destroy_secrets_records_the_removal_against_the_operator_who_asked(
@@ -1455,7 +1462,7 @@ def test_destroy_secrets_does_not_wedge_on_a_namespace_that_is_already_gone(
 
     assert "removed" in detail
     assert sero.unsyncs == []
-    assert len(sero.absent_unsyncs) == 3
+    assert len(sero.absent_unsyncs) == 4
     # The KV paths still go: the namespace being gone says nothing about
     # what the platform is holding.
     assert sero.stored == {}
@@ -1519,6 +1526,26 @@ def test_destroy_secrets_never_logs_what_the_lane_said(session_factory, config, 
 
 
 # --- _destroy_access without a model group (2026-10-01) -------------------------------
+
+
+def test_destroy_access_revokes_the_agents_gateway_key(session_factory, config):
+    """Destruction safety (kobo#390): with the model gateway on, the key the
+    room minted for the agent is revoked by its alias, so no destroyed agent
+    keeps a live way to the room's models; an agent that never had one
+    (born before the gateway) reads as nothing to revoke."""
+    cfg = config.model_copy(update={"models_gateway_url": "http://models-gateway.models.svc"})
+    session, agent = _make_ctx_agent(session_factory)
+    gateway = FakeModelsGateway()
+    gateway.mint_key(AGENT_NAME, ["claude-affordable-sonnet"], alias=f"agent:{AGENT_NAME}")
+    ctx = _ctx(session, agent, cfg)
+    ctx.clients.models_gateway = gateway
+
+    detail = _destroy_access(ctx)
+
+    assert gateway.keys == {}
+    assert "gateway key revoked: True" in detail
+    assert "gateway key revoked: False" in _destroy_access(ctx)
+    session.close()
 
 
 # --- namespace ownership (issue #193) -------------------------------------------

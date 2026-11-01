@@ -85,6 +85,13 @@ from kobo_api.metadata import (
     skill_descriptions_for_agent,
     tooling_filenames_for,
 )
+from kobo_api.model_providers import (
+    available_gateway_models,
+    deliver_models_key,
+    gateway_model_for,
+    gateway_on,
+    models_secret_name,
+)
 from kobo_api.models import INVITE_ACCEPTED, A2AInvite, Agent, AgentStatus
 from kobo_api.pairs import implicitly_paired
 from kobo_api.purpose_tags import decode_tags, encode_tags
@@ -940,6 +947,10 @@ class RepoStep:
             # Colleague mode (issue #131): NULL, the row of every agent born
             # without one, composes as `default`.
             colleague_mode=effective_colleague_mode(agent.colleague_mode),
+            # The room's model gateway (kobo#390): on, the model block points
+            # at the gateway under the name it serves this entry as.
+            models_gateway_url=config.models_gateway_url,
+            gateway_model=gateway_model_for(config, agent.model_id) if gateway_on(config) else None,
         )
 
         compose_dir = ctx.workdir / "repo"
@@ -1036,6 +1047,10 @@ class ComposeDirectoryStep:
             liminal_url=config.liminal_url,
             archetype=agent.archetype,
             colleague_mode=effective_colleague_mode(agent.colleague_mode),
+            # The room's model gateway (kobo#390): on, the model block points
+            # at the gateway under the name it serves this entry as.
+            models_gateway_url=config.models_gateway_url,
+            gateway_model=gateway_model_for(config, agent.model_id) if gateway_on(config) else None,
         )
         compose_dir = ctx.workdir / "compose"
         shutil.rmtree(compose_dir, ignore_errors=True)
@@ -1552,10 +1567,17 @@ class AccessStep:
         # personal GCP project has no Cloud Identity and no groups to join,
         # and this step used to fail there on the first agent (the tenish
         # dogfood, 2026-10-01).
-        if config.model_group:
+        # With the room's model gateway on (kobo#390) the agent reaches its
+        # model through the gateway, whose own identity holds the Vertex
+        # role, so nothing is granted to the agent for models.
+        if gateway_on(config):
+            granted = "model access through the room's model gateway"
+        elif config.model_group:
             cloud.add_to_group(email, config.model_group)
+            granted = f"granted model access to {email}"
         else:
             cloud.grant_model_access(email, config.vertex_project)
+            granted = f"granted model access to {email}"
         # Connected agents get no memory prefix (design 2026-09-21): the
         # room replicates the memory its OWN runtime keeps, and it has not
         # read a team's code, so it has nothing to say about whether that
@@ -1571,7 +1593,7 @@ class AccessStep:
             cloud.grant_bucket_prefix_write(
                 email, config.memory_replica_bucket, f"{agent.name}/"
             )
-        return f"granted model access to {email}"
+        return granted
 
 
 # --- WireStep: app-authored manifests, the P0 kustomization-registration gotcha ----
@@ -1767,7 +1789,19 @@ def _update_gojira_yaml(gojira_yaml_path, agent, config) -> None:
     }
     if cabal_enabled(config):
         _append_secrets_from(data, f"{agent.name}-cabal")
+    if gateway_on(config):
+        # The agent's gateway key (kobo#390), delivered by WireStep before
+        # the push the same way the colleague pass is.
+        _append_secrets_from(data, models_secret_name(agent.name))
     gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+
+def _integration_rows(session):
+    # Local import: admin_store is a sibling the steps did not reach before
+    # the model gateway; kept here so the module's import graph stays as it was.
+    from kobo_api.admin_store import list_integrations
+
+    return list_integrations(session)
 
 
 class WireStep:
@@ -1846,6 +1880,15 @@ class WireStep:
             # name either way, so nothing else in this step changes.
             deliver_pass(
                 ctx.clients.kubectl, ctx.clients.cabal, agent, ctx.clients.sero
+            )
+        # The agent's gateway key (kobo#390): same ordering and same lane as
+        # the colleague pass above. The key may call every model the room's
+        # providers serve, so Change model later needs no new key.
+        if gateway_on(config) and ctx.clients.models_gateway is not None:
+            deliver_models_key(
+                ctx.clients, config, agent,
+                models=available_gateway_models(config, _integration_rows(ctx.session)),
+                acting_email=agent.created_by,
             )
 
         changed = github.commit_push(clone_dir, "kobo: wire service account, PVC, model env")

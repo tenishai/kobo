@@ -771,21 +771,38 @@ export async function destroyAgent(name: string): Promise<{ status: string }> {
   return parse<{ status: string }>(res);
 }
 
+/** One model the room offers. With the room's model gateway on (kobo#390)
+ * each entry also says which cloud serves it (`provider_label`), what the
+ * gateway calls it, and whether it can be picked right now; `reason` says
+ * why not. Without the gateway only the first four fields are present. */
+export type CatalogModel = {
+  id: string;
+  label: string;
+  family?: string | null;
+  tier?: string | null;
+  provider?: string;
+  provider_label?: string;
+  gateway_model?: string;
+  available?: boolean;
+  reason?: string | null;
+};
+
+export type ModelsCatalog = {
+  models: CatalogModel[];
+  /** The model a new agent gets when none is picked; null when the gateway
+   * is on and no connected cloud serves one. */
+  default: string | null;
+  /** True when the list came from the connected clouds. */
+  gateway?: boolean;
+};
+
 /** `GET /api/catalog/models` — the one catalog endpoint that survived the
  * move to search: skills and personas are now `searchSkills`/`searchPersonas`
  * below, but the model list is small and fixed, so it's still fetched
  * whole. */
-export async function fetchModels(): Promise<{
-  models: { id: string; label: string; family?: string | null; tier?: string | null }[];
-  default: string;
-}> {
+export async function fetchModels(): Promise<ModelsCatalog> {
   const res = await fetch("/api/catalog/models");
-  return parse<{
-    models: { id: string; label: string; family?: string | null; tier?: string | null }[];
-    default: string;
-  }>(
-    res,
-  );
+  return parse<ModelsCatalog>(res);
 }
 
 /** `GET /api/guide`: the room's own user guide, every section with its

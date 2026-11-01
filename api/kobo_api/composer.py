@@ -147,6 +147,16 @@ class BundleSpec:
     # (whether colleagues.md is written at all). The default composes
     # byte-identical output to every bundle before the setting existed.
     colleague_mode: str = "default"
+    # The room's model gateway (kobo#390). Both set means the agent reaches
+    # its model through the gateway: `model.id` is `openai/<gateway_model>`
+    # (the name the gateway serves it under, an OpenAI-compatible route),
+    # `api_base` is the gateway's `/v1`, and the key the room mints for the
+    # agent arrives as the env var `MODELS_GATEWAY_KEY_ENV` names, through
+    # the Secret `<name>-models`. Empty url (the default) keeps the model
+    # block exactly as before: `${AGENT_MODEL:-<model_id>}` against Vertex
+    # AI with the agent's own identity.
+    models_gateway_url: str = ""
+    gateway_model: str | None = None
 
 
 # --- agent.yaml rendering ----------------------------------------------------
@@ -249,6 +259,13 @@ def _a2a_transport(spec: BundleSpec) -> _FlowDict:
 # `kobo_api.colleagues.deliver_pass` (which writes the Secret key of the
 # same name) can never drift apart.
 CABAL_COLLEAGUE_TOKEN_ENV = "CABAL_COLLEAGUE_TOKEN"
+
+# The gateway-key secret key an agent's `model.api_key_env` names when the
+# room's model gateway is on (kobo#390): the runtime's LiteLLM client reads
+# the key from this env var. One constant so this module and
+# `kobo_api.model_providers.deliver_models_key` (which writes the Secret key
+# of the same name) can never drift apart.
+MODELS_GATEWAY_KEY_ENV = "MODELS_GATEWAY_KEY"
 
 # The colleagues tools allow-list: the set of colleagues-provider tools
 # every agent can call (when the switchboard is configured). Shared by both
@@ -405,20 +422,41 @@ def _approvals_gates(spec: BundleSpec) -> list | _FlowList:
 _ROOM_MEMORY_REVISION = "operator"
 
 
+def gateway_model_block(models_gateway_url: str, gateway_model: str) -> dict:
+    """The `model:` block of an agent that thinks through the room's model
+    gateway (kobo#390): an OpenAI-compatible route to the gateway's `/v1`,
+    the key read from `MODELS_GATEWAY_KEY_ENV`. A plain id, not the
+    `${AGENT_MODEL:-...}` placeholder: an agent moved onto the gateway may
+    still carry an `AGENT_MODEL` from an earlier Vertex change, and the
+    placeholder would resolve to that."""
+    return {
+        "id": f"openai/{gateway_model}",
+        "max_tokens": 8192,
+        "api_base": f"{models_gateway_url.rstrip('/')}/v1",
+        "api_key_env": MODELS_GATEWAY_KEY_ENV,
+    }
+
+
+def _model_block(spec: BundleSpec) -> dict:
+    if spec.models_gateway_url and spec.gateway_model:
+        return gateway_model_block(spec.models_gateway_url, spec.gateway_model)
+    return {
+        "id": f"${{AGENT_MODEL:-{spec.model_id}}}",
+        "max_tokens": 8192,
+        # No per-task token budget (2026-09-08 ruling): max_steps bounds
+        # the loop, prompt caching bounds the cost, and a budget sized
+        # for chat starved every real multi-tool task -- three live
+        # exhaustions (an audit twice, a release survey once) before the
+        # pattern was named.
+    }
+
+
 def _agent_yaml_data(spec: BundleSpec) -> dict:
     return {
         "name": spec.name,
         "card": "agent-card.json",
         "persona": "persona.md",
-        "model": {
-            "id": f"${{AGENT_MODEL:-{spec.model_id}}}",
-            "max_tokens": 8192,
-            # No per-task token budget (2026-09-08 ruling): max_steps bounds
-            # the loop, prompt caching bounds the cost, and a budget sized
-            # for chat starved every real multi-tool task -- three live
-            # exhaustions (an audit twice, a release survey once) before the
-            # pattern was named.
-        },
+        "model": _model_block(spec),
         "transports": [_a2a_transport(spec)],
         "tools": _tools_block(spec),
         "memory": {"personal": "techne", "home": "/techne", "revision": _ROOM_MEMORY_REVISION},
@@ -1637,6 +1675,38 @@ def update_agent_yaml_max_tokens(bundle_dir: Path, *, max_tokens: int) -> None:
     if count == 0:
         raise ClientError(f"agent.yaml has no max_tokens line to update: {agent_yaml_path}")
     agent_yaml_path.write_text(updated)
+
+
+# The whole `model:` stanza of a composed `agent.yaml`: the composer renders
+# it as one flow-style line (`model: {id: ..., max_tokens: 8192}`), and a
+# hand-edited bundle may carry it block-style (`model:` then indented
+# lines). Either shape is matched whole, so the replacement below can swap
+# the stanza for the gateway block without a YAML round-trip of the file.
+_MODEL_STANZA_RE = re.compile(
+    r"^model:[ \t]*(?:\{[^\n]*\}[ \t]*\n|\n(?:[ \t]+[^\n]*\n)+)", re.MULTILINE
+)
+
+
+def update_agent_yaml_model(bundle_dir: Path, *, block: dict) -> bool:
+    """In-place rewrite of an already-composed `bundle_dir/agent.yaml`'s
+    `model:` stanza to `block` (kobo#390: Change model with the room's
+    model gateway on points a running agent at the gateway). Every other
+    line stays byte-identical, the same idiom as `update_agent_yaml_
+    max_tokens`. Returns whether the file changed; raises `ClientError`
+    when there is no `model:` stanza to replace."""
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    try:
+        text = agent_yaml_path.read_text()
+    except OSError as exc:
+        raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
+    rendered = yaml.dump({"model": _FlowDict(block)}, Dumper=_AgentYamlDumper, sort_keys=False, width=1000)
+    updated, count = _MODEL_STANZA_RE.subn(lambda _m: rendered, text, count=1)
+    if count == 0:
+        raise ClientError(f"agent.yaml has no model stanza to update: {agent_yaml_path}")
+    if updated == text:
+        return False
+    agent_yaml_path.write_text(updated)
+    return True
 
 
 def _materialize_skill(skill: StagedSkill, dest: Path) -> None:

@@ -5088,6 +5088,20 @@ def test_refresh_colleague_rosters_does_not_cross_deliver_between_two_groups(
     assert "other-group" not in delivered_to
 
 
+def test_access_step_skips_the_vertex_grant_when_the_gateway_is_on(session_factory, config):
+    """Gate (authorization, kobo#390): with the room's model gateway on the
+    agent reaches models through the gateway's identity, so its own identity
+    is made and bound but granted nothing for models, on either road."""
+    cfg = config.model_copy(update={"models_gateway_url": "http://models-gateway.models.svc"})
+    session, agent = _make_agent(session_factory, name="rae")
+    cloud = FakeCloud(project=cfg.gcp_project)
+
+    detail = AccessStep().run(_make_ctx(session, agent, cfg, _clients(cloud=cloud)))
+
+    assert [c.split(":")[0] for c in cloud.calls] == ["ensure_gsa", "bind_workload_identity"]
+    assert detail == "model access through the room's model gateway"
+
+
 def test_access_step_grants_prefix_scoped_to_this_agents_own_name(session_factory, config):
     """Gate (visibility): Access step grants prefix scoped to this agents own name.
 

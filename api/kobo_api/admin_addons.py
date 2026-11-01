@@ -18,6 +18,7 @@ from typing import Any
 
 from .clients import ClientError, Clients, cabal_enabled
 from .config import Config
+from .model_providers import GatewayView
 
 
 @dataclass(frozen=True)
@@ -134,16 +135,24 @@ def _memory(config: Config) -> AddonCard:
     )
 
 
-def _model_gateway(config: Config) -> AddonCard:
+def _models(config: Config, view: GatewayView | None) -> AddonCard:
+    """The room's model gateway (kobo#390): on when the org names it, with
+    what the connected providers put on it; `view` is the filler's reading
+    (`model_providers.gateway_view`), None when the gateway is off."""
     base = {
-        "id": "model-gateway",
-        "name": "Model gateway",
-        "summary": "One place agents reach their models through, with the room's keys.",
-        "keys": ["broker_url"],
+        "id": "models",
+        "name": "Models",
+        "summary": "One place agents reach their models through, filled from the clouds the room connects.",
+        "keys": ["models_gateway_url", "models_gateway_master_key_secret"],
     }
-    if not config.broker_url:
+    if not config.models_gateway_url:
         return AddonCard(state="off", detail="Not configured; agents reach models with their own credentials.", **base)
-    return AddonCard(state="on", detail=f"Models through {config.broker_url}.", **base)
+    if view is None or not view.ready:
+        return AddonCard(state="error", detail=f"Not reachable at {config.models_gateway_url}.", **base)
+    providers = f"{view.providers} provider{'' if view.providers == 1 else 's'} connected"
+    models = f"{view.models} model{'' if view.models == 1 else 's'} available"
+    default = f", default {view.default_label}" if view.default_label else ", no default yet"
+    return AddonCard(state="on", detail=f"{providers}, {models}{default}.", **base)
 
 
 def _access(config: Config, clients: Clients | None) -> AddonCard:
@@ -163,9 +172,11 @@ def _access(config: Config, clients: Clients | None) -> AddonCard:
     return AddonCard(state="on", detail=f"Permissions and leases through {config.bab_url}.", **base)
 
 
-def addon_cards(config: Config, clients: Clients | None) -> list[dict[str, Any]]:
+def addon_cards(config: Config, clients: Clients | None, *, models: GatewayView | None = None) -> list[dict[str, Any]]:
     """Every add-on card, in the order the pane shows them. Never raises: a
-    probe that fails is an `error` card, not a failed page."""
+    probe that fails is an `error` card, not a failed page. `models` is the
+    model gateway's reading, which needs the integration rows the route
+    holds a session for."""
     return [
         card.as_dict()
         for card in (
@@ -176,6 +187,6 @@ def addon_cards(config: Config, clients: Clients | None) -> list[dict[str, Any]]
             _tool_gateway(config),
             _access(config, clients),
             _memory(config),
-            _model_gateway(config),
+            _models(config, models),
         )
     ]

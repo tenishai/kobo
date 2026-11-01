@@ -375,3 +375,30 @@ describe("HarnessPanel — identity and access (2026-09-29)", () => {
     expect(request).toContain("  - roles/bigquery.dataViewer");
   });
 });
+
+describe("HarnessPanel — Change model with the model gateway on (kobo#390)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    stubFetch({
+      "/api/catalog/models": {
+        gateway: true,
+        default: "claude-x",
+        models: [
+          { id: "claude-x", label: "Claude X", provider: "vertex_ai", provider_label: "Google Cloud", available: true, reason: null },
+          { id: "gemini-y", label: "Gemini Y", provider: "vertex_ai", provider_label: "Google Cloud", available: false, reason: "The model gateway is not reachable" },
+        ],
+      },
+      ...BASE_ROUTES,
+    });
+  });
+
+  it("keeps a greyed model in the list and never lets Change model send it", async () => {
+    renderWithClient(HarnessPanel, { ...BASE_PROPS, canUpdateRuntime: true });
+
+    const greyed = (await screen.findByRole("radio", { name: /Gemini Y/ })) as HTMLInputElement;
+    expect(greyed.disabled).toBe(true);
+    expect(screen.getByText("The model gateway is not reachable")).not.toBeNull();
+    const change = screen.getByRole("button", { name: "Change model" }) as HTMLButtonElement;
+    expect(change.disabled).toBe(true);
+  });
+});

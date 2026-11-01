@@ -40,7 +40,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 import kobo_api.personas as personas_module
-from kobo_api import admin_store, audit, bootstrap, db
+from kobo_api import (
+    admin_integrations,
+    admin_store,
+    audit,
+    bootstrap,
+    db,
+    model_providers,
+)
 from kobo_api.agent_env import SECRETS_WIRING_BRANCH
 from kobo_api.archetypes import render_team_guide
 from kobo_api.bootstrap import _exit_code, run_bootstrap
@@ -69,7 +76,7 @@ from kobo_api.composer import (
     update_agent_card_metadata,
     update_agent_yaml_tools,
 )
-from kobo_api.config import SHARED_GROUP, Config, GroupChoice
+from kobo_api.config import SHARED_GROUP, Config, GroupChoice, ModelChoice
 from kobo_api.db import init_db, make_engine
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.intake import IntakeError, upload_intake_file
@@ -99,6 +106,7 @@ from kobo_api.models import (
     LEARNING_APPROVED,
     LEARNING_PENDING,
     AdminAuditEvent,
+    AdminIntegration,
     Agent,
     AgentLearning,
     AgentStatus,
@@ -163,6 +171,7 @@ from tests.fakes import (
     FakeGojira,
     FakeImage,
     FakeKubectl,
+    FakeModelsGateway,
     FakeName,
     FakeSero,
     FakeSlack,
@@ -6942,3 +6951,81 @@ def test_repo_access_rows_wait_for_a_github_connection(session_factory):
         assert migrate_repo_access(s, clients, bab)["waiting"] is True
         assert all(r.migrated_at is None for r in s.query(RepoAccess).all())
     assert bab.integrations("x") == [] and bab.grants("ward", "x") == []
+
+
+# --- the model gateway filler (kobo#390) ---------------------------------------------
+
+
+def _vertex_provider(session, *, row_id="gcp-example", project="example-model-project", location="us-east5", state=admin_store.STATE_APPLIED):
+    """A Google Cloud project row that serves the room's models (kobo#390)."""
+    admin_store.put_integration(
+        session, vendor="gcp", name="Google Cloud example", base_access="read", integration_id=row_id,
+        spec={"kind": "account", "project": project, "models": {"provider": "vertex_ai", "location": location}},
+        credential_ref=None, actor="ops@example.com",
+    )
+    admin_store.set_integration_state(session, row_id, state=state, detail="connected")
+    session.commit()
+
+
+def _gateway_config(tmp_path) -> Config:
+    return Config(
+        workdir=tmp_path / "work", models_gateway_url="http://models-gateway.models.svc",
+        models=[ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Affordable Sonnet"),
+                ModelChoice(id="vertex_ai/gemini-2.5-flash", label="Gemini Fast Flash", location="global")],
+    )
+
+
+def test_the_filler_adds_and_deletes_exactly_the_diff_and_reruns_as_a_no_op(session_factory, tmp_path):
+    """Idempotent re-run (kobo#390): the gateway ends up holding one
+    deployment per (provider, model) under the room's own id, a second run
+    changes nothing, a second provider adds only its own, and removing a
+    provider deletes only its models; a deployment someone added by hand on
+    the gateway is never the room's to delete."""
+    config = _gateway_config(tmp_path)
+    gateway = FakeModelsGateway(models=[{"model_name": "by-hand", "litellm_params": {"model": "x"}, "model_info": {"id": "b2b0c1d2e3f4"}}])
+    session = session_factory()
+    _vertex_provider(session, row_id="gcp-a", project="project-a")
+    rows = admin_store.list_integrations(session)
+
+    first = model_providers.sync_gateway(gateway, config, rows)
+    assert sorted(first.added) == ["gcp-a:vertex_ai/claude-sonnet-4-5", "gcp-a:vertex_ai/gemini-2.5-flash"]
+    assert first.deleted == [] and first.ok
+    assert gateway.models["gcp-a:vertex_ai/gemini-2.5-flash"]["litellm_params"] == {
+        "model": "vertex_ai/gemini-2.5-flash", "vertex_project": "project-a", "vertex_location": "global"}
+    assert gateway.models["gcp-a:vertex_ai/claude-sonnet-4-5"]["model_name"] == "claude-affordable-sonnet"
+
+    again = model_providers.sync_gateway(gateway, config, rows)
+    assert (again.added, again.deleted, again.kept) == ([], [], 2)
+
+    _vertex_provider(session, row_id="gcp-b", project="project-b")
+    second = model_providers.sync_gateway(gateway, config, admin_store.list_integrations(session))
+    assert sorted(second.added) == ["gcp-b:vertex_ai/claude-sonnet-4-5", "gcp-b:vertex_ai/gemini-2.5-flash"]
+
+    admin_store.remove_integration(session, "gcp-a", actor="ops@example.com")
+    session.commit()
+    removed = model_providers.sync_gateway(gateway, config, admin_store.list_integrations(session))
+    assert sorted(removed.deleted) == ["gcp-a:vertex_ai/claude-sonnet-4-5", "gcp-a:vertex_ai/gemini-2.5-flash"]
+    assert set(gateway.models) == {"b2b0c1d2e3f4", "gcp-b:vertex_ai/claude-sonnet-4-5", "gcp-b:vertex_ai/gemini-2.5-flash"}
+    session.close()
+
+
+def test_the_filler_survives_a_gateway_failure_and_leaves_the_provider_connected(session_factory, tmp_path):
+    """Writes that stay in their box (kobo#390): a gateway that refuses its
+    writes fails nothing upstream; the provider row stays connected with the
+    refusal on its line, and a later sync with the gateway back adds the
+    models it missed."""
+    config = _gateway_config(tmp_path)
+    gateway = FakeModelsGateway(fails=True)
+    clients = Clients(github=None, gojira=None, cloud=None, agent=None, kubectl=None, models_gateway=gateway)
+    session = session_factory()
+    _vertex_provider(session)
+    row = session.get(AdminIntegration, "gcp-example")
+
+    admin_integrations._fill_models_gateway(session, clients, config, row)
+
+    assert row.state == admin_store.STATE_APPLIED
+    assert "the model gateway did not answer" in (row.state_detail or "")
+    gateway.fails = False
+    result = model_providers.sync_from_session(session, clients, config)
+    assert result is not None and result.ok and len(result.added) == 2
+    session.close()

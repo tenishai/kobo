@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from kobo_api import admin_store as admin_store_module
 from kobo_api.clients import Clients
 from kobo_api.config import Config, GroupChoice
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
@@ -36,6 +37,7 @@ from kobo_api.main import (
     _owner_or_operator_or_403,
     create_app,
 )
+from kobo_api.model_providers import NO_MODEL_AVAILABLE
 from kobo_api.models import (
     GRANT_ROLE_MANAGE,
     GRANT_ROLE_VIEW,
@@ -55,6 +57,7 @@ from tests.fakes import (
     FakeGojira,
     FakeImage,
     FakeKubectl,
+    FakeModelsGateway,
     FakeSlack,
     FakeStorage,
 )
@@ -2032,3 +2035,51 @@ def test_every_retired_broker_route_is_gone(client, method, path):
     routes behind it no longer exist on any room, whatever the configuration; an agent reaches
     GitHub through the gateway with a token the permission service leases it."""
     assert client.request(method, path, json={}).status_code == 404
+
+
+# --- the model gateway's gates (kobo#390) --------------------------------------------
+
+
+def _gateway_room(tmp_path, fake_storage, *, gateway):
+    engine = create_engine(f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    config = Config(workdir=tmp_path / "work", skills_bucket="skills-bucket", personas_bucket="personas-bucket",
+                    models_gateway_url="http://models-gateway.models.svc")
+    clients = Clients(github=FakeGitHub(), gojira=FakeGojira(), cloud=FakeCloud(), agent=FakeAgent(),
+                      kubectl=FakeKubectl(), storage=fake_storage, models_gateway=gateway)
+    return TestClient(create_app(session_factory, config=config, clients=clients)), session_factory
+
+
+def test_create_refuses_when_no_model_is_available(tmp_path, fake_storage):
+    """Gate (not-ready 409, kobo#390): a room with the gateway on and no cloud
+    connected cannot create an agent, and says which page to go to."""
+    client, _ = _gateway_room(tmp_path, fake_storage, gateway=FakeModelsGateway())
+
+    response = client.post("/api/agents", json={"name": "clio", "persona": "helpful-generalist"})
+
+    assert response.status_code == 409
+    assert response.json() == {"error": NO_MODEL_AVAILABLE}
+    assert NO_MODEL_AVAILABLE == "Connect a cloud with models under Admin, Integrations, before creating an agent."
+
+
+def test_set_model_refuses_a_model_no_connected_cloud_serves(tmp_path, fake_storage):
+    """Gate (not-ready 409, kobo#390): Change model takes only a model some
+    connected provider serves and the gateway can reach."""
+    gateway = FakeModelsGateway(up=False)
+    client, session_factory = _gateway_room(tmp_path, fake_storage, gateway=gateway)
+    with session_factory() as session:
+        admin_store_module.put_integration(
+            session, vendor="gcp", name="Google Cloud example", base_access="read", integration_id="gcp-example",
+            spec={"kind": "account", "project": "example-model-project", "models": {"provider": "vertex_ai", "location": "us-east5"}},
+            credential_ref=None, actor="ops@example.com",
+        )
+        admin_store_module.set_integration_state(session, "gcp-example", state=admin_store_module.STATE_APPLIED, detail="connected")
+        session.add(Agent(name="clio", persona="helpful-generalist", model_id="vertex_ai/claude-sonnet-4-5",
+                          status=AgentStatus.READY, repo_full_name="acme/agent-clio"))
+        session.commit()
+
+    response = client.patch("/api/agents/clio/model", json={"model": "vertex_ai/claude-sonnet-4-5"})
+
+    assert response.status_code == 409
+    assert response.json()["error"].endswith("The model gateway is not reachable")

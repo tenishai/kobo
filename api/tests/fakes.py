@@ -2825,3 +2825,59 @@ class FakeBab:
         revoked = sum(1 for g in self._grants.values() if g["integration"] in gone)
         self._grants = {k: g for k, g in self._grants.items() if g["integration"] not in gone}
         return {"removed": integration, "grants_revoked": revoked, "tuples_deleted": revoked + len(gone)}
+
+
+class FakeModelsGateway:
+    """In-memory `ModelsGatewayClient`: deployments by the room's own id,
+    keys by alias. `fails=True` makes every write raise `ClientError`
+    (the gateway is up but refuses); `up=False` makes `ready()` False.
+    `calls` records each operation by name for the diff tests."""
+
+    def __init__(self, *, up: bool = True, fails: bool = False, models: list[dict] | None = None):
+        self.up = up
+        self.fails = fails
+        self.models: dict[str, dict] = {}
+        for entry in models or []:
+            self.models[entry["model_info"]["id"]] = entry
+        self.keys: dict[str, list[dict]] = {}
+        self.calls: list[str] = []
+        self._minted = 0
+
+    def _guard(self, what: str) -> None:
+        if self.fails:
+            raise ClientError(f"model gateway {what} failed (503): refused")
+
+    def ready(self) -> bool:
+        return self.up
+
+    def list_models(self) -> list[dict]:
+        self.calls.append("list_models")
+        self._guard("list models")
+        return list(self.models.values())
+
+    def add_model(self, *, model_name: str, model_id: str, litellm_params: dict, model_info: dict | None = None) -> None:
+        self.calls.append(f"add_model:{model_id}")
+        self._guard(f"add model {model_name}")
+        self.models[model_id] = {
+            "model_name": model_name,
+            "litellm_params": dict(litellm_params),
+            "model_info": {**(model_info or {}), "id": model_id},
+        }
+
+    def delete_model(self, model_id: str) -> bool:
+        self.calls.append(f"delete_model:{model_id}")
+        self._guard(f"delete model {model_id}")
+        return self.models.pop(model_id, None) is not None
+
+    def mint_key(self, agent: str, models: list[str], *, alias: str) -> str:
+        self.calls.append(f"mint_key:{alias}")
+        self._guard(f"mint key for {agent}")
+        self._minted += 1
+        key = f"sk-fake-{agent}-{self._minted}"
+        self.keys.setdefault(alias, []).append({"key": key, "models": list(models)})
+        return key
+
+    def revoke_key(self, alias: str) -> bool:
+        self.calls.append(f"revoke_key:{alias}")
+        self._guard(f"revoke key {alias}")
+        return self.keys.pop(alias, None) is not None

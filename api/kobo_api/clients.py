@@ -1470,7 +1470,7 @@ class HttpxGojiraClient:
             if resp.status_code != 200:
                 return None
             rows = resp.json().get("clusters") or []
-        except Exception:  # noqa: BLE001 -- a panel fact, never a failure
+        except Exception:
             log.debug("gojira clusters lookup failed", exc_info=True)
             return None
         for row in rows:
@@ -5363,6 +5363,160 @@ def _universe_from_groups(groups: list[GroupChoice]) -> dict[str, list[str]]:
     return merged
 
 
+# --- ModelsGatewayClient: the room's model gateway (kobo#390) -------------------
+
+# The one key the gateway's master-key Secret must carry.
+MODELS_GATEWAY_MASTER_KEY = "LITELLM_MASTER_KEY"
+
+
+class ModelsGatewayClient(Protocol):
+    """The room's model gateway: a LiteLLM proxy the install deploys
+    (`Config.models_gateway_url`), whose admin plane the room writes its
+    model list to and mints one key per agent from. Agents call the
+    gateway's `/v1/chat/completions` with their own key; the room never
+    does. No method here ever logs or raises a key value."""
+
+    def ready(self) -> bool:
+        """Whether the gateway answers its readiness probe right now. Never
+        raises: an unreachable gateway reads False."""
+        ...
+
+    def list_models(self) -> list[dict]:
+        """Every deployment the gateway serves, as it reports them (each
+        with `model_name`, `litellm_params`, `model_info.id`)."""
+        ...
+
+    def add_model(self, *, model_name: str, model_id: str, litellm_params: dict, model_info: dict | None = None) -> None:
+        """Register one deployment: `model_name` is what agents ask for,
+        `model_id` is the room's own stable id for it (`model_info.id`), so
+        a later delete names exactly this one."""
+        ...
+
+    def delete_model(self, model_id: str) -> bool:
+        """Remove the deployment with `model_info.id == model_id`. False
+        when the gateway had no such model (already gone)."""
+        ...
+
+    def mint_key(self, agent: str, models: list[str], *, alias: str) -> str:
+        """A key for `agent` that may call `models` and nothing else, filed
+        under `alias` so a revoke can name it without holding it. Returns
+        the key; the caller delivers it and forgets it."""
+        ...
+
+    def revoke_key(self, alias: str) -> bool:
+        """Delete every key filed under `alias`. False when there was none."""
+        ...
+
+
+class HttpxModelsGatewayClient:
+    """`ModelsGatewayClient` over httpx against LiteLLM's admin API, bearer-
+    authenticated with the master key read from a Kubernetes Secret
+    (`Config.models_gateway_master_key_secret`) on first use through the
+    same `KubectlClient.secret_literals` the Slack token store reads with.
+    The key is held in memory for the process and never logged."""
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        master_key_provider: Callable[[], str],
+        client: httpx.Client | None = None,
+    ):
+        self._base_url = base_url.rstrip("/")
+        self._master_key_provider = master_key_provider
+        self._master_key: str | None = None
+        self._client = client or httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0))
+
+    def _headers(self) -> dict[str, str]:
+        if self._master_key is None:
+            self._master_key = self._master_key_provider()
+        return {"Authorization": f"Bearer {self._master_key}"}
+
+    def _call(self, method: str, path: str, *, json: dict | None = None, what: str) -> httpx.Response:
+        try:
+            resp = self._client.request(method, f"{self._base_url}{path}", json=json, headers=self._headers())
+        except httpx.HTTPError as exc:
+            raise ClientError(f"model gateway {what} failed: {type(exc).__name__}") from exc
+        if resp.status_code >= 400:
+            # The body may quote the request; a key never travels in one of
+            # ours except on /key/delete, which names an alias, so the text
+            # is safe to carry.
+            raise ClientError(f"model gateway {what} failed ({resp.status_code}): {resp.text[:300]}")
+        return resp
+
+    def ready(self) -> bool:
+        try:
+            resp = self._client.get(f"{self._base_url}/health/readiness")
+        except Exception:
+            log.debug("model gateway readiness probe failed", exc_info=True)
+            return False
+        return resp.status_code == 200
+
+    def list_models(self) -> list[dict]:
+        resp = self._call("GET", "/model/info", what="list models")
+        body = resp.json()
+        return list(body.get("data", []) if isinstance(body, dict) else body)
+
+    def add_model(self, *, model_name: str, model_id: str, litellm_params: dict, model_info: dict | None = None) -> None:
+        self._call(
+            "POST", "/model/new",
+            json={"model_name": model_name, "litellm_params": litellm_params, "model_info": {**(model_info or {}), "id": model_id}},
+            what=f"add model {model_name}",
+        )
+
+    def delete_model(self, model_id: str) -> bool:
+        try:
+            self._call("POST", "/model/delete", json={"id": model_id}, what=f"delete model {model_id}")
+        except ClientError as exc:
+            if "(404)" in str(exc) or "not found" in str(exc).lower():
+                return False
+            raise
+        return True
+
+    def mint_key(self, agent: str, models: list[str], *, alias: str) -> str:
+        resp = self._call(
+            "POST", "/key/generate",
+            json={"key_alias": alias, "models": list(models), "metadata": {"agent": agent, "minted_by": "kobo"}},
+            what=f"mint key for {agent}",
+        )
+        key = resp.json().get("key")
+        if not key:
+            raise ClientError(f"model gateway mint key for {agent} returned no key")
+        return key
+
+    def revoke_key(self, alias: str) -> bool:
+        try:
+            self._call("POST", "/key/delete", json={"key_aliases": [alias]}, what=f"revoke key {alias}")
+        except ClientError as exc:
+            text = str(exc).lower()
+            if "(404)" in text or "not found" in text or "no keys" in text:
+                return False
+            raise
+        return True
+
+
+def models_gateway_master_key_reader(config: Config, kubectl: KubectlClient) -> Callable[[], str]:
+    """How `Clients.real` hands the gateway client its master key: read from
+    the Secret `models_gateway_master_key_secret` names, when first needed.
+    A room with the gateway on and no Secret named raises at that first use
+    with a sentence that says which key to set, never at boot."""
+
+    def read() -> str:
+        if not config.models_gateway_master_key_secret:
+            raise ClientError(
+                "models_gateway_url is set but models_gateway_master_key_secret is not; "
+                "the room cannot write to the model gateway without its master key"
+            )
+        namespace, _, name = config.models_gateway_master_key_secret.partition("/")
+        literals = kubectl.secret_literals(namespace, name)
+        key = literals.get(MODELS_GATEWAY_MASTER_KEY)
+        if not key:
+            raise ClientError(f"model gateway secret {namespace}/{name} is missing key {MODELS_GATEWAY_MASTER_KEY!r}")
+        return key
+
+    return read
+
+
 @dataclass
 class Clients:
     github: GitHubClient
@@ -5445,6 +5599,11 @@ class Clients:
     # `slack` above is the deployment client only; the room-held pair is
     # resolved per request by `room_services.slack_client(clients)`.
     room_services: object | None = None
+    # The room's model gateway (kobo#390). None whenever `models_gateway_url`
+    # is empty: the catalogue, the composer, the access step and destroy all
+    # read `config.models_gateway_url` as the switch and this field as the
+    # door, the same two-gate discipline the switchboard uses.
+    models_gateway: ModelsGatewayClient | None = None
 
     @classmethod
     def real(cls, config: Config) -> Clients:
@@ -5543,4 +5702,12 @@ class Clients:
             # `RoomServices.github_app`), so `slack` above stays the plain
             # deployment client and None when nothing is configured.
             room_services=build_room_services(config, kubectl),
+            # Off unless the org names the gateway; the master key is read
+            # from its Secret on first use, through the same kubectl.
+            models_gateway=HttpxModelsGatewayClient(
+                config.models_gateway_url,
+                master_key_provider=models_gateway_master_key_reader(config, kubectl),
+            )
+            if config.models_gateway_url
+            else None,
         )
