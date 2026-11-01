@@ -168,8 +168,10 @@ import {
   removeRoomService,
   type RoomServiceId,
   type RoomServiceValues,
+  type AuditAgentsFilters,
   type AuditFilters,
   fetchAdminAudit,
+  fetchAdminAuditAgents,
   fetchAdminAwsSetup,
   fetchAdminConnections,
   fetchAdminIntegrations,
@@ -725,6 +727,14 @@ export function adminAuditQuery(filters: AuditFilters, cursor: string | null = n
   return queryOptions({
     queryKey: ["admin", "audit", filters, cursor] as const,
     queryFn: () => fetchAdminAudit(filters, cursor),
+    staleTime: 15_000,
+  });
+}
+
+export function adminAuditAgentsQuery(filters: AuditAgentsFilters) {
+  return queryOptions({
+    queryKey: ["admin", "audit-agents", filters] as const,
+    queryFn: () => fetchAdminAuditAgents(filters),
     staleTime: 15_000,
   });
 }

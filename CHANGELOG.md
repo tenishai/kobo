@@ -6,6 +6,20 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The Audit page has two tabs, People and Agents (#371, section 3).** People is the room's
+  own log as before. Agents is what agents did with their connections, read live from the
+  permission service and shown in the same row shape: a lease it minted (`lease.minted`,
+  outcome `ok`), one it refused (`lease.refused`) and one it could not mint (`lease.failed`),
+  each as one sentence ("ward borrowed read on AWS aws-prod for 1h: count instances"). The
+  Actor and Action selects hide on Agents; the agent and outcome facets come from that
+  answer; Export hands that window back as CSV or JSON. `#/admin/audit?tab=agents&agent=x`
+  opens it filtered. `GET /api/admin/audit/agents` (admin gate; `agent`, `outcome`, `since`,
+  `until`, `q`, `limit`, `format=csv|json`) is the route, `kobo_api.audit_agents` the merge
+  and the sentence, `BabClient.events(...)` the new read (bab `GET /events`). The people
+  route and its export are unchanged.
+
 ### Changed
 
 - **Agent connections leave the Integrations table and get their own page (#371).** `GET
