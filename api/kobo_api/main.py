@@ -9275,9 +9275,10 @@ def create_app(
     ) -> JSONResponse:
         """How Slack wakes this agent in a channel (2026-10-06): `mention`,
         `thread` or `channel`. One environment variable in the agent's deploy
-        contract (`SLACK_WAKE_MODE`, the same lane the model change uses), so
-        the running agent picks it up on its next roll, plus the row, so the
-        manifest route and every later reprovision agree.
+        contract (`SLACK_WAKE_MODE`, the same lane the model change uses),
+        set on the live deployment at once as well (`applied_now`,
+        2026-11-01) so the running agent restarts with it now, plus the
+        row, so the manifest route and every later reprovision agree.
 
         The answer says whether the Slack app's own event list changed
         (`manifest_changed`): crossing between `mention` and the other two
@@ -9320,6 +9321,18 @@ def create_app(
         except ClientError as exc:
             return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
         agent.slack_wake = mode
+        # The commit above reaches the running agent only when the deploy
+        # platform next rolls it, minutes later, and the page cannot see
+        # when. So the same value is set on the live deployment now (which
+        # rolls the pods by itself); the later apply finds nothing to
+        # change. A cluster that refuses is reported, never a 5xx: the
+        # commit already landed and the next roll carries it.
+        applied_now = True
+        try:
+            clients.kubectl.set_env(agent.name, agent.name, WAKE_ENV, mode)
+        except ClientError as exc:
+            applied_now = False
+            log.warning("slack wake: live apply for agent %s failed: %s", agent.name, exc)
         manifest_changed = wake_subscribes_channel_messages(mode) != wake_subscribes_channel_messages(previous)
         # A room-made app (issue #371) has no app-level token and nobody to
         # paste a manifest: the room applies the new event list itself with
@@ -9358,6 +9371,7 @@ def create_app(
                 "wake": mode,
                 "previous_wake": previous,
                 "manifest_changed": manifest_changed,
+                "applied_now": applied_now,
                 "wiring": result.how,
             }
         )

@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-platform-clients
 updated: 2026-11-01
-anchor: api/kobo_api/clients.py sha=fd001d02dcfc7f7bdb144f6fbb3bc00e7ec29a6e
-anchor: api/tests/fakes.py sha=d6247d23c616a060b15e9c083bbba3569568dc20
+anchor: api/kobo_api/clients.py sha=ea698427706aa3f75bdea476d1ee0feb8cb9e574
+anchor: api/tests/fakes.py sha=e38251773c228b342afad92c96b354b5ad3904fe
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
@@ -40,3 +40,4 @@ API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provid
 - `KubectlClient.deployment_exists(namespace, deploy)` (2026-10-29, issue #274): True/False, or `ClientError` when the cluster cannot be asked (`--ignore-not-found -o name`, the `namespace_created_at` idiom), unlike `deployment_status_json` whose failure folds absent and unreachable together. `FakeKubectl(deployments={(ns, name)}, deployment_exists_error=...)` seeds it.
 - `KubectlClient.delete_secret(namespace, name)` (2026-10-29, issue #284): the remove half of `apply_secret`, `--ignore-not-found`, for the room's own Secrets. `FakeKubectl.secrets_deleted` records it and the entry leaves `.secrets`.
 - `Clients.room_services` (object | None, 2026-10-29, issue #284): `kobo_api.room_services.RoomServices`, the room's own credentials store (Slack config-token pair, GitHub app for pull requests) as one Secret per service in `room_namespace` (or the pod's own); None when the room has neither. Built in `Clients.real` by `build_room_services` from config and the pod's own namespace file ONLY (never kubectl's context, never a kubectl call: a self-hosted CI runner is a pod, and construction must not shell out). Whether the room HOLDS anything is asked at request time. `probe_slack_token_store` also dry-runs the room-held pair's write at boot. The secrets platform (sero) is NOT used for these: it has no read-back lane and the room needs the values back.
+- `KubectlClient.set_env(namespace, deploy, name, value)` (2026-11-01): one environment variable set on the live Deployment (`kubectl set env deployment/<deploy> NAME=value`), which rolls the pods itself; no separate `restart_deploy`. The Slack wake route (`main.set_slack_wake`, `PUT /api/agents/{name}/slack/wake`) calls it right after `agent_env.edit_gojira_yaml` commits the same `SLACK_WAKE_MODE` value, so the running agent restarts with the choice now and the provisioner's later apply changes nothing; a `ClientError` is logged and answered as `applied_now: false` on a 200, never a 5xx, because the commit already landed. The ClusterRole in `k8s/cluster/rbac.yaml` already grants `get, patch` on deployments, which is all `set env` needs. `FakeKubectl(set_env_error=...)` refuses; `FakeKubectl.env_sets` records `(namespace, deploy, name, value)`.

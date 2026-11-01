@@ -1618,10 +1618,14 @@ def test_get_slack_app_view_carries_the_install_link_while_created_and_not_insta
 
 
 def test_put_wake_writes_the_env_key_and_says_when_the_manifest_changed(session_factory__api_slack, config__api_slack):
-    """Wire shape: Put wake writes the env key and says when the manifest changed."""
+    """Wire shape: Put wake writes the env key, sets it on the running agent
+    at once (`applied_now`, 2026-11-01) and says when the manifest changed."""
     gojira, app_id = _onboarded_gojira()
     github = _GojiraCapturingGitHub()
-    client = _make_client__api_slack(session_factory__api_slack, config__api_slack, github=github, gojira=gojira)
+    kubectl = FakeKubectl()
+    client = _make_client__api_slack(
+        session_factory__api_slack, config__api_slack, github=github, gojira=gojira, kubectl=kubectl
+    )
     _seed_agent__api_slack(session_factory__api_slack, config__api_slack, gojira_app_id=app_id)
 
     # A row from before the choice reads as mention, and the manifest says so.
@@ -1634,9 +1638,13 @@ def test_put_wake_writes_the_env_key_and_says_when_the_manifest_changed(session_
     response = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "channel"})
     assert response.status_code == 200, response.text
     body = response.json()
-    assert (body["wake"], body["previous_wake"], body["manifest_changed"]) == ("channel", "mention", True)
+    assert (body["wake"], body["previous_wake"], body["manifest_changed"], body["applied_now"]) == (
+        "channel", "mention", True, True
+    )
     assert github.captured_gojira is not None
     assert github.captured_gojira["env"]["SLACK_WAKE_MODE"] == "channel"
+    # The live deployment gets the same value, in the agent's own namespace.
+    assert kubectl.env_sets == [(AGENT_NAME, AGENT_NAME, "SLACK_WAKE_MODE", "channel")]
 
     assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["wake"] == "channel"
     events = client.get(f"/api/agents/{AGENT_NAME}/slack/manifest").json()["manifest"]["settings"][
@@ -1647,6 +1655,22 @@ def test_put_wake_writes_the_env_key_and_says_when_the_manifest_changed(session_
     # thread <-> channel keeps the same events: nothing to re-apply in Slack.
     again = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "thread"}).json()
     assert (again["previous_wake"], again["manifest_changed"]) == ("channel", False)
+
+
+def test_put_wake_says_applied_now_false_when_the_live_apply_fails(session_factory__api_slack, config__api_slack):
+    """Wire shape: the commit landed, so a cluster that refuses the live
+    change is reported as `applied_now: false` on a 200, never a 5xx."""
+    gojira, app_id = _onboarded_gojira()
+    client = _make_client__api_slack(
+        session_factory__api_slack, config__api_slack, github=_GojiraCapturingGitHub(), gojira=gojira,
+        kubectl=FakeKubectl(set_env_error="forbidden"),
+    )
+    _seed_agent__api_slack(session_factory__api_slack, config__api_slack, gojira_app_id=app_id)
+
+    response = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "thread"})
+
+    assert (response.status_code, response.json()["applied_now"]) == (200, False)
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["wake"] == "thread"
 
 
 # --- from test_api_model_change.py ---

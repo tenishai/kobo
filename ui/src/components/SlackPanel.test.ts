@@ -430,6 +430,42 @@ describe("SlackPanel", () => {
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("locks Wakes on while a change applies and reads Live once the room's next check finds the agent up", async () => {
+    // Contract: a saved choice restarts the agent (`applied_now`), so the
+    // choices stay locked, two picks cannot race, and the note turns to
+    // "Live." only on a health reading taken after the save.
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    let answerDetail!: (value: Response) => void;
+    const detail = new Promise<Response>((resolve) => (answerDetail = resolve));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/slack/wake")) {
+          return json({ wake: "thread", previous_wake: "mention", manifest_changed: false, applied_now: true, wiring: "env" });
+        }
+        return manifestRoute(url) ?? detail;
+      }),
+    );
+    const rendered = renderWithClient(SlackPanel, { agentName: "warden", slack: CONNECTED, frozen: false });
+    const checked = (at: string) => ({ name: "warden", status: "ready", slack: CONNECTED, health: { state: "up", reason: null, checked_at: at } });
+    rendered.client.setQueryData(["agents", "warden"], checked("2026-11-01T10:00:00Z"));
+
+    await fireEvent.click(screen.getByLabelText(/Mentions, then the thread/));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toBe("Saved. The agent restarts with this choice now; give it a minute.");
+    });
+    expect((screen.getByLabelText(/Mentions only/) as HTMLInputElement).disabled).toBe(true);
+
+    answerDetail(json(checked("2026-11-01T10:01:00Z")));
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toBe("Live.");
+    });
+    expect((screen.getByLabelText(/Mentions only/) as HTMLInputElement).disabled).toBe(false);
+  });
+
   it("greys out with one sentence when the room has no Slack integration", () => {
     // The room's gate (#304): no fields, no buttons, only who to ask.
     renderWithClient(SlackPanel, {

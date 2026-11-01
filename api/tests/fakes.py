@@ -1561,6 +1561,7 @@ class FakeKubectl:
         deployment_status: dict[tuple[str, str], dict] | None = None,
         deployment_status_error: str | None = None,
         restart_error: str | None = None,
+        set_env_error: str | None = None,
         external_secrets: dict[tuple[str, str], dict] | None = None,
         external_secret_error: str | None = None,
         namespaces: dict[str, datetime] | None = None,
@@ -1603,6 +1604,11 @@ class FakeKubectl:
         # deliberately NOT `.calls`, which pre-existing tests assert on
         # exactly for rollout_ok alone (see the class docstring above).
         self.restarts: list[tuple[str, str]] = []
+        # `set_env`'s record (the Slack wake route's live apply, 2026-11-01):
+        # `(namespace, deploy, name, value)`; `set_env_error` is the
+        # cluster refusing, which the route reports as `applied_now: false`.
+        self._set_env_error = set_env_error
+        self.env_sets: list[tuple[str, str, str, str]] = []
         # The Secrets panel's lock: `{(namespace, name): status}` for
         # `external_secret_status`. A pair with no entry reads as None --
         # no such object -- which is the ordinary state of an agent
@@ -1685,6 +1691,11 @@ class FakeKubectl:
         if self._restart_error is not None:
             raise ClientError(self._restart_error)
         self.restarts.append((namespace, deploy))
+
+    def set_env(self, namespace: str, deploy: str, name: str, value: str) -> None:
+        if self._set_env_error is not None:
+            raise ClientError(self._set_env_error)
+        self.env_sets.append((namespace, deploy, name, value))
 
     def external_secret_status(self, namespace: str, name: str) -> dict | None:
         if self._external_secret_error is not None:

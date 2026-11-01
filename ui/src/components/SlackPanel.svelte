@@ -51,14 +51,16 @@
   // needs a *new* query per sha, and only a real Svelte store makes
   // createQuery re-derive its options after the first one).
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { errorMessage, type AgentSlack, type SlackWake } from "../lib/api";
+  import { errorMessage, type AgentDetail, type AgentSlack, type SlackWake } from "../lib/api";
   import {
+    agentQuery,
     connectSlackMutation,
     deliveryQuery,
     saveSlackChannelsMutation,
     setSlackWakeMutation,
     slackManifestQuery,
   } from "../lib/queries";
+  import { WAKE_NOTE_LIVE, wakeSavedNote, watchWakeLive } from "../lib/slackWake";
 
   let {
     agentName,
@@ -107,13 +109,43 @@
     },
   ];
 
+  // A save also reaches the running agent at once (the route restarts it
+  // with the choice), and the note follows it: "give it a minute" while the
+  // room's next health check of the agent is awaited, "Live." once that
+  // check finds it up (lib/slackWake). The choices stay locked meanwhile,
+  // so a second pick cannot land while the first is still applying.
   // svelte-ignore state_referenced_locally
   let wake = $state<SlackWake>(slack.wake);
   let wakeNote = $state<string | null>(null);
   let wakeError = $state<string | null>(null);
+  let wakeApplying = $state(false);
+  let stopWakeWatch: (() => void) | null = null;
+  const wakeLocked = $derived(frozen || saveWake.isPending || wakeApplying);
+  const MANIFEST_NOTE =
+    "The Slack app's event list changed: copy the manifest again and paste it " +
+    "over the old one at api.slack.com/apps, under App Manifest. No reinstall needed.";
+
+  function watchWake(tail: string): void {
+    stopWakeWatch?.();
+    wakeApplying = true;
+    const settle = () => {
+      wakeApplying = false;
+      stopWakeWatch = null;
+    };
+    stopWakeWatch = watchWakeLive({
+      baseline: queryClient.getQueryData<AgentDetail>(["agents", agentName])?.health?.checked_at ?? null,
+      read: async () => (await queryClient.fetchQuery(agentQuery(agentName))).health,
+      onLive: () => {
+        wakeNote = [WAKE_NOTE_LIVE, tail].filter(Boolean).join(" ");
+        settle();
+      },
+      onGiveUp: settle,
+    });
+  }
+  $effect(() => () => stopWakeWatch?.());
 
   async function handleWake(next: SlackWake): Promise<void> {
-    if (frozen || next === wake) {
+    if (wakeLocked || next === wake) {
       return;
     }
     const previous = wake;
@@ -122,13 +154,9 @@
     wakeError = null;
     try {
       const result = await saveWake.mutateAsync(next);
-      if (result.manifest_changed && slack.state !== "idle") {
-        wakeNote =
-          "Saved. The Slack app's event list changed: copy the manifest again and paste it " +
-          "over the old one at api.slack.com/apps, under App Manifest. No reinstall needed.";
-      } else {
-        wakeNote = "Saved.";
-      }
+      const tail = result.manifest_changed && slack.state !== "idle" ? MANIFEST_NOTE : "";
+      wakeNote = [wakeSavedNote(result), tail].filter(Boolean).join(" ");
+      if (result.applied_now) watchWake(tail);
     } catch (err: unknown) {
       wake = previous;
       wakeError = errorMessage(err, "Couldn't save how it wakes up. Try again.");
@@ -668,7 +696,7 @@
 {/snippet}
 
 {#snippet wakeChoice(inSection = false)}
-  <fieldset class="slack-panel__wake" disabled={frozen || saveWake.isPending}>
+  <fieldset class="slack-panel__wake" disabled={wakeLocked}>
     <legend class={inSection ? "panel__sr" : "field__label"}>Wakes on</legend>
     <div class="slack-panel__wake-options">
       {#each WAKE_OPTIONS as option (option.value)}
@@ -678,7 +706,7 @@
             name="slack-panel-wake"
             value={option.value}
             checked={wake === option.value}
-            disabled={frozen || saveWake.isPending}
+            disabled={wakeLocked}
             onchange={() => handleWake(option.value)}
           />
           <span class="slack-panel__wake-text">

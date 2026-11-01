@@ -2409,22 +2409,25 @@ export async function saveSlackChannels(
  * channel. `manifest_changed` is true when the Slack app's own event list
  * changed with it (crossing between `mention` and the other two), which only
  * a re-applied manifest at Slack can carry out; the panel says so.
+ * `applied_now` (2026-11-01) is whether the running agent was given the
+ * choice at once and is restarting with it; false means it picks the
+ * choice up when it next restarts. Older rooms omit it.
  */
-export async function setSlackWake(
-  name: string,
-  wake: SlackWake,
-): Promise<{ wake: SlackWake; previous_wake: SlackWake; manifest_changed: boolean; wiring: string }> {
+export type SlackWakeResult = {
+  wake: SlackWake;
+  previous_wake: SlackWake;
+  manifest_changed: boolean;
+  applied_now?: boolean;
+  wiring: string;
+};
+
+export async function setSlackWake(name: string, wake: SlackWake): Promise<SlackWakeResult> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/slack/wake`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ wake }),
   });
-  return parse<{
-    wake: SlackWake;
-    previous_wake: SlackWake;
-    manifest_changed: boolean;
-    wiring: string;
-  }>(res);
+  return parse<SlackWakeResult>(res);
 }
 
 /** `GET /api/agents/{name}/slack`: the Access tab's Slack section. */

@@ -7,7 +7,7 @@ If the room itself has no Slack integration yet, the tab is a greyed box with on
 
 ## When the room makes the app for you
 
-In some rooms Slack is a row on the **Access** tab instead, with the other vendors. There is nothing to copy or paste: pick **Wakes on**, press **Create Slack app**, then **Install to Slack**. Slack asks you to allow the app in your workspace and sends you straight back to the agent's page, with the Slack row in view: the workspace, the channel list and **Wakes on**. Invite the agent to any channel in Slack and it answers there; no channel ID is needed to get started. The channel list only narrows it: list channels and it answers in those alone, clear the list and it answers wherever it is invited again. Changing **Wakes on** later applies on its own, and **Remove** takes the app out of Slack. An agent connected the older way, from the Slack tab, keeps that tab and keeps working. The rest of this section describes the Slack tab.
+In some rooms Slack is a row on the **Access** tab instead, with the other vendors. There is nothing to copy or paste: pick **Wakes on**, press **Create Slack app**, then **Install to Slack**. Slack asks you to allow the app in your workspace and sends you straight back to the agent's page, with the Slack row in view: the workspace, **Wakes on**, and the row's state, **Live** once the agent is answering. Invite the agent to any channel in Slack and it answers there; that is the whole of it, there is no channel list on the row. Changing **Wakes on** later applies on its own: the row reads **Applying your change** while the agent restarts with the new choice, within a minute, and **Live** once it is back; wait for **Live** before trying the new choice. **Remove** takes the app out of Slack. An agent connected the older way, from the Slack tab, keeps that tab and keeps working. The rest of this section describes the Slack tab.
 
 ## 1. Where it answers
 
@@ -39,7 +39,7 @@ Press **Connect**. The room delivers the tokens straight to the agent as secrets
 
 A direct message always reaches the agent, whichever you pick. The agent is told its own setting, so if someone asks whether they must keep mentioning it, it answers truthfully.
 
-The choice saves as soon as you pick it. Moving between **Mentions only** and either of the other two changes which events the Slack app receives, so copy the manifest again and paste it over the old one at api.slack.com/apps under App Manifest. The room tells you when that is needed. No reinstall, and no new tokens.
+The choice saves as soon as you pick it, and the agent restarts with the new choice within a minute; the note under the choices reads **Live.** once it has. Moving between **Mentions only** and either of the other two changes which events the Slack app receives, so copy the manifest again and paste it over the old one at api.slack.com/apps under App Manifest. The room tells you when that is needed. No reinstall, and no new tokens.
 
 ## After it is connected
 
