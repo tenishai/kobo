@@ -605,10 +605,27 @@ a.btn:hover {
 
 .modal__header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-sm);
   padding: var(--space-sm) var(--space-lg);
   border-bottom: 1px solid var(--border);
+}
+
+/* The title and, when the dialog has one, the sentence under it. */
+.modal__heading {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-2xs) 0;
+}
+
+/* The one sentence saying what the dialog asks for: it explains, so it
+   reads in ink, like a panel's lead. */
+.modal__description {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.875rem;
 }
 
 /* The page's own h2: a dialog names itself the same way a panel does. */
@@ -624,7 +641,7 @@ a.btn:hover {
 
 .modal__close {
   margin-left: auto;
-  padding: 0 var(--space-2xs);
+  padding: var(--space-2xs);
   border: none;
   background: none;
   color: var(--muted);
@@ -695,6 +712,26 @@ a.btn:hover {
   align-items: center;
   gap: var(--space-xs);
   margin-left: auto;
+}
+
+/* On a phone the dialog takes the screen minus a 16px gutter, and its
+   three bands keep that same gutter inside. */
+@media (max-width: 40rem) {
+  .modal-backdrop {
+    padding: 16px;
+  }
+
+  .modal__header,
+  .modal__body,
+  .modal__footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .modal__footer--inline {
+    margin-left: -16px;
+    margin-right: -16px;
+  }
 }
 
 /* The stepper: a line of numbers at the top of a dialog that has steps.
@@ -810,6 +847,11 @@ textarea.field__input {
   color: var(--fail);
 }
 
+/* A hint that asks for something before the form can go on. */
+.field__help--warn {
+  color: var(--warn);
+}
+
 /* One radio or checkbox and the sentence it answers. */
 .field__choice {
   display: flex;
@@ -834,9 +876,11 @@ textarea.field__input {
 }
 
 /* --- Lists ----------------------------------------------------------------
-   What a dialog offers to pick from: rows, not cards. A row is a name, a
-   tag, and one line about it that is cut off rather than allowed to set
-   the height of everything below it. */
+   What a dialog offers to pick from: rows, not cards (restyled 2026-11-01
+   to the room's row look: hairlines between rows, the name in ink, the
+   one line about it in ink and cut off rather than allowed to set the
+   height of everything below it, and a small-caps grey label over each
+   run). A selected row carries the accent at its edge. */
 
 .list {
   display: flex;
@@ -863,11 +907,12 @@ textarea.field__input {
 }
 
 .list__row:hover {
-  background: var(--bg);
+  background: var(--accent-soft);
 }
 
 .list__row--selected {
   background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 /* A row that does something instead of selecting something. Quiet: it is
@@ -886,9 +931,8 @@ textarea.field__input {
 
 .list__name {
   color: var(--ink);
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  font-weight: 600;
+  font-size: 0.875rem;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -910,28 +954,30 @@ textarea.field__input {
   color: var(--ink);
 }
 
-/* The one line of description: truncated. Where the rest of it lives is
-   the list's own business — the persona list answers with a hover card. */
+/* The one line of description: in ink, truncated. Where the rest of it
+   lives is the list's own business; the persona list answers with a hover
+   card. */
 .list__desc {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  color: var(--muted);
-  font-size: 0.8rem;
+  color: var(--ink);
+  font-size: 0.85rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 /* A group heading over a run of rows (the persona list: Built-in, then
-   the team personas). Small and muted: it names the run, it is not a row
-   anyone picks. */
+   the group whose pill is pressed). Small caps in grey, the way the Access
+   tab labels its groups: it names the run, it is not a row anyone picks. */
 .list__group {
-  padding: var(--space-2xs) var(--space-sm);
+  padding: var(--space-xs) var(--space-sm) var(--space-2xs);
   border-bottom: 1px solid var(--border);
-  background: var(--bg);
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .list__empty {
@@ -1077,12 +1123,14 @@ textarea.field__input {
 }
 
 /* A field's rule and its verdict on one line: what is allowed on the left,
-   what the room makes of what you typed on the right. */
+   what the room makes of what you typed on the right. They stack on a
+   phone rather than push the dialog wider. */
 .field__help-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--space-xs);
+  gap: var(--space-2xs) var(--space-xs);
 }
 
 /* Two short fields that read as one line, so a form of mostly one-line
