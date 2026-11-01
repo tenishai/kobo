@@ -223,6 +223,30 @@ describe("SlackVendor", () => {
     expect(radio(/Mentions only/).disabled).toBe(false);
   });
 
+  it("shows the old app with one Move button for a legacy agent, and the move calls the route (kobo#304)", async () => {
+    // Contract (phase 3 of #304): an agent with an app from the Slack tab
+    // reads "Connected the old way" with its app id and offers nothing but
+    // the move; the press is one POST to the move route, and the room's
+    // honest answer about the old app lands on the row.
+    const LEGACY = { ...NONE, app_id: "A0OLD", legacy: true };
+    room(LEGACY, { ...AGENT, slack: { ...AGENT.slack, app_id: "A0OLD", legacy: true } });
+
+    const moveButton = await screen.findByRole("button", { name: "Move to the new Slack setup" });
+    expect(screen.getByRole("status").textContent?.trim()).toBe("Connected the old way: A0OLD");
+    expect(screen.getByText(/the old app is removed. Channels and Wakes on carry over/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Create Slack app" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Install to Slack" })).toBeNull();
+
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ app_id: "A0MADE", install_url: "https://slack.com/x", old_app_removed: false }), { status: 200 }),
+    );
+    await fireEvent.click(moveButton);
+    const post = vi.mocked(fetch).mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST");
+    expect(post).toBeDefined();
+    expect(String(post![0])).toContain("/api/agents/clio/slack/move");
+    expect(await screen.findByText(/could not confirm the old app was removed/)).toBeTruthy();
+  });
+
   it("renders nothing when the room does not make Slack apps", async () => {
     room(NONE, { ...AGENT, slack: { ...AGENT.slack, relay: false } });
 

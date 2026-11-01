@@ -257,6 +257,7 @@ import {
   saveAgentSecrets,
   saveKnowledgeFile,
   saveLocalSkill,
+  moveSlackApp,
   removeSlackApp,
   saveSlackChannels,
   type ScanFinding,
@@ -1609,6 +1610,18 @@ export function createSlackAppMutation(queryClient: QueryClient, name: string) {
 export function removeSlackAppMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: () => removeSlackApp(name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
+}
+
+/** Move a legacy agent to the room-made Slack app (issue #304, phase 3);
+ * the agent detail follows (`slack.legacy` turns false, so the Slack tab
+ * goes) and so does the row (created, install pending). */
+export function moveSlackAppMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: () => moveSlackApp(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name] });
     },
