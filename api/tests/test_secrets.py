@@ -1486,6 +1486,60 @@ def test_create_slack_app_writes_the_five_values_through_the_lane_and_returns_th
     assert [t for t in written if t.get("kind") == "slack"] == [{"kind": "slack"}]
 
 
+def test_move_to_the_new_slack_setup_drops_the_old_tokens_as_the_five_values_land(
+    session_factory__api_slack, config__api_slack
+):
+    """Secrets handling: moving a legacy agent (issue #304, phase 3) deletes
+    the old app with the room's config token, stores the new app's five
+    values through the lane in the same write that removes the app-level
+    token and the old bot token, keeps the agent's saved channels, answers
+    the install link without a value in it, and records `slack.move`."""
+    from kobo_api.models import AuditLog, SlackRelayApp
+
+    private_key, jwk = _generate_jwk()
+    relay_config = config__api_slack.model_copy(
+        update={"iap_audience": IAP_AUDIENCE, "slack_relay": True, "operators": [OPERATOR_EMAIL]}
+    )
+    sero, kubectl, slack = FakeSero(), FakeKubectl(), FakeSlack(app_id="A0MADE")
+    sero.stored[f"apps/{AGENT_NAME}/slack"] = {"SLACK_BOT_TOKEN": BOT_TOKEN, "SLACK_APP_TOKEN": APP_TOKEN}
+    gojira, app_id = _onboarded_gojira__api_slack()
+    client = _make_client(
+        session_factory__api_slack, relay_config, github=(github := _CapturingGitHub__api_slack()), kubectl=kubectl,
+        gojira=gojira, sero=sero, slack=slack, iap_jwks_fetcher=_fetcher(jwk),
+    )
+    _seed_agent(
+        session_factory__api_slack, relay_config, gojira_app_id=app_id, slack_app_id=APP_ID,
+        slack_channels=[CHANNEL], slack_wired=True, created_by=OPERATOR_EMAIL,
+    )
+
+    response = client.post(
+        f"/api/agents/{AGENT_NAME}/slack/move", headers={ASSERTION_HEADER: _sign(private_key, email=OPERATOR_EMAIL)},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert slack.delete_calls == [APP_ID]
+    with session_factory__api_slack() as s:
+        row = s.query(SlackRelayApp).filter_by(agent_name=AGENT_NAME).one()
+        agent = s.query(Agent).filter_by(name=AGENT_NAME).one()
+        actions = [a.action for a in s.query(AuditLog).all()]
+    assert body == {"app_id": "A0MADE", "install_url": body["install_url"], "old_app_removed": True}
+    assert body["install_url"].startswith("https://slack.com/oauth/v2/authorize?")
+    for value in (BOT_TOKEN, APP_TOKEN, "fake-signing-secret", row.relay_secret):
+        assert value not in response.text
+    assert sero.removes == [(OPERATOR_EMAIL, f"apps/{AGENT_NAME}/slack", ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"])]
+    assert sero.stored[f"apps/{AGENT_NAME}/slack"] == {
+        "SLACK_APP_ID": "A0MADE", "SLACK_CLIENT_ID": "fake-client-id", "SLACK_CLIENT_SECRET": "fake-client-secret",
+        "SLACK_SIGNING_SECRET": "fake-signing-secret", "SLACK_RELAY_SECRET": row.relay_secret,
+    }
+    assert kubectl.secrets_applied == []
+    assert agent.slack_app_id == "A0MADE" and not agent.slack_app_self_service and not agent.slack_wired
+    assert "slack.move" in actions
+    # The saved channel stays and still narrows the agent.
+    written = yaml.safe_load(github.captured_agent_yaml)["transports"]
+    assert [t for t in written if t.get("kind") == "slack"] == [{"kind": "slack", "channel": CHANNEL}]
+
+
 def test_install_callback_stores_the_bot_token_through_the_lane_and_redirects(
     session_factory__api_slack, config__api_slack
 ):

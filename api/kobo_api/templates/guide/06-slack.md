@@ -9,6 +9,10 @@ If the room itself has no Slack connection yet, the tab is a greyed box with one
 
 In some rooms Slack is a row on the **Access** tab instead, with the other vendors. There is nothing to copy or paste: pick **Wakes on**, press **Create Slack app**, then **Install to Slack**. Slack asks you to allow the app in your workspace and sends you straight back to the agent's page, with the Slack row in view: the workspace, **Wakes on**, and the row's state, **Live** once the agent is answering. Invite the agent to any channel in Slack and it answers there; that is the whole of it, there is no channel list on the row. Changing **Wakes on** later applies on its own: the row reads **Applying your change** while the agent restarts with the new choice, and **Live** only once the room has seen the agent back and listening, usually within a minute; wait for **Live** before trying the new choice. While it restarts, the agent's page says **Restarting** rather than Down. **Remove** takes the app out of Slack. An agent connected the older way, from the Slack tab, keeps that tab and keeps working. The rest of this section describes the Slack tab.
 
+### Moving an agent made the old way
+
+An agent whose Slack app came from the Slack tab shows **Connected the old way** and its app id on the Slack row of the **Access** tab, with one button, **Move to the new Slack setup**. The room makes a new app and you install it once; the old app is removed. Channels and **Wakes on** carry over. After the move the row reads **App made; install it to finish**: press **Install to Slack** as usual, and the agent answers through the new app once you are back on its page. If the room could not confirm the old app was removed, the row says so; look for it in Slack's app list and remove it there. The Slack tab goes away for that agent once it has moved.
+
 ## 1. Where it answers
 
 Add the ID of each channel the agent may answer in, then invite the agent to that channel in Slack with `/invite @agent-name`. Both are needed: the channel list is an allowlist the agent enforces, and the invite is Slack's own permission. Up to eight channels.

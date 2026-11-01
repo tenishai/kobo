@@ -3230,6 +3230,70 @@ def test_put_empty_channels_on_room_made_app_writes_the_open_transport(
     assert transports == [a2a, *expected_slack_entries]
 
 
+def _onboarded_gojira__slack_move():
+    gojira = FakeGojira(activate_after=1)
+    app_id = gojira.create_app(
+        name=AGENT_NAME, repo_full_name="acme/agent-clio", cluster="example-cluster", namespace=AGENT_NAME
+    )
+    return gojira, app_id
+
+
+def test_move_still_completes_when_the_old_slack_app_cannot_be_deleted(
+    session_factory__api_slack, config__api_slack
+):
+    """Data integrity: the move to the new Slack setup (issue #304, phase 3)
+    goes on when Slack refuses to delete the old app, since it may already be
+    gone or belong to a token the room never held; the answer says
+    `old_app_removed: false` and the agent is on the new setup."""
+    from kobo_api.models import SlackRelayApp
+
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    slack = FakeSlack(app_id="A0MADE", delete_error="invalid_auth")
+    gojira, app_id = _onboarded_gojira__slack_move()
+    github = FakeGitHub(agent_yaml_transports=[{"kind": "a2a", "host": "0.0.0.0", "port": 8080}])
+    client = _make_client__api_slack(session_factory__api_slack, relay_config, github=github, gojira=gojira, slack=slack)
+    _seed_agent__api_slack(
+        session_factory__api_slack, relay_config, gojira_app_id=app_id, slack_app_id="A0OLD",
+        slack_channels=[CHANNEL], slack_wired=True, created_by="ops@example.com",
+    )
+
+    response = client.post(f"/api/agents/{AGENT_NAME}/slack/move")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["old_app_removed"] is False
+    assert response.json()["app_id"] == "A0MADE"
+    assert slack.delete_calls == ["A0OLD"]
+    with session_factory__api_slack() as s:
+        assert s.query(SlackRelayApp).filter_by(agent_name=AGENT_NAME, app_id="A0MADE").count() == 1
+
+
+@pytest.mark.parametrize("slack_app_id,room_made", [(None, False), ("A0MADE", True)], ids=["no-app", "already-moved"])
+def test_move_refuses_an_agent_that_is_not_on_the_old_setup(
+    session_factory__api_slack, config__api_slack, slack_app_id, room_made
+):
+    """Data integrity: the move never runs twice and never runs for nothing.
+    An agent with no Slack app, or one already on the room-made app, gets a
+    409 and Slack is not asked to delete or create anything."""
+    from datetime import datetime
+
+    from kobo_api.models import SlackRelayApp
+
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    slack = FakeSlack(app_id="A0NEW")
+    client = _make_client__api_slack(session_factory__api_slack, relay_config, slack=slack)
+    _seed_agent__api_slack(session_factory__api_slack, relay_config, slack_app_id=slack_app_id)
+    if room_made:
+        with session_factory__api_slack() as s:
+            s.add(SlackRelayApp(relay_id="relay-id-for-clio-0000", agent_name=AGENT_NAME, app_id="A0MADE",
+                                relay_secret="fake-relay-secret", created_at=datetime(2026, 11, 1)))
+            s.commit()
+
+    response = client.post(f"/api/agents/{AGENT_NAME}/slack/move")
+
+    assert response.status_code == 409
+    assert slack.delete_calls == [] and slack.manifests == []
+
+
 # --- from test_slack_setup.py ---
 
 

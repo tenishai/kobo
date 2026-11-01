@@ -396,6 +396,10 @@ def _remove_slack_app(client, headers):
     return client.delete(f"/api/agents/{AGENT_NAME}/slack/app", headers=headers)
 
 
+def _move_slack_app(client, headers):
+    return client.post(f"/api/agents/{AGENT_NAME}/slack/move", headers=headers)
+
+
 def _set_colleague_mode(client, headers):
     return client.put(
         f"/api/agents/{AGENT_NAME}/colleague-mode", json={"mode": "roster-only"}, headers=headers
@@ -495,6 +499,7 @@ SMOKE_ROUTES = [
     ("slack-wake", _set_slack_wake),
     ("slack-app-create", _create_slack_app),
     ("slack-app-remove", _remove_slack_app),
+    ("slack-app-move", _move_slack_app),
     ("colleague-mode", _set_colleague_mode),
     ("knowledge-delete", _delete_knowledge),
     ("retry", _retry),
@@ -726,6 +731,7 @@ READY_GATED_ROUTES = [
     ("PUT", f"/api/agents/{AGENT_NAME}/slack/wake", {"json": {"wake": "thread"}}),
     ("POST", f"/api/agents/{AGENT_NAME}/slack/app", {"json": {"wake": "thread"}}),
     ("DELETE", f"/api/agents/{AGENT_NAME}/slack/app", {}),
+    ("POST", f"/api/agents/{AGENT_NAME}/slack/move", {}),
     ("PUT", f"/api/agents/{AGENT_NAME}/persona", {"json": {"persona": PERSONA}}),
     ("PATCH", f"/api/agents/{AGENT_NAME}/model", {"json": {"model": "vertex_ai/claude-sonnet-4-5"}}),
     ("POST", f"/api/agents/{AGENT_NAME}/restart", {}),
@@ -969,6 +975,7 @@ GUARDED_ROUTES = [
     ("PUT", f"/api/agents/{AGENT_NAME}/colleague-mode", {"json": {"mode": "roster-only"}}),
     ("POST", f"/api/agents/{AGENT_NAME}/chat", {"json": {"messages": [{"role": "user", "text": "hi"}]}}),
     ("POST", f"/api/agents/{AGENT_NAME}/slack/app", {"json": {"wake": "thread"}}),
+    ("POST", f"/api/agents/{AGENT_NAME}/slack/move", {}),
 ]
 
 
