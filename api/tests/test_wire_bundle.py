@@ -52,7 +52,6 @@ def _make_spec(
     colleagues: list[dict] | None = None,
     cabal_url: str | None = None,
     memory_replica_bucket: str = "",
-    broker_url: str = "",
     liminal_url: str = "",
     archetype: str | None = None,
 ) -> BundleSpec:
@@ -71,7 +70,6 @@ def _make_spec(
         colleagues=colleagues if colleagues is not None else [],
         cabal_url=cabal_url,
         memory_replica_bucket=memory_replica_bucket,
-        broker_url=broker_url,
         liminal_url=liminal_url,
         archetype=archetype,
     )
@@ -254,39 +252,23 @@ def test_bundle_loads_with_real_daedalus_if_available(tmp_path):
     del daedalus  # only imported to prove importorskip's module handle works
 
 
-def test_tools_block_gains_github_sidecar_when_broker_url_set(tmp_path):
-    """Wire shape: Tools block gains github sidecar when broker url set."""
+def test_tools_block_composes_no_github_sidecar(tmp_path):
+    """Wire shape (kobo#365): the pull request broker retired, so a composed
+    bundle carries no `github` block and no `github.` allow entry; GitHub reaches
+    an agent as gateway tools its permission's lane admits after birth."""
     dest = tmp_path / "out"
-    compose(
-        _make_spec(
-            name="kestrel",
-            cabal_url="http://cabal.example.com",
-            broker_url="http://kobo.example.com",
-        ),
-        dest,
-    )
+    compose(_make_spec(name="kestrel", cabal_url="http://cabal.example.com", liminal_url="http://liminal.example.com"), dest)
     text = (dest / "bundle" / "agent.yaml").read_text()
-    # The full explicit github allow: the one write plus the read quartet
-    # (2026-08-28). Named one by one, never a glob -- the allow list is law.
-    for tool in (
-        "github.open_pr",
-        "github.list_prs",
-        "github.get_pr",
-        "github.list_releases",
-        "github.read_file",
-    ):
-        assert tool in text
-    assert 'broker_url: "http://kobo.example.com"' in text
-    assert "token_env: CABAL_COLLEAGUE_TOKEN" in text
-    assert 'self: "kestrel"' in text
+    tools = yaml.safe_load(text)["tools"]
+    assert "github" not in tools and "broker_url" not in text
+    assert not any(str(t).startswith("github") for t in tools["allow"])
 
 
 def test_liminal_block_composes_when_both_coordinates_exist():
     """Wire shape: Liminal block composes when both coordinates exist."""
     from kobo_api.composer import _render_agent_yaml
 
-    spec = _make_spec(cabal_url="http://cabal.test", broker_url="http://kobo.test",
-                      liminal_url="http://liminal.test")
+    spec = _make_spec(cabal_url="http://cabal.test", liminal_url="http://liminal.test")
     import yaml as _yaml
 
     data = _yaml.safe_load(_render_agent_yaml(spec))
@@ -335,7 +317,6 @@ def _spec(*, switchboard: bool = True, **overrides) -> BundleSpec:
     if switchboard:
         base.update(
             cabal_url="https://cabal.example",
-            broker_url="http://kobo.svc",
             liminal_url="https://liminal.example",
             colleagues=ROSTER,
             group="g",
@@ -365,7 +346,8 @@ def test_default_mode_composes_the_same_bytes_as_before_the_setting(tmp_path):
     `approvals.ceiling.write: false` (a deliberate change to the default
     bundle, agora discussion #55 item 7), and again on 2026-10-29 when the
     roster stopped telling the agent the live list_colleagues read wins
-    (issue #274). Nothing in the colleague-mode work may change them."""
+    (issue #274), and once more on 2026-11-01 when the github broker sidecar
+    left the bundle (kobo#365). Nothing in the colleague-mode work may change them."""
     on = _compose(tmp_path / "on", _spec(colleague_mode="default"))
     off = _compose(tmp_path / "off", _spec(switchboard=False, colleague_mode="default"))
 
@@ -375,7 +357,7 @@ def test_default_mode_composes_the_same_bytes_as_before_the_setting(tmp_path):
         "off/agent.yaml": _sha(off / "agent.yaml"),
         "off/colleagues.md": _sha(off / "knowledge" / "colleagues.md"),
     } == {
-        "on/agent.yaml": "1c04bd2c2a0164a145707c665b82ca445ed0ac11f47bf35cf32f971088ec07b5",
+        "on/agent.yaml": "ac4bb068205750c83852adce30fd59111521cebb1daae5d346e751cf1e6d0e70",
         "on/colleagues.md": "d06ee4e0a42fb564e458e3a119460880b0538257a4c92bf6283122ed27544f8d",
         "off/agent.yaml": "aef18cec1a2ce13072097b7c108ed8abb91114087ecd50d26f8b46e4476be5e6",
         "off/colleagues.md": "06be61b3e459caffaf6439d577616128f9f4d42dbc76e315b0411a348d722d86",

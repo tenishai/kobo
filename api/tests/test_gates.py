@@ -1822,6 +1822,8 @@ VISIBILITY_ROUTES = [
     ("GET", "/api/agents/clio/requestable", {}),
     ("GET", "/api/agents/clio/grants", {}),
     ("GET", "/api/agents/clio/access", {}),
+    ("GET", "/api/agents/clio/github/repositories", {}),
+    ("PUT", "/api/agents/clio/github/repositories", {"json": {"repositories": ["acme/a"]}}),
     ("GET", "/api/agents/clio/leases", {}),
     ("GET", "/api/colleagues/feed?agent=clio", {}),
 ]
@@ -1991,3 +1993,21 @@ def test_every_admin_route_is_403_for_a_signed_in_non_admin(tmp_path, method, pa
 
     assert response.status_code == 403, f"{method} {path}: {response.status_code} {response.text}"
 
+
+
+# --- the pull request broker's lane for agents retired (kobo#365) -----------------
+
+RETIRED_ROUTES = [
+    ("POST", "/broker/agents/wren/github-token"),
+    ("POST", "/api/agents/wren/repo-access"),
+    ("GET", "/api/repo-access"),
+    ("POST", "/api/repo-access/decide"),
+]
+
+
+@pytest.mark.parametrize(("method", "path"), RETIRED_ROUTES, ids=[f"{m} {p}" for m, p in RETIRED_ROUTES])
+def test_every_retired_broker_route_is_gone(client, method, path):
+    """Gate (authorization, kobo#365): the agent-facing GitHub token broker and the repo-access
+    routes behind it no longer exist on any room, whatever the configuration; an agent reaches
+    GitHub through the gateway with a token the permission service leases it."""
+    assert client.request(method, path, json={}).status_code == 404

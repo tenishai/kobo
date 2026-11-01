@@ -98,7 +98,8 @@ AUTH_KINDS = {
     "datadog_service_account": "a Datadog service account the permission service mints scoped application keys from",
     # GitHub through the permission service (kobo#338): the room holds a GitHub App (its
     # own, or one pasted here) and the service mints an installation token per agent,
-    # narrowed to the granted permissions and the connection's repositories.
+    # narrowed to the granted level and the agent's own repository set (kobo#365: a
+    # child integration under this connection, written from the agent's Access tab).
     "github_app": "a GitHub App the permission service mints narrowed installation tokens from",
 }
 DATADOG_AUTH = "datadog_service_account"
@@ -114,6 +115,23 @@ GITHUB_SECRET = "bab-github"
 GITHUB_MCP_ADDRESS = "https://api.githubcopilot.com"
 GITHUB_MCP_SCOPE = "github:read"
 GITHUB_MCP_CATALOG_PROVIDER = "github-app"
+# The second target per GitHub connection (kobo#365): the same server without the
+# read-only header, open to an agent granted Review pull requests (`github:review`);
+# the tools that create branches, commits, pull requests and issues want the scope
+# Open pull requests carries (`github:write`), and merge and delete want one no lane
+# ever grants, so the gateway refuses them whatever the token could do.
+MCP_WRITE_TARGET_SUFFIX = "-mcp-write"
+GITHUB_MCP_WRITE_SCOPE = "github:review"
+GITHUB_WRITE_SCOPE = "github:write"
+GITHUB_NEVER_SCOPE = "github:never"
+GITHUB_WRITE_TOOL_SCOPES: dict[str, str] = {
+    **dict.fromkeys((
+        "create_branch", "create_or_update_file", "push_files", "create_pull_request", "update_pull_request",
+        "update_pull_request_branch", "create_repository", "fork_repository", "create_issue", "update_issue",
+        "add_issue_comment",
+    ), GITHUB_WRITE_SCOPE),
+    **dict.fromkeys(("merge_pull_request", "delete_file"), GITHUB_NEVER_SCOPE),
+}
 GITHUB_PRIVATE_KEY_FIELD = "PRIVATE_KEY"
 _DIGITS = re.compile(r"^\d+$")
 # How long a connect waits for the permission service to see the Secret it just wrote
@@ -218,6 +236,11 @@ def mcp_target_name(integration_id: str) -> str:
     return f"{integration_id}{MCP_TARGET_SUFFIX}"
 
 
+def mcp_write_target_name(integration_id: str) -> str:
+    """The gateway target that is a GitHub connection's writing MCP server (kobo#365)."""
+    return f"{integration_id}{MCP_WRITE_TARGET_SUFFIX}"
+
+
 def datadog_mcp_address(site: str | None = None) -> str:
     """Datadog's hosted MCP server for a site, without the trailing `/mcp`
     the gateway adds itself."""
@@ -297,6 +320,28 @@ def github_target_spec(row: AdminIntegration) -> dict[str, Any]:
     }
 
 
+def github_write_target_spec(row: AdminIntegration) -> dict[str, Any]:
+    """The second target of a GitHub connection (kobo#365): `github_target_spec`
+    without the read-only header, wanting `github:review` (the Review pull
+    requests level), with `tool_scopes` sending the creating tools to
+    `github:write` (Open pull requests) and merge and delete to a scope no lane
+    grants. The leased installation token is what the vendor enforces; the
+    scopes are what the gateway enforces before the call leaves."""
+    spec = {k: v for k, v in github_target_spec(row).items() if k != "headers"}
+    spec["required_scope"] = GITHUB_MCP_WRITE_SCOPE
+    spec["tool_scopes"] = dict(GITHUB_WRITE_TOOL_SCOPES)
+    return spec
+
+
+def extra_live_targets(row: AdminIntegration) -> dict[str, dict[str, Any]]:
+    """Further targets a row puts on the gateway beside `live_target_spec`'s,
+    by name: a GitHub connection's `<id>-mcp-write` (kobo#365); nothing for
+    any other kind. Attached and removed with the row."""
+    if (row.spec or {}).get("auth") == GITHUB_AUTH:
+        return {mcp_write_target_name(row.id): github_write_target_spec(row)}
+    return {}
+
+
 def live_target_spec(row: AdminIntegration) -> dict[str, Any] | None:
     """The spec the admin plane takes for this row, or None for a kind that
     only goes by pull request (AWS is a registry entry, the other key kinds
@@ -359,8 +404,10 @@ def datadog_target_stanza(row: AdminIntegration) -> str:
 
 
 def github_target_stanza(row: AdminIntegration) -> str:
-    """`github_target_spec` as the `[[target]]` the pull request writes."""
-    return _render_stanza(row, mcp_target_name(row.id), github_target_spec(row))
+    """`github_target_spec` and `github_write_target_spec` as the two
+    `[[target]]` stanzas the pull request writes (kobo#365)."""
+    return (_render_stanza(row, mcp_target_name(row.id), github_target_spec(row))
+            + _render_stanza(row, mcp_write_target_name(row.id), github_write_target_spec(row)))
 
 
 MCP_AUTHS = frozenset({DATADOG_AUTH, GITHUB_AUTH})
@@ -398,7 +445,7 @@ def _without_stanza(text: str, target_name: str) -> str:
     pattern = re.compile(
         r"\n?(?:#[^\n]*\n)*\[\[target\]\]\nname = \""
         + re.escape(target_name)
-        + r"\"\n(?:(?:[A-Za-z_]+ = [^\n]*|\[target\.[a-z_]+\])\n)*",
+        + r"\"\n(?:(?:[A-Za-z0-9_-]+ = [^\n]*|\[target\.[a-z_]+\])\n)*",
     )
     return pattern.sub("", text)
 
@@ -424,17 +471,20 @@ def apply_target_live(clients: Clients | None, row: AdminIntegration, *, remove:
     if spec is None:
         return None
     name = gateway_target_name(row)
+    extras = extra_live_targets(row)
     if remove:
-        try:
-            admin.delete_target(name)
-        except TargetNotFound:
-            pass
+        for target in (name, *extras):
+            try:
+                admin.delete_target(target)
+            except TargetNotFound:
+                pass
         return "removed from the gateway"
-    out = admin.put_target(name, spec) or {}
-    status = str(out.get("status") or "ready")
-    if status == "ready":
-        return f"live on the gateway: the {name} target is ready"
-    return f"live on the gateway: the {name} target is degraded: {status}"
+    states = []
+    for target, target_spec_ in ((name, spec), *extras.items()):
+        out = admin.put_target(target, target_spec_) or {}
+        status = str(out.get("status") or "ready")
+        states.append(f"the {target} target is ready" if status == "ready" else f"the {target} target is degraded: {status}")
+    return "live on the gateway: " + "; ".join(states)
 
 
 PR_SENTENCE = "; pull request open on the gateway:"
@@ -518,6 +568,8 @@ def _gateway_pr(
             updated = stripped if remove else stripped.rstrip("\n") + "\n" + aws_roles_stanza(row)
         else:
             stripped = _without_stanza(current, target_name)
+            if github_app:
+                stripped = _without_stanza(stripped, mcp_write_target_name(row.id))
             stanza = datadog_target_stanza(row) if datadog else github_target_stanza(row) if github_app else target_stanza(row)
             updated = stripped if remove else stripped.rstrip("\n") + "\n" + stanza
         if updated == current:
@@ -542,13 +594,16 @@ def _gateway_pr(
             f"Serves after this merges and the gateway rolls."
         )
     elif github_app:
-        what = "target"
+        what = "targets"
         added = (
-            f"Adds the `{target_name}` target: GitHub\'s hosted MCP server at {(row.spec or {}).get('address') or GITHUB_MCP_ADDRESS}. "
-            f"Each agent\'s calls carry its own installation token leased from the permission service "
-            f"(`service-token`, `GITHUB_TOKEN`), read-only on every request; the catalog fetch carries an installation "
-            f"token the gateway mints from its own App (`catalog_token_provider = \"{GITHUB_MCP_CATALOG_PROVIDER}\"`). "
-            f"Needs the gateway on liminal 0.9.2 or later. "
+            f"Adds the `{target_name}` and `{mcp_write_target_name(row.id)}` targets: GitHub\'s hosted MCP server at "
+            f"{(row.spec or {}).get('address') or GITHUB_MCP_ADDRESS}. Each agent\'s calls carry its own installation "
+            f"token leased from the permission service (`service-token`, `GITHUB_TOKEN`), narrowed to the agent\'s "
+            f"repository set. `{target_name}` is read-only on every request (`github:read`); "
+            f"`{mcp_write_target_name(row.id)}` wants `{GITHUB_MCP_WRITE_SCOPE}`, sends the branch-, commit-, pull-request- "
+            f"and issue-creating tools to `{GITHUB_WRITE_SCOPE}` and merge and delete to `{GITHUB_NEVER_SCOPE}`, which no "
+            f"lane grants. The catalog fetch carries an installation token the gateway mints from its own App "
+            f"(`catalog_token_provider = \"{GITHUB_MCP_CATALOG_PROVIDER}\"`). Needs the gateway on liminal 0.9.2 or later. "
             f"Serves after this merges and the gateway rolls."
         )
     else:
@@ -560,7 +615,8 @@ def _gateway_pr(
             f"`{token_env(row.id)}` (key `{SECRET_KEY}`). The target serves after this merges and "
             f"the gateway rolls."
         )
-    removed = f"Removes the `{row.id if aws else target_name}` {what}."
+    removed = (f"Removes the `{target_name}` and `{mcp_write_target_name(row.id)}` targets." if github_app
+               else f"Removes the `{row.id if aws else target_name}` {what}.")
     body = f"Opened by the room\'s admin panel for {actor}.\n\n" + (removed if remove else added)
     add_branch, remove_branch = f"{BRANCH_PREFIX}{row.id}", f"{BRANCH_PREFIX}{row.id}{REMOVE_SUFFIX}"
     return _gateway_branch_pr(
@@ -686,7 +742,11 @@ def _connect_github(
 ) -> AdminIntegration:
     """GitHub through the permission service (kobo#338): the room's own GitHub
     App unless one is pasted, written to the service's Secret and probed; then
-    the `github-mcp` target on the gateway."""
+    the `github-mcp` and `github-mcp-write` targets on the gateway (kobo#365).
+    The connection carries no repository list of its own any more: each agent's
+    set is a child integration under it, written from the agent's Access tab
+    (`kobo_api.github_access`). An older row whose identity still names
+    `repositories` is read as it is and means nothing to the lease."""
     if bab is None:
         raise ConnectRefused("GitHub through a GitHub App needs the permission service; turn Access on first")
     kubectl = getattr(clients, "kubectl", None) if clients is not None else None
@@ -706,7 +766,7 @@ def _connect_github(
         identity["app_id"], identity["installation_id"] = str(app.app_id), str(app.installation_id)
         secrets[GITHUB_PRIVATE_KEY_FIELD] = pem
         source = "room"
-    repositories = sorted({r.strip() for r in identity.get("repositories", "").split(",") if r.strip()})
+    identity.pop("repositories", None)
     inst = identity["installation_id"]
     where = f"the Secret {GITHUB_SECRET} in the {config.bab_namespace} namespace, read by the permission service"
     probed: dict[str, Any] = {}
@@ -724,7 +784,7 @@ def _connect_github(
         "trust": trust if trust in ("trusted", "untrusted") else "untrusted",
         "auth": GITHUB_AUTH,
         "identity": {"app_id": identity["app_id"], "installation_id": inst, "source": source,
-                     **({"account": account} if account else {}), **({"repositories": repositories} if repositories else {})},
+                     **({"account": account} if account else {})},
         "secret_keys": [],
     }
     row = admin_store.put_integration(
@@ -737,14 +797,19 @@ def _connect_github(
         detail = (f"GitHub agreed: the permission service read installation {inst}"
                   + (f" on {account}" if account else "") + f" and minted a probe token that sees "
                   f"{probed.get('repositories', 0)} repositories; the app is in {where}")
-    spec_for_bab = {"installation_id": inst, "repositories": repositories, "name": name, **({"account": account} if account else {})}
+    spec_for_bab = {"installation_id": inst, "name": name, **({"account": account} if account else {})}
     try:
-        bab.put_integration(row.id, vendor, spec_for_bab, bab_mod.read_permissions(bab, vendor, actor), actor)
+        # Every github permission, not the read tier alone: the levels (Read, Review
+        # pull requests, Open pull requests) are each agent's to ask on its own
+        # repository set, and Review's to decide (kobo#365).
+        bab.put_integration(row.id, vendor, spec_for_bab, bab_mod.all_permissions(bab, vendor, actor), actor)
     except ClientError as exc:
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the permission service refused: {exc}")
         return row
-    detail += "; connected in the permission service, agents may ask for its read permissions"
-    return _attach_mcp_target(session, clients, config, row, detail=detail, waiting=waiting, actor=actor, label="GitHub\'s MCP server")
+    detail += ("; connected in the permission service: each agent picks its repositories on its Access tab and asks "
+               "for a level (Read, Review pull requests, Open pull requests)")
+    return _attach_mcp_target(session, clients, config, row, detail=detail, waiting=waiting, actor=actor,
+                              label="GitHub\'s MCP server (the read and the write targets)")
 
 
 def _connect_datadog(

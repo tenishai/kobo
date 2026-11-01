@@ -64,7 +64,6 @@ export type HarnessSectionId =
   | "tooling"
   | "memory"
   | "learnings"
-  | "permissions"
   | "activity";
 
 export const HARNESS_SECTION_LABELS: Record<HarnessSectionId, string> = {
@@ -75,7 +74,6 @@ export const HARNESS_SECTION_LABELS: Record<HarnessSectionId, string> = {
   tooling: "Tooling",
   memory: "Memory",
   learnings: "Learnings",
-  permissions: "Permissions",
   activity: "Activity",
 };
 
@@ -97,11 +95,14 @@ export function harnessSections(
 ): HarnessSectionId[] {
   // Identity is true of any agent the room deploys, connected included:
   // both kinds run as the service account the room made for them. With the
-  // permission service on, access is asked for under Permissions and the
-  // identity facts move to one line there, so the section goes (#292).
+  // permission service on, access is asked for on the Access tab (what this
+  // agent can reach, issue #365) and the identity facts move to one line
+  // there, so the section goes (#292). Permissions was a section here until
+  // that wave; the Harness is what runs the agent, and what it may reach is
+  // an Access question.
   const all: HarnessSectionId[] =
     kind === KIND_CONNECTED
-      ? [DEFAULT_HARNESS_SECTION, "identity", "permissions", "activity"]
+      ? [DEFAULT_HARNESS_SECTION, "identity", "activity"]
       : [...HARNESS_SECTION_IDS];
   return opts.accessOn ? all.filter((id) => id !== "identity") : all;
 }

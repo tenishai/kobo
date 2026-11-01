@@ -5,7 +5,6 @@
     ClockCounterClockwise,
     Cpu,
     IdentificationCard,
-    Key,
     Lightbulb,
     Lightning,
     UserCircle,
@@ -22,7 +21,6 @@
     tooling: Wrench,
     memory: Brain,
     learnings: Lightbulb,
-    permissions: Key,
     activity: ClockCounterClockwise,
   } as const;
   import type { AgentIdentity } from "../lib/api";
@@ -49,7 +47,6 @@
   import type { Snippet } from "svelte";
   import LearningsPanel from "./LearningsPanel.svelte";
   import ActivityPanel from "./ActivityPanel.svelte";
-  import PermissionsPanel from "./PermissionsPanel.svelte";
   import MemoryPanel from "./MemoryPanel.svelte";
   import SkillsPanel from "./SkillsPanel.svelte";
   import ToolingPanel from "./ToolingPanel.svelte";
@@ -501,9 +498,6 @@
           <MemoryPanel {agentName} {frozen} />
         {:else if id === "learnings"}
           <LearningsPanel {agentName} canDecide={canDecideLearnings} {frozen} />
-        {:else if id === "permissions"}
-          <!-- The identity line moves here only when the section it lived in is gone (#292). -->
-          <PermissionsPanel {agentName} identity={accessOn ? identity : null} />
         {:else if id === "activity"}
           <ActivityPanel {agentName} />
         {/if}

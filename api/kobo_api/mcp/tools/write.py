@@ -6,10 +6,7 @@ staging/removing marketplace catalog skills on an owned agent),
 owned agent, from the marketplace or given inline), `kobo_create_skill`/
 `kobo_create_tool` (Task 5, publishing a NEW skill or tool into the org
 marketplace catalog itself, membership-gated -- see that pair's own
-docstring section below), `kobo_request_repo_access`/`kobo_list_repo_access`/
-`kobo_decide_repo_access` (the agent PR broker's request/list/decide trio,
-gating which GitHub repositories an agent's own github.open_pr tool may
-mint scoped tokens against), `kobo_create_persona` (persona wave Task
+docstring section below), `kobo_create_persona` (persona wave Task
 5, publishing a NEW persona into the room's own catalog -- see that tool's
 own docstring section below), and the write half of the MCP learnings
 trio (Task 8) -- `kobo_decide_learning`/`kobo_decide_learnings_bulk` --
@@ -70,7 +67,7 @@ either the tool's return value or a `ToolError`.
 
 **(A) The agent-scoped tools** (`kobo_teach`, `kobo_chat`,
 `kobo_request_colleague`, `kobo_accept_invite`, `kobo_wire_slack`,
-`kobo_set_agent_skills`, `kobo_add_agent_tool`, `kobo_request_repo_access`,
+`kobo_set_agent_skills`, `kobo_add_agent_tool`,
 `kobo_decide_learning`, `kobo_decide_learnings_bulk`) -- every one of
 these resolves an existing agent by name (or, for `kobo_accept_invite`, an
 existing invite naming two agents) before doing anything else, so the
@@ -701,9 +698,6 @@ def register(mcp: FastMCP, app: Any) -> None:
     set_colleague_mode_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/colleague-mode")
     metadata_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/metadata")
     set_runtime_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/runtime")
-    request_repo_access_endpoint = _endpoint(app, "POST", "/api/agents/{name}/repo-access")
-    list_repo_access_endpoint = _endpoint(app, "GET", "/api/repo-access")
-    decide_repo_access_endpoint = _endpoint(app, "POST", "/api/repo-access/decide")
     create_persona_endpoint = _endpoint(app, "POST", "/api/personas")
     move_persona_endpoint = _endpoint(app, "PATCH", "/api/personas/{persona_id}")
     archive_persona_endpoint = _endpoint(app, "POST", "/api/personas/{persona_id}/archive")
@@ -1271,91 +1265,6 @@ def register(mcp: FastMCP, app: Any) -> None:
             "mode": body.get("mode"),
             "message": body.get("message"),
         }
-
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
-    @audited("kobo_request_repo_access")
-    async def kobo_request_repo_access(ctx: Context, agent: str, repositories: list[str]) -> dict:
-        """Request pull-request access to GitHub repositories for `agent` --
-        the agent PR broker's request half. Pass MANY repositories at once
-        (each "owner/name"); the room's operator set approves or revokes in
-        batch. You must own `agent` (or be a room operator). Approved
-        grants let the agent's own github.open_pr tool mint tokens scoped
-        to exactly those repositories, nothing wider.
-        """
-        from kobo_api.main import RepoAccessRequest
-
-        email = get_user_email(ctx)
-        req = authz.room_request(app, email)
-        session = app.state.session_factory()
-        try:
-            try:
-                payload = RepoAccessRequest(repositories=repositories)
-            except ValidationError as exc:
-                raise ToolError(_bad_request(exc)) from exc
-            response = await _off_loop(
-                request_repo_access_endpoint,
-                name=agent,
-                payload=payload,
-                request=req,
-                session=session,
-            )
-        finally:
-            session.close()
-        body = _agent_route_result(response)
-        return {"requested": body.get("requested", [])}
-
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-    @audited("kobo_list_repo_access")
-    async def kobo_list_repo_access(ctx: Context, status: str | None = None) -> dict:
-        """List repo-access grant rows you can see: each agent's requested,
-        approved, and revoked repositories, with who asked and who decided.
-        Optional status filters to one of requested/approved/revoked. The
-        operator review queue is status="requested".
-        """
-        email = get_user_email(ctx)
-        req = authz.room_request(app, email)
-        session = app.state.session_factory()
-        try:
-            response = await _off_loop(
-                list_repo_access_endpoint, request=req, status=status, session=session
-            )
-        finally:
-            session.close()
-        body = _agent_route_result(response)
-        return {"results": body.get("results", [])}
-
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
-    @audited("kobo_decide_repo_access")
-    async def kobo_decide_repo_access(ctx: Context, ids: list[int], decision: str) -> dict:
-        """Approve or revoke repo-access requests in BATCH -- the operator
-        gate of the agent PR broker. `ids` are row ids from
-        kobo_list_repo_access; `decision` is "approved" or "revoked".
-        Operator-only; revoking is destructive (the agent's next token mint
-        excludes the repository immediately).
-        """
-        from kobo_api.main import RepoAccessDecision
-
-        email = get_user_email(ctx)
-        req = authz.room_request(app, email)
-        session = app.state.session_factory()
-        try:
-            try:
-                payload = RepoAccessDecision(ids=ids, decision=decision)
-            except ValidationError as exc:
-                raise ToolError(_bad_request(exc)) from exc
-            response = await _off_loop(
-                decide_repo_access_endpoint, payload=payload, request=req, session=session
-            )
-        finally:
-            session.close()
-        # NOT table (A): no agent is being resolved here, so a 403 is the
-        # operator gate speaking and its message is the honest answer --
-        # folding it into "agent not found" would be nonsense copy. 404
-        # stays generic (an unknown row id enumerates nothing).
-        if response.status_code == 403:
-            raise ToolError(str(_parse(response).get("error", "operator only")))
-        body = _agent_route_result(response)
-        return {"decided": body.get("decided", [])}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_create_skill")

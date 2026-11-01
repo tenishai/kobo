@@ -2511,7 +2511,6 @@ def _make_spec(
     colleagues: list[dict] | None = None,
     cabal_url: str | None = None,
     memory_replica_bucket: str = "",
-    broker_url: str = "",
     liminal_url: str = "",
     archetype: str | None = None,
 ) -> BundleSpec:
@@ -2530,7 +2529,6 @@ def _make_spec(
         colleagues=colleagues if colleagues is not None else [],
         cabal_url=cabal_url,
         memory_replica_bucket=memory_replica_bucket,
-        broker_url=broker_url,
         liminal_url=liminal_url,
         archetype=archetype,
     )
@@ -6623,3 +6621,71 @@ def test_a_delivery_is_delivered_only_once_the_new_pod_is_available():
     settled = FakeKubectl(images={("acme-agent", "acme-agent"): f"registry.example/agents/acme-agent:{sha[:12]}"})
     out = delivery_state(github, settled, repo="acme-org/acme-agent", namespace="acme-agent", deploy="acme-agent", sha=sha)
     assert out["state"] == "delivered", out
+
+
+# --- the broker's approved rows move onto GitHub per agent at boot (kobo#365) ------
+
+
+def _repo_access_room(session_factory, *, connected=True):
+    from kobo_api.models import RepoAccess
+    from tests.fakes import FakeBab, FakeGitHub
+
+    levels = ["github_pulls_review", "github_pulls_write", "github_repos_read"]
+    bab = FakeBab(integrations=[{"integration": "github", "vendor": "github", "kind": "connection", "name": "GitHub",
+                                 "ceiling": levels, "spec": {"installation_id": "151256501", "name": "GitHub"},
+                                 "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"}] if connected else [])
+    with session_factory() as s:
+        for name in ("ward", "clio"):
+            s.add(Agent(name=name, persona="p", model_id="m", status=AgentStatus.READY, repo_full_name=f"acme/agent-{name}"))
+        s.add(RepoAccess(agent_name="ward", repository="acme/a", status="approved", requested_by="o@example.com"))
+        s.add(RepoAccess(agent_name="ward", repository="acme/b", status="approved", requested_by="o@example.com"))
+        s.add(RepoAccess(agent_name="ward", repository="acme/c", status="requested", requested_by="o@example.com"))
+        s.add(RepoAccess(agent_name="clio", repository="acme/d", status="approved", requested_by="o@example.com"))
+        s.commit()
+    return bab, SimpleNamespace(github=FakeGitHub(), liminal_admin=None, bab=bab)
+
+
+def test_approved_repo_access_rows_become_a_github_child_and_an_open_pull_requests_grant_once(session_factory):
+    """Data integrity (kobo#365): at boot every agent with approved broker rows and no GitHub
+    child gets the child with exactly those repositories and an approved `github_pulls_write`
+    grant on it, the rows are stamped `migrated_at`, one audit row per agent; a second boot
+    moves nothing; an agent that already picked a set keeps it and is stamped without a grant;
+    an unapproved row is left alone."""
+    from kobo_api.github_access import migrate_repo_access
+    from kobo_api.models import AuditLog, RepoAccess
+
+    bab, clients = _repo_access_room(session_factory)
+    bab.put_integration("github-clio", "github", {"repositories": ["acme/z"], "name": "GitHub for clio"}, ["github_repos_read"], "x",
+                        parent="github")
+    with session_factory() as s:
+        out = migrate_repo_access(s, clients, bab)
+        assert out == {"agents": 2, "migrated": 1, "kept": 1, "waiting": False}
+        rows = {(r.agent_name, r.repository): r.migrated_at for r in s.query(RepoAccess).all()}
+        assert rows[("ward", "acme/a")] is not None and rows[("ward", "acme/b")] is not None and rows[("clio", "acme/d")] is not None
+        assert rows[("ward", "acme/c")] is None
+        assert sorted(a.summary for a in s.query(AuditLog).filter_by(action="access.migrate").all()) == sorted([
+            "the room moved ward's repository access onto GitHub: 2 repositories, Open pull requests",
+            "the room kept clio's repository set (1 repositories) and retired its 1 approved broker row(s)",
+        ])
+    child = next(i for i in bab.integrations("x") if i["integration"] == "github-ward")
+    assert child["parent"] == "github" and child["spec"]["repositories"] == ["acme/a", "acme/b"]
+    assert child["spec"]["installation_id"] == "151256501" and child["spec"]["name"] == "GitHub for ward"
+    assert [(g["integration"], g["permission"], g["state"]) for g in bab.grants("ward", "x")] == [("github-ward", "github_pulls_write", "active")]
+    assert bab.grants("clio", "x") == []
+    assert next(i for i in bab.integrations("x") if i["integration"] == "github-clio")["spec"]["repositories"] == ["acme/z"]
+    with session_factory() as s:
+        assert migrate_repo_access(s, clients, bab) == {"agents": 0, "migrated": 0, "kept": 0, "waiting": False}
+    assert len(bab.grants("ward", "x")) == 1
+
+
+def test_repo_access_rows_wait_for_a_github_connection(session_factory):
+    """Data integrity (kobo#365): without a GitHub connection nothing is written and no row is
+    stamped, so the next boot tries again."""
+    from kobo_api.github_access import migrate_repo_access
+    from kobo_api.models import RepoAccess
+
+    bab, clients = _repo_access_room(session_factory, connected=False)
+    with session_factory() as s:
+        assert migrate_repo_access(s, clients, bab)["waiting"] is True
+        assert all(r.migrated_at is None for r in s.query(RepoAccess).all())
+    assert bab.integrations("x") == [] and bab.grants("ward", "x") == []

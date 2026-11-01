@@ -337,15 +337,40 @@ ACCOUNT_NOUN = {"aws": "account", "gcp": "project", "azure": "subscription"}
 
 
 def _add_account(accounts: list[dict], iid: str, name: str, row: dict | None, org: str | None,
-                 account_id: str | None = None) -> None:
+                 account_id: str | None = None, *, repositories: list[str] | None = None,
+                 has_repo_set: bool = False) -> None:
     if any(a["id"] == iid for a in accounts):
         return
     accounts.append({"id": iid, "name": name, "connected": row is not None,
                      "ceiling": sorted(row.get("ceiling") or []) if row else [],
-                     "organization": org, "account_id": account_id or (row or {}).get("account_id")})
+                     "organization": org, "account_id": account_id or (row or {}).get("account_id"),
+                     "repositories": sorted(repositories or []), "has_repo_set": has_repo_set})
 
 
-def picker(bab: BabClient, actor: str) -> list[dict]:
+def child_id(connection: str, agent: str) -> str:
+    """The id of an agent's child under a service connection (kobo#365):
+    `<connection>-<agent>`, the one integration the agent's GitHub grants target."""
+    return f"{connection}-{agent}"
+
+
+def child_repositories(row: dict | None) -> list[str]:
+    """The repository set a child carries: bab's listing names it as
+    `repositories` on the row (0.4.12); a row that still carries its `spec`
+    (the test fake, an older service) is read the same way. [] for none."""
+    row = row or {}
+    repos = row.get("repositories") or (row.get("spec") or {}).get("repositories") or []
+    return sorted(str(r) for r in repos)
+
+
+def _labelled(tree: dict) -> dict:
+    """The catalogue tree with `label` on every permission: bab's when it sends one
+    (0.4.12), null before that, so the UI reads one shape either way."""
+    groups = [{**g, "permissions": [{**p, "label": p.get("label")} for p in g.get("permissions", [])]}
+              for g in tree.get("groups", [])]
+    return {**tree, "groups": groups}
+
+
+def picker(bab: BabClient, actor: str, agent: str | None = None) -> list[dict]:
     """The tree the Permissions section walks: vendor, then (for a cloud) the account,
     project or subscription, then the vendor's permissions grouped its way with the tier
     as a column. A cloud's accounts are the rows connected in bab, with their ceiling and
@@ -355,7 +380,13 @@ def picker(bab: BabClient, actor: str) -> list[dict]:
     offered: a lease is for an account. A service vendor has one "account": its
     connection, or a placeholder when none is connected yet, so the vendor stays
     discoverable. Nothing above a connection's ceiling is hidden; the UI greys it with
-    the reason."""
+    the reason.
+
+    A service connection may carry children, one per agent (kobo#365: GitHub, a repo set
+    per agent as the child `<connection>-<agent>`). Given `agent`, that vendor shows ONE
+    account: the agent's own child when it exists (`repositories`, `has_repo_set` true),
+    else the connection as a placeholder for the set still to pick; other agents' children
+    are never offered. Without an agent, children are hidden and the connection stands."""
     integrations = bab.integrations(actor)
     known = {v["vendor"]: v for v in bab.vendors(actor)}
     names: list[str] = list(known)
@@ -389,10 +420,18 @@ def picker(bab: BabClient, actor: str) -> list[dict]:
                     _add_account(accounts, iid, row.get("name") or iid, row, None)
         else:
             for iid, row in connected.items():
-                _add_account(accounts, iid, iid, row, None)
+                if row.get("parent"):
+                    continue  # a child: offered only as the asking agent's own, below
+                child = connected.get(child_id(iid, agent)) if agent else None
+                if child is not None and child.get("parent") == iid:
+                    _add_account(accounts, child["integration"], row.get("name") or iid, child, None,
+                                 repositories=child_repositories(child), has_repo_set=True)
+                else:
+                    _add_account(accounts, iid, row.get("name") or iid, row, None)
             if not accounts:
                 accounts.append({"id": vendor, "name": meta["label"], "connected": False, "ceiling": [],
-                                 "organization": None, "account_id": None})
+                                 "organization": None, "account_id": None, "repositories": [], "has_repo_set": False})
+        tree = _labelled(tree)
         out.append({"id": vendor, "kind": meta["kind"], "label": meta.get("label") or vendor,
                     "account_noun": meta.get("account") or ("account" if meta["kind"] == "cloud" else None),
                     "organizations": [{"id": o["integration"], "name": o.get("name") or o["integration"]} for o in orgs],
@@ -408,6 +447,18 @@ def read_permissions(bab: BabClient, vendor: str, actor: str) -> list[str]:
     except ClientError:
         return []
     return sorted(p["name"] for g in tree.get("groups", []) for p in g.get("permissions", []) if p.get("tier") == "read")
+
+
+def all_permissions(bab: BabClient, vendor: str, actor: str) -> list[str]:
+    """Every permission the catalogue offers for a vendor, whatever its tier: the
+    ceiling of a GitHub connection and of each agent's child under it (kobo#365), so
+    Review may approve Review pull requests and Open pull requests where the owner
+    asks; bab's tiers still decide how long each grant stands."""
+    try:
+        tree = bab.catalogue(vendor, actor)
+    except ClientError:
+        return []
+    return sorted(p["name"] for g in tree.get("groups", []) for p in g.get("permissions", []))
 
 
 def active_leases(bab: BabClient, actor: str, now: datetime | None = None) -> list[dict]:
@@ -438,10 +489,14 @@ __all__ = [
     "BabClient",
     "HttpxBabClient",
     "actor_for",
+    "all_permissions",
     "build_bab",
+    "child_id",
+    "child_repositories",
     "ensure_agent_integrations",
     "picker",
     "push_topology",
+    "read_permissions",
     "remove_agent_integration",
     "since_days",
     "topology_agent",

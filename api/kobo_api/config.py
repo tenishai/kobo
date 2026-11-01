@@ -529,11 +529,11 @@ class Config(BaseModel):
     pr_app_id: str = ""
     pr_app_installation_id: str = ""
     pr_app_private_key_path: Path | None = None
-    # The room's OWN in-cluster base URL, as deployed AGENTS reach it -- the
-    # PR broker's client half (daedalus's github sidecar) calls
-    # {broker_url}/broker/... with the agent's colleague JWT. Org-settable
-    # (an infra coordinate like cabal_url); empty = the composer emits no
-    # github block at all.
+    # The room's OWN in-cluster base URL, as deployed AGENTS reach it: the
+    # /broker/agents/{name}/jira/* lane is called at {broker_url}/broker/...
+    # with the agent's colleague JWT. Org-settable (an infra coordinate like
+    # cabal_url). The composer no longer reads it: the github broker sidecar
+    # retired with the pull request broker (kobo#365, 2026-11-01).
     broker_url: str = ""
     # The observability catalog's Noto link (Task 4): the dashboard base
     # URL and this room's project slug within it, surfaced at

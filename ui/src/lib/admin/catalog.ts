@@ -50,9 +50,8 @@ export const CATALOG: CatalogEntry[] = [
       { key: "app_id", label: "App id", secret: false, optional: true, placeholder: "leave blank to use the room's GitHub App" },
       { key: "installation_id", label: "Installation id", secret: false, optional: true },
       { key: "PRIVATE_KEY", label: "Private key (PEM)", secret: true, optional: true },
-      { key: "repositories", label: "Repositories agents may be granted", secret: false, optional: true, placeholder: "all the app can see; or names, comma-separated" },
     ],
-    note: "Uses the room's own GitHub App (the one under Integrations that opens pull requests) unless you paste another. The app must hold every permission agents may be granted: metadata, contents, issues, pull requests, actions and checks, read. The room mints a short-lived installation token per agent, narrowed to its permissions and these repositories. Agents also reach GitHub's MCP server through the gateway with that token.",
+    note: "Uses the room's own GitHub App (the one under Integrations that opens pull requests) unless you paste another. The app must hold every permission agents may be granted: metadata, contents, issues, pull requests, actions and checks, with pull requests and contents writable for the Review and Open levels. Each agent picks its own repositories on its Access tab; the room mints it a short-lived installation token narrowed to that set and its level. Agents also reach GitHub's MCP server through the gateway with that token.",
   },
   {
     id: "gcp", name: "Google Cloud", summary: "Projects, resources and IAM.", auth: "gcp_identity",

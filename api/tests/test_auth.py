@@ -30,7 +30,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api.admin_store import audit_events
-from kobo_api.clients import ClientError, Clients
+from kobo_api.clients import Clients
 from kobo_api.config import Config, GroupChoice, MCPConfig
 from kobo_api.iap import (
     ASSERTION_HEADER,
@@ -53,8 +53,8 @@ from kobo_api.mcp import server as mcp_server
 from kobo_api.mcp.jwt import ACCESS_TTL_S, mint, verify
 from kobo_api.mcp.refresh_tokens import consume, create_family
 from kobo_api.mcp.server import _KoboTokenVerifier
-from kobo_api.models import Agent, AgentStatus, Base, MCPRefreshToken
-from kobo_api.pr_broker import BrokerAuthError, mint_scoped_token
+from kobo_api.models import Base, MCPRefreshToken
+from kobo_api.pr_broker import BrokerAuthError
 from tests.fakes import FakeAgent, FakeCloud, FakeGitHub, FakeGojira, FakeKubectl
 
 # --- from test_iap.py ---
@@ -525,7 +525,7 @@ def test_broker_lane_is_untouched_by_the_https_guard(session_factory, iap_config
 
     for method, path in (
         ("get", "/broker/agents/wren/jira/search?q=x"),
-        ("post", "/broker/agents/wren/github-token"),
+        ("get", "/broker/agents/wren/jira/issues/AREQ-1"),
     ):
         for headers in ({}, HTTP_PROTO, HTTPS_PROTO):
             resp = getattr(test_client, method)(
@@ -1541,118 +1541,7 @@ def test_revoke_cuts_the_families_logs_the_action_and_the_verifier_refuses_old_t
     assert ("mcp.revoke", "gone@example.com") in actions
 
 
-# --- from test_pr_broker.py ---
-
-
-@pytest.fixture
-def broker_config(tmp_path):
-    key = tmp_path / "pr-app.pem"
-    key.write_text("not-a-real-key")
-    return Config(
-        workdir=tmp_path / "work",
-        pr_app_id="4741722",
-        pr_app_installation_id="157070479",
-        pr_app_private_key_path=key,
-        cabal_url="http://cabal.test",
-    )
-
-
-@pytest.fixture
-def broker_client(session_factory, broker_config):
-    return TestClient(create_app(session_factory, config=broker_config))
-
-
-def _agent(session_factory, name="ward"):
-    session = session_factory()
-    agent = Agent(
-        name=name, persona="helpful-generalist", model_id="m", status=AgentStatus.READY
-    )
-    session.add(agent)
-    session.commit()
-    session.close()
-    return name
-
-
-def _rsa_key_pem(tmp_path):
-    # PyJWT needs a real RSA key to sign the App JWT; generate a throwaway.
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    pem = key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    )
-    p = tmp_path / "k.pem"
-    p.write_bytes(pem)
-    return p
-
-
-def test_token_route_401s_when_verification_fails(
-    broker_client, session_factory, monkeypatch
-):
-    """Gate (authentication): Token route 401s when verification fails."""
-    import kobo_api.main as main_mod
-    from kobo_api.pr_broker import BrokerAuthError
-
-    name = _agent(session_factory)
-
-    def refuse(*a, **k):
-        raise BrokerAuthError("no")
-
-    monkeypatch.setattr(main_mod, "verify_agent_token", refuse)
-    r = broker_client.post(
-        f"/broker/agents/{name}/github-token", headers={"Authorization": "Bearer x"}
-    )
-    assert r.status_code == 401
-
-
-def test_token_route_mints_scoped_to_approved_rows_only(
-    broker_client, session_factory, monkeypatch
-):
-    """Gate (authentication): Token route mints scoped to approved rows only."""
-    import kobo_api.main as main_mod
-
-    name = _agent(session_factory)
-    rows = broker_client.post(
-        f"/api/agents/{name}/repo-access",
-        json={"repositories": ["acme/a", "acme/b"]},
-    ).json()["requested"]
-    # Approve only the first; the second stays requested.
-    broker_client.post(
-        "/api/repo-access/decide", json={"ids": [rows[0]["id"]], "decision": "approved"}
-    )
-
-    monkeypatch.setattr(main_mod, "verify_agent_token", lambda *a, **k: None)
-    calls = {}
-
-    def fake_mint(**kwargs):
-        calls.update(kwargs)
-        return {"token": "ghs_x", "expires_at": "later", "repositories": kwargs["repositories"]}
-
-    monkeypatch.setattr(main_mod, "mint_scoped_token", fake_mint)
-    r = broker_client.post(
-        f"/broker/agents/{name}/github-token", headers={"Authorization": "Bearer x"}
-    )
-    assert r.status_code == 200
-    assert calls["repositories"] == ["acme/a"]  # wall 2: approved rows only
-    assert r.json()["token"] == "ghs_x"
-
-
-def test_rerequest_never_demotes_an_approved_grant(broker_client, session_factory):
-    """Gate (authentication): Rerequest never demotes an approved grant."""
-    name = _agent(session_factory)
-    rows = broker_client.post(
-        f"/api/agents/{name}/repo-access", json={"repositories": ["acme/a"]}
-    ).json()["requested"]
-    broker_client.post(
-        "/api/repo-access/decide", json={"ids": [rows[0]["id"]], "decision": "approved"}
-    )
-    again = broker_client.post(
-        f"/api/agents/{name}/repo-access", json={"repositories": ["acme/a"]}
-    ).json()["requested"]
-    assert again[0]["status"] == "approved"
+# --- from test_pr_broker.py (the token verification the jira lane kept, kobo#365) ---
 
 
 def test_verify_refuses_a_pass_issued_before_the_last_mint(monkeypatch):
@@ -1683,17 +1572,6 @@ def test_verify_refuses_a_pass_issued_before_the_last_mint(monkeypatch):
     with pytest.raises(pr_broker.BrokerAuthError):
         pr_broker.verify_agent_token(
             "http://cabal", "t", "ward", not_before=datetime.fromtimestamp(1_100, UTC).replace(tzinfo=None)
-        )
-
-
-def test_mint_refuses_an_empty_scope(tmp_path):
-    """Gate (authentication): Mint refuses an empty scope."""
-    with pytest.raises(ClientError):
-        mint_scoped_token(
-            app_id="1",
-            installation_id="2",
-            private_key_path=_rsa_key_pem(tmp_path),
-            repositories=[],
         )
 
 

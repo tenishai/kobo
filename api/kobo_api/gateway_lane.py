@@ -1,20 +1,28 @@
-"""The gateway lane follows the permission (kobo#327).
+"""The gateway lane follows the permission (kobo#327, per permission since kobo#365).
 
 With the permission service on, an agent holds permissions, not lanes: a
 grant on a Datadog connection lets it borrow a scoped application key for an
-hour. The tool gateway still has to let the agent's calls through to the
-vendor's handler and to the vendor's MCP target (`datadog-mcp`), and it
+hour; a grant on its GitHub repository set lets it borrow an installation
+token narrowed to that set. The tool gateway still has to let the agent's
+calls through to the vendor's handler and to the vendor's MCP target, and it
 decides that from its own grant table: a scope per target and an allowed
 handler list per persona. This module keeps the two in step, so approving
 the permission is the only thing anyone grants.
 
-`GATEWAY_LANES` says, per vendor, which scopes and handlers an agent needs on
-the gateway once it holds ANY active grant on an integration of that vendor.
-`follow` recomputes the managed part of the agent's gateway grant from its
-grants in the permission service and writes it live through the gateway's
-admin plane, leaving whatever else the grant carries (scopes and handlers the
-room did not put there) alone. Best effort: it never raises, it answers one
-sentence for the audit row.
+Two tables. `GATEWAY_LANES` says, per vendor, which scopes and handlers an
+agent needs once it holds ANY active grant on an integration of that vendor
+(Datadog). `PERMISSION_LANES` says it per (vendor, permission), for a vendor
+whose levels open different targets (GitHub: Read opens the read-only
+`github-mcp` target, Review pull requests and Open pull requests open the
+`github-mcp-write` target, the second with the `github:write` scope the
+branch- and pull-request-creating tools need). `follow` recomputes the
+managed part of the agent's gateway grant from its grants in the permission
+service and writes it live through the gateway's admin plane, leaving
+whatever else the grant carries (scopes and handlers the room did not put
+there) alone, and brings the agent's own bundle allow list in step both
+ways: a pattern the agent now earns is added, one it no longer earns is
+withdrawn (one commit, one restart). Best effort: it never raises, it
+answers one sentence for the audit row.
 
 Import-light on purpose: it takes the clients bag and the permission-service
 client it is handed, and never imports the app.
@@ -27,6 +35,7 @@ import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
+import yaml
 from sqlalchemy.orm import Session
 
 from .clients import ClientError
@@ -39,43 +48,87 @@ from .repo_lock import repo_write_lock
 log = logging.getLogger(__name__)
 
 class Lane(NamedTuple):
-    """What an agent granted a vendor needs on the gateway (scopes, handlers)
-    and in its own bundle (allow patterns, matched by the runtime with
-    fnmatch): the gateway filters the catalog per grant, the runtime offers
-    only what the bundle allows, so a permission has to open both."""
+    """What an agent granted a vendor (or one of its permissions) needs on the
+    gateway (scopes, handlers) and in its own bundle (allow patterns, matched by
+    the runtime with fnmatch): the gateway filters the catalog per grant, the
+    runtime offers only what the bundle allows, so a permission has to open both."""
 
     scopes: tuple[str, ...]
     handlers: tuple[str, ...]
     allow: tuple[str, ...]
 
 
-# vendor -> the lane an agent granted that vendor needs.
+# vendor -> the lane an agent granted ANY permission of that vendor needs.
 GATEWAY_LANES: dict[str, Lane] = {
     "datadog": Lane(scopes=("datadog:read",), handlers=("datadog", "datadog-mcp"), allow=("datadog.*", "datadog-mcp.*")),
-    "github": Lane(scopes=("github:read",), handlers=("github", "github-mcp"), allow=("github.*", "github-mcp.*")),
 }
-MANAGED_SCOPES: frozenset[str] = frozenset(s for lane in GATEWAY_LANES.values() for s in lane.scopes)
-MANAGED_HANDLERS: frozenset[str] = frozenset(h for lane in GATEWAY_LANES.values() for h in lane.handlers)
+# (vendor, permission) -> the lane that one permission needs; wins over the
+# vendor table for its vendor (kobo#365: GitHub's three levels).
+PERMISSION_LANES: dict[tuple[str, str], Lane] = {
+    ("github", "github_repos_read"): Lane(scopes=("github:read",), handlers=("github-mcp",), allow=("github-mcp.*",)),
+    ("github", "github_pulls_review"): Lane(scopes=("github:review",), handlers=("github-mcp-write",),
+                                            allow=("github-mcp-write.*",)),
+    ("github", "github_pulls_write"): Lane(scopes=("github:review", "github:write"), handlers=("github-mcp-write",),
+                                           allow=("github-mcp-write.*",)),
+}
+# What the room used to put there and no lane earns any more: withdrawn on the
+# next `follow` (the gateway's `github` handler and the broker sidecar's tools,
+# kobo#365). Listed here so `follow` keeps managing them until they are gone.
+RETIRED_HANDLERS: tuple[str, ...] = ("github",)
+RETIRED_ALLOW: dict[str, str] = {"github.*": "github"}
+
+_ALL_LANES: list[tuple[str, Lane]] = [*GATEWAY_LANES.items(), *((v, lane) for (v, _), lane in PERMISSION_LANES.items())]
+MANAGED_SCOPES: frozenset[str] = frozenset(s for _, lane in _ALL_LANES for s in lane.scopes)
+MANAGED_HANDLERS: frozenset[str] = frozenset(h for _, lane in _ALL_LANES for h in lane.handlers) | frozenset(RETIRED_HANDLERS)
+# allow pattern -> the vendor it belongs to, for the commit message.
+ALLOW_VENDOR: dict[str, str] = {**{p: v for v, lane in _ALL_LANES for p in lane.allow}, **RETIRED_ALLOW}
+MANAGED_ALLOW: frozenset[str] = frozenset(ALLOW_VENDOR)
 ALLOW_COMMIT = "kobo: allow the {vendor} tools"
+WITHDRAW_COMMIT = "kobo: withdraw the {vendor} tools"
 
 NOT_WIRED = "the gateway admin plane is not wired; the lane did not change"
 UNCHANGED = "gateway lane unchanged"
 REMOVED = "gateway lane removed"
 
 
+def lane_for(vendor: str, permission: str) -> Lane | None:
+    """The lane one active grant earns: the permission's own when the vendor
+    is per permission, else the vendor's; None for a vendor with no lane."""
+    return PERMISSION_LANES.get((vendor, permission)) or GATEWAY_LANES.get(vendor)
+
+
+def held_lanes(bab, agent_name: str, actor: str) -> list[Lane]:
+    """The lanes of every (vendor, permission) the agent holds an active grant
+    on. A grant on an integration the permission service no longer lists
+    counts for nothing."""
+    vendor_of = {i.get("integration"): i.get("vendor") for i in bab.integrations(actor)}
+    lanes: list[Lane] = []
+    for g in bab.grants(agent_name, actor):
+        if g.get("state", "active") != "active":
+            continue
+        vendor = vendor_of.get(g.get("integration"))
+        if not vendor:
+            continue
+        lane = lane_for(str(vendor), str(g.get("permission") or ""))
+        if lane is not None and lane not in lanes:
+            lanes.append(lane)
+    return lanes
+
+
 def desired_lane(bab, agent_name: str, actor: str) -> tuple[set[str], set[str]]:
     """The scopes and handlers the gateway owes this agent: the union over the
-    vendors of every integration it holds an active grant on. A grant on an
-    integration the permission service no longer lists counts for nothing."""
+    lanes of every (vendor, permission) it holds an active grant on."""
     scopes: set[str] = set()
     handlers: set[str] = set()
-    for vendor in held_vendors(bab, agent_name, actor):
-        lane = GATEWAY_LANES.get(vendor)
-        if lane is None:
-            continue
+    for lane in held_lanes(bab, agent_name, actor):
         scopes.update(lane.scopes)
         handlers.update(lane.handlers)
     return scopes, handlers
+
+
+def desired_allow(lanes: list[Lane]) -> set[str]:
+    """The bundle allow patterns the agent's lanes earn."""
+    return {p for lane in lanes for p in lane.allow}
 
 
 def held_vendors(bab, agent_name: str, actor: str) -> set[str]:
@@ -88,47 +141,84 @@ def held_vendors(bab, agent_name: str, actor: str) -> set[str]:
     }
 
 
-def ensure_allow(session: Session, clients, *, agent_name: str, vendors: set[str]) -> str:
-    """Make the agent's own bundle admit the gateway tools of every vendor in
-    `vendors` (one commit, one restart) when it does not already. Returns a
-    clause for the sentence: "" when nothing had to change or the agent is
-    not the room's own, else what was pushed or why it could not be."""
-    patterns = sorted({p for v in sorted(vendors) for p in (GATEWAY_LANES.get(v).allow if v in GATEWAY_LANES else ())})
-    if not patterns:
-        return ""
+def _vendors_of(patterns: set[str]) -> str:
+    return ", ".join(sorted({ALLOW_VENDOR.get(p, p.split(".", 1)[0]) for p in patterns}))
+
+
+def sync_allow(session: Session, clients, *, agent_name: str, patterns: set[str]) -> str:
+    """Make the agent's own bundle admit exactly the managed patterns in
+    `patterns` (one commit, one restart): the ones it lacks are added, the
+    managed ones it carries and no longer earns are withdrawn; entries the
+    room never put there stay. Returns a clause for the sentence: "" when
+    nothing had to change or the agent is not the room's own, else what was
+    pushed or why it could not be."""
     agent = session.query(Agent).filter_by(name=agent_name).one_or_none()
     github = getattr(clients, "github", None) if clients is not None else None
     if agent is None or agent.kind != KIND_COMPOSED or not agent.repo_full_name or github is None:
         return ""
     if agent.status != AgentStatus.READY:
         return ""
+    wanted = sorted(patterns & MANAGED_ALLOW)
+    withdraw = sorted(MANAGED_ALLOW - patterns)
     repo = agent.repo_full_name
     try:
         with repo_write_lock(repo), tempfile.TemporaryDirectory(prefix="kobo-allow-") as tmp:
             workdir = Path(tmp) / "repo"
             github.clone(repo, workdir)
-            if not update_agent_yaml_allow(workdir / "bundle", entries=patterns):
+            before = _allow_entries(workdir / "bundle")
+            if not update_agent_yaml_allow(workdir / "bundle", entries=wanted, remove=withdraw):
                 return ""
-            github.commit_push(workdir, ALLOW_COMMIT.format(vendor=", ".join(sorted(vendors))))
+            added = [p for p in wanted if p not in before]
+            gone = [p for p in withdraw if p in before]
+            github.commit_push(workdir, _commit_message(added, gone))
     except (ClientError, OSError) as exc:
         log.warning("allow list for %s could not be updated: %s", agent_name, exc)
         return f"; the agent's allow list could not be updated: {exc}"
-    return f"; the agent now allows {', '.join(patterns)} (it restarts once)"
+    said = []
+    if added:
+        said.append(f"now allows {', '.join(added)}")
+    if gone:
+        said.append(f"no longer allows {', '.join(gone)}")
+    return f"; the agent {' and '.join(said)} (it restarts once)"
+
+
+def _commit_message(added: list[str], gone: list[str]) -> str:
+    """One commit for both halves: "kobo: allow the github tools",
+    "kobo: withdraw the github tools", or both joined when a level change
+    opens one target and closes another."""
+    parts = []
+    if added:
+        parts.append(ALLOW_COMMIT.format(vendor=_vendors_of(set(added))))
+    if gone:
+        parts.append(WITHDRAW_COMMIT.format(vendor=_vendors_of(set(gone))) if not added
+                     else f"withdraw the {_vendors_of(set(gone))} tools")
+    return "; ".join(parts)
+
+
+def _allow_entries(bundle_dir: Path) -> list[str]:
+    """The bundle's allow list as it stands, [] when it cannot be read (the
+    editor raises its own `ClientError` for the sentence)."""
+    try:
+        data = yaml.safe_load((bundle_dir / "agent.yaml").read_text())
+        return [str(p) for p in ((data or {}).get("tools") or {}).get("allow") or []]
+    except (OSError, yaml.YAMLError, AttributeError):
+        return []
 
 
 def follow(session: Session, clients, bab, *, agent_name: str, actor: str) -> str:
     """Bring the agent's gateway grant in step with its permissions, and its
-    bundle's allow list with the vendors it holds, and say what happened in
+    bundle's allow list with the lanes it holds, and say what happened in
     one sentence. Scopes and handlers the room does not manage stay; a grant
-    that allows every handler (None) is never narrowed; allow entries are
-    only ever added (the gateway's grant is what takes a tool away)."""
+    that allows every handler (None) is never narrowed; allow entries the
+    room manages are added and withdrawn as the lanes say, others stay."""
     admin = getattr(clients, "liminal_admin", None) if clients is not None else None
     if admin is None:
         return NOT_WIRED
     try:
-        vendors = held_vendors(bab, agent_name, actor)
-        allowed = ensure_allow(session, clients, agent_name=agent_name, vendors=vendors) if vendors else ""
-        scopes, handlers = desired_lane(bab, agent_name, actor)
+        lanes = held_lanes(bab, agent_name, actor)
+        allowed = sync_allow(session, clients, agent_name=agent_name, patterns=desired_allow(lanes))
+        scopes = {s for lane in lanes for s in lane.scopes}
+        handlers = {h for lane in lanes for h in lane.handlers}
         existing = next((g for g in admin.list_grants() if g.issuer == ISSUER and g.persona == agent_name), None)
         old_scopes = set(existing.scopes) if existing is not None else set()
         new_scopes = (old_scopes - MANAGED_SCOPES) | scopes
@@ -143,7 +233,7 @@ def follow(session: Session, clients, bab, *, agent_name: str, actor: str) -> st
             return UNCHANGED + allowed
         if not new_scopes and new_handlers is not None and not new_handlers:
             admin.revoke(ISSUER, agent_name)
-            return REMOVED
+            return REMOVED + allowed
         admin.grant(GatewayGrant(
             issuer=ISSUER, persona=agent_name, scopes=tuple(sorted(new_scopes)),
             allowed_handlers=None if new_handlers is None else tuple(sorted(new_handlers)),
@@ -157,7 +247,7 @@ def follow(session: Session, clients, bab, *, agent_name: str, actor: str) -> st
 
 def tally(sentence: str) -> str:
     """Which bucket a `follow` sentence falls in: `set`, `unchanged` or `failed`."""
-    if sentence.startswith("gateway lane set") or sentence == REMOVED:
+    if sentence.startswith(("gateway lane set", REMOVED)):
         return "set"
     if "could not be updated" in sentence:
         return "failed"
@@ -166,4 +256,7 @@ def tally(sentence: str) -> str:
     return "failed"
 
 
-__all__ = ["GATEWAY_LANES", "MANAGED_HANDLERS", "MANAGED_SCOPES", "Lane", "desired_lane", "ensure_allow", "follow", "held_vendors", "tally"]
+__all__ = [
+    "GATEWAY_LANES", "MANAGED_ALLOW", "MANAGED_HANDLERS", "MANAGED_SCOPES", "PERMISSION_LANES", "RETIRED_HANDLERS",
+    "Lane", "desired_allow", "desired_lane", "follow", "held_lanes", "held_vendors", "lane_for", "sync_allow", "tally",
+]

@@ -36,7 +36,6 @@ from kobo_api.liminal_admin import (
     TargetNotFound,
     targets_unsupported,
 )
-from kobo_api.pr_broker import PR_PERMISSIONS, mint_scoped_token
 from kobo_api.sero import HttpxSeroClient
 from kobo_api.slack_setup import render_manifest
 
@@ -721,60 +720,6 @@ def test_render_manifest_thread_and_channel_modes_subscribe_channel_messages():
         render_manifest("echo", "x", wake="channel")["oauth_config"]
         == render_manifest("echo", "x")["oauth_config"]
     )
-
-
-# --- from test_pr_broker.py ---
-
-
-class _FakeHttp:
-    """Records the mint POST and answers like GitHub's 201."""
-
-    def __init__(self, status=201):
-        self.status = status
-        self.sent = None
-
-    def post(self, url, headers=None, json=None):
-        self.sent = {"url": url, "json": json}
-        request = httpx.Request("POST", url)
-        return httpx.Response(
-            self.status,
-            request=request,
-            json={"token": "ghs_scoped", "expires_at": "2026-08-27T23:00:00Z"},
-        )
-
-
-def _rsa_key_pem(tmp_path):
-    # PyJWT needs a real RSA key to sign the App JWT; generate a throwaway.
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    pem = key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    )
-    p = tmp_path / "k.pem"
-    p.write_bytes(pem)
-    return p
-
-
-def test_mint_pins_repositories_and_pr_permissions(tmp_path):
-    """Wire shape: Mint pins repositories and pr permissions."""
-    fake = _FakeHttp()
-    out = mint_scoped_token(
-        app_id="1",
-        installation_id="2",
-        private_key_path=_rsa_key_pem(tmp_path),
-        repositories=["acme/services-clip", "acme/sero"],
-        http_client=fake,
-        now=lambda: 1_000_000,
-    )
-    assert fake.sent["json"]["repositories"] == ["services-clip", "sero"]  # bare names
-    assert fake.sent["json"]["permissions"] == PR_PERMISSIONS
-    assert out["token"] == "ghs_scoped"
-    assert out["repositories"] == ["acme/services-clip", "acme/sero"]
-
 
 
 def test_gateway_targets_go_out_as_the_stanza_and_a_plain_404_is_an_older_admin_plane():
