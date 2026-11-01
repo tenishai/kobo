@@ -2468,6 +2468,26 @@ class FakeStorage:
         return True
 
 
+# The permission service's Google Cloud rows as a test wants them (kobo#390): two read
+# permissions with the viewer roles the minter binds, and the Vertex AI row the contract
+# names (`gcp_vertex_ai_user`, roles/aiplatform.user). Not in the default catalogue.
+GCP_CATALOGUE = {
+    "vendor": "gcp",
+    "groups": [
+        {"name": "Compute", "permissions": [
+            {"name": "gcp_compute_read", "tier": "read", "description": "Compute Engine: instances, disks, networks, firewalls",
+             "extra": {"roles": ["roles/compute.viewer"]}}]},
+        {"name": "Observability", "permissions": [
+            {"name": "gcp_logging_read", "tier": "read", "description": "Cloud Logging entries, sinks and buckets",
+             "extra": {"roles": ["roles/logging.viewer"]}}]},
+        {"name": "AI", "permissions": [
+            {"name": "gcp_vertex_ai_user", "tier": "read", "description": "Call Vertex AI models",
+             "extra": {"roles": ["roles/aiplatform.user"]}}]},
+    ],
+    "tiers": [{"name": "read", "lease_seconds": 3600, "validity_days": None}],
+}
+
+
 class FakeBab:
     """The room's permission service, in memory (kobo_api.bab): one connected
     integration with a ceiling, a small vendor catalogue, and requests that
@@ -2479,18 +2499,32 @@ class FakeBab:
     a service connection (one level, kind `account`), the listing carries each
     row's `spec`, and every catalogue permission carries a `label` (the
     `github` vendor's three levels do here). Removing a connection removes its
-    children and every grant on them, as the service does."""
+    children and every grant on them, as the service does.
+
+    Google Cloud (kobo#390): `identity("gcp")` is the service account a project
+    owner grants; `probe("gcp", project=..., service_account=...)` records the
+    body in `gcp_probes`, refuses a project with "refuse" in its id (the
+    identity lacks access), and answers `vertex` when the body named a
+    `vertex_location`. A row whose spec carries `parent_resource` is kind `org`
+    (a folder or organization); `discover_accounts` on it lists `PROJECTS`,
+    reachable when in `reachable_projects`. The default catalogue has no `gcp`
+    vendor (#301: vendors come from the catalogue alone); a test that connects a
+    project adds `GCP_CATALOGUE` to `_catalogue`."""
 
     def __init__(self, *, integrations=None, catalogue=None, healthy=True, error=None):
         # Which accounts carry the spoke role when discover probes them (#275): the first
         # does, the second does not, unless a test says otherwise.
         self.reachable_accounts = {"111111111111"}
-        self.discoveries: list[tuple[str, str]] = []
+        # Which projects under a Google Cloud folder the identity can read (kobo#390):
+        # two of the three, unless a test says otherwise.
+        self.reachable_projects = {"example-prod-1234", "example-data-5678"}
+        self.discoveries: list[tuple[str, str | None]] = []
         self.healthy = healthy
         self.error = error
         self.topologies: list[tuple[str, list[dict]]] = []
         self.revoked: list[tuple[int, str]] = []
         self.probes: list[tuple[str, str]] = []
+        self.gcp_probes: list[dict] = []
         self.datadog_probes: list[str] = []
         self.github_probes: list[str] = []
         self._requests: dict[int, dict] = {}
@@ -2555,8 +2589,8 @@ class FakeBab:
     def vendors(self, actor):
         self._guard()
         return [{"vendor": v, "kind": "cloud" if v in ("aws", "gcp", "azure") else "service",
-                 "label": {"aws": "AWS", "datadog": "Datadog", "github": "GitHub", "agents": "Other agents"}.get(v, v),
-                 "account": {"aws": "account"}.get(v), "permissions": {}} for v in self._catalogue]
+                 "label": {"aws": "AWS", "gcp": "Google Cloud", "datadog": "Datadog", "github": "GitHub", "agents": "Other agents"}.get(v, v),
+                 "account": {"aws": "account", "gcp": "project"}.get(v), "permissions": {}} for v in self._catalogue]
 
     def integrations(self, actor):
         self._guard()
@@ -2654,10 +2688,34 @@ class FakeBab:
                 and (until is None or e["at"] < until.isoformat())]
         return sorted(rows, key=lambda e: e["id"], reverse=True)[:limit]
 
-    def aws_identity(self, actor):
+    def identity(self, vendor, actor):
+        """`GET /identity/{vendor}`: the one service account, as each cloud names it."""
         self._guard()
+        if vendor == "gcp":
+            return {"email": "access@example.iam.gserviceaccount.com", "subject": "102000000000000000000"}
         return {"subject": "102000000000000000000", "email": "access@example.iam.gserviceaccount.com",
                 "audience": "sts.amazonaws.com", "issuer": "https://accounts.google.com"}
+
+    def probe(self, vendor, actor, *, what=None, **body):
+        """`POST /probe/{vendor}`. Google Cloud (kobo#390): the identity reads the project;
+        one with "refuse" in its id is one it lacks access on."""
+        self._guard()
+        if vendor == "aws":
+            return self.probe_aws(body["role_arn"], body["audience"], actor, body.get("hub_role_arn"), body.get("external_id"))
+        if vendor != "gcp":
+            raise ClientError(f"the permission service refused the {vendor} probe: no minter for {vendor!r}")
+        self.gcp_probes.append(dict(body))
+        project = str(body.get("project") or "")
+        if "refuse" in project:
+            raise ClientError(f"the permission service refused the project {project}: the identity lacks access on {project}")
+        out = {"project": project, "project_number": "123456789012", "subject": "102000000000000000000",
+               "hops": ["access@example.iam.gserviceaccount.com"] + ([body["service_account"]] if body.get("service_account") else [])}
+        if body.get("vertex_location"):
+            out["vertex"] = {"location": body["vertex_location"], "models": 1}
+        return out
+
+    def aws_identity(self, actor):
+        return self.identity("aws", actor)
 
     def probe_aws(self, role_arn, audience, actor, hub_role_arn=None, external_id=None):
         self._guard()
@@ -2697,7 +2755,8 @@ class FakeBab:
                        or parent_row.get("kind") not in ("org", "connection")):
             raise ClientError(f"the permission service refused connecting {integration}: {parent!r} is not a connected "
                               f"{vendor} organization or connection")
-        kind = "account" if parent else ("org" if spec.get("hub_role_arn") else ("account" if spec.get("role_arn") else "connection"))
+        kind = "account" if parent else ("org" if spec.get("hub_role_arn") or spec.get("parent_resource")
+                                         else ("account" if spec.get("role_arn") or spec.get("project") else "connection"))
         self._integrations = [i for i in self._integrations if i["integration"] != integration]
         self._integrations.append({"integration": integration, "vendor": vendor, "ceiling": list(ceiling), "kind": kind,
                                    "parent": parent, "name": spec.get("name") or integration, "account_id": spec.get("account_id"),
@@ -2705,11 +2764,19 @@ class FakeBab:
                                    "spec": dict(spec), "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"})
         return {"integration": integration, "vendor": vendor, "ceiling": list(ceiling), "teams": [], "parent": parent, "kind": kind}
 
+    # The projects under any Google Cloud folder or organization the fake holds (kobo#390).
+    PROJECTS = (("example-prod-1234", "Example prod"), ("example-data-5678", "Example data"), ("example-lab-9012", "Example lab"))
+
     def org_accounts(self, integration, actor):
         self._guard()
         org = next((i for i in self._integrations if i["integration"] == integration), None)
         if org is None or org.get("kind") != "org":
             raise ClientError(f"the permission service refused the accounts of {integration}: not an organization")
+        if org.get("vendor") == "gcp":
+            children = {str((i.get("spec") or {}).get("project")): i["integration"]
+                        for i in self._integrations if i.get("parent") == integration}
+            return [{"id": p, "project": p, "name": n, "project_number": str(100000000000 + k), "status": "ACTIVE",
+                     "integration": children.get(p), "connected": p in children} for k, (p, n) in enumerate(self.PROJECTS)]
         children = {str(i.get("account_id")): i["integration"] for i in self._integrations if i.get("parent") == integration}
         return [{"id": a, "name": n, "email": None, "status": "ACTIVE", "integration": children.get(a), "connected": a in children}
                 for a, n in (("111111111111", "acme-prod"), ("222222222222", "acme-data"))]
@@ -2727,12 +2794,18 @@ class FakeBab:
     def external_id_for_org(self, parent):
         return f"ext-{parent}"
 
-    def discover_accounts(self, integration, actor, role_name):
+    def discover_accounts(self, integration, actor, role_name=None):
         self._guard()
         self.discoveries.append((integration, role_name))
         org = next((i for i in self._integrations if i["integration"] == integration), None)
         if org is None or org.get("kind") != "org":
             raise ClientError(f"the permission service refused the accounts of {integration}: not an organization")
+        if org.get("vendor") == "gcp":
+            out = []
+            for a in self.org_accounts(integration, actor):
+                ok = a["id"] in self.reachable_projects
+                out.append({**a, "reachable": ok, "reason": None if ok else f"the identity lacks access on {a['id']}"})
+            return {"organization": integration, "parent_resource": (org.get("spec") or {}).get("parent_resource"), "accounts": out}
         external_id = (org.get("spec") or {}).get("external_id")
         if not external_id:
             raise ClientError(f"the permission service refused the accounts of {integration}: no external id")

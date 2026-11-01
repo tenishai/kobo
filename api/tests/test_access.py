@@ -87,6 +87,7 @@ from kobo_api.steps import (
     refresh_colleague_rosters,
 )
 from tests.fakes import (
+    GCP_CATALOGUE,
     FakeAgent,
     FakeBab,
     FakeCabal,
@@ -5825,6 +5826,113 @@ def test_an_organization_then_its_accounts_register_themselves(tmp_path, fake_st
     assert page["external_id"] == "ext-acme-aws" and '"sts:ExternalId": "ext-acme-aws"' in page["trust_policy"]
     bad = client.get("/api/admin/integrations/aws/setup?mode=account&integration=x&parent=nope&account_id=111111111111", headers=headers)
     assert bad.status_code == 409
+
+
+GCP_PROJECT = "example-prod-1234"
+
+
+def _gcp_bab() -> FakeBab:
+    bab = FakeBab(integrations=[])
+    bab._catalogue["gcp"] = GCP_CATALOGUE
+    return bab
+
+
+def test_a_google_cloud_project_is_probed_through_the_permission_service_and_held_there_with_the_read_ceiling(tmp_path, fake_storage):
+    """Gate (authorization, kobo#390): a project connects only after the permission service
+    reads it as its own identity (and Vertex AI there when the models box is ticked); the
+    row is held there with every gcp read permission as the ceiling, the room's row carries
+    the models spec the model gateway reads, and a refused or malformed project is written
+    nowhere."""
+    bab = _gcp_bab()
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
+    client, headers = _access_client(tmp_path, fake_storage, github=github, bab=bab)
+    body = {"vendor": "gcp", "name": "Example prod", "base_access": "read", "auth": "gcp_identity",
+            "identity": {"project": GCP_PROJECT, "models_provider": "vertex_ai", "models_location": "us-east5"}}
+    response = client.post("/api/admin/integrations", json=body, headers=headers)
+    assert response.status_code == 201, response.text
+    row = response.json()
+    # The probe named the project, no service account, and the Vertex AI read at the location.
+    assert bab.gcp_probes == [{
+        "project": GCP_PROJECT, "service_account": None, "vertex_location": "us-east5",
+        "vertex_url": f"https://us-east5-aiplatform.googleapis.com/v1/projects/{GCP_PROJECT}/locations/us-east5/publishers/google/models?pageSize=1",
+    }]
+    assert row["id"] == "example-prod" and row["state"] == "applied" and row["credential_ref"] is None
+    assert "Google Cloud agreed" in row["state_detail"] and "Vertex AI answers at us-east5" in row["state_detail"]
+    assert row["spec"]["kind"] == "account" and row["spec"]["project"] == GCP_PROJECT
+    assert row["spec"]["models"] == {"provider": "vertex_ai", "location": "us-east5"}
+    (integ,) = bab.integrations("x")
+    assert integ["vendor"] == "gcp" and integ["kind"] == "account" and integ["parent"] is None
+    assert integ["spec"] == {"project": GCP_PROJECT, "service_account": None, "name": "Example prod"}
+    assert integ["ceiling"] == ["gcp_compute_read", "gcp_logging_read", "gcp_vertex_ai_user"]
+    assert not github._pushed_trees, "the gateway has nothing to learn: leases come from the permission service"
+    # The picker reads it as a project, under no parent.
+    picker = {v["id"]: v for v in client.get("/api/access/picker", headers=headers).json()["vendors"]}["gcp"]
+    assert picker["account_noun"] == "project" and picker["connected"] is True
+    assert [(a["id"], a["organization"]) for a in picker["accounts"]] == [("example-prod", None)]
+    # Without the box, no models spec and no Vertex read; the global location uses the plain host.
+    plain = client.post("/api/admin/integrations", json={**body, "name": "Example data", "identity": {"project": "example-data-5678"}},
+                        headers=headers).json()
+    assert "models" not in plain["spec"] and bab.gcp_probes[-1] == {"project": "example-data-5678", "service_account": None}
+    client.post("/api/admin/integrations", json={**body, "name": "Example lab", "identity": {
+        "project": "example-lab-9012", "service_account": "narrow@example-lab-9012.iam.gserviceaccount.com",
+        "models_provider": "vertex_ai", "models_location": "global"}}, headers=headers)
+    assert bab.gcp_probes[-1]["vertex_url"].startswith("https://aiplatform.googleapis.com/v1/projects/example-lab-9012/locations/global/")
+    assert bab.gcp_probes[-1]["service_account"] == "narrow@example-lab-9012.iam.gserviceaccount.com"
+    # A project the identity cannot read, and a malformed id, are saved nowhere.
+    refused = client.post("/api/admin/integrations", json={**body, "name": "nope", "identity": {"project": "refuse-me-1234"}}, headers=headers)
+    assert refused.status_code == 409 and "lacks access" in refused.json()["error"] and "connect again" in refused.json()["error"]
+    bad = client.post("/api/admin/integrations", json={**body, "name": "bad", "identity": {"project": "My Project"}}, headers=headers)
+    assert bad.status_code == 409 and "project's id" in bad.json()["error"]
+    assert len(bab.gcp_probes) == 4 and len(bab.integrations("x")) == 3, "the refused project was probed, the malformed one never reached the service"
+    assert {r["id"] for r in client.get("/api/admin/integrations", headers=headers).json()["integrations"]} == {"example-prod", "example-data", "example-lab"}
+    # Disconnect takes it out of the permission service too.
+    out = client.delete(f"/api/admin/integrations/{row['id']}", headers=headers).json()
+    assert out["access"].startswith("removed") and len(bab.integrations("x")) == 2
+
+
+def test_a_google_cloud_folder_then_its_readable_projects_register_themselves(tmp_path, fake_storage):
+    """Gate (authorization, kobo#390): a folder or organization is the hub shape: a row with
+    no ceiling, then the permission service lists its projects and the ones its identity can
+    read connect under it with the read ceiling; the rest are reported, not created. Check
+    again later connects what gained the grant and leaves the rest alone."""
+    bab = _gcp_bab()
+    client, headers = _access_client(tmp_path, fake_storage, bab=bab)
+    row = client.post("/api/admin/integrations", json={"vendor": "gcp", "name": "example-platform", "base_access": "read",
+                                                        "auth": "gcp_parent", "identity": {"parent_resource": "folders/123"}},
+                      headers=headers).json()
+    assert row["id"] == "example-platform" and row["state"] == "applied" and row["spec"]["kind"] == "org", row
+    assert row["spec"]["parent_resource"] == "folders/123"
+    assert "2 project(s) the identity can read are connected, 1 it cannot read yet" in row["state_detail"]
+    assert bab.gcp_probes == [], "a folder is not probed as a project; its projects are read by discover"
+    assert bab.discoveries == [("example-platform", None)]
+    rows = {i["integration"]: i for i in bab.integrations("x")}
+    assert rows["example-platform"]["kind"] == "org" and rows["example-platform"]["ceiling"] == []
+    assert rows["example-platform"]["spec"] == {"parent_resource": "folders/123", "name": "example-platform"}
+    prod = rows["example-prod"]
+    assert prod["parent"] == "example-platform" and prod["kind"] == "account"
+    assert prod["spec"] == {"project": GCP_PROJECT, "service_account": None, "name": "Example prod"}
+    assert prod["ceiling"] == ["gcp_compute_read", "gcp_logging_read", "gcp_vertex_ai_user"]
+    assert "example-lab" not in rows
+    panel = {r["id"]: r for r in client.get("/api/admin/integrations", headers=headers).json()["integrations"]}
+    assert panel["example-prod"]["spec"]["parent"] == "example-platform" and panel["example-prod"]["spec"]["project"] == GCP_PROJECT
+    assert panel["example-prod"]["spec"]["project_number"] == "100000000000" and panel["example-prod"]["state"] == "applied"
+    # The parent's projects, each connected or not.
+    projects = {a["id"]: a for a in client.get("/api/admin/integrations/example-platform/accounts", headers=headers).json()["accounts"]}
+    assert projects[GCP_PROJECT]["connected"] is True and projects["example-lab-9012"]["connected"] is False
+    # Later the third project is granted: Check connects it and leaves the first two alone.
+    bab.reachable_projects.add("example-lab-9012")
+    found = client.post("/api/admin/integrations/example-platform/accounts/check", headers=headers).json()
+    assert sorted(a["id"] for a in found["already"]) == sorted([GCP_PROJECT, "example-data-5678"])
+    assert [(a["id"], a["integration"]) for a in found["connected"]] == [("example-lab-9012", "example-lab")]
+    assert found["without_role"] == []
+    # The picker offers the projects under their parent; the parent itself never.
+    picker = {v["id"]: v for v in client.get("/api/access/picker", headers=headers).json()["vendors"]}["gcp"]
+    assert [o["id"] for o in picker["organizations"]] == ["example-platform"]
+    by_id = {a["id"]: a for a in picker["accounts"]}
+    assert by_id["example-prod"]["organization"] == "example-platform" and "example-platform" not in by_id
+    # An organization is the other parent shape; a badly named one is refused.
+    assert client.post("/api/admin/integrations", json={"vendor": "gcp", "name": "x", "base_access": "read", "auth": "gcp_parent",
+                                                         "identity": {"parent_resource": "folder-123"}}, headers=headers).status_code == 409
 
 
 def test_a_datadog_probe_the_permission_service_refuses_connects_nothing(tmp_path, fake_storage, monkeypatch):

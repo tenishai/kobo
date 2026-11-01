@@ -1210,6 +1210,10 @@ export type AdminIntegration = {
   spec: {
     address?: string; trust?: string; pull_request?: string; ceiling?: string[]; kind?: "org" | "account"; parent?: string; account_id?: string;
     auth?: string; identity?: Record<string, string>;
+    /** Google Cloud (kobo#390): a project row names its project; a folder or organization
+     * row its `parent_resource`; a project that serves the room's models carries `models`. */
+    project?: string; project_number?: string; parent_resource?: string;
+    models?: { provider: string; location: string };
     /** `access`: held by the permission service, never made here. `deployment`: an older
      * install's deployment config stands behind it (kobo#377); Replace moves it into the room. */
     source?: "access" | "deployment";
@@ -1224,7 +1228,7 @@ export type AdminIntegration = {
 export type AdminConnectIntegration = {
   vendor: string;
   name: string;
-  auth?: "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token";
+  auth?: "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "gcp_parent" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token";
   identity?: Record<string, string>;
   secrets?: Record<string, string>;
   base_access: "read" | "write";
@@ -1298,6 +1302,43 @@ export async function fetchAdminAwsSetup(input: AwsSetupRequest): Promise<AdminA
   if (input.account_id) q.set("account_id", input.account_id);
   const res = await fetch(`/api/admin/integrations/aws/setup?${q.toString()}`);
   return parse<AdminAwsSetup>(res);
+}
+
+/** The Connect Google Cloud page (kobo#390): the identity to grant (the permission
+ * service's service account), the packs, and the roles bound three ways. */
+export type AdminGcpSetup = {
+  version: string;
+  /** `project`: one project (the common case); `parent`: a folder or organization whose
+   * readable projects connect under it. */
+  mode: "project" | "parent";
+  principal: "access";
+  identity: { email: string; subject: string } | null;
+  identity_note: string | null;
+  packs: { id: string; purpose: string; required: boolean; roles: string[] }[];
+  chosen: string[];
+  roles: string[];
+  target: string;
+  gcloud: string;
+  terraform: string;
+  vertex_default_location: string;
+  /** The room can ask the permission service to read the project before saving it. */
+  checked: boolean;
+};
+
+export type GcpSetupRequest = {
+  packs: string[];
+  mode?: "project" | "parent";
+  integration?: string;
+  /** The project id, or `folders/<number>` / `organizations/<number>`, typed so far. */
+  target?: string;
+};
+
+export async function fetchAdminGcpSetup(input: GcpSetupRequest): Promise<AdminGcpSetup> {
+  const q = new URLSearchParams({ packs: input.packs.join(","), mode: input.mode ?? "project" });
+  if (input.integration) q.set("integration", input.integration);
+  if (input.target) q.set("target", input.target);
+  const res = await fetch(`/api/admin/integrations/gcp/setup?${q.toString()}`);
+  return parse<AdminGcpSetup>(res);
 }
 
 /** One account of an AWS organization as its hub sees it, and whether it is connected. */
