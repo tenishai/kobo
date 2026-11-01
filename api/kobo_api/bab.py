@@ -354,9 +354,12 @@ def child_id(connection: str, agent: str) -> str:
 
 
 def child_repositories(row: dict | None) -> list[str]:
-    """The repository set a child carries, from its spec; [] for none."""
-    spec = (row or {}).get("spec") or {}
-    return sorted(str(r) for r in (spec.get("repositories") or []))
+    """The repository set a child carries: bab's listing names it as
+    `repositories` on the row (0.4.12); a row that still carries its `spec`
+    (the test fake, an older service) is read the same way. [] for none."""
+    row = row or {}
+    repos = row.get("repositories") or (row.get("spec") or {}).get("repositories") or []
+    return sorted(str(r) for r in repos)
 
 
 def _labelled(tree: dict) -> dict:

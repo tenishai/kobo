@@ -2484,7 +2484,10 @@ class FakeBab:
 
     def integrations(self, actor):
         self._guard()
-        return [dict(i) for i in self._integrations]
+        # Listed the way the service lists them (0.4.12): a child's repository
+        # set rides the row as `repositories`, beside the spec the fake keeps.
+        return [{**dict(i), "repositories": list(((i.get("spec") or {}).get("repositories")) or []) or None}
+                for i in self._integrations]
 
     def catalogue(self, vendor, actor):
         self._guard()
