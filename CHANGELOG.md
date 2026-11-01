@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.36] - 2026-11-01
+
 ### Changed
 
 - **Slack and GitHub are connections, not service rows (kobo#377).** The two rows that were
