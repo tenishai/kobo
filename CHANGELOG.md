@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.35] - 2026-11-01
+
 ### Fixed
 
 - **Live means live.** After a Wakes on save, the Slack row (and the Slack tab's note) said
