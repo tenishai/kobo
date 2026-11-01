@@ -6,6 +6,52 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **GitHub per agent: a repository set and a level (#365).** The room's GitHub connection is
+  never granted to an agent. Each agent's GitHub access is a child integration
+  `<connection>-<agent>` in the permission service, carrying the repository set its owner picks
+  on the Access tab from the installation's repositories (`GET`/`PUT
+  /api/agents/{name}/github/repositories`, owner or manager; strays and an empty set are 422,
+  no GitHub connection is 404), and a level requested on it: Read (`github_repos_read`), Review
+  pull requests (`github_pulls_review`) or Open pull requests (`github_pulls_write`). `GET
+  /api/agents/{name}/access` shows GitHub as that agent's own set (or the connection as a
+  placeholder while none is picked), never another agent's; every account entry carries
+  `repositories` and `has_repo_set`, every permission carries its `label`; Review rows and
+  decide results carry `repositories` for a request on a child.
+- **Lanes per permission.** Read opens the read-only `github-mcp` target (`github:read`);
+  Review pull requests opens `github-mcp-write` (`github:review`); Open pull requests adds
+  `github:write`. The gateway's `github` handler is in no lane. `follow` recomputes on approve
+  and revoke and now withdraws allow patterns the agent no longer earns (one commit, "kobo:
+  allow the ... tools" or "kobo: withdraw the ... tools", one restart).
+- **Two live targets per GitHub connection.** `<id>-mcp` (read-only header, `github:read`) and
+  `<id>-mcp-write` (no header, `required_scope github:review`, `tool_scopes` sending the
+  branch-, commit-, pull-request- and issue-creating tools to `github:write` and merge and
+  delete to `github:never`), attached, written into the gateway pull request fallback and
+  removed together. The connection's ceiling is every `github` catalogue permission; the
+  room-level "Repositories agents may be granted" field is gone (an older row that has it is
+  read as before).
+- **Guide.** The Access tab holds who can reach the agent and what it can reach; Permissions
+  moved there from the Harness; GitHub is repositories first, then a level.
+
+### Removed
+
+- **The pull request broker's lane for agents.** `POST /broker/agents/{name}/github-token`,
+  `POST /api/agents/{name}/repo-access`, `GET /api/repo-access`, `POST /api/repo-access/decide`,
+  the MCP tools `kobo_request_repo_access`, `kobo_list_repo_access` and
+  `kobo_decide_repo_access`, and the composed `github` sidecar block (`BundleSpec.broker_url`).
+  `pr_broker.py` keeps only the agent token verification the Jira lane shares. The Jira lane
+  and the room's own GitHub client are untouched.
+
+### Migration
+
+- `repo_access.migrated_at` (alembic `e1f2a3b4c5d6`). At boot, with the permission service on
+  and a GitHub connection present, every agent with approved repo-access rows and no GitHub
+  child gets the child with those repositories and an approved Open pull requests grant, its
+  lane brought in step, the rows stamped and an audit row written; an agent that already
+  picked a set keeps it. Without a connection the rows wait for the next boot. Nothing an
+  agent held is lost.
+
 ## [0.3.27] - 2026-10-31
 
 ### Changed

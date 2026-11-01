@@ -1,7 +1,7 @@
 # The harness
 <!-- summary: What runs the agent: model and runtime, identity, persona, skills, tooling, memory, learnings, activity. -->
 
-The **Harness** tab is everything that runs your agent, in eight sections down its left side. A connected agent shows Model and runtime, Identity and access, and Activity, because it brings its own harness.
+The **Harness** tab is everything that runs your agent, in seven sections down its left side. A connected agent shows Model and runtime, Identity and access, and Activity, because it brings its own harness. What the agent may reach at each vendor is on the **Access** tab, under Permissions (see "Access and groups").
 
 ## Model and runtime
 
@@ -15,7 +15,7 @@ Below them, **Asks other agents** sets whether the agent may ask its colleagues:
 
 ## Identity and access
 
-Shown only while the permission service is off. The service account the agent runs as, the Google service account bound to it, and the room's project, with **Ask for access to another project** to write a request you hand to the SRE team. With the permission service on, access is asked for under **Permissions**, which shows the identity the agent runs as in one line.
+Shown only while the permission service is off. The service account the agent runs as, the Google service account bound to it, and the room's project, with **Ask for access to another project** to write a request you hand to the SRE team. With the permission service on, access is asked for under **Permissions** on the Access tab, which shows the identity the agent runs as in one line.
 
 ## Persona
 
@@ -38,12 +38,6 @@ The notes you have taught the agent and the files you have uploaded for it to le
 ## Learnings
 
 What the agent proposes from its own conversations each day, waiting for your decision. The badge on the Harness tab is the count. Nothing is kept until you press Remember.
-
-## Permissions
-
-What the agent may do at each vendor the room has connected, when the room's permission service is on. The agent holds no standing credential: when a task needs one, it borrows an hour of access scoped to exactly the permissions it holds, and the vendor's own audit trail names the agent. **Held** lists what it has, by service and account, with the tier and when it expires (read permissions stand until revoked; write permissions expire and are asked for again). Room admins see **Revoke now** on each row. The first permission approved on a vendor also puts that vendor's tools in front of the agent: its files change once and it restarts once, and from then on the gateway decides tool by tool from what it holds.
-
-**Ask for more** walks the way access is granted. Pick the vendor first: AWS, Google Cloud and Azure are connected one account, project or subscription at a time, so the next step is the account; Datadog, GitHub, Atlassian and the like are one connection each and open straight on their permissions. Only accounts a room admin has connected on Admin › Integrations are listed; an account appears here when it is connected there. Then find the service you need with the search box, tick it, and press **Confirm request**. Only read access is offered here, and read means configuration and listings, never the data a service holds. A service the connection does not allow is greyed with the reason, not hidden. Requests go to the room's reviewers in Admin › Review; until they decide, the row says "waiting for review".
 
 ## Activity
 
