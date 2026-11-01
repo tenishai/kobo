@@ -485,12 +485,17 @@ def wire_slack_values(
     return head
 
 
-def rewire_slack_channels(github: GitHubClient, *, repo: str, channels: list[str]) -> str:
+def rewire_slack_channels(
+    github: GitHubClient, *, repo: str, channels: list[str], every_channel: bool = False
+) -> str:
     """Update which channels an already-connected agent listens on: clone
     `repo` fresh, replace `bundle/agent.yaml`'s slack transports with one
     entry per channel in `channels` (order preserved; `_update_agent_yaml_
     transports` handles the round-trip), commit as `"kobo: slack channels
-    updated"`, and push.
+    updated"`, and push. `every_channel` is the room-made app's case (issue
+    #371): an empty list writes the one open entry back instead of none, so
+    clearing the list returns the agent to answering wherever it is invited
+    rather than going silent.
 
     Commit-only, deliberately smaller than `wire_slack` above: rewiring
     channels never touches a bot/app token, `gojira.yaml`'s `secrets_from`,
@@ -513,7 +518,7 @@ def rewire_slack_channels(github: GitHubClient, *, repo: str, channels: list[str
         workdir = Path(tmp)
         github.clone(repo, workdir)
 
-        _update_agent_yaml_transports(workdir / "bundle" / "agent.yaml", channels)
+        _update_agent_yaml_transports(workdir / "bundle" / "agent.yaml", channels, every_channel=every_channel)
 
         github.commit_push(workdir, "kobo: slack channels updated")
 

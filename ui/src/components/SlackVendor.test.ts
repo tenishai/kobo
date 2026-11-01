@@ -2,8 +2,10 @@
 // Slack as a vendor on the Access tab (issue #371): three states a person
 // reads (pick Wakes on then Create Slack app; Install to Slack; installed
 // with the workspace, channels, Wakes on and Remove), and nothing at all
-// when the room does not make Slack apps itself.
-import { fireEvent, screen } from "@testing-library/svelte";
+// when the room does not make Slack apps itself. A room-made app answers
+// wherever it is invited until channels are listed, and the row is what the
+// person lands on after Install to Slack (`?vendor=slack`).
+import { fireEvent, screen, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import SlackVendor from "./SlackVendor.svelte";
@@ -39,6 +41,7 @@ function room(view: unknown, agent: unknown = AGENT) {
 
 beforeEach(() => {
   vi.unstubAllGlobals();
+  window.location.hash = "";
 });
 
 describe("SlackVendor", () => {
@@ -79,6 +82,37 @@ describe("SlackVendor", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(screen.getByRole("button", { name: "Remove the Slack app" })).toBeDefined();
+  });
+
+  it("says a room-made app answers wherever it is invited, and the list only narrows it", async () => {
+    room({ ...INSTALLED, channels: [] });
+
+    await screen.findByText("Answers in every channel it is invited to.");
+    expect(screen.getByText(/Invite @clio to any channel in Slack and it answers there/)).toBeDefined();
+    expect(screen.queryByText(/answers only in channels listed here/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Add channel" })).toBeDefined();
+  });
+
+  it("brings the Slack row into view, lit, when Slack sends the person back with ?vendor=slack", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    window.location.hash = "#/agents/clio/access?vendor=slack";
+    room(INSTALLED);
+
+    const section = await screen.findByRole("region", { name: "Slack" });
+    await waitFor(() => expect(scroll).toHaveBeenCalled());
+    expect(section.className).toContain("vendor--arrived");
+    // Read once: the query is gone, so a reload does not scroll again.
+    expect(window.location.hash).toBe("#/agents/clio/access");
+  });
+
+  it("puts the failed-install sentence on the row itself", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    window.location.hash = "#/agents/clio/access?vendor=slack&slack=failed";
+    room(CREATED);
+
+    const section = await screen.findByRole("region", { name: "Slack" });
+    expect(section.textContent).toContain("Installing to Slack did not finish.");
   });
 
   it("renders nothing when the room does not make Slack apps", async () => {

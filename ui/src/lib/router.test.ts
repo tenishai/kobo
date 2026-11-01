@@ -1,5 +1,6 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { formatHash, hashQuery, parseHash } from "./router.svelte";
+import { clearHashQuery, formatHash, hashQuery, navigate, parseHash } from "./router.svelte";
 
 describe("parseHash", () => {
   it("maps the empty string to the dashboard", () => {
@@ -180,4 +181,18 @@ it("falls back to dashboard for the retired personas page", () => {
   // The page went in the personas-in-place wave (2026-09-30); an old
   // bookmark lands on the dashboard rather than a blank main.
   expect(parseHash("#/personas")).toEqual({ page: "dashboard" });
+});
+
+describe("navigate", () => {
+  it("keeps the query a link arrived with when the route it names is already showing", () => {
+    // The Slack install sends the person back to `#/agents/<name>/access?vendor=slack`;
+    // the page's own hash-follow navigate must not strip that before the row reads it.
+    location.hash = "#/agents/clio/access?vendor=slack";
+    navigate({ page: "agent", name: "clio", tab: "access" });
+    expect(location.hash).toBe("#/agents/clio/access?vendor=slack");
+
+    clearHashQuery();
+    expect(location.hash).toBe("#/agents/clio/access");
+    location.hash = "";
+  });
 });

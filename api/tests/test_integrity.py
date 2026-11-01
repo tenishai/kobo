@@ -3102,6 +3102,49 @@ def test_put_channels_rewire_failure_returns_502_and_leaves_original_channels_st
     assert detail["slack"]["state"] == "connected"
 
 
+@pytest.mark.parametrize(
+    ("room_made", "expected_slack_entries"),
+    [(True, [{"kind": "slack"}]), (False, [])],
+    ids=["room-made app stays open", "pasted app disconnects"],
+)
+def test_put_empty_channels_on_room_made_app_writes_the_open_transport(
+    session_factory__api_slack, config__api_slack, room_made, expected_slack_entries
+):
+    """Data integrity: clearing the channel list on a room-made Slack app
+    (issue #371, the relay row is the sign) writes the one open slack
+    transport back, so the agent keeps answering wherever it is invited
+    instead of going silent; an app from the Slack tab's paste flow still
+    disconnects on an empty list."""
+    from datetime import datetime
+
+    import yaml
+
+    from kobo_api.models import SlackRelayApp
+
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    a2a = {"kind": "a2a", "host": "0.0.0.0", "port": 8080}
+    github = FakeGitHub(agent_yaml_transports=[a2a, {"kind": "slack", "channel": CHANNEL}])
+    client = _make_client__api_slack(session_factory__api_slack, relay_config, github=github)
+    _seed_agent__api_slack(
+        session_factory__api_slack, relay_config, slack_app_id="A0MADE",
+        slack_channels=[CHANNEL], slack_wired=True,
+    )
+    if room_made:
+        with session_factory__api_slack() as s:
+            s.add(SlackRelayApp(relay_id="relay-id-for-clio-0000", agent_name=AGENT_NAME, app_id="A0MADE",
+                                client_id="fake-client-id", client_secret="fake-client-secret",
+                                signing_secret="fake-signing-secret", relay_secret="fake-relay-secret",
+                                created_by=None, created_at=datetime(2026, 11, 1)))
+            s.commit()
+
+    response = client.put(f"/api/agents/{AGENT_NAME}/slack/channels", json={"channels": []})
+
+    assert response.status_code == 200
+    assert response.json()["channels"] == []
+    transports = yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["transports"]
+    assert transports == [a2a, *expected_slack_entries]
+
+
 # --- from test_slack_setup.py ---
 
 
