@@ -3667,3 +3667,29 @@ def test_audit_export_matches_the_filter(tmp_path):
     lines = csv_body.text.strip().splitlines()
     assert lines[0].startswith("id,at,actor,") and len(lines) == 2 and ",agent.create," in lines[1]
     assert [r["id"] for r in json_body.json()] == [1]
+
+
+def test_a_request_on_a_github_child_carries_the_repository_set_for_review(a2a_room):
+    """Wire shape (kobo#365): a permission request targets the agent's GitHub child, and the
+    Review pane's rows and decide results carry `repositories` (the child's set) so a reviewer
+    sees what the level would open; a request on anything else carries none."""
+    c, h, bab = a2a_room.client, a2a_room.headers, a2a_room.bab
+    levels = ["github_pulls_review", "github_pulls_write", "github_repos_read"]
+    bab.put_integration("github", "github", {"installation_id": "151256501", "name": "GitHub"}, levels, "ops@example.com")
+    c.app.state.clients.github = FakeGitHub(existing_repos={"acme/infra", "acme/web"})
+    put = c.put("/api/agents/asker/github/repositories", headers=h, json={"repositories": ["acme/infra"]})
+    assert put.status_code == 200, put.text
+    r = c.post("/api/agents/asker/access/requests", headers=h,
+               json={"integration": "github-asker", "permissions": ["github_pulls_review"], "note": "reviews"})
+    assert r.status_code == 201, r.text
+    other = c.post("/api/agents/asker/access/requests", headers=h,
+                   json={"integration": "oracle", "permissions": ["a2a_ask"], "note": None}).json()
+    rows = {row["id"]: row for row in c.get("/api/admin/access/requests", headers=h).json()["requests"]}
+    assert rows[r.json()["id"]]["repositories"] == ["acme/infra"] and rows[r.json()["id"]]["integration"] == "github-asker"
+    assert "repositories" not in rows[other["id"]]
+    (result,) = c.post("/api/admin/access/decide", headers=h, json={"ids": [r.json()["id"]], "verdict": "approve"}).json()["results"]
+    assert result["status"] == "approved" and result["repositories"] == ["acme/infra"]
+    page = c.get("/api/agents/asker/access", headers=h).json()
+    gh = next(v for v in page["vendors"] if v["id"] == "github")
+    assert gh["accounts"][0]["id"] == "github-asker" and gh["accounts"][0]["has_repo_set"] is True
+    assert [g["integration"] for g in page["grants"]] == ["github-asker"]

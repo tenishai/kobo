@@ -381,7 +381,6 @@ def _composed_tree(tmp_path: Path) -> dict[str, str]:
         vertex_project="p",
         vertex_location="us-east5",
         cabal_url="https://cabal.example",
-        broker_url="http://kobo.svc",
     )
     dest = tmp_path / "composed"
     compose(spec, dest)
@@ -1447,7 +1446,6 @@ def _make_spec(
     colleagues: list[dict] | None = None,
     cabal_url: str | None = None,
     memory_replica_bucket: str = "",
-    broker_url: str = "",
     liminal_url: str = "",
     archetype: str | None = None,
 ) -> BundleSpec:
@@ -1466,7 +1464,6 @@ def _make_spec(
         colleagues=colleagues if colleagues is not None else [],
         cabal_url=cabal_url,
         memory_replica_bucket=memory_replica_bucket,
-        broker_url=broker_url,
         liminal_url=liminal_url,
         archetype=archetype,
     )
@@ -2127,60 +2124,6 @@ def test_concurrent_syncs_in_one_process_never_interleave(session_factory__pairs
     second.join(5)
 
     assert events == ["compute", "put", "done", "compute", "put", "done"]
-
-
-# --- from test_pr_broker.py ---
-
-
-@pytest.fixture
-def broker_config(tmp_path):
-    key = tmp_path / "pr-app.pem"
-    key.write_text("not-a-real-key")
-    return Config(
-        workdir=tmp_path / "work",
-        pr_app_id="4741722",
-        pr_app_installation_id="157070479",
-        pr_app_private_key_path=key,
-        cabal_url="http://cabal.test",
-    )
-
-
-@pytest.fixture
-def broker_client(session_factory, broker_config):
-    return TestClient(create_app(session_factory, config=broker_config))
-
-
-def _agent__pr_broker(session_factory, name="ward"):
-    session = session_factory()
-    agent = Agent(
-        name=name, persona="helpful-generalist", model_id="m", status=AgentStatus.READY
-    )
-    session.add(agent)
-    session.commit()
-    session.close()
-    return name
-
-
-def test_token_route_404s_with_zero_approvals(
-    broker_client, session_factory, monkeypatch
-):
-    """Production bug: Token route 404s with zero approvals.
-
-    Still a 404, but after the token verifies the message says why: the
-    caller is proven to be the agent, so "no such agent" would be false
-    (issue #11)."""
-    import kobo_api.main as main_mod
-
-    name = _agent__pr_broker(session_factory)
-    monkeypatch.setattr(main_mod, "verify_agent_token", lambda *a, **k: None)
-    r = broker_client.post(
-        f"/broker/agents/{name}/github-token", headers={"Authorization": "Bearer x"}
-    )
-    assert r.status_code == 404
-    error = r.json()["error"]
-    assert "no such agent" not in error
-    assert "none has been requested" in error
-    assert f"POST /api/agents/{name}/repo-access" in error
 
 
 # --- from test_sero.py ---

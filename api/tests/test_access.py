@@ -5381,7 +5381,8 @@ def test_ask_review_hold_revoke_and_the_topology_push(tmp_path, fake_storage):
     assert flat["aws_ecs_update_service"]["tier"] == "mutate"
     # A service vendor is one connection; none connected yet shows a placeholder.
     assert dd["kind"] == "service" and dd["accounts"] == [{"id": "datadog", "name": "Datadog", "connected": False, "ceiling": [],
-                                                           "organization": None, "account_id": None}]
+                                                           "organization": None, "account_id": None,
+                                                           "repositories": [], "has_repo_set": False}]
 
     # The owner asks; the request is pending on the agent page and in Review, with the owner named.
     r = c.post("/api/agents/ledger/access/requests", headers=h,
@@ -6042,7 +6043,6 @@ def _make_spec(
     colleagues: list[dict] | None = None,
     cabal_url: str | None = None,
     memory_replica_bucket: str = "",
-    broker_url: str = "",
     liminal_url: str = "",
     archetype: str | None = None,
 ) -> BundleSpec:
@@ -6061,7 +6061,6 @@ def _make_spec(
         colleagues=colleagues if colleagues is not None else [],
         cabal_url=cabal_url,
         memory_replica_bucket=memory_replica_bucket,
-        broker_url=broker_url,
         liminal_url=liminal_url,
         archetype=archetype,
     )
@@ -6075,7 +6074,6 @@ def test_team_guide_archetype_composes_no_github_and_no_liminal(tmp_path):
         _make_spec(
             name="atlas",
             cabal_url="http://cabal.example.com",
-            broker_url="http://kobo.example.com",
             liminal_url="http://liminal.example.com",
             archetype="team_guide",
         ),
@@ -6112,7 +6110,8 @@ def test_team_guide_archetype_composes_no_github_and_no_liminal(tmp_path):
 # ---- GitHub through the permission service (kobo#338) ----------------------------
 
 GITHUB_APP_BODY = {"vendor": "github", "name": "GitHub", "base_access": "read", "auth": "github_app",
-                   "identity": {"repositories": "infra, web"}, "secrets": {}}
+                   "identity": {}, "secrets": {}}
+GITHUB_LEVELS = ["github_pulls_review", "github_pulls_write", "github_repos_read"]
 PEM = "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"
 
 
@@ -6125,12 +6124,16 @@ def _room_github_app(client, app_id="4487276", installation_id="151256501"):
 
 
 def test_a_github_connect_uses_the_rooms_app_writes_the_secret_and_puts_the_github_mcp_target_live(tmp_path, fake_storage):
-    """Wire shape (kobo#338, GitHub on the Datadog template): a connect with the app fields blank
-    takes the room's own GitHub App, writes the permission service's `bab-github` Secret, probes
-    the installation, connects the integration in the service with the read ceiling, and PUTs
-    the `github-mcp` target (service-token, read-only on every request, the catalog bearer from
-    the gateway's env) through the admin plane with no pull request. Remove takes all of it back."""
-    from kobo_api.admin_integrations import github_target_spec
+    """Wire shape (kobo#338, GitHub on the Datadog template; kobo#365): a connect with the app
+    fields blank takes the room's own GitHub App, writes the permission service's `bab-github`
+    Secret, probes the installation, connects the integration in the service with EVERY github
+    permission as its ceiling (the levels are each agent's to ask), and PUTs two targets through
+    the admin plane with no pull request: `github-mcp` (service-token, read-only on every request,
+    `github:read`) and `github-mcp-write` (no read-only header, `github:review`, the creating
+    tools behind `github:write`, merge and delete behind a scope no lane grants). An older
+    `repositories` field pasted at connect time is dropped: the set is per agent now. Remove
+    takes all of it back, both targets included."""
+    from kobo_api.admin_integrations import github_target_spec, github_write_target_spec
     from kobo_api.models import AdminIntegration
     admin = FakeLiminalAdmin()
     github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
@@ -6139,13 +6142,13 @@ def test_a_github_connect_uses_the_rooms_app_writes_the_secret_and_puts_the_gith
     client.app.state.clients.liminal_admin = admin
     _room_github_app(client)
     kubectl = client.app.state.clients.kubectl
-    r = client.post("/api/admin/integrations", json=GITHUB_APP_BODY, headers=headers)
+    r = client.post("/api/admin/integrations", json={**GITHUB_APP_BODY, "identity": {"repositories": "infra, web"}}, headers=headers)
     assert r.status_code == 201, r.text
     row = r.json()
     assert row["state"] == "applied" and "live on the gateway" in row["state_detail"], row
     assert "GitHub agreed" in row["state_detail"] and "3 repositories" in row["state_detail"]
-    assert row["spec"]["identity"] == {"app_id": "4487276", "installation_id": "151256501", "source": "room",
-                                       "account": "acme", "repositories": ["infra", "web"]}
+    assert "picks its repositories on its Access tab" in row["state_detail"]
+    assert row["spec"]["identity"] == {"app_id": "4487276", "installation_id": "151256501", "source": "room", "account": "acme"}
     assert row["spec"]["gateway"] == "live" and "pull_request" not in row["spec"] and row["spec"]["secret_keys"] == []
     assert github.open_pr_calls == []
     # The Secret the minter reads, the probe it answered, the integration it holds.
@@ -6153,18 +6156,27 @@ def test_a_github_connect_uses_the_rooms_app_writes_the_secret_and_puts_the_gith
                                                       "GITHUB_APP_PRIVATE_KEY": PEM}
     assert bab.github_probes == ["151256501"]
     held = next(i for i in bab._integrations if i["integration"] == row["id"])
-    assert held["vendor"] == "github" and held["spec"]["repositories"] == ["infra", "web"] and held["spec"]["account"] == "acme"
-    # The target, exactly as the spec builder says, and never the key.
-    expected = github_target_spec(AdminIntegration(id=row["id"], vendor="github", name="GitHub", base_access="read",
-                                                   created_by="ops@example.com", spec=row["spec"]))
+    assert held["vendor"] == "github" and held["ceiling"] == GITHUB_LEVELS and held["spec"]["account"] == "acme"
+    assert "repositories" not in held["spec"]
+    # The targets, exactly as the spec builders say, and never the key.
+    model = AdminIntegration(id=row["id"], vendor="github", name="GitHub", base_access="read",
+                             created_by="ops@example.com", spec=row["spec"])
+    assert set(admin.targets) == {"github-mcp", "github-mcp-write"}
     target = admin.targets["github-mcp"]
-    assert target == expected
+    assert target == github_target_spec(model)
     assert target["auth_method"] == "service-token" and target["credential_key"] == "GITHUB_TOKEN"
     assert target["required_scope"] == "github:read" and target["headers"] == {"X-MCP-Readonly": "true"}
     assert target["catalog_token_provider"] == "github-app" and "catalog_headers_env" not in target
-    assert target["address"] == "https://api.githubcopilot.com" and "abc" not in str(target)
+    assert target["address"] == "https://api.githubcopilot.com" and "abc" not in str(admin.targets)
+    write = admin.targets["github-mcp-write"]
+    assert write == github_write_target_spec(model)
+    assert write["required_scope"] == "github:review" and "headers" not in write
+    assert {k: v for k, v in write.items() if k not in ("required_scope", "tool_scopes")} == \
+        {k: v for k, v in target.items() if k not in ("required_scope", "headers")}
+    assert write["tool_scopes"]["create_pull_request"] == "github:write" and write["tool_scopes"]["push_files"] == "github:write"
+    assert write["tool_scopes"]["merge_pull_request"] == "github:never" and write["tool_scopes"]["delete_file"] == "github:never"
     out = client.delete(f"/api/admin/integrations/{row['id']}", headers=headers).json()
-    assert out["gateway"] == "removed from the gateway" and "github-mcp" not in admin.targets
+    assert out["gateway"] == "removed from the gateway" and admin.targets == {}
     assert out["secret"] == "removed" and ("bab", "bab-github") not in kubectl.secrets
     assert github.open_pr_calls == []
 
@@ -6194,10 +6206,136 @@ def test_a_github_connect_refuses_without_an_app_or_with_half_of_one_or_a_refuse
     assert admin.targets == {} and bab._integrations == []
 
 
-def test_a_github_grant_opens_the_github_lane_on_the_gateway():
-    """Gate (authorization): the lane for GitHub names the handler, the MCP target and the
-    bundle allow patterns, so approving a GitHub permission opens both halves."""
-    from kobo_api.gateway_lane import GATEWAY_LANES
-    lane = GATEWAY_LANES["github"]
-    assert lane.scopes == ("github:read",) and lane.handlers == ("github", "github-mcp")
-    assert lane.allow == ("github.*", "github-mcp.*")
+def test_a_github_grant_opens_the_lane_its_level_names():
+    """Gate (authorization, kobo#365): GitHub's lane is per permission. Read opens the read-only
+    target; Review pull requests opens the write target; Open pull requests adds the scope the
+    creating tools want. The gateway's `github` handler is in no lane and is withdrawn."""
+    from kobo_api.gateway_lane import (
+        GATEWAY_LANES,
+        MANAGED_HANDLERS,
+        PERMISSION_LANES,
+        lane_for,
+    )
+    assert "github" not in GATEWAY_LANES
+    read, review, write = (PERMISSION_LANES[("github", p)] for p in ("github_repos_read", "github_pulls_review", "github_pulls_write"))
+    assert (read.scopes, read.handlers, read.allow) == (("github:read",), ("github-mcp",), ("github-mcp.*",))
+    assert (review.scopes, review.handlers, review.allow) == (("github:review",), ("github-mcp-write",), ("github-mcp-write.*",))
+    assert (write.scopes, write.handlers, write.allow) == (("github:review", "github:write"), ("github-mcp-write",), ("github-mcp-write.*",))
+    assert lane_for("datadog", "datadog_monitors_read") is GATEWAY_LANES["datadog"] and lane_for("github", "unknown") is None
+    assert "github" in MANAGED_HANDLERS and not any("github" in lane.handlers for lane in PERMISSION_LANES.values())
+
+
+# ---- GitHub per agent: a repository set, then a level (kobo#365) -----------------
+
+GITHUB_CONNECTION = {"integration": "github", "vendor": "github", "kind": "connection", "name": "GitHub",
+                     "ceiling": GITHUB_LEVELS, "spec": {"installation_id": "151256501", "name": "GitHub"},
+                     "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"}
+_BARE_AGENT_YAML = ("name: ledger\ncard: agent-card.json\npersona: persona.md\n"
+                    "transports:\n  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
+                    "tools: {provider: colleagues, liminal: {url: http://liminal.test, token_env: CABAL_COLLEAGUE_TOKEN, "
+                    "exchange_url: http://cabal.test}, allow: [colleagues.list_colleagues, github.*]}\n"
+                    "memory: {personal: techne, home: /techne}\n")
+
+
+def _github_room(tmp_path, fake_storage, *, connected=True):
+    bab = FakeBab(integrations=[dict(GITHUB_CONNECTION)] if connected else [])
+    github = FakeGitHub(existing_repos={"example-org/agent-ledger", "acme/infra", "acme/web"},
+                        extra_clone_files={"bundle/agent.yaml": _BARE_AGENT_YAML}, track_pushed_content=True)
+    c, h = _room(tmp_path, fake_storage, bab=bab, github=github)
+    admin = FakeLiminalAdmin([GatewayGrant(issuer="cabal-core", persona="ledger", scopes=("x:read",),
+                                           allowed_handlers=("scratchpad", "github"))])
+    c.app.state.clients.liminal_admin = admin
+    return c, h, bab, github, admin
+
+
+def test_the_access_tab_shows_github_as_the_agents_own_repository_set(tmp_path, fake_storage):
+    """Gate (authorization) and wire shape (kobo#365): with no set picked, GitHub shows as the
+    connection with an empty set; the owner lists the installation's repositories and picks
+    some; the room writes the child `<connection>-<agent>` under the connection with every
+    level in its ceiling, and from then on the Access tab shows the child, never the
+    connection and never another agent's child. Strays, an empty set and a room without
+    GitHub are refused; the room-wide picker still shows the connection alone."""
+    c, h, bab, _, _ = _github_room(tmp_path, fake_storage)
+    page = c.get("/api/agents/ledger/access", headers=h).json()
+    gh = next(v for v in page["vendors"] if v["id"] == "github")
+    assert gh["accounts"] == [{"id": "github", "name": "GitHub", "connected": True, "ceiling": GITHUB_LEVELS, "organization": None,
+                               "account_id": None, "repositories": [], "has_repo_set": False}]
+    assert {p["name"]: p["label"] for g in gh["groups"] for p in g["permissions"]} == {
+        "github_repos_read": "Read", "github_pulls_review": "Review pull requests", "github_pulls_write": "Open pull requests"}
+    assert all("label" in p for v in page["vendors"] for g in v["groups"] for p in g["permissions"])
+
+    listing = c.get("/api/agents/ledger/github/repositories", headers=h).json()
+    assert listing["available"] is True and listing["selected"] == [] and listing["note"] is None
+    assert [r["full_name"] for r in listing["repositories"]] == ["acme/infra", "acme/web", "example-org/agent-ledger"]
+    assert set(listing["repositories"][0]) == {"full_name", "private", "default_branch"}
+
+    r = c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/web", "acme/infra"]})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"integration": "github-ledger", "repositories": ["acme/infra", "acme/web"], "changed": True}
+    child = next(i for i in bab.integrations("x") if i["integration"] == "github-ledger")
+    assert child["parent"] == "github" and child["vendor"] == "github" and child["ceiling"] == GITHUB_LEVELS
+    assert child["spec"] == {"repositories": ["acme/infra", "acme/web"], "name": "GitHub for ledger", "installation_id": "151256501"}
+    assert c.get("/api/agents/ledger/github/repositories", headers=h).json()["selected"] == ["acme/infra", "acme/web"]
+    page = c.get("/api/agents/ledger/access", headers=h).json()
+    gh = next(v for v in page["vendors"] if v["id"] == "github")
+    assert gh["accounts"] == [{"id": "github-ledger", "name": "GitHub", "connected": True, "ceiling": GITHUB_LEVELS,
+                               "organization": None, "account_id": None, "repositories": ["acme/infra", "acme/web"],
+                               "has_repo_set": True}]
+    # Another agent's child is nobody else's business; the room-wide picker shows the connection.
+    bab.put_integration("github-other", "github", {"repositories": ["acme/web"], "name": "GitHub for other"}, GITHUB_LEVELS, "x",
+                        parent="github")
+    gh = next(v for v in c.get("/api/agents/ledger/access", headers=h).json()["vendors"] if v["id"] == "github")
+    assert [a["id"] for a in gh["accounts"]] == ["github-ledger"]
+    gh = next(v for v in c.get("/api/access/picker", headers=h).json()["vendors"] if v["id"] == "github")
+    assert [a["id"] for a in gh["accounts"]] == ["github"]
+
+    same = c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/infra", "acme/web"]})
+    assert same.json()["changed"] is False
+    stray = c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/infra", "acme/nope"]})
+    assert stray.status_code == 422 and stray.json()["strays"] == ["acme/nope"] and "acme/nope" in stray.json()["error"]
+    assert c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": []}).status_code == 422
+    assert c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["not-a-repo"]}).status_code == 422
+
+    c2, h2, _, _, _ = _github_room(tmp_path / "none", fake_storage, connected=False)
+    assert c2.put("/api/agents/ledger/github/repositories", headers=h2, json={"repositories": ["acme/infra"]}).status_code == 404
+    off = c2.get("/api/agents/ledger/github/repositories", headers=h2).json()
+    assert off["available"] is False and off["repositories"] == [] and "Admin > Integrations" in off["note"]
+
+
+def test_the_gateway_lane_follows_each_github_level_and_withdraws_what_is_revoked(tmp_path, fake_storage):
+    """Gate (authorization, kobo#365): Read approved opens the read-only target's lane and the
+    bundle admits `github-mcp.*`; Open pull requests approved adds the write target's lane with
+    `github:review` and `github:write`; revoking Read takes the read lane and its allow pattern
+    back while the write lane stays. The retired `github` handler and `github.*` pattern are
+    withdrawn on the first follow, whatever the agent held before."""
+    import yaml as _yaml
+
+    c, h, bab, github, admin = _github_room(tmp_path, fake_storage)
+    assert c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/infra"]}).status_code == 200
+    rid = c.post("/api/agents/ledger/access/requests", headers=h,
+                 json={"integration": "github-ledger", "permissions": ["github_repos_read"], "note": "read"}).json()["id"]
+    out = c.post("/api/admin/access/decide", headers=h, json={"ids": [rid], "verdict": "approve"}).json()["results"]
+    assert out[0]["status"] == "approved" and out[0]["repositories"] == ["acme/infra"]
+    lane = admin.grants[("cabal-core", "ledger")]
+    assert set(lane.scopes) == {"x:read", "github:read"} and set(lane.allowed_handlers) == {"scratchpad", "github-mcp"}
+    pushed = _yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["tools"]["allow"]
+    assert pushed == ["colleagues.list_colleagues", "github-mcp.*"], pushed
+    assert github.pushes[-1][1] == "kobo: allow the github tools; withdraw the github tools"
+
+    rid = c.post("/api/agents/ledger/access/requests", headers=h,
+                 json={"integration": "github-ledger", "permissions": ["github_pulls_write"], "note": "open PRs"}).json()["id"]
+    c.post("/api/admin/access/decide", headers=h, json={"ids": [rid], "verdict": "approve"})
+    lane = admin.grants[("cabal-core", "ledger")]
+    assert set(lane.scopes) == {"x:read", "github:read", "github:review", "github:write"}
+    assert set(lane.allowed_handlers) == {"scratchpad", "github-mcp", "github-mcp-write"}
+    assert set(_yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["tools"]["allow"]) == {
+        "colleagues.list_colleagues", "github-mcp.*", "github-mcp-write.*"}
+
+    read_grant = next(g for g in bab.grants("ledger", "x") if g["permission"] == "github_repos_read")
+    assert c.delete(f"/api/agents/ledger/access/grants/{read_grant['id']}", headers=h).status_code == 200
+    lane = admin.grants[("cabal-core", "ledger")]
+    assert set(lane.scopes) == {"x:read", "github:review", "github:write"}
+    assert set(lane.allowed_handlers) == {"scratchpad", "github-mcp-write"}
+    pushed = _yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["tools"]["allow"]
+    assert "github-mcp.*" not in pushed and "github-mcp-write.*" in pushed and "github.*" not in pushed
+    assert c.post("/api/admin/access/sync", headers=h).json()["gateway_lanes"]["failed"] == 0

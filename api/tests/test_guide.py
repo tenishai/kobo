@@ -107,7 +107,6 @@ def _make_spec(
     colleagues: list[dict] | None = None,
     cabal_url: str | None = None,
     memory_replica_bucket: str = "",
-    broker_url: str = "",
     liminal_url: str = "",
     archetype: str | None = None,
 ) -> BundleSpec:
@@ -126,7 +125,6 @@ def _make_spec(
         colleagues=colleagues if colleagues is not None else [],
         cabal_url=cabal_url,
         memory_replica_bucket=memory_replica_bucket,
-        broker_url=broker_url,
         liminal_url=liminal_url,
         archetype=archetype,
     )

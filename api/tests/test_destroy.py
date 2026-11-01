@@ -2135,61 +2135,30 @@ def test_destroy_for_a_folder_agent_removes_the_folder_and_touches_no_platform(s
 # --- from test_pr_broker.py ---
 
 
-@pytest.fixture
-def broker_config(tmp_path):
-    key = tmp_path / "pr-app.pem"
-    key.write_text("not-a-real-key")
-    return Config(
-        workdir=tmp_path / "work",
-        pr_app_id="4741722",
-        pr_app_installation_id="157070479",
-        pr_app_private_key_path=key,
-        cabal_url="http://cabal.test",
-    )
-
-
-@pytest.fixture
-def broker_client(session_factory, broker_config):
-    return TestClient(create_app(session_factory, config=broker_config))
-
-
-def _agent(session_factory, name="ward"):
-    session = session_factory()
-    agent = Agent(
-        name=name, persona="helpful-generalist", model_id="m", status=AgentStatus.READY
-    )
-    session.add(agent)
-    session.commit()
-    session.close()
-    return name
-
-
-def test_destroy_forget_deletes_repo_access_rows(broker_client, session_factory, broker_config):
+def test_destroy_forget_deletes_repo_access_rows(session_factory, tmp_path):
     """Destruction safety: Destroy forget deletes repo access rows.
 
     A future agent reusing a destroyed agent's name must inherit ZERO
-    grants -- destroy-forget clears repo_access by name."""
+    grants -- destroy-forget clears repo_access by name. The rows are the
+    retired broker's record (kobo#365) and the boot migration reads them,
+    so a destroyed agent's must not be moved onto a namesake either."""
     from kobo_api.clients import Clients
     from kobo_api.destroy import DestroyCtx, _destroy_forget
 
-    name = _agent(session_factory)
-    rows = broker_client.post(
-        f"/api/agents/{name}/repo-access", json={"repositories": ["acme/a"]}
-    ).json()["requested"]
-    broker_client.post(
-        "/api/repo-access/decide", json={"ids": [rows[0]["id"]], "decision": "approved"}
-    )
-
     session = session_factory()
-    agent = session.query(Agent).filter_by(name=name).one()
+    agent = Agent(name="ward", persona="helpful-generalist", model_id="m", status=AgentStatus.READY)
+    session.add(agent)
+    session.add(RepoAccess(agent_name="ward", repository="acme/a", status="approved", requested_by="o@example.com"))
+    session.add(RepoAccess(agent_name="other", repository="acme/b", status="approved", requested_by="o@example.com"))
+    session.commit()
     ctx = DestroyCtx(
         agent=agent,
         session=session,
-        config=broker_config,
+        config=Config(workdir=tmp_path / "work"),
         clients=Clients(github=None, gojira=None, cloud=None, agent=None, kubectl=None),
     )
     _destroy_forget(ctx)
-    assert session.query(RepoAccess).count() == 0
+    assert [r.agent_name for r in session.query(RepoAccess).all()] == ["other"]
     session.close()
 
 

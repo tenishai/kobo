@@ -2400,7 +2400,13 @@ class FakeBab:
     integration with a ceiling, a small vendor catalogue, and requests that
     become grants when approved. Records every topology push in
     `.topologies` (list of (actor, agents)) and every revoke in `.revoked`.
-    `error`, when set, makes every call raise `ClientError(error)`."""
+    `error`, when set, makes every call raise `ClientError(error)`.
+
+    bab 0.4.12 (kobo#365): a child may hang under an AWS organization or under
+    a service connection (one level, kind `account`), the listing carries each
+    row's `spec`, and every catalogue permission carries a `label` (the
+    `github` vendor's three levels do here). Removing a connection removes its
+    children and every grant on them, as the service does."""
 
     def __init__(self, *, integrations=None, catalogue=None, healthy=True, error=None):
         # Which accounts carry the spoke role when discover probes them (#275): the first
@@ -2441,6 +2447,19 @@ class FakeBab:
                     {"name": "datadog_monitors_read", "tier": "read", "description": "List and read monitors"}]}],
                 "tiers": [{"name": "read", "lease_seconds": 3600, "validity_days": None}],
             },
+            # GitHub per agent (kobo#365): three levels on one repository set.
+            "github": {
+                "vendor": "github",
+                "groups": [{"name": "Repositories", "permissions": [
+                    {"name": "github_repos_read", "label": "Read", "tier": "read",
+                     "description": "Read code, issues, pull requests, checks and workflow runs"},
+                    {"name": "github_pulls_review", "label": "Review pull requests", "tier": "mutate",
+                     "description": "Read, plus review and comment on pull requests"},
+                    {"name": "github_pulls_write", "label": "Open pull requests", "tier": "mutate",
+                     "description": "Review, plus branches, commits and pull requests of its own"}]}],
+                "tiers": [{"name": "read", "lease_seconds": 3600, "validity_days": None},
+                          {"name": "mutate", "lease_seconds": 3600, "validity_days": 30}],
+            },
             # Agent-to-agent talk (kobo#310): one integration per built agent, one permission.
             "agents": {
                 "vendor": "agents",
@@ -2460,7 +2479,7 @@ class FakeBab:
     def vendors(self, actor):
         self._guard()
         return [{"vendor": v, "kind": "cloud" if v in ("aws", "gcp", "azure") else "service",
-                 "label": {"aws": "AWS", "datadog": "Datadog", "agents": "Other agents"}.get(v, v),
+                 "label": {"aws": "AWS", "datadog": "Datadog", "github": "GitHub", "agents": "Other agents"}.get(v, v),
                  "account": {"aws": "account"}.get(v), "permissions": {}} for v in self._catalogue]
 
     def integrations(self, actor):
@@ -2512,8 +2531,10 @@ class FakeBab:
                 continue
             for p in r["permissions"]:
                 gid = len(self._grants) + 1
+                tier = next((x["tier"] for v in self._catalogue.values() for g in v["groups"] for x in g["permissions"]
+                             if x["name"] == p), "read")
                 self._grants[gid] = {"id": gid, "agent": r["agent"], "integration": r["integration"], "permission": p,
-                                     "tier": "read", "gated": False, "expires_at": None, "granted_by": actor,
+                                     "tier": tier, "gated": False, "expires_at": None, "granted_by": actor,
                                      "created_at": "2026-10-29T12:05:00", "request_id": rid, "state": "active"}
                 r["outcome"][p] = "granted"
             r["status"] = "approved"
@@ -2583,8 +2604,11 @@ class FakeBab:
 
     def put_integration(self, integration, vendor, spec, ceiling, actor, parent=None):
         self._guard()
-        if parent and not any(i["integration"] == parent and i.get("kind") == "org" for i in self._integrations):
-            raise ClientError(f"the permission service refused connecting {integration}: {parent!r} is not a connected {vendor} organization")
+        parent_row = next((i for i in self._integrations if i["integration"] == parent), None) if parent else None
+        if parent and (parent_row is None or parent_row.get("parent") or parent_row.get("vendor") != vendor
+                       or parent_row.get("kind") not in ("org", "connection")):
+            raise ClientError(f"the permission service refused connecting {integration}: {parent!r} is not a connected "
+                              f"{vendor} organization or connection")
         kind = "account" if parent else ("org" if spec.get("hub_role_arn") else ("account" if spec.get("role_arn") else "connection"))
         self._integrations = [i for i in self._integrations if i["integration"] != integration]
         self._integrations.append({"integration": integration, "vendor": vendor, "ceiling": list(ceiling), "kind": kind,
@@ -2633,10 +2657,10 @@ class FakeBab:
 
     def delete_integration(self, integration, actor):
         self._guard()
-        before = len(self._integrations)
-        self._integrations = [i for i in self._integrations if i["integration"] != integration]
-        if len(self._integrations) == before:
+        if not any(i["integration"] == integration for i in self._integrations):
             raise ClientError(f"the permission service refused disconnecting {integration}: no integration {integration!r}")
-        revoked = sum(1 for g in self._grants.values() if g["integration"] == integration)
-        self._grants = {k: g for k, g in self._grants.items() if g["integration"] != integration}
-        return {"removed": integration, "grants_revoked": revoked, "tuples_deleted": revoked + 1}
+        gone = {integration} | {i["integration"] for i in self._integrations if i.get("parent") == integration}
+        self._integrations = [i for i in self._integrations if i["integration"] not in gone]
+        revoked = sum(1 for g in self._grants.values() if g["integration"] in gone)
+        self._grants = {k: g for k, g in self._grants.items() if g["integration"] not in gone}
+        return {"removed": integration, "grants_revoked": revoked, "tuples_deleted": revoked + len(gone)}
