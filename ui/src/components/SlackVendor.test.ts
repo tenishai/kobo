@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 // Slack as a vendor on the Access tab (issue #371): three states a person
 // reads (pick Wakes on then Create Slack app; Install to Slack; installed
-// with the workspace, channels, Wakes on and Remove), and nothing at all
-// when the room does not make Slack apps itself. A room-made app answers
-// wherever it is invited until channels are listed, and the row is what the
-// person lands on after Install to Slack (`?vendor=slack`).
+// with the workspace, Wakes on and Remove, and no channel list: inviting
+// the app in Slack is the only control), and nothing at all when the room
+// does not make Slack apps itself. The header's state is honest: Live only
+// when the agent is ready and no change is pending, Applying while a Wakes
+// on change restarts it. The row is what the person lands on after Install
+// to Slack (`?vendor=slack`).
 import { fireEvent, screen, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -72,25 +74,20 @@ describe("SlackVendor", () => {
     expect(screen.getByRole("button", { name: "Remove" })).toBeDefined();
   });
 
-  it("shows the workspace, the channels, Wakes on and Remove once installed", async () => {
+  it("shows the workspace, the invite sentence, Wakes on and Remove once installed, reading Live", async () => {
     room(INSTALLED);
 
     expect((await screen.findByText("Acme")).textContent).toBe("Acme");
-    expect((screen.getByRole("textbox", { name: "Channel 1" }) as HTMLInputElement).value).toBe("C0123456789");
+    expect(screen.getByRole("status").textContent?.trim()).toBe("Live");
+    expect(screen.getByText("Invite @clio to a channel in Slack and it answers there.")).toBeDefined();
+    // No channel list on a room-made app: inviting it in Slack is the only control.
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add channel" })).toBeNull();
     expect((screen.getByRole("radio", { name: /Mentions, then the thread/ }) as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByRole("link", { name: "Install to Slack" })).toBeNull();
 
     await fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(screen.getByRole("button", { name: "Remove the Slack app" })).toBeDefined();
-  });
-
-  it("says a room-made app answers wherever it is invited, and the list only narrows it", async () => {
-    room({ ...INSTALLED, channels: [] });
-
-    await screen.findByText("Answers in every channel it is invited to.");
-    expect(screen.getByText(/Invite @clio to any channel in Slack and it answers there/)).toBeDefined();
-    expect(screen.queryByText(/answers only in channels listed here/)).toBeNull();
-    expect(screen.getByRole("button", { name: "Add channel" })).toBeDefined();
   });
 
   it("brings the Slack row into view, lit, when Slack sends the person back with ?vendor=slack", async () => {
@@ -113,6 +110,59 @@ describe("SlackVendor", () => {
 
     const section = await screen.findByRole("region", { name: "Slack" });
     expect(section.textContent).toContain("Installing to Slack did not finish.");
+  });
+
+  /** The wake route answers `wake`, and the agent detail is answered by
+   * `detail` (a promise the test settles when the room's next check lands). */
+  function roomAfterWakeSave(wake: Record<string, unknown>, detail: Promise<Response>) {
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/slack/wake")) return json(wake);
+        if (url.includes("/slack")) return json(INSTALLED);
+        return detail;
+      }),
+    );
+    const rendered = renderWithClient(SlackVendor, { agentName: "clio" });
+    rendered.client.setQueryData(["agents", "clio"], checkedAt("2026-11-01T10:00:00Z"));
+    return { json };
+  }
+  const checkedAt = (at: string) => ({ ...AGENT, health: { state: "up", reason: null, checked_at: at } });
+  const radio = (name: RegExp) => screen.getByRole("radio", { name }) as HTMLInputElement;
+
+  it("reads Applying with Wakes on locked, and Live again only when the room's next check finds the agent up", async () => {
+    // Contract: a saved choice restarts the agent (`applied_now`), so two
+    // picks cannot race, and the header goes back to Live only on a health
+    // reading taken after the save, never on the one already in hand.
+    let answerDetail!: (value: Response) => void;
+    const { json } = roomAfterWakeSave(
+      { wake: "channel", previous_wake: "thread", manifest_changed: false, applied_now: true, wiring: "env" },
+      new Promise<Response>((resolve) => (answerDetail = resolve)),
+    );
+
+    await fireEvent.click(await screen.findByRole("radio", { name: /Every message in the channel/ }));
+
+    await waitFor(() => expect(screen.getByRole("status").textContent?.trim()).toBe("Applying your change. Give it a minute."));
+    expect(radio(/Mentions only/).disabled).toBe(true);
+
+    answerDetail(json(checkedAt("2026-11-01T10:01:00Z")));
+    await waitFor(() => expect(screen.getByRole("status").textContent?.trim()).toBe("Live"));
+    expect(radio(/Mentions only/).disabled).toBe(false);
+  });
+
+  it("says a saved choice waits for the agent's next restart when it could not be applied now", async () => {
+    roomAfterWakeSave(
+      { wake: "channel", previous_wake: "thread", manifest_changed: false, applied_now: false, wiring: "env" },
+      new Promise<Response>(() => {}),
+    );
+
+    await fireEvent.click(await screen.findByRole("radio", { name: /Every message in the channel/ }));
+
+    await waitFor(() => expect(screen.getByRole("status").textContent?.trim()).toBe("Saved. Takes effect when the agent next restarts."));
+    expect(radio(/Mentions only/).disabled).toBe(false);
   });
 
   it("renders nothing when the room does not make Slack apps", async () => {

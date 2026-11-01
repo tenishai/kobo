@@ -2264,6 +2264,21 @@ class KubectlClient(Protocol):
         """
         ...
 
+    def set_env(self, namespace: str, deploy: str, name: str, value: str) -> None:
+        """Set one environment variable on the live Deployment now (`kubectl
+        set env deployment/<deploy> NAME=value`), which rolls its pods by
+        itself; no separate restart.
+
+        Used by the Slack wake route (kobo_api.main `set_slack_wake`,
+        2026-11-01): the committed `gojira.yaml` carries the same value, so
+        the provisioner's later apply finds nothing to change, and the
+        agent behaves as the page says within a minute instead of whenever
+        the next roll happens to land. Raises `ClientError` when the
+        cluster refuses; the caller reports that, since the commit already
+        landed.
+        """
+        ...
+
     def namespace_created_at(self, namespace: str) -> datetime | None:
         """When `namespace` was created, as naive UTC, or None when there is
         no such namespace (issue #193). An agent's namespace is its name, so
@@ -2382,6 +2397,11 @@ class KubectlCLI:
     def restart_deploy(self, namespace: str, deploy: str) -> None:
         self._runner.run(
             [self._kubectl, "-n", namespace, "rollout", "restart", f"deploy/{deploy}"]
+        )
+
+    def set_env(self, namespace: str, deploy: str, name: str, value: str) -> None:
+        self._runner.run(
+            [self._kubectl, "-n", namespace, "set", "env", f"deployment/{deploy}", f"{name}={value}"]
         )
 
     def namespace_created_at(self, namespace: str) -> datetime | None:

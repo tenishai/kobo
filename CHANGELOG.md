@@ -8,6 +8,26 @@ All notable changes to kobo are documented here. The format follows
 
 ### Changed
 
+- **A Wakes on change reaches the agent at once.** Saving **Wakes on** used to write the
+  choice into the agent's files and leave the running agent on the old one until the deploy
+  platform next rolled it, minutes later, with the page saying only "Saved." Now the route
+  (`PUT /api/agents/{name}/slack/wake`) also sets the value on the live deployment
+  (`KubectlClient.set_env`, `kubectl set env`, which rolls the pods itself) and answers
+  `applied_now`; the committed and live values agree, so the later apply changes nothing.
+  Both the Slack tab and the Slack row on Access keep the choices locked while it applies, so
+  two changes cannot race. The Slack tab's note reads "Saved. The agent restarts with this
+  choice now; give it a minute." and then "Live." once the room's next check finds the agent
+  up. The Slack row's header carries an honest state instead of "Installed in <workspace>":
+  "Live" (green) when the agent is ready and nothing is pending, "Applying your change. Give
+  it a minute." (amber) from the save until the agent is back up, "Installing" while the
+  install is in flight, and "Saved. Takes effect when the agent next restarts." (amber) when
+  the live change was refused. The guide's Slack section says the same. The channel list on
+  the legacy Slack tab is unchanged: it is a bundle change that takes a rebuild.
+- **No channel list on the Slack row.** A room-made app answers wherever it is invited, so
+  the Slack row on Access drops the channel list and **Add channel**; one sentence takes their
+  place: "Invite @<agent> to a channel in Slack and it answers there." The channels route and
+  the legacy Slack tab's own list are untouched, and Create still wires the open entry.
+
 - **A room-made Slack app answers wherever it is invited.** The Slack row on the Access tab
   now says so: invite the agent to any channel and it answers there; the channel list only
   narrows it, and the empty list reads "Answers in every channel it is invited to." Clearing
