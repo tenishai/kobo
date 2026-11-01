@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.30] - 2026-11-01
+
 ### Added
 
 - **The Audit page has two tabs, People and Agents (#371, section 3).** People is the room's
