@@ -1289,6 +1289,17 @@ class FakeGojira:
         self.calls.append("ping")
         return self._ping_result
 
+    # The clusters gojira knows, as `GET /api/v1/clusters` lists them; a test
+    # sets this to say where the alias the room deploys through really points.
+    clusters: list[dict] = []
+
+    def cluster(self, name: str) -> dict | None:
+        self.calls.append("cluster")
+        for row in self.clusters:
+            if row.get("name") == name:
+                return {k: row.get(k) for k in ("name", "gcp_project", "location", "gke_cluster")}
+        return None
+
     def delete_app(self, app_id: int, *, delete_namespaces: bool = True) -> dict:
         self.calls.append(f"delete_app:{app_id}")
         self.delete_calls.append((app_id, delete_namespaces))

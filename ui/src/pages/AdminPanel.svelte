@@ -130,7 +130,15 @@
           </div>
           <div>
             <dt>Deploys to</dt>
-            <dd><code title={room.data.cluster}>{room.data.cluster || "not set"}</code></dd>
+            {#if room.data.cluster_detail}
+              <dd>
+                <code title={`${room.data.cluster_detail.gcp_project} · ${room.data.cluster_detail.location} · registered as ${room.data.cluster}`}
+                  >{room.data.cluster_detail.gke_cluster}</code
+                >
+              </dd>
+            {:else}
+              <dd><code title={room.data.cluster}>{room.data.cluster || "not set"}</code></dd>
+            {/if}
           </div>
         </dl>
       </div>

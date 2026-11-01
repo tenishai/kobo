@@ -8,6 +8,13 @@ All notable changes to kobo are documented here. The format follows
 
 ### Fixed
 
+- **The admin panel's "Deploys to" names the cluster, not the alias.** It read the name the
+  deploy platform registered the cluster under; it now asks the platform where that alias
+  points and shows the cluster, with the project, location and alias on hover. The alias
+  stands in when the platform cannot say.
+
+### Fixed
+
 - **The Harness page now says what an agent really runs on.** The room records what each
   agent is built on (`Agent.built_runtime_image`, the ref its Dockerfile's `FROM` carries,
   migration `f2a7c4d9e1b3`): compose writes it at create, every fast-lane commit that re-pins

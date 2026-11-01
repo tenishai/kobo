@@ -1553,7 +1553,10 @@ export function auditAgentsExportUrl(filters: AuditAgentsFilters, format: "csv" 
 export type AdminRoom = {
   org_repo: string | null;
   runtime_image: string;
+  /** The alias the room deploys through. */
   cluster: string;
+  /** Where that alias really points, when the deploy platform can say. */
+  cluster_detail: { name: string; gcp_project: string; location: string; gke_cluster: string } | null;
   delivery_backend: string;
 };
 
