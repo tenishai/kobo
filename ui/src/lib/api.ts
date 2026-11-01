@@ -1631,6 +1631,18 @@ export type AccessVendor = {
   accounts: AccessAccount[];
   groups: { name: string; permissions: AccessPermission[] }[];
   tiers: { name: string; lease_seconds: number; validity_days: number | null }[];
+  /** The newest failed or refused lease for this agent at this vendor in the
+   * last day (issue #382), or null: none, or a lease landed since. The
+   * reason is the permission service's own sentence; it names no secret.
+   * Absent on an older server. */
+  last_failure?: AccessFailure | null;
+};
+
+export type AccessFailure = {
+  /** RFC 3339. */
+  at: string;
+  kind: "lease.failed" | "lease.refused" | string;
+  reason: string;
 };
 
 export type AccessGrant = {

@@ -55,9 +55,11 @@ const CASES: Array<[string, unknown, Record<string, unknown>, Reveal?]> = [
     AccessPanel,
     { agentName: "warden", groupName: "growth", frozen: true },
     async () => {
-      // The vendors come from the access route: the one held grant below
-      // puts a Revoke on screen, and the vendor's own button is a
-      // disclosure (it opens the picker) that the freeze shuts.
+      // The vendors come from the access route as closed rows (issue #382);
+      // the row's own button is a disclosure that still opens when frozen,
+      // and the one held grant inside puts a Revoke on screen. The picker
+      // is not offered on a frozen agent.
+      await fireEvent.click(await screen.findByRole("button", { name: /Datadog/ }));
       expect(await screen.findByRole("button", { name: /Revoke now/ })).not.toBeNull();
     },
   ],
@@ -106,7 +108,7 @@ describe("frozen panels disable every control", () => {
         ],
         pending: [],
         vendors: [
-          { id: "datadog", kind: "service", label: "Datadog", account_noun: null, organizations: [],
+          { id: "datadog", kind: "service", label: "Datadog", connected: true, account_noun: null, organizations: [],
             accounts: [{ id: "datadog", name: "datadog", connected: true, ceiling: ["datadog_monitors_read"], organization: null, account_id: null, repositories: [], has_repo_set: false }],
             groups: [{ name: "Monitors", permissions: [{ name: "datadog_monitors_read", tier: "read", description: "Monitors", label: null }] }], tiers: [] },
         ],

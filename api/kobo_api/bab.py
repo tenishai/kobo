@@ -31,7 +31,7 @@ import httpx
 from .clients import ClientError
 from .kinds import KIND_CONNECTED
 from .models import AgentStatus
-from .timefmt import stamp_strings
+from .timefmt import rfc3339, stamp_strings
 
 log = logging.getLogger(__name__)
 
@@ -509,6 +509,75 @@ def since_days(days: int, now: datetime | None = None) -> datetime:
     return (now or datetime.now(UTC)) - timedelta(days=max(1, min(int(days), 90)))
 
 
+# ---- the Access tab's failure line (kobo#382) ---------------------------------
+
+FAILURE_KINDS = ("lease.failed", "lease.refused")
+"""The ledger events that mean the agent asked for a credential and did not get one:
+the service could not mint (`lease.failed`, e.g. the vendor answered 422 for a narrowed
+token) or would not (`lease.refused`, nothing granted). The agent only tells the person
+"my credential did not resolve"; the owner reads the reason on the vendor's row."""
+FAILURE_WINDOW = timedelta(hours=24)
+FAILURE_EVENTS = 50
+
+
+def _instant(value) -> datetime | None:
+    """An instant the service wrote (naive UTC) or the room did (RFC 3339), aware."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def last_failures(bab: BabClient, agent: str, vendors: list[dict], actor: str,
+                  now: datetime | None = None) -> dict[str, dict]:
+    """Vendor id -> the newest failed or refused lease for `agent` there within the last
+    day, as `{at, kind, reason}`, from ONE read of the service's events (newest first,
+    capped) grouped by the vendor the event's integration belongs to (the picker's
+    vendors: a vendor's own id, or one of its accounts, an agent's GitHub set included).
+    A failure is cleared by a lease at the same vendor issued after it: the agent got
+    its credential since, so there is nothing to warn about. The service being away is
+    not a reason to fail the Access tab: the answer is then no failures."""
+    now = now or datetime.now(UTC)
+    since = now - FAILURE_WINDOW
+    vendor_of: dict[str, str] = {}
+    for v in vendors:
+        vendor_of[v["id"]] = v["id"]
+        for a in v.get("accounts", []):
+            vendor_of[a["id"]] = v["id"]
+    try:
+        events = bab.events(since, None, list(FAILURE_KINDS), agent, FAILURE_EVENTS, actor)
+    except ClientError as exc:
+        log.warning("bab events for %s unavailable: %s", agent, exc)
+        return {}
+    out: dict[str, tuple[datetime, dict]] = {}
+    for event in events:
+        detail = dict(event.get("detail") or {})
+        at = _instant(event.get("at"))
+        vendor = vendor_of.get(str(detail.get("integration") or "")) or vendor_of.get(str(detail.get("vendor") or ""))
+        if at is None or at < since or vendor is None:
+            continue
+        if vendor in out and out[vendor][0] >= at:
+            continue
+        reason = str(detail.get("reason") or detail.get("error") or "").strip()
+        out[vendor] = (at, {"at": rfc3339(at), "kind": str(event.get("kind") or ""), "reason": reason})
+    if not out:
+        return {}
+    try:
+        leases = bab.leases(agent, since, actor)
+    except ClientError as exc:
+        log.warning("bab leases for %s unavailable: %s", agent, exc)
+        leases = []
+    for lease in leases:
+        vendor = vendor_of.get(str(lease.get("integration") or ""))
+        issued = _instant(lease.get("issued_at"))
+        if vendor in out and issued is not None and issued > out[vendor][0]:
+            del out[vendor]
+    return {vendor: row for vendor, (_, row) in out.items()}
+
+
 # ---- the Agent connections pane (kobo#371) ----------------------------------
 
 AGENT_CONNECTIONS_WORKERS = 6
@@ -671,6 +740,7 @@ __all__ = [
     "child_id",
     "child_repositories",
     "ensure_agent_integrations",
+    "last_failures",
     "picker",
     "push_topology",
     "read_permissions",
