@@ -25,6 +25,26 @@ All notable changes to kobo are documented here. The format follows
   Mode may be moved freely. The Slack tab already hides itself for a moved agent; its full
   removal, along with the Slack tab's guide text, is a later cleanup once dev has moved.
 
+- **Connect Google Cloud (kobo#390).** Admin > Integrations > Add integration > Google Cloud is
+  its own sheet, modelled on the AWS one: pick **A project** (the common case) or **A folder or
+  organization**, and the page shows the room's identity (the permission service's service
+  account, email and id) and the roles to grant it three ways, `gcloud` commands, Terraform
+  (`google_project_iam_member` and the folder and organization forms) or the plain list for the
+  console, rendered from a vendored pack file (`packs-gcp.json`: `inventory`, every viewer role the
+  catalogue's gcp read permissions name; `models`, `roles/aiplatform.user`). No key is made
+  anywhere. Connect asks the permission service to read the project as that identity (`POST
+  /probe/gcp`) and saves nothing until Google Cloud agrees; the row is held there with every gcp
+  read permission as the ceiling and nothing goes to the gateway. A folder or organization is the
+  hub shape: every project under it the identity can read connects by itself (`POST
+  /integrations/{id}/discover`), the rest read **Not granted yet** until **Check projects** finds
+  them granted. Tick **Use this project's Vertex AI models in the room** (location `us-east5` by
+  default, `global` allowed) and the probe also lists Vertex AI models there; the row's spec then
+  carries `models = {provider: vertex_ai, location}` and its line reads "Models: Vertex AI,
+  us-east5". That spec is the hook the room's model gateway reads in the next lane; `GET
+  /api/catalog/models` is unchanged here. New auth kind `gcp_parent`; `gcp_identity` now requires
+  the project id. The permission service client gains generic `identity(vendor)` and
+  `probe(vendor, **body)`; the picker reads a project row as a "project" under its folder.
+
 ## [0.3.36] - 2026-11-01
 
 ### Changed

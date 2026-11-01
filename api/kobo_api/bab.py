@@ -70,6 +70,8 @@ class BabClient(Protocol):
     def all_leases(self, since: datetime | None, actor: str) -> list[dict]: ...
     def events(self, since: datetime | None, until: datetime | None, kinds: list[str], agent: str | None,
                limit: int, actor: str) -> list[dict]: ...
+    def identity(self, vendor: str, actor: str) -> dict: ...
+    def probe(self, vendor: str, actor: str, **body) -> dict: ...
     def aws_identity(self, actor: str) -> dict: ...
     def probe_aws(self, role_arn: str, audience: str, actor: str, hub_role_arn: str | None = None,
                   external_id: str | None = None) -> dict: ...
@@ -83,7 +85,7 @@ class BabClient(Protocol):
     def org_hub_role_arn(self, integration: str, actor: str) -> str: ...
     def external_id_for(self, parent: str, account_id: str) -> str: ...
     def external_id_for_org(self, parent: str) -> str: ...
-    def discover_accounts(self, integration: str, actor: str, role_name: str) -> dict: ...
+    def discover_accounts(self, integration: str, actor: str, role_name: str | None = None) -> dict: ...
 
 
 class HttpxBabClient:
@@ -182,13 +184,26 @@ class HttpxBabClient:
             params["agent"] = agent
         return self._call("GET", "/events", actor, params=params, what="the events").get("events", [])
 
+    def identity(self, vendor: str, actor: str) -> dict:
+        """`GET /identity/{vendor}`: who the service is at that cloud. AWS answers the
+        Google subject and audience its web-identity token carries; Google Cloud (kobo#390)
+        the service account `email` and its unique `subject`, the member a project owner
+        grants the role pack to."""
+        return self._call("GET", f"/identity/{vendor}", actor, what=f"its {vendor} identity")
+
+    def probe(self, vendor: str, actor: str, *, what: str | None = None, **body) -> dict:
+        """`POST /probe/{vendor}` with `body`: the service proves it can mint for the
+        thing named before the room writes anything. Its refusal carries the vendor's
+        sentence (AWS's AccessDenied, Google Cloud's "lacks access on that project")."""
+        return self._call("POST", f"/probe/{vendor}", actor, json=body, what=what or f"the {vendor} probe")
+
     def aws_identity(self, actor: str) -> dict:
-        return self._call("GET", "/identity/aws", actor, what="its identity")
+        return self.identity("aws", actor)
 
     def probe_aws(self, role_arn: str, audience: str, actor: str, hub_role_arn: str | None = None,
                   external_id: str | None = None) -> dict:
-        body = {"role_arn": role_arn, "audience": audience, "hub_role_arn": hub_role_arn, "external_id": external_id}
-        return self._call("POST", "/probe/aws", actor, json=body, what=f"the role {role_arn}")
+        return self.probe("aws", actor, what=f"the role {role_arn}", role_arn=role_arn, audience=audience,
+                          hub_role_arn=hub_role_arn, external_id=external_id)
 
     def probe_datadog(self, service_account_id: str, actor: str) -> dict:
         """`POST /probe/datadog` (kobo#322): the service creates and deletes an application
@@ -236,8 +251,12 @@ class HttpxBabClient:
         token, so the set-up page and the connect agree before anything is stored."""
         return _external_id(self._token, parent)
 
-    def discover_accounts(self, integration: str, actor: str, role_name: str) -> dict:
-        return self._call("POST", f"/integrations/{integration}/discover", actor, json={"role_name": role_name},
+    def discover_accounts(self, integration: str, actor: str, role_name: str | None = None) -> dict:
+        """`POST /integrations/{org}/discover`: which of an organization's accounts the
+        service can reach. AWS names the spoke role to look for; a Google Cloud folder or
+        organization (kobo#390) sends an empty body, since its identity is granted directly."""
+        body = {"role_name": role_name} if role_name else {}
+        return self._call("POST", f"/integrations/{integration}/discover", actor, json=body,
                           what=f"the accounts of {integration}")
 
     def delete_integration(self, integration: str, actor: str) -> dict:
@@ -461,7 +480,9 @@ def picker(bab: BabClient, actor: str, agent: str | None = None) -> list[dict]:
             is_connected = any(not row.get("parent") for row in connected.values())
         out.append({"id": vendor, "kind": meta["kind"], "label": meta.get("label") or vendor,
                     "connected": is_connected,
-                    "account_noun": meta.get("account") or ("account" if meta["kind"] == "cloud" else None),
+                    # The service names the noun (bab 0.3.1+: account, project, subscription); an
+                    # older one, or a vendor it has not labelled, falls back to the room's table.
+                    "account_noun": meta.get("account") or ACCOUNT_NOUN.get(vendor) or ("account" if meta["kind"] == "cloud" else None),
                     "organizations": [{"id": o["integration"], "name": o.get("name") or o["integration"]} for o in orgs],
                     "accounts": accounts, "groups": tree.get("groups", []), "tiers": tree.get("tiers", [])})
     return out

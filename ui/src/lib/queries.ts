@@ -132,6 +132,7 @@ import {
   archivePersona,
   type AwsSetupRequest,
   type CatalogEntry,
+  type GcpSetupRequest,
   type ChatMessage,
   chatWithAgent,
   type ColleagueFeed,
@@ -172,6 +173,7 @@ import {
   fetchAdminAudit,
   fetchAdminAuditAgents,
   fetchAdminAwsSetup,
+  fetchAdminGcpSetup,
   fetchAdminConnections,
   fetchAdminIntegrations,
   fetchAdminPeople,
@@ -574,6 +576,15 @@ export function adminAwsSetupQuery(input: AwsSetupRequest) {
   return queryOptions({
     queryKey: ["admin", "integrations", "aws-setup", input.mode ?? "role", input.integration ?? "", input.parent ?? "", input.account_id ?? "", [...input.packs].sort().join(",")] as const,
     queryFn: () => fetchAdminAwsSetup(input),
+    staleTime: 60_000,
+    retry: shouldRetry,
+  });
+}
+
+export function adminGcpSetupQuery(input: GcpSetupRequest) {
+  return queryOptions({
+    queryKey: ["admin", "integrations", "gcp-setup", input.mode ?? "project", input.integration ?? "", input.target ?? "", [...input.packs].sort().join(",")] as const,
+    queryFn: () => fetchAdminGcpSetup(input),
     staleTime: 60_000,
     retry: shouldRetry,
   });
