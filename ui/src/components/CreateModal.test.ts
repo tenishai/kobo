@@ -678,3 +678,62 @@ describe("CreateModal — five built-ins lead, group personas sit behind pills (
     });
   });
 });
+
+describe("CreateModal — models from the connected clouds (kobo#390)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const GATEWAY_MODELS = {
+    gateway: true,
+    default: "vertex_ai/claude-sonnet-4-5",
+    models: [
+      {
+        id: "vertex_ai/claude-sonnet-4-5", label: "Claude Affordable Sonnet", family: "Claude", tier: "balanced",
+        provider: "vertex_ai", provider_label: "Google Cloud", gateway_model: "claude-affordable-sonnet",
+        available: true, reason: null,
+      },
+      {
+        id: "bedrock/claude-3-7", label: "Claude Fast Haiku", family: "Claude", tier: "fast",
+        provider: "bedrock", provider_label: "AWS", gateway_model: "claude-fast-haiku",
+        available: false, reason: "Ask a kobo admin to connect AWS",
+      },
+    ],
+  };
+
+  it("groups the list by cloud and greys a model whose cloud is not connected, with the reason", async () => {
+    stubCreateModalCatalogs({ "/api/catalog/models": GATEWAY_MODELS });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+    await findFormReady();
+
+    expect(await screen.findByText("Google Cloud")).not.toBeNull();
+    expect(screen.getByText("AWS")).not.toBeNull();
+    const greyed = screen.getByRole("radio", { name: /Claude, Fast/ }) as HTMLInputElement;
+    expect(greyed.disabled).toBe(true);
+    expect(screen.getByText("Ask a kobo admin to connect AWS")).not.toBeNull();
+    const offered = screen.getByRole("radio", { name: /Claude, Balanced/ }) as HTMLInputElement;
+    expect(offered.disabled).toBe(false);
+    expect(offered.checked).toBe(true);
+  });
+
+  it("disables Create agent with one sentence when no connected cloud serves a model", async () => {
+    stubCreateModalCatalogs({
+      "/api/catalog/models": {
+        ...GATEWAY_MODELS,
+        default: null,
+        models: GATEWAY_MODELS.models.map((m) => ({ ...m, available: false, reason: "Ask a kobo admin to connect Google Cloud" })),
+      },
+      "/api/personas/search": { results: [HELPER] },
+      "/api/availability": { available: true, reason: null },
+    });
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+    await findFormReady();
+    await pickHelperAndName();
+
+    expect(
+      screen.getByText(/Connect a cloud with models under Admin, Integrations, before creating an agent\./),
+    ).not.toBeNull();
+    const submit = screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+  });
+});

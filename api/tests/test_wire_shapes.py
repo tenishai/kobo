@@ -28,8 +28,8 @@ from mcp.shared.context import RequestContext
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from kobo_api import admin_store, bootstrap
 from kobo_api import audit as room_audit
-from kobo_api import bootstrap
 from kobo_api.bootstrap import render_org_yaml
 from kobo_api.bundle_publish import bundle_reference
 from kobo_api.clients import ClientError, Clients, _build_learnings_envelope
@@ -44,6 +44,10 @@ from kobo_api.mcp import audit, authz, rate_limit
 from kobo_api.mcp.jwt import ACCESS_TTL_S, mint, signing_key
 from kobo_api.mcp.server import build_mcp_server
 from kobo_api.mcp.tools.write import _endpoint
+from kobo_api.model_providers import (
+    REASON_GATEWAY_DOWN,
+    REASON_NOT_CONNECTED,
+)
 from kobo_api.models import A2AInvite, Agent, AgentLearning, AgentStatus, Base
 from kobo_api.org import ORG_KEYS, load_org_config
 from kobo_api.personas import (
@@ -71,6 +75,7 @@ from tests.fakes import (
     FakeGitHub,
     FakeGojira,
     FakeKubectl,
+    FakeModelsGateway,
     FakeName,
     FakePeopleSearch,
     FakeSero,
@@ -3666,6 +3671,7 @@ def test_render_org_yaml_golden_with_computed_defaults():
         "runtime_image": "registry.example/agents/daedalus-runtime:v1",
         "memory_replica_bucket": "",
         "broker_url": "",
+        "models_gateway_url": "",
         "liminal_url": "",
         "bab_url": "",
         "noto_url": None,
@@ -4095,3 +4101,161 @@ def test_health_reports_rolling_for_a_recreate_gap_and_an_unfinished_generation_
 
     assert (verdict.state, verdict.rolling, verdict.ready_since) == (state, rolling, ready_since)
     assert verdict.body()["rolling"] is rolling
+
+
+# --- the model gateway (kobo#390) -------------------------------------------------
+
+MODELS_GATEWAY_URL = "http://models-gateway.models.svc"
+
+
+def _vertex_provider(session, *, row_id="gcp-example", project="example-model-project", location="us-east5", state=admin_store.STATE_APPLIED):
+    """A Google Cloud project row that serves the room's models (kobo#390)."""
+    admin_store.put_integration(
+        session, vendor="gcp", name="Google Cloud example", base_access="read", integration_id=row_id,
+        spec={"kind": "account", "project": project, "models": {"provider": "vertex_ai", "location": location}},
+        credential_ref=None, actor="ops@example.com",
+    )
+    admin_store.set_integration_state(session, row_id, state=state, detail="connected")
+    session.commit()
+
+
+def _models_room(tmp_path, *, gateway, models_gateway_url=MODELS_GATEWAY_URL, github=None, gojira=None):
+    """A room with the model gateway on, an operator signed in through IAP
+    and the admin panel open. Returns the client, the operator's headers
+    and the session factory, so a test seeds its own provider rows."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    engine = create_engine(f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    config = Config(
+        workdir=tmp_path / "work", iap_audience=WHOAMI_AUDIENCE, operators=["ops@example.com"], admin_panel=True,
+        models_gateway_url=models_gateway_url,
+        models=[
+            ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Affordable Sonnet", family="Claude", tier="balanced"),
+            ModelChoice(id="vertex_ai/gemini-2.5-flash", label="Gemini Fast Flash", family="Gemini", tier="fast", location="global"),
+        ],
+    )
+    private_key, jwk = _generate_jwk()
+    clients = Clients(github=github or FakeGitHub(), gojira=gojira or FakeGojira(), cloud=FakeCloud(), agent=FakeAgent(),
+                      kubectl=FakeKubectl(), models_gateway=gateway)
+    app = create_app(session_factory, config=config, clients=clients, iap_jwks_fetcher=_fetcher(jwk))
+    return TestClient(app), {ASSERTION_HEADER: _sign_whoami(private_key, email="ops@example.com")}, session_factory
+
+
+def test_catalog_models_answers_from_the_providers_with_available_and_reason(tmp_path):
+    """Wire shape (kobo#390): with the gateway on, each model says which cloud
+    serves it and whether it can be picked; nothing connected reads as
+    unavailable with the sentence naming the cloud, the gateway down reads
+    as unavailable with its own sentence, and `default` is the first
+    available model or null."""
+    gateway = FakeModelsGateway()
+    client, headers, session_factory = _models_room(tmp_path, gateway=gateway)
+
+    before = client.get("/api/catalog/models", headers=headers).json()
+    assert before["default"] is None
+    assert [m["available"] for m in before["models"]] == [False, False]
+    assert before["models"][0]["reason"] == REASON_NOT_CONNECTED.format(cloud="Google Cloud")
+    assert before["models"][0]["provider_label"] == "Google Cloud"
+    assert before["models"][0]["gateway_model"] == "claude-affordable-sonnet"
+
+    with session_factory() as session:
+        _vertex_provider(session)
+    connected = client.get("/api/catalog/models", headers=headers).json()
+    assert connected["default"] == "vertex_ai/claude-sonnet-4-5"
+    assert [m["available"] for m in connected["models"]] == [True, True]
+    assert connected["gateway"] is True
+
+    gateway.up = False
+    down = client.get("/api/catalog/models", headers=headers).json()
+    assert down["default"] is None
+    assert {m["reason"] for m in down["models"]} == {REASON_GATEWAY_DOWN}
+
+
+def test_catalog_models_is_unchanged_with_the_gateway_off(tmp_path):
+    """Wire shape (kobo#390): an install that has not set `models_gateway_url`
+    gets exactly the payload it always did, so nothing moves until it does."""
+    client, headers, _ = _models_room(tmp_path, gateway=None, models_gateway_url="")
+
+    body = client.get("/api/catalog/models", headers=headers).json()
+
+    assert body == {
+        "models": [
+            {"id": "vertex_ai/claude-sonnet-4-5", "label": "Claude Affordable Sonnet", "family": "Claude", "tier": "balanced"},
+            {"id": "vertex_ai/gemini-2.5-flash", "label": "Gemini Fast Flash", "family": "Gemini", "tier": "fast"},
+        ],
+        "default": "vertex_ai/claude-sonnet-4-5",
+    }
+
+
+def test_services_models_row_states(tmp_path):
+    """Wire shape (kobo#390): the Services row is off without the key, not
+    reachable when the gateway does not answer, and on with the providers,
+    models and default the filler sees."""
+    off, headers, _ = _models_room(tmp_path / "off", gateway=None, models_gateway_url="")
+    row = next(a for a in off.get("/api/admin/addons", headers=headers).json()["addons"] if a["id"] == "models")
+    assert row["name"] == "Models"
+    assert (row["state"], row["detail"]) == ("off", "Not configured; agents reach models with their own credentials.")
+
+    gateway = FakeModelsGateway(up=False)
+    client, headers, session_factory = _models_room(tmp_path / "on", gateway=gateway)
+    row = next(a for a in client.get("/api/admin/addons", headers=headers).json()["addons"] if a["id"] == "models")
+    assert row["state"] == "error"
+    assert row["detail"].startswith("Not reachable")
+
+    gateway.up = True
+    with session_factory() as session:
+        _vertex_provider(session)
+    row = next(a for a in client.get("/api/admin/addons", headers=headers).json()["addons"] if a["id"] == "models")
+    assert row["state"] == "on"
+    assert row["detail"] == "1 provider connected, 2 models available, default Claude Affordable Sonnet."
+
+
+class _CapturingBundleGitHub(FakeGitHub):
+    """Captures the bundle's agent.yaml and gojira.yaml at the push."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.agent_yaml: str | None = None
+        self.gojira: dict | None = None
+
+    def commit_push(self, workdir: Path, message: str) -> bool:
+        self.agent_yaml = (workdir / "bundle" / "agent.yaml").read_text()
+        self.gojira = yaml.safe_load((workdir / "gojira.yaml").read_text())
+        return super().commit_push(workdir, message)
+
+
+def test_set_model_through_the_gateway_rewrites_the_model_block_and_delivers_a_key(tmp_path):
+    """Wire shape (kobo#390): Change model with the gateway on points the
+    agent's bundle at the gateway (`openai/<gateway model>`, the gateway's
+    `/v1`, the key's env name), wires the `<agent>-models` Secret into the
+    deploy contract, drops an earlier `AGENT_MODEL`, mints the key for every
+    model the providers serve and delivers it under `MODELS_GATEWAY_KEY`;
+    the key value itself is in the Secret and nowhere else."""
+    github = _CapturingBundleGitHub(extra_clone_files={
+        "bundle/agent.yaml": "name: clio\nmodel: {id: '${AGENT_MODEL:-vertex_ai/claude-sonnet-4-5}', max_tokens: 8192}\ntransports: []\n",
+        "gojira.yaml": "app: clio\nenv: {AGENT_MODEL: vertex_ai/claude-sonnet-4-5, VERTEXAI_PROJECT: p}\n",
+    })
+    gateway, gojira = FakeModelsGateway(), FakeGojira()
+    client, headers, session_factory = _models_room(tmp_path, gateway=gateway, github=github, gojira=gojira)
+    app_id = gojira.create_app(name="clio", repo_full_name="acme/agent-clio", cluster="dev", namespace="clio")
+    with session_factory() as session:
+        _vertex_provider(session)
+        session.add(Agent(name="clio", persona="helpful-generalist", model_id="vertex_ai/claude-sonnet-4-5", status=AgentStatus.READY,
+                          repo_full_name="acme/agent-clio", gojira_app_id=app_id, created_by="ops@example.com"))
+        session.commit()
+
+    response = client.patch("/api/agents/clio/model", json={"model": "vertex_ai/gemini-2.5-flash"}, headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["wiring"] == "committed"
+    model = yaml.safe_load(github.agent_yaml)["model"]
+    assert model == {"id": "openai/gemini-fast-flash", "max_tokens": 8192,
+                     "api_base": f"{MODELS_GATEWAY_URL}/v1", "api_key_env": "MODELS_GATEWAY_KEY"}
+    assert github.gojira["secrets_from"] == ["clio-models"]
+    assert "AGENT_MODEL" not in github.gojira["env"]
+    assert f"reprovision:{app_id}" in gojira.calls
+    [minted] = gateway.keys["agent:clio"]
+    assert minted["models"] == ["claude-affordable-sonnet", "gemini-fast-flash"]
+    kubectl = client.app.state.clients.kubectl
+    assert kubectl.secrets[("clio", "clio-models")] == {"MODELS_GATEWAY_KEY": minted["key"]}
+    assert minted["key"] not in response.text and minted["key"] not in github.agent_yaml

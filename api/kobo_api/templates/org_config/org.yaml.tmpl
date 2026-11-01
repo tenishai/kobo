@@ -26,6 +26,12 @@ memory_replica_bucket: __KOBO_MEMORY_REPLICA_BUCKET__
 # the github.open_pr tool (the PR broker). Empty = agents get no github
 # tools at all.
 broker_url: __KOBO_BROKER_URL__
+# The room's model gateway, in-cluster, as the room and its agents reach it.
+# Empty = off: models come from the list below and agents reach them with
+# their own identity. Set, models come from the clouds connected under
+# Admin > Integrations and every new agent reaches them through the gateway
+# with a key the room mints for it.
+models_gateway_url: __KOBO_MODELS_GATEWAY_URL__
 liminal_url: __KOBO_LIMINAL_URL__
 # The room's permission service (bab), in-cluster. Empty = Access is off.
 bab_url: __KOBO_BAB_URL__

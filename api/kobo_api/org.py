@@ -51,6 +51,9 @@ ORG_KEYS = frozenset(
         # set is not org-settable until it is named HERE.
         "memory_replica_bucket",
         "broker_url",
+        # The room's model gateway (kobo#390): the install deploys it, the
+        # org names where. Empty keeps every model path as it was.
+        "models_gateway_url",
         "liminal_url",
         "bab_url",
         "noto_url",

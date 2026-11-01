@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-bundle
-updated: 2026-11-01
-anchor: api/kobo_api/composer.py sha=082336ab4ad09b4614813deb51542838b22a21b6
+updated: 2026-11-02
+anchor: api/kobo_api/composer.py sha=58dae145e0f17806784c28bf23f5f5938a08b151
 anchor: api/kobo_api/vendor/bundle.schema.json sha=257c9575d4674177daf32d7bc0ad2b1145709552
 ---
 # bundle — the daedalus agent bundle kobo writes into each agent repo
@@ -10,7 +10,7 @@ The vendored schema is daedalus v0.5.5's `docs/bundle.schema.json` (copied 2026-
 
 WHAT / SEAM: api/kobo_api/composer.py. `BundleSpec` (dataclass) → `compose(spec, dest)` writes the tree; `validate_agent_yaml(bundle_dir)` checks it against api/kobo_api/vendor/bundle.schema.json, a verbatim copy of daedalus `docs/bundle.schema.json` (never hand-edit; re-copy from daedalus). Called by RepoStep (steps.py) for composed agents only; connected agents bring their own repo.
 OPS / FLOW: `compose` writes `Dockerfile` (single `FROM {runtime_image}` + `COPY bundle/ /bundle`), `bundle/agent.yaml`, `bundle/agent-card.json`, `bundle/persona.md`, `bundle/knowledge/self.md`, `bundle/knowledge/colleagues.md` (not when `colleague_mode` is `none`), `bundle/skills/<id>/**`, and `litestream.yml` + `entrypoint.sh` only when `memory_replica_bucket` is set. WireStep then adds `k8s/base/*` and edits `gojira.yaml` (steps.py); later lanes append `bundle/intake/*` (teach archive), tooling, and Slack transports.
-agent.yaml shape (`_agent_yaml_data`): `model.id: ${AGENT_MODEL:-<id>}` (env override; the placeholder is substituted before schema validation), `max_tokens: 8192`, one a2a transport on :8080, `tools`, `memory: {personal: techne, home: /techne, revision: operator}`, `checkpoints: sqlite`, `approvals: {gates, escalation: {route: cli}}` (no `ceiling` since 2026-10-18: the runtime enforces only `ceiling.exec`, agora #55 item 7; agents composed earlier still carry `ceiling: {write: false}` until recomposed).
+agent.yaml shape (`_agent_yaml_data`): `model.id: ${AGENT_MODEL:-<id>}` (env override; the placeholder is substituted before schema validation), `max_tokens: 8192`; with `BundleSpec.models_gateway_url` and `gateway_model` set (kobo#390, the room's model gateway on) the block is `gateway_model_block`: `id: openai/<gateway_model>`, `api_base: <gateway>/v1`, `api_key_env: MODELS_GATEWAY_KEY`, no placeholder (an earlier `AGENT_MODEL` would win over it), and `update_agent_yaml_model` swaps a composed bundle's whole `model:` stanza in place for Change model; one a2a transport on :8080, `tools`, `memory: {personal: techne, home: /techne, revision: operator}`, `checkpoints: sqlite`, `approvals: {gates, escalation: {route: cli}}` (no `ceiling` since 2026-10-18: the runtime enforces only `ceiling.exec`, agora #55 item 7; agents composed earlier still carry `ceiling: {write: false}` until recomposed).
 Switchboard-dependent parts (all gated on `spec.cabal_url` presence):
 - a2a `auth`: `jwks_url = <cabal_url>/.well-known/jwks.json`, `issuer "cabal-core"`, `audience = <agent name>`. The agent accepts only switchboard-signed calls.
 - `tools.provider: colleagues`, allow `colleagues.{list_colleagues,ask_colleague,remember}`, `token_env: CABAL_COLLEAGUE_TOKEN`; plus a `liminal` block via `liminal_url` when set. Team-guide archetype gets the colleague trio only. No `github` sidecar since 2026-11-01 (kobo#365: the pull request broker retired; `BundleSpec.broker_url` is gone): GitHub reaches an agent as gateway tools (`github-mcp.*`, `github-mcp-write.*`) that `gateway_lane.follow` adds to the allow list after birth, per permission, and withdraws on revoke (`update_agent_yaml_allow(entries=..., remove=...)`).

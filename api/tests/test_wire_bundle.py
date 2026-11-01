@@ -24,6 +24,7 @@ from kobo_api.composer import (
     compose,
     validate_agent_yaml,
 )
+from kobo_api.model_providers import MODELS_SECRET_PURPOSE, gateway_model_name
 from kobo_api.models import Agent
 from kobo_api.provisioner import Ctx
 from kobo_api.steps import TECHNE_FS_GROUP, StagedSkill, WireStep
@@ -33,6 +34,7 @@ from tests.fakes import (
     FakeGitHub,
     FakeGojira,
     FakeKubectl,
+    FakeModelsGateway,
 )
 
 # --- from test_composer.py ---
@@ -422,10 +424,10 @@ def _make_ctx(session, agent, config, clients) -> Ctx:
     return Ctx(agent=agent, session=session, config=config, clients=clients, workdir=workdir)
 
 
-def _clients(*, github=None, gojira=None, kubectl=None, cabal=None, sero=None) -> Clients:
+def _clients(*, github=None, gojira=None, kubectl=None, cabal=None, sero=None, models_gateway=None) -> Clients:
     return Clients(
         github=github, gojira=gojira, cloud=None, agent=None, kubectl=kubectl,
-        cabal=cabal, sero=sero,
+        cabal=cabal, sero=sero, models_gateway=models_gateway,
     )
 
 
@@ -518,3 +520,57 @@ def test_wire_step_enabled_appends_agent_cabal_to_secrets_from(session_factory, 
     gojira_yaml = yaml.safe_load((ctx.workdir / "wire" / "gojira.yaml").read_text())
     assert gojira_yaml["secrets_from"] == [f"{AGENT_NAME}-cabal"]
 
+
+
+# --- the model gateway (kobo#390) -------------------------------------------------
+
+MODELS_GATEWAY_URL = "http://models-gateway.models.svc"
+
+
+def test_compose_writes_the_gateway_model_block_when_the_gateway_is_on(tmp_path):
+    """Wire shape (kobo#390): an agent born with the gateway on thinks through
+    it: an OpenAI-compatible id under the gateway's name for the model, the
+    gateway's `/v1`, and the key's env name; no `${AGENT_MODEL}` placeholder,
+    and the bundle still validates against the runtime's schema."""
+    spec = _make_spec()
+    spec.models_gateway_url, spec.gateway_model = MODELS_GATEWAY_URL, "claude-affordable-sonnet"
+
+    compose(spec, tmp_path / "out")
+
+    validate_agent_yaml(tmp_path / "out" / "bundle")
+    assert yaml.safe_load((tmp_path / "out" / "bundle" / "agent.yaml").read_text())["model"] == {
+        "id": "openai/claude-affordable-sonnet", "max_tokens": 8192,
+        "api_base": f"{MODELS_GATEWAY_URL}/v1", "api_key_env": "MODELS_GATEWAY_KEY",
+    }
+
+
+def test_wire_step_delivers_the_gateway_key_and_names_its_secret(session_factory, config):
+    """Wire shape (kobo#390): with the gateway on, WireStep mints the agent's
+    key for every model the connected providers serve, delivers it as the
+    Secret `<agent>-models` under `MODELS_GATEWAY_KEY` before the push, and
+    gojira.yaml's `secrets_from` names that Secret. The key value reaches
+    the Secret and nothing else the step writes."""
+    from kobo_api import admin_store
+
+    cfg = config.model_copy(update={"models_gateway_url": MODELS_GATEWAY_URL})
+    repo = _repo_full_name(cfg)
+    session, agent = _make_agent(session_factory, repo_full_name=repo, gojira_app_id=1, created_by="owner@example.com")
+    admin_store.put_integration(
+        session, vendor="gcp", name="Google Cloud example", base_access="read", integration_id="gcp-example",
+        spec={"kind": "account", "project": "example-model-project", "models": {"provider": "vertex_ai", "location": "us-east5"}},
+        credential_ref=None, actor="ops@example.com",
+    )
+    admin_store.set_integration_state(session, "gcp-example", state=admin_store.STATE_APPLIED, detail="connected")
+    session.commit()
+    github, gojira, kubectl, gateway = FakeGitHub(), FakeGojira(activate_after=1), FakeKubectl(), FakeModelsGateway()
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=cfg.gojira_cluster, namespace=AGENT_NAME)
+    ctx = _make_ctx(session, agent, cfg, _clients(github=github, gojira=gojira, kubectl=kubectl, models_gateway=gateway))
+
+    WireStep().run(ctx)
+
+    gojira_yaml = yaml.safe_load((ctx.workdir / "wire" / "gojira.yaml").read_text())
+    assert gojira_yaml["secrets_from"] == [f"{AGENT_NAME}-{MODELS_SECRET_PURPOSE}"]
+    [minted] = gateway.keys[f"agent:{AGENT_NAME}"]
+    assert minted["models"] == [gateway_model_name(m) for m in cfg.models]
+    assert kubectl.secrets[(AGENT_NAME, f"{AGENT_NAME}-models")] == {"MODELS_GATEWAY_KEY": minted["key"]}
+    assert minted["key"] not in (ctx.workdir / "wire" / "gojira.yaml").read_text()

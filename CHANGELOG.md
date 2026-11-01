@@ -8,6 +8,28 @@ All notable changes to kobo are documented here. The format follows
 
 ### Added
 
+- **The room's model gateway (kobo#390).** Models now come from the clouds the room connects. With
+  the new org key `models_gateway_url` set (the LiteLLM proxy the install deploys; its master key is
+  read from the Secret the machine-local `models_gateway_master_key_secret` names, never from org
+  config), a Google Cloud project connected with the Vertex AI box ticked becomes a model provider:
+  the room registers every `vertex_ai/` entry of the org's `models:` list on the gateway as one
+  deployment per project (`model_name` = the label as a slug, `model_info.id` = `<row id>:<entry
+  id>`), at connect, disconnect and boot, adding and deleting only the difference; a gateway that
+  refuses leaves the row connected with the refusal on its line. `GET /api/catalog/models` then
+  carries `provider`, `provider_label`, `gateway_model`, `available` and `reason` for each model,
+  and `default` is the first available one. New agent and Change model group the list by cloud and
+  show a model nobody serves in grey with its reason (its cloud is not connected, or the model
+  gateway is not reachable); with no model available New agent is off with one sentence pointing
+  at Admin, Integrations, the create route refuses with 409 and the same sentence, and Change model
+  refuses an unavailable model the same way. A new agent's bundle thinks through the gateway
+  (`model: {id: openai/<gateway_model>, api_base: <gateway>/v1, api_key_env: MODELS_GATEWAY_KEY}`),
+  the room mints it a key of its own (alias `agent:<name>`) and delivers it through the same lane
+  the Slack values use as the Secret `<agent>-models`, the deploy contract names that Secret, the
+  per-agent Vertex grant is skipped (the gateway's identity holds the role), and destroy revokes the
+  key. Agents made before the key was set are untouched until an owner presses Change model, which
+  moves them onto the gateway. The Services row **Model gateway** (a stub on a retired key) is now
+  **Models**: off, Not reachable, or "N providers connected, M models available, default X". With
+  `models_gateway_url` empty nothing changes.
 - **Connect Google Cloud (kobo#390).** Admin > Integrations > Add integration > Google Cloud is
   its own sheet, modelled on the AWS one: pick **A project** (the common case) or **A folder or
   organization**, and the page shows the room's identity (the permission service's service

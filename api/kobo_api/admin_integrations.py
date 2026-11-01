@@ -78,7 +78,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from . import admin_store, cloud_access, room_credentials
+from . import admin_store, cloud_access, model_providers, room_credentials
 from . import bab as bab_mod
 from .agent_env import require_our_branch
 from .clients import ClientError, Clients, GitHubClient
@@ -1303,6 +1303,19 @@ def _connect_gcp(
     return row
 
 
+def _fill_models_gateway(session: Session, clients: Clients | None, config: Config, row: AdminIntegration | None) -> None:
+    """After a connect or a disconnect that touches a provider (kobo#390):
+    run the gateway filler. A gateway that did not take the models leaves
+    the row connected, with the refusal on its line; the models it did take
+    serve, the rest show as not available until the next sync."""
+    result = model_providers.sync_from_session(session, clients, config)
+    if result is None or result.ok or row is None or row.state != admin_store.STATE_APPLIED:
+        return
+    admin_store.set_integration_state(
+        session, row.id, state=admin_store.STATE_APPLIED, detail=f"{row.state_detail or 'connected'}; {result.failure}"
+    )
+
+
 def connect(
     session: Session,
     clients: Clients | None,
@@ -1339,8 +1352,10 @@ def connect(
         return _connect_github(session, clients, config, bab, vendor=vendor, name=name, base_access=base_access,
                                address=address, trust=trust, actor=actor, identity=identity, secrets=secrets)
     if auth in GCP_AUTHS:
-        return _connect_gcp(session, clients, config, bab, vendor=vendor, name=name, base_access=base_access,
-                            trust=trust, actor=actor, auth=auth, identity=identity)
+        row = _connect_gcp(session, clients, config, bab, vendor=vendor, name=name, base_access=base_access,
+                           trust=trust, actor=actor, auth=auth, identity=identity)
+        _fill_models_gateway(session, clients, config, row)
+        return row
     probe: dict[str, str] | None = None
     hub_role_arn: str | None = None
     if auth in ("aws_hub", "aws_spoke") and bab is None:
@@ -1660,9 +1675,15 @@ def disconnect(session: Session, clients: Clients | None, config: Config, *, int
     # The gateway's target goes the way it came: off the admin plane, or by pull request.
     outcome["gateway"] = "nothing to remove" if room_only else _remove_from_gateway(clients, config, row, actor=actor)
     went_wrong = any(str(v).startswith("left:") for v in outcome.values())
+    served_models = bool((row.spec or {}).get("models"))
     admin_store.remove_integration(
         session, integration_id, actor=actor,
         landed=admin_store.LANDED_FAILED if went_wrong else admin_store.LANDED_APPLIED,
         detail="; ".join(f"{k}: {outcome[k]}" for k in ("access", "secret", "gateway") if k in outcome),
     )
+    if served_models:
+        # The provider is gone from the rows; the filler deletes exactly its models.
+        result = model_providers.sync_from_session(session, clients, config)
+        if result is not None:
+            outcome["models"] = result.sentence()
     return outcome

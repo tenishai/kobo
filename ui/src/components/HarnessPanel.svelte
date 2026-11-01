@@ -52,6 +52,7 @@
   import ActivityPanel from "./ActivityPanel.svelte";
   import AgentToAgentPanel from "./AgentToAgentPanel.svelte";
   import MemoryPanel from "./MemoryPanel.svelte";
+  import ModelPicker from "./ModelPicker.svelte";
   import SkillsPanel from "./SkillsPanel.svelte";
   import ToolingPanel from "./ToolingPanel.svelte";
   import { errorMessage, KIND_COMPOSED, KIND_CONNECTED, type ColleagueMode } from "../lib/api";
@@ -244,6 +245,11 @@
   const models = createQuery(() => ({ ...modelsQuery(), enabled: canChangeModel }));
   let pickedModel = $state<string | null>(null);
   const modelChoice = $derived(pickedModel ?? model);
+  // A model the room cannot serve right now (its cloud not connected, or the
+  // gateway down) is in the list but greyed; Change model stays off for it.
+  const choiceAvailable = $derived(
+    (models.data?.models ?? []).find((m) => m.id === modelChoice)?.available !== false,
+  );
   // svelte-ignore state_referenced_locally
   const updateModel = createMutation(() => updateAgentModelMutation(queryClient, agentName));
 
@@ -356,21 +362,19 @@
               <dd title={model}>
                 {#if canChangeModel && models.data}
                   <span class="harness__model-change">
-                    <select
-                      class="field__input harness__model-select"
-                      aria-label="Model"
-                      disabled={frozen || updateModel.isPending}
-                      value={modelChoice}
-                      onchange={(event) => (pickedModel = event.currentTarget.value)}
-                    >
-                      {#each models.data.models as choice (choice.id)}
-                        <option value={choice.id}>{choice.label}</option>
-                      {/each}
-                    </select>
+                    <span class="harness__model-picker">
+                      <ModelPicker
+                        models={models.data.models ?? []}
+                        value={modelChoice}
+                        name="harness-model"
+                        disabled={frozen || updateModel.isPending}
+                        onchange={(id) => (pickedModel = id)}
+                      />
+                    </span>
                     <button
                       type="button"
                       class="btn"
-                      disabled={frozen || updateModel.isPending || modelChoice === model}
+                      disabled={frozen || updateModel.isPending || modelChoice === model || !choiceAvailable}
                       onclick={handleChangeModel}
                     >
                       {updateModel.isPending ? "Changing…" : "Change model"}
@@ -781,5 +785,11 @@
   .harness__model-select {
     width: auto;
     min-width: 14rem;
+  }
+
+  .harness__model-picker {
+    display: block;
+    width: 100%;
+    max-width: 28rem;
   }
 </style>

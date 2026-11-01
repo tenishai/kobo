@@ -36,6 +36,7 @@ from kobo_api import (
     gateway_lane,
     gateway_prs,
     github_access,
+    model_providers,
     room_credentials,
     slack_relay,
 )
@@ -3506,8 +3507,13 @@ def create_app(
         return JSONResponse(section.full())
 
     @app.get("/api/catalog/models")
-    def catalog_models() -> dict:
+    def catalog_models(session: Session = Depends(get_session)) -> dict:  # noqa: B008
         cfg: Config = app.state.config
+        if model_providers.gateway_on(cfg):
+            # Models come from the connected clouds (kobo#390): each entry
+            # says which cloud serves it and whether it can be picked now.
+            rows = admin_store.list_integrations(session)
+            return model_providers.catalogue(cfg, rows, getattr(app.state.clients, "models_gateway", None))
         return {
             "models": [
                 {"id": m.id, "label": m.label, "family": m.family, "tier": m.tier}
@@ -3797,14 +3803,17 @@ def create_app(
         )
 
     @app.get("/api/admin/addons")
-    def admin_addons(request: Request) -> JSONResponse:
+    def admin_addons(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
         """The admin panel's Add-ons pane: what this room runs on, one card
         each, derived from the org keys that turn each one on (design
         2026-10-18, Arc 2 step 2)."""
         blocked = _admin_panel_gate(request)
         if blocked is not None:
             return blocked
-        return JSONResponse({"addons": addon_cards(app.state.config, app.state.clients)})
+        cfg: Config = app.state.config
+        # The Models row (kobo#390) reads the providers from the rows.
+        models = model_providers.gateway_view(session, cfg, app.state.clients) if model_providers.gateway_on(cfg) else None
+        return JSONResponse({"addons": addon_cards(cfg, app.state.clients, models=models)})
 
     @app.get("/api/admin/people")
     def admin_people(request: Request) -> JSONResponse:
@@ -5848,6 +5857,17 @@ def create_app(
                 {"error": f"unknown model: {payload.model!r}"}, status_code=422
             )
         model_id = payload.model if payload.model is not None else cfg.models[0].id
+        if model_providers.gateway_on(cfg):
+            # At least one model before the first agent (kobo#390): with no
+            # cloud connected the room refuses rather than build an agent
+            # that cannot think; the default is the first model that can.
+            rows = admin_store.list_integrations(session)
+            gateway = getattr(app.state.clients, "models_gateway", None)
+            if payload.model is None:
+                model_id = model_providers.catalogue(cfg, rows, gateway)["default"] or model_id
+            ok, refusal = model_providers.availability(cfg, rows, gateway, model_id)
+            if not ok:
+                return JSONResponse({"error": refusal}, status_code=409)
 
         # Checked last (a DB round-trip) rather than first: a malformed request
         # is a 422 regardless of whether the name happens to collide too.
@@ -10168,34 +10188,57 @@ def create_app(
                 {"error": f"there is no model {model_id!r} in the room's list"}, status_code=422
             )
         clients = app.state.clients
-        location = vertex_location_for(cfg, model_id)
+        if model_providers.gateway_on(cfg):
+            # Through the room's model gateway (kobo#390): the model block in
+            # the agent's bundle is rewritten to the gateway, a key is minted
+            # and delivered, and the deploy contract names its Secret. This
+            # is also how an agent born before the gateway moves onto it.
+            rows = admin_store.list_integrations(session)
+            gateway = getattr(clients, "models_gateway", None)
+            ok, refusal = model_providers.availability(cfg, rows, gateway, model_id)
+            if not ok:
+                return JSONResponse({"error": refusal}, status_code=409)
+            try:
+                model_providers.deliver_models_key(
+                    clients, cfg, agent, models=model_providers.available_gateway_models(cfg, rows),
+                    acting_email=getattr(request.state, "iap_email", None) or agent.created_by,
+                )
+                how = model_providers.commit_gateway_model(
+                    clients.github, clients.gojira, repo=agent.repo_full_name, gojira_app_id=agent.gojira_app_id,
+                    agent_name=agent.name, config=cfg, gateway_model=model_providers.gateway_model_for(cfg, model_id),
+                )
+            except ClientError as exc:
+                return _lane_failed("model change", agent, exc, AGENT_FILES_UNREACHABLE)
+            result = SimpleNamespace(how=how)
+        else:
+            location = vertex_location_for(cfg, model_id)
 
-        def edit(data: dict) -> bool:
-            # `apply_env` never touches the two model keys (an owner's wall);
-            # the location is the room's own to set, so it is written here.
-            changed = apply_env(data, {"AGENT_MODEL": model_id}, [])
-            env = data["env"]
-            if env.get("VERTEXAI_LOCATION") != location:
-                env["VERTEXAI_LOCATION"] = location
-                changed = True
-            return changed
+            def edit(data: dict) -> bool:
+                # `apply_env` never touches the two model keys (an owner's wall);
+                # the location is the room's own to set, so it is written here.
+                changed = apply_env(data, {"AGENT_MODEL": model_id}, [])
+                env = data["env"]
+                if env.get("VERTEXAI_LOCATION") != location:
+                    env["VERTEXAI_LOCATION"] = location
+                    changed = True
+                return changed
 
-        try:
-            result = edit_gojira_yaml(
-                clients.github,
-                clients.gojira,
-                repo=agent.repo_full_name,
-                connected=False,
-                gojira_app_id=agent.gojira_app_id,
-                edit=edit,
-                message=f"kobo: model is now {choice.label}",
-            )
-        except DeployTriggerFailed as exc:
-            return _deploy_trigger_failed(agent, exc)
-        except RepoBusy as exc:
-            return JSONResponse({"error": str(exc)}, status_code=409)
-        except ClientError as exc:
-            return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
+            try:
+                result = edit_gojira_yaml(
+                    clients.github,
+                    clients.gojira,
+                    repo=agent.repo_full_name,
+                    connected=False,
+                    gojira_app_id=agent.gojira_app_id,
+                    edit=edit,
+                    message=f"kobo: model is now {choice.label}",
+                )
+            except DeployTriggerFailed as exc:
+                return _deploy_trigger_failed(agent, exc)
+            except RepoBusy as exc:
+                return JSONResponse({"error": str(exc)}, status_code=409)
+            except ClientError as exc:
+                return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
 
         previous = agent.model_id
         agent.model_id = model_id
@@ -12488,6 +12531,23 @@ def _backfill_audit_landed(session_factory) -> None:
         session.close()
 
 
+def _fill_models_gateway(session_factory, clients, config: Config) -> None:
+    """The model gateway filler at boot (kobo#390): the gateway holds exactly
+    what the connected providers serve, idempotent, one log line, never a
+    failed boot. Off when the org names no gateway."""
+    if not model_providers.gateway_on(config):
+        return
+    session = session_factory()
+    try:
+        model_providers.sync_from_session(session, clients, config)
+        session.commit()
+    except Exception:
+        session.rollback()
+        log.warning("the model gateway sync was skipped this boot", exc_info=True)
+    finally:
+        session.close()
+
+
 def _fold_service_rows(session_factory, clients, config: Config) -> None:
     """A room whose Secret still stands behind a Slack or GitHub service row
     (before kobo#377) gets the connection row made from it, once
@@ -12577,6 +12637,7 @@ def build_default_app() -> FastAPI:
     # The Slack and GitHub service rows fold into connections (kobo#377): once,
     # idempotent, fail-soft, one log line when something moved.
     _fold_service_rows(session_factory, clients, config)
+    _fill_models_gateway(session_factory, clients, config)
     # Boot-time dispatch-pairs resync (final-review fix round, HIGH-2a): a
     # no-op if the switchboard isn't wired, fail-soft otherwise -- see
     # `_boot_sync_dispatch_pairs`'s own docstring for why this belongs

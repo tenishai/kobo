@@ -542,6 +542,24 @@ class Config(BaseModel):
     # cabal_url). The composer no longer reads it: the github broker sidecar
     # retired with the pull request broker (kobo#365, 2026-11-01).
     broker_url: str = ""
+    # The room's model gateway (kobo#390): the in-cluster base URL of the
+    # LiteLLM proxy the install deploys, as the room reaches its admin plane
+    # and as agents reach `/v1/chat/completions`. Org-settable like
+    # broker_url above. Empty (the default) = off: the catalogue answers from
+    # `models` as it always has and agents reach Vertex AI with their own
+    # identity. Set, the catalogue answers from the connected providers
+    # (`kobo_api.model_providers`), a new agent's model block points at the
+    # gateway with a key the room mints for it, and the per-agent Vertex
+    # grant is skipped. Agents born before the key was set are untouched
+    # until an owner presses Change model.
+    models_gateway_url: str = ""
+    # `<namespace>/<name>` of the Kubernetes Secret holding the gateway's
+    # master key under `LITELLM_MASTER_KEY`, read through the same kubectl
+    # call slack_tokens_secret uses. Deployment-local like slack_tokens_secret
+    # and deliberately absent from org.py's ORG_KEYS: it names an object in
+    # THIS cluster, and a key's address is never the org's to hand out. The
+    # value is read when first needed and never logged.
+    models_gateway_master_key_secret: str = ""
     # The observability catalog's Noto link (Task 4): the dashboard base
     # URL and this room's project slug within it, surfaced at
     # GET /api/catalog/observability for the UI to build a deep link from.
@@ -711,6 +729,21 @@ class Config(BaseModel):
             raise ValueError(
                 f"slack_tokens_secret {value!r} must be '<namespace>/<name>' "
                 "with no spaces"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _models_gateway_secret_names_a_namespace_and_a_name(self) -> Config:
+        """Same shape rule as `slack_tokens_secret` above, for the same
+        reason: a half-written address builds a reader pointed at an empty
+        namespace, found out at the first agent's key mint."""
+        value = self.models_gateway_master_key_secret
+        if not value:
+            return self
+        namespace, slash, name = value.partition("/")
+        if not slash or not namespace or not name or "/" in name or any(ch.isspace() for ch in value):
+            raise ValueError(
+                f"models_gateway_master_key_secret {value!r} must be '<namespace>/<name>'"
             )
         return self
 

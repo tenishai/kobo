@@ -43,6 +43,7 @@ export const RESERVED_KEYS = [
   "VERTEXAI_LOCATION",
   "AGENT_MODEL",
   "SLACK_WAKE_MODE",
+  "MODELS_GATEWAY_KEY",
 ];
 
 /** Names the runtime owns: how the container finds its binaries, its

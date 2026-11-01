@@ -51,6 +51,7 @@ from kobo_api.clients import ClientError, cabal_enabled
 from kobo_api.config import Config
 from kobo_api.directory import retire_directory
 from kobo_api.kinds import KIND_COMPOSED, is_connected, is_directory
+from kobo_api.model_providers import gateway_on, revoke_models_key
 from kobo_api.models import (
     A2AInvite,
     Agent,
@@ -152,7 +153,7 @@ DESTROY_STEP_LABELS: dict[str, str] = {
 # (`<agent>-cabal`, `<agent>-slack`, `<agent>-env`), which is what
 # `secrets_from` in the agent's gojira.yaml names and what the destroy
 # step below takes away with the path.
-SECRET_PURPOSES = ("cabal", "slack", "env")
+SECRET_PURPOSES = ("cabal", "slack", "env", "models")
 
 
 # How much older than the agent's row its namespace may be and still count as
@@ -483,8 +484,14 @@ def _destroy_access(ctx: DestroyCtx) -> str:
     else:
         removed = cloud.revoke_model_access(email, config.vertex_project)
         what = "model access"
+    # The agent's gateway key (kobo#390): revoked by its alias, so the room
+    # never has to hold the key to take it back. False when the gateway held
+    # none (an agent born before the gateway, or a resume); a gateway that
+    # does not answer fails the step, which a resume retries, since a key
+    # left live is exactly what this step exists to prevent.
+    revoked = revoke_models_key(ctx.clients, agent.name) if gateway_on(config) else False
     gone = cloud.delete_gsa(email)
-    return f"{what} removed: {removed}, gsa deleted: {gone}"
+    return f"{what} removed: {removed}, gateway key revoked: {revoked}, gsa deleted: {gone}"
 
 
 def _destroy_slack(ctx: DestroyCtx) -> str:
