@@ -10,14 +10,23 @@
   // CSV or JSON. The selects offer only what the current window holds, so a
   // filter never names something that is not there. A link may open this
   // pane pre-filtered (`#/admin/audit?agent=ward`, from an agent's page).
+  //
+  // Two tabs (kobo#371). People is the room's own log, as above. Agents is
+  // what agents did with their connections, read live from the permission
+  // service in the same row shape: each time one borrowed access, was
+  // refused it or could not get it. Actor and Action do not apply there, so
+  // those selects hide; the agent and outcome facets come from that answer;
+  // Export hands that window back. `?tab=agents` in the link opens it.
   import { createQuery } from "@tanstack/svelte-query";
-  import { auditExportUrl, type AuditFilters, type AuditRow } from "../../lib/api";
-  import { adminAuditQuery } from "../../lib/queries";
+  import { auditAgentsExportUrl, auditExportUrl, type AuditAgentsFilters, type AuditFilters, type AuditRow } from "../../lib/api";
+  import { adminAuditAgentsQuery, adminAuditQuery } from "../../lib/queries";
   import { hashQuery } from "../../lib/router.svelte";
   import { relativeTime, when } from "../../lib/time";
 
   const initial = typeof location === "undefined" ? {} : hashQuery(location.hash);
 
+  type Tab = "people" | "agents";
+  let tab = $state<Tab>(initial.tab === "agents" ? "agents" : "people");
   let q = $state(initial.q ?? "");
   let actor = $state(initial.actor ?? "");
   let action = $state(initial.action ?? "");
@@ -38,13 +47,26 @@
   }
 
   const filters: AuditFilters = $derived({ q, actor, action, agent, outcome, since, until });
+  const agentFilters: AuditAgentsFilters = $derived({ q, agent, outcome, since, until });
   const filterKey = $derived(JSON.stringify(filters));
 
   // Pages already loaded for the current filter; a filter change starts over.
   let cursor = $state<string | null>(null);
   let older = $state<AuditRow[]>([]);
   let loadedFor = $state("");
-  const page = createQuery(() => (adminAuditQuery(filters, cursor)));
+  const page = createQuery(() => ({ ...adminAuditQuery(filters, cursor), enabled: tab === "people" }));
+  const agentsPage = createQuery(() => ({ ...adminAuditAgentsQuery(agentFilters), enabled: tab === "agents" }));
+
+  function show(next: Tab): void {
+    if (next === tab) {
+      return;
+    }
+    tab = next;
+    // Actor and Action belong to People only; a value left behind would
+    // narrow nothing on Agents and surprise on the way back.
+    actor = "";
+    action = "";
+  }
 
   $effect(() => {
     if (filterKey !== loadedFor) {
@@ -54,8 +76,11 @@
     }
   });
 
-  const rows = $derived([...older, ...(page.data?.rows ?? [])]);
-  const total = $derived(page.data?.total_in_window ?? 0);
+  const current = $derived(tab === "agents" ? agentsPage : page);
+  const rows = $derived(tab === "agents" ? (agentsPage.data?.rows ?? []) : [...older, ...(page.data?.rows ?? [])]);
+  const total = $derived(current.data?.total_in_window ?? 0);
+  const agentFacet = $derived(tab === "agents" ? (agentsPage.data?.agents ?? []) : (page.data?.agents ?? []));
+  const outcomeFacet = $derived(tab === "agents" ? (agentsPage.data?.outcomes ?? []) : ["ok", "failed", "refused"]);
   const hasFilter = $derived(Boolean(q || actor || action || agent || outcome || since || until));
 
   function loadMore(): void {
@@ -88,10 +113,23 @@
       <p class="page__lead">What people, the room and agents did here, newest first. Kept for the room's retention window.</p>
     </div>
     <div class="audit__export" role="group" aria-label="Export">
-      <a class="btn" href={auditExportUrl(filters, "csv")} download><DownloadSimple size={14} aria-hidden="true" />CSV</a>
-      <a class="btn" href={auditExportUrl(filters, "json")} download><DownloadSimple size={14} aria-hidden="true" />JSON</a>
+      {#if tab === "agents"}
+        <a class="btn" href={auditAgentsExportUrl(agentFilters, "csv")} download><DownloadSimple size={14} aria-hidden="true" />CSV</a>
+        <a class="btn" href={auditAgentsExportUrl(agentFilters, "json")} download><DownloadSimple size={14} aria-hidden="true" />JSON</a>
+      {:else}
+        <a class="btn" href={auditExportUrl(filters, "csv")} download><DownloadSimple size={14} aria-hidden="true" />CSV</a>
+        <a class="btn" href={auditExportUrl(filters, "json")} download><DownloadSimple size={14} aria-hidden="true" />JSON</a>
+      {/if}
     </div>
   </div>
+
+  <div class="audit__tabs" role="tablist" aria-label="Show">
+    <button type="button" role="tab" class="audit__tab" aria-selected={tab === "people"} onclick={() => show("people")}>People</button>
+    <button type="button" role="tab" class="audit__tab" aria-selected={tab === "agents"} onclick={() => show("agents")}>Agents</button>
+  </div>
+  <p class="audit__tab-lead">
+    {#if tab === "agents"}What agents did with their connections: each time one borrowed access, was refused it or could not get it.{:else}What people and the room did here.{/if}
+  </p>
 
   <!-- The filters, together in one panel: search across the top, then one
        labelled control per field in a grid. -->
@@ -100,40 +138,41 @@
       <MagnifyingGlass class="audit__search-icon" size={15} aria-hidden="true" />
       <input
         type="search"
-        placeholder="Search actor, action, target or sentence"
+        placeholder={tab === "agents" ? "Search agent, connection or sentence" : "Search actor, action, target or sentence"}
         aria-label="Search the audit log"
         value={typed}
         oninput={onType}
       />
     </div>
-    <div class="audit__grid">
-      <label class="audit__field"><span>Actor</span>
-        <select bind:value={actor}>
-          <option value="">Any</option>
-          {#if actor && !(page.data?.actors ?? []).includes(actor)}<option value={actor}>{actor}</option>{/if}
-          {#each page.data?.actors ?? [] as a (a)}<option value={a}>{a}</option>{/each}
-        </select>
-      </label>
-      <label class="audit__field"><span>Action</span>
-        <select bind:value={action}>
-          <option value="">Any</option>
-          {#if action && !(page.data?.families ?? []).includes(action)}<option value={action}>{action}</option>{/if}
-          {#each page.data?.families ?? [] as f (f)}<option value={f}>{f}</option>{/each}
-        </select>
-      </label>
+    <div class="audit__grid" class:audit__grid--agents={tab === "agents"}>
+      {#if tab === "people"}
+        <label class="audit__field"><span>Actor</span>
+          <select bind:value={actor}>
+            <option value="">Any</option>
+            {#if actor && !(page.data?.actors ?? []).includes(actor)}<option value={actor}>{actor}</option>{/if}
+            {#each page.data?.actors ?? [] as a (a)}<option value={a}>{a}</option>{/each}
+          </select>
+        </label>
+        <label class="audit__field"><span>Action</span>
+          <select bind:value={action}>
+            <option value="">Any</option>
+            {#if action && !(page.data?.families ?? []).includes(action)}<option value={action}>{action}</option>{/if}
+            {#each page.data?.families ?? [] as f (f)}<option value={f}>{f}</option>{/each}
+          </select>
+        </label>
+      {/if}
       <label class="audit__field"><span>Agent</span>
         <select bind:value={agent}>
           <option value="">Any</option>
-          {#if agent && !(page.data?.agents ?? []).includes(agent)}<option value={agent}>{agent}</option>{/if}
-          {#each page.data?.agents ?? [] as a (a)}<option value={a}>{a}</option>{/each}
+          {#if agent && !agentFacet.includes(agent)}<option value={agent}>{agent}</option>{/if}
+          {#each agentFacet as a (a)}<option value={a}>{a}</option>{/each}
         </select>
       </label>
       <label class="audit__field"><span>Outcome</span>
         <select bind:value={outcome}>
           <option value="">Any</option>
-          <option value="ok">ok</option>
-          <option value="failed">failed</option>
-          <option value="refused">refused</option>
+          {#if outcome && !outcomeFacet.includes(outcome)}<option value={outcome}>{outcome}</option>{/if}
+          {#each outcomeFacet as o (o)}<option value={o}>{o}</option>{/each}
         </select>
       </label>
       <label class="audit__field"><span>From</span><input type="date" bind:value={since} aria-label="From date" /></label>
@@ -143,15 +182,15 @@
 
   <div class="audit__meta">
     <span class="count">
-      {#if page.isPending && rows.length === 0}Reading the log…{:else}{total} {total === 1 ? "row" : "rows"}{hasFilter ? " match" : ""}{/if}
+      {#if current.isPending && rows.length === 0}Reading the log…{:else}{total} {total === 1 ? "row" : "rows"}{hasFilter ? " match" : ""}{/if}
     </span>
     {#if hasFilter}<button type="button" class="btn btn--quiet" onclick={clear}>Clear filters</button>{/if}
   </div>
 
-  {#if page.isError}
-    <p class="panel__note">Could not read the log just now.</p>
-  {:else if !page.isPending && rows.length === 0}
-    <p class="panel__empty">{hasFilter ? "Nothing matches that filter." : "Nothing has happened here yet."}</p>
+  {#if current.isError}
+    <p class="panel__note">{tab === "agents" ? "Could not read what agents did just now." : "Could not read the log just now."}</p>
+  {:else if !current.isPending && rows.length === 0}
+    <p class="panel__empty">{hasFilter ? "Nothing matches that filter." : tab === "agents" ? "No agent has used a connection yet." : "Nothing has happened here yet."}</p>
   {:else if rows.length > 0}
     <div class="table-card"><table class="panel__table log">
       <thead><tr><th>Who</th><th>Action</th><th>What happened</th></tr></thead>
@@ -173,7 +212,7 @@
         {/each}
       </tbody>
     </table></div>
-    {#if page.data?.next_cursor}
+    {#if tab === "people" && page.data?.next_cursor}
       <p class="more"><button type="button" class="btn btn--quiet" onclick={loadMore} disabled={page.isFetching}>Load more</button></p>
     {/if}
   {/if}
@@ -201,6 +240,42 @@
 
   .audit__export :global(.btn) {
     gap: 0.35rem;
+  }
+
+  .audit__tabs {
+    display: inline-flex;
+    align-self: flex-start;
+    gap: 2px;
+    padding: 3px;
+    border-radius: calc(var(--radius-sm) + 3px);
+    background: var(--accent-soft);
+  }
+
+  .audit__tab {
+    display: inline-flex;
+    align-items: center;
+    height: 2rem;
+    padding: 0 var(--space-md);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  .audit__tab[aria-selected="true"] {
+    background: var(--panel);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px var(--border);
+    color: var(--ink);
+  }
+
+  .audit__tab-lead {
+    margin: calc(-1 * var(--space-xs)) 0 0;
+    color: var(--ink);
+    font-size: 0.9rem;
   }
 
   .audit__filters {
@@ -239,9 +314,18 @@
     gap: var(--space-sm) var(--space-md);
   }
 
+  /* Agents has four: one row of four, two rows of two when narrow. */
+  .audit__grid--agents {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
   @media (max-width: 90rem) {
     .audit__grid {
       grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .audit__grid--agents {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
 

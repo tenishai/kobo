@@ -67,6 +67,8 @@ class BabClient(Protocol):
     def revoke(self, grant_id: int, actor: str) -> dict: ...
     def leases(self, agent: str, since: datetime | None, actor: str) -> list[dict]: ...
     def all_leases(self, since: datetime | None, actor: str) -> list[dict]: ...
+    def events(self, since: datetime | None, until: datetime | None, kinds: list[str], agent: str | None,
+               limit: int, actor: str) -> list[dict]: ...
     def aws_identity(self, actor: str) -> dict: ...
     def probe_aws(self, role_arn: str, audience: str, actor: str, hub_role_arn: str | None = None,
                   external_id: str | None = None) -> dict: ...
@@ -163,6 +165,21 @@ class HttpxBabClient:
         if since is not None:
             params["since"] = since.isoformat()
         return self._call("GET", "/leases", actor, params=params, what="the leases").get("leases", [])
+
+    def events(self, since: datetime | None, until: datetime | None, kinds: list[str], agent: str | None,
+               limit: int, actor: str) -> list[dict]:
+        """`GET /events` (kobo#371): the service's ledger events, newest first. `kinds` rides
+        as one comma list; `agent` matches the agent the row's detail names."""
+        params: dict[str, str] = {"limit": str(max(1, min(int(limit), 1000)))}
+        if since is not None:
+            params["since"] = since.isoformat()
+        if until is not None:
+            params["until"] = until.isoformat()
+        if kinds:
+            params["kind"] = ",".join(kinds)
+        if agent:
+            params["agent"] = agent
+        return self._call("GET", "/events", actor, params=params, what="the events").get("events", [])
 
     def aws_identity(self, actor: str) -> dict:
         return self._call("GET", "/identity/aws", actor, what="its identity")
