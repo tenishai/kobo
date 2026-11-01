@@ -157,18 +157,28 @@ FAKE_LOCAL_HEAD_DEFAULT = "ed17ed17ed17ed17ed17ed17ed17ed17ed17ed17"
 FAKE_DEPLOY_IMAGE_DEFAULT = f"gojira-app:{FAKE_LOCAL_HEAD_DEFAULT[:12]}"
 
 # FakeKubectl's default `deployment_status_json` payload (kobo_api.knowledge.
-# rollout_in_progress, Task 6): a fully settled Deployment (the controller
-# has observed the latest generation and every replica is updated and
-# available) — the same "nothing to see here" default posture as
-# `rollout_result=True` above, so a bare `FakeKubectl()` reads as "not mid-
-# rollout" for any test that doesn't care about this probe at all.
+# rollout_in_progress, Task 6; kobo_api.health.probe_health's `rolling`): a
+# fully settled Deployment (the controller has observed the latest
+# generation, every replica is updated, ready and available, and its own
+# conditions say the rollout finished) — the same "nothing to see here"
+# default posture as `rollout_result=True` above, so a bare `FakeKubectl()`
+# reads as "not mid-rollout" for any test that doesn't care about this probe
+# at all. The health probe reads `readyReplicas`, `replicas` and the
+# Progressing/Available conditions the way the controller writes them.
 FAKE_DEPLOYMENT_STATUS_SETTLED = {
     "metadata": {"generation": 1},
     "spec": {"replicas": 1},
     "status": {
         "observedGeneration": 1,
+        "replicas": 1,
         "updatedReplicas": 1,
+        "readyReplicas": 1,
         "availableReplicas": 1,
+        "conditions": [
+            {"type": "Available", "status": "True", "reason": "MinimumReplicasAvailable",
+             "lastTransitionTime": "2026-11-01T09:00:00Z"},
+            {"type": "Progressing", "status": "True", "reason": "NewReplicaSetAvailable"},
+        ],
     },
 }
 

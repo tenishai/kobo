@@ -175,6 +175,37 @@ describe("AdminPanel", () => {
     expect(rows.length).toBeGreaterThanOrEqual(6);
   });
 
+  it("Overview carries an Agent connections card, with how many agents hold access, when the permission service is on", async () => {
+    // The card's figure is the room's cheap count (`/api/admin/access/summary`),
+    // never the pane's full read; it opens the Agent connections page.
+    vi.unstubAllGlobals();
+    stubFetch({
+      "/api/whoami": ADMIN_WHOAMI,
+      "/api/admin/addons": { addons: [{ id: "access", name: "Access", summary: "", state: "on", detail: "", keys: [], owner: "" }] },
+      "/api/admin/room-services": ROOM_SERVICES,
+      "/api/admin/room": { org_repo: "example/kobo-config", runtime_image: "r", cluster: "c", delivery_backend: "deployed" },
+      "/api/admin/integrations": { integrations: [] },
+      "/api/admin/roles": ROLES,
+      "/api/admin/connections": CONNECTIONS,
+      "/api/admin/access/summary": { agents_with_access: 1, agents: 2, fetched_at: "2026-11-01T10:00:00Z" },
+      "/api/admin/access/requests": [],
+      "/api/admin/access/leases": { leases: [] },
+      "/api/group-requests": { requests: REQUESTS },
+    });
+    navigate({ page: "admin", pane: "overview" });
+    renderWithClient(AdminPanel);
+    const figure = await screen.findByText("1 agent holds access");
+    const card = figure.closest("a") as HTMLAnchorElement;
+    expect(card.getAttribute("href")).toContain("admin/connections");
+    expect(card.textContent).toContain("Agent connections");
+    expect(card.textContent).toContain("Which agents reach which vendors, and what they hold right now.");
+    // The lanes card is the other face of the same page, and stays away.
+    expect(screen.queryByText(/without a lane|all with a lane/)).toBeNull();
+    const summaryCalls = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/api/admin/access/summary"));
+    expect(summaryCalls.length).toBeGreaterThanOrEqual(1);
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/api/admin/access/agents"))).toBe(false);
+  });
+
   it("Reload org config asks first", async () => {
     navigate({ page: "admin", pane: "services" });
     renderWithClient(AdminPanel);

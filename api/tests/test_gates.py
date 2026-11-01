@@ -1988,6 +1988,7 @@ ADMIN_ROUTES = [
     ("POST", "/api/admin/access/decide", {"json": {"ids": [1], "verdict": "approve"}}),
     ("GET", "/api/admin/access/leases", {}),
     ("GET", "/api/admin/access/agents", {}),
+    ("GET", "/api/admin/access/summary", {}),
     ("POST", "/api/admin/access/sync", {}),
     ("POST", "/api/admin/sync-pairs", {}),
     ("GET", "/api/group-requests", {}),

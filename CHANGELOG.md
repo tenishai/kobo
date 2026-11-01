@@ -6,6 +6,31 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Live means live.** After a Wakes on save, the Slack row (and the Slack tab's note) said
+  **Live** on the room's first health reading after the save that found the agent up, which
+  could be the old agent before it went, or another replica's older reading. The health probe
+  now also reports `rolling` (the agent is mid-restart: the controller has not caught up with
+  the latest spec, or the new pod is not ready while the controller says the rollout is still
+  progressing) and `ready_since`; the wake route answers `applied_at`; and the row waits for a
+  reading taken after the save that is up and not rolling, then settles fifteen seconds before
+  saying Live, since the agent reads as up a few seconds before it listens. The three-minute
+  give-up and the amber "takes effect when the agent next restarts" stay.
+- **Restarting, not down.** While the agent is mid-restart (`health.rolling`, or a Wakes on
+  change this page just saved), the agent page reads **This agent is restarting. Back in
+  about a minute.** in amber instead of the red down banner, the header pill reads
+  **Restarting**, and the Slack row reads **Applying your change** rather than Down. A pod
+  that is simply down, including a crash loop after a finished rollout, still reads Down.
+
+### Added
+
+- **Agent connections on the admin Overview.** With the permission service on, a card after
+  Integrations reads **N agents hold access** and opens Agent connections. Its figure comes
+  from `GET /api/admin/access/summary`, which counts agents with a connection of their own, an
+  unexpired lease or an approved request from the same three reads the pane starts with and
+  none of its per-agent grant calls.
+
 ## [0.3.34] - 2026-11-01
 
 ### Fixed

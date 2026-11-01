@@ -2,7 +2,7 @@
 card: arch-card:kobo-platform-clients
 updated: 2026-11-01
 anchor: api/kobo_api/clients.py sha=6eda5c57d2151e3550934948308e654a0f16f167
-anchor: api/tests/fakes.py sha=7bbd2db08de5418835a6a3a6b0040c20d37da6a2
+anchor: api/tests/fakes.py sha=f3bfb0062dae09904c0d0c95b03a8a06a9416353
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
@@ -13,7 +13,7 @@ WHAT / SEAM: api/kobo_api/clients.py. The outside systems in the table below are
 | gojira | `GojiraClient` | `HttpxGojiraClient` (`/api/v1/apps...`) | `FakeGojira` |
 | cloud | `CloudClient` | `GcloudClient` (GSA, WI binding, groups, bucket IAM) | `FakeCloud` |
 | agent | `AgentClient` | `KubectlAgentClient` (port-forward a2a, legacy direct path) | `FakeAgent` |
-| kubectl | `KubectlClient` | `KubectlCLI` (rollout, secrets, ExternalSecret status, `deployment_status_json`/`pods_json` for health.py) | `FakeKubectl` (set `.pods` for pod fixtures) |
+| kubectl | `KubectlClient` | `KubectlCLI` (rollout, secrets, ExternalSecret status, `deployment_status_json`/`pods_json` for health.py) | `FakeKubectl` (set `.pods` for pod fixtures; `deployment_status={(ns, name): dep}` for the health probe's `rolling`, whose settled default `FAKE_DEPLOYMENT_STATUS_SETTLED` carries `readyReplicas`, `replicas` and the Progressing/Available conditions the controller writes, 2026-11-01) |
 | slack | `SlackClient` + `SlackTokenStore` | `HttpxSlackClient`; `FileSlackTokenStore` / `KubeSlackTokenStore` (deployment config); the room-held pair is a second `HttpxSlackClient` over `room_services.RoomSlackTokenStore`, resolved per request by `room_services.slack_client(clients)`. Methods: `create_app` / `create_app_with_credentials` (apps.manifest.create; the second keeps the client pair and signing secret, `SlackAppCredentials`, for the relay flow kobo#371), `update_app` (apps.manifest.update), `delete_app`, `oauth_access` (oauth.v2.access with the app's client pair in the form, no config token) | `FakeSlack` (records `manifests`, `updates`, `oauth_calls`, `delete_calls`; obvious fake credentials) |
 | image / name | `ImageClient` / `NameClient` | `VertexImageClient` / `VertexNameClient` | `FakeImage` / `FakeName` |
 | storage | `StorageClient` | `HttpxStorageClient` (GCS JSON API), or `DirectoryStorageClient` (`<storage_root>/<bucket>/<key>`, sidecar `<key>.meta.json`, containment-checked; `storage_backend: directory`, #208) | `FakeStorage` |

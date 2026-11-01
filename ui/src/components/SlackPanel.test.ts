@@ -2,6 +2,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SlackPanel from "./SlackPanel.svelte";
+import { WAKE_SETTLE_MS } from "../lib/slackWake";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
 const IDLE_SLACK = { app_id: null, channels: [], state: "idle" as const, wake: "thread" as const };
@@ -430,40 +431,47 @@ describe("SlackPanel", () => {
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("locks Wakes on while a change applies and reads Live once the room's next check finds the agent up", async () => {
-    // Contract: a saved choice restarts the agent (`applied_now`), so the
-    // choices stay locked, two picks cannot race, and the note turns to
-    // "Live." only on a health reading taken after the save.
+  it("locks Wakes on while a change applies and reads Live once a check past the save finds the agent back, plus a settle", async () => {
+    // Contract (live means live, 2026-11-01): a saved choice restarts the
+    // agent (`applied_now`), so the choices stay locked, two picks cannot
+    // race, and the note turns to "Live." only on a health reading taken
+    // after the save that is up and not restarting, and then only after the
+    // settle (the shared watcher, lib/slackWake). The click and what follows
+    // run on a fake clock, because the watch is timers all the way.
     const json = (body: unknown) =>
       new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
-    let answerDetail!: (value: Response) => void;
-    const detail = new Promise<Response>((resolve) => (answerDetail = resolve));
+    const checked = (at: string) => ({ name: "warden", status: "ready", slack: CONNECTED, health: { state: "up", reason: null, checked_at: at, rolling: false } });
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
         if (url.includes("/slack/wake")) {
-          return json({ wake: "thread", previous_wake: "mention", manifest_changed: false, applied_now: true, wiring: "env" });
+          return json({ wake: "thread", previous_wake: "mention", manifest_changed: false, applied_now: true,
+                        applied_at: "2026-11-01T10:00:30Z", wiring: "env" });
         }
-        return manifestRoute(url) ?? detail;
+        return manifestRoute(url) ?? json(checked("2026-11-01T10:01:00Z"));
       }),
     );
     const rendered = renderWithClient(SlackPanel, { agentName: "warden", slack: CONNECTED, frozen: false });
-    const checked = (at: string) => ({ name: "warden", status: "ready", slack: CONNECTED, health: { state: "up", reason: null, checked_at: at } });
     rendered.client.setQueryData(["agents", "warden"], checked("2026-11-01T10:00:00Z"));
+    const thread = screen.getByLabelText(/Mentions, then the thread/);
 
-    await fireEvent.click(screen.getByLabelText(/Mentions, then the thread/));
-
-    await waitFor(() => {
+    vi.useFakeTimers();
+    try {
+      await fireEvent.click(thread);
+      await vi.advanceTimersByTimeAsync(0);
       expect(screen.getByRole("status").textContent).toBe("Saved. The agent restarts with this choice now; give it a minute.");
-    });
-    expect((screen.getByLabelText(/Mentions only/) as HTMLInputElement).disabled).toBe(true);
+      expect((screen.getByLabelText(/Mentions only/) as HTMLInputElement).disabled).toBe(true);
 
-    answerDetail(json(checked("2026-11-01T10:01:00Z")));
-    await waitFor(() => {
+      // The very first reading is back and past the save; Live still waits for the settle.
+      await vi.advanceTimersByTimeAsync(WAKE_SETTLE_MS - 1);
+      expect(screen.getByRole("status").textContent).toBe("Saved. The agent restarts with this choice now; give it a minute.");
+      await vi.advanceTimersByTimeAsync(1);
       expect(screen.getByRole("status").textContent).toBe("Live.");
-    });
-    expect((screen.getByLabelText(/Mentions only/) as HTMLInputElement).disabled).toBe(false);
+      expect((screen.getByLabelText(/Mentions only/) as HTMLInputElement).disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("greys out with one sentence when the room has no Slack integration", () => {

@@ -17,6 +17,7 @@
   import {
     accessLeasesQuery,
     accessRequestsQuery,
+    accessSummaryQuery,
     adminAddonsQuery,
     adminConnectionsQuery,
     adminIntegrationsQuery,
@@ -32,19 +33,28 @@
   // 404 when Access is off for the room; the row then says so instead of a number.
   const access = createQuery(() => (accessRequestsQuery("pending")));
   const leases = createQuery(() => (accessLeasesQuery()));
+  // The permission service decides two things here: whether Connections is
+  // the lanes page or Agent connections, and whether the Agent connections
+  // card has a figure to show. Its count is the room's cheap one
+  // (`/api/admin/access/summary`), read only while Access is on.
+  const accessOn = $derived((addons.data ?? []).some((x) => x.id === "access" && x.state === "on"));
+  const summary = createQuery(() => ({ ...accessSummaryQuery(), enabled: accessOn }));
 
   function plural(n: number, one: string, many: string = one + "s"): string {
     return `${n} ${n === 1 ? one : many}`;
   }
 
-  type Row = { pane: string; name: string; note: string; warn?: boolean };
+  type About = { text: string; icon: typeof Stack };
+  type Row = { pane: string; name: string; note: string; warn?: boolean; about?: About };
 
   // What each page is for, and its icon: the card's second line, so an
   // admin who has not opened the page yet knows why they would.
-  const ABOUT: Record<string, { text: string; icon: typeof Stack }> = {
+  const ABOUT: Record<string, About> = {
     services: { text: "What the room runs on, and which add-ons are on.", icon: Stack },
     integrations: { text: "The vendors the room can lend agents access to.", icon: Plugs },
     connections: { text: "Which agent reaches which vendor through the gateway.", icon: Graph },
+    // The same page id as `connections` when the permission service is on (#371).
+    agentConnections: { text: "Which agents reach which vendors, and what they hold right now.", icon: Graph },
     review: { text: "Permission requests waiting for a decision.", icon: SealCheck },
     roles: { text: "What each role may do in the room.", icon: UserGear },
     people: { text: "Who runs the room, and group requests.", icon: Users },
@@ -61,8 +71,8 @@
     const r = roles.data?.roles ?? [];
     const pending = (requests.data ?? []).filter((x) => x.status === "pending").length;
     const waiting = (access.data ?? []).length;
-    const accessOn = a.some((x) => x.id === "access" && x.state === "on");
     const out = (leases.data ?? []).length;
+    const holding = summary.data?.agents_with_access ?? 0;
     return [
       {
         pane: "services",
@@ -76,6 +86,14 @@
         note: integrations.isPending ? "…" : failed ? `${plural(failed, "connection")} failed` : i.length ? `${plural(i.length, "vendor")} connected` : "none yet",
         warn: failed > 0,
       },
+      // Agent connections, with the permission service on: how many agents
+      // hold access anywhere right now.
+      ...(accessOn ? [{
+        pane: "connections",
+        name: "Agent connections",
+        note: summary.isPending ? "…" : `${plural(holding, "agent")} ${holding === 1 ? "holds" : "hold"} access`,
+        about: ABOUT.agentConnections,
+      }] : []),
       // Connections exists only while the permission service is off; until the
       // add-ons have answered, nobody knows, so the row waits rather than flash
       // and vanish (the nav got the same rule in #315).
@@ -109,7 +127,7 @@
   </header>
   <div class="overview__grid">
     {#each rows as r (r.pane)}
-      {@const about = ABOUT[r.pane]}
+      {@const about = r.about ?? ABOUT[r.pane]}
       <a class="overview__card" href={formatHash({ page: "admin", pane: r.pane })}>
         <span class="overview__top">
           <span class="overview__icon" aria-hidden="true">

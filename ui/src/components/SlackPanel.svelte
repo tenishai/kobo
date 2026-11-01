@@ -60,6 +60,7 @@
     setSlackWakeMutation,
     slackManifestQuery,
   } from "../lib/queries";
+  import { beginRestart, endRestart } from "../lib/delivery.svelte";
   import { WAKE_NOTE_LIVE, wakeSavedNote, watchWakeLive } from "../lib/slackWake";
 
   let {
@@ -110,10 +111,12 @@
   ];
 
   // A save also reaches the running agent at once (the route restarts it
-  // with the choice), and the note follows it: "give it a minute" while the
-  // room's next health check of the agent is awaited, "Live." once that
-  // check finds it up (lib/slackWake). The choices stay locked meanwhile,
-  // so a second pick cannot land while the first is still applying.
+  // with the choice), and the note follows it: "give it a minute" while a
+  // health check taken after the save that finds the agent up and not
+  // restarting is awaited, plus a short settle, "Live." once it lands
+  // (lib/slackWake). The page's header reads Restarting meanwhile
+  // (lib/delivery's restarts). The choices stay locked meanwhile, so a
+  // second pick cannot land while the first is still applying.
   // svelte-ignore state_referenced_locally
   let wake = $state<SlackWake>(slack.wake);
   let wakeNote = $state<string | null>(null);
@@ -125,15 +128,18 @@
     "The Slack app's event list changed: copy the manifest again and paste it " +
     "over the old one at api.slack.com/apps, under App Manifest. No reinstall needed.";
 
-  function watchWake(tail: string): void {
+  function watchWake(tail: string, since: string | null): void {
     stopWakeWatch?.();
     wakeApplying = true;
+    beginRestart(agentName);
     const settle = () => {
       wakeApplying = false;
       stopWakeWatch = null;
+      endRestart(agentName);
     };
     stopWakeWatch = watchWakeLive({
       baseline: queryClient.getQueryData<AgentDetail>(["agents", agentName])?.health?.checked_at ?? null,
+      since,
       read: async () => (await queryClient.fetchQuery(agentQuery(agentName))).health,
       onLive: () => {
         wakeNote = [WAKE_NOTE_LIVE, tail].filter(Boolean).join(" ");
@@ -142,7 +148,10 @@
       onGiveUp: settle,
     });
   }
-  $effect(() => () => stopWakeWatch?.());
+  $effect(() => () => {
+    stopWakeWatch?.();
+    endRestart(agentName);
+  });
 
   async function handleWake(next: SlackWake): Promise<void> {
     if (wakeLocked || next === wake) {
@@ -156,7 +165,7 @@
       const result = await saveWake.mutateAsync(next);
       const tail = result.manifest_changed && slack.state !== "idle" ? MANIFEST_NOTE : "";
       wakeNote = [wakeSavedNote(result), tail].filter(Boolean).join(" ");
-      if (result.applied_now) watchWake(tail);
+      if (result.applied_now) watchWake(tail, result.applied_at ?? null);
     } catch (err: unknown) {
       wake = previous;
       wakeError = errorMessage(err, "Couldn't save how it wakes up. Try again.");

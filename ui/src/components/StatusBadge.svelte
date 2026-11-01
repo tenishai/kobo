@@ -9,7 +9,8 @@
     status,
     health = null,
     updating = false,
-  }: { status: string; health?: AgentHealth | null; updating?: boolean } = $props();
+    restarting = false,
+  }: { status: string; health?: AgentHealth | null; updating?: boolean; restarting?: boolean } = $props();
 
   // Ready says the setup finished. If the cluster says the pod is not
   // running today, that is the fact a person needs, so it wears the badge
@@ -18,13 +19,20 @@
   // from lib/delivery), the pod is down because of that, so the badge says
   // Updating in the working tone instead (issue #268). Health itself is
   // never altered: an agent that is up stays Ready either way.
+  //
+  // Restarting (2026-11-01) is the same idea one step earlier: the cluster
+  // itself says the agent is mid-restart (`health.rolling`, a change being
+  // applied), or this page asked for the restart (`restarting`, from
+  // lib/delivery's restarts) and the room's check has not caught up yet.
+  // Amber, since a restart the owner asked for is not an outage.
   const down = $derived(status === "ready" && health?.state === "down");
   const rolling = $derived(down && updating);
-  const tone = $derived(rolling ? "warn" : down ? "fail" : agentTone(status));
-  const label = $derived(rolling ? "updating" : down ? "down" : status);
+  const restartingNow = $derived(status === "ready" && !rolling && (restarting || health?.rolling === true));
+  const tone = $derived(rolling || restartingNow ? "warn" : down ? "fail" : agentTone(status));
+  const label = $derived(rolling ? "updating" : restartingNow ? "restarting" : down ? "down" : status);
 </script>
 
-<span class="status-badge" title={down && !rolling ? (health?.reason ?? undefined) : undefined}>
+<span class="status-badge" title={down && !rolling && !restartingNow ? (health?.reason ?? undefined) : undefined}>
   <span class="status-badge__dot status-badge__dot--{tone}" class:pulse={tone === "warn"}></span>
   <span class="status-badge__label">{label}</span>
 </span>

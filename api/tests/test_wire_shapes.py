@@ -14,7 +14,7 @@ import importlib.util
 import json
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -35,6 +35,7 @@ from kobo_api.bundle_publish import bundle_reference
 from kobo_api.clients import ClientError, Clients, _build_learnings_envelope
 from kobo_api.config import Config, GroupChoice, MCPConfig, ModelChoice
 from kobo_api.directory import sync_directory
+from kobo_api.health import probe_health
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.kinds import KIND_COMPOSED
 from kobo_api.liminal_admin import GatewayGrant
@@ -61,6 +62,7 @@ from kobo_api.steps import (
 )
 from kobo_api.tooling import list_tooling
 from tests.fakes import (
+    FAKE_DEPLOYMENT_STATUS_SETTLED,
     FAKE_LOCAL_HEAD_DEFAULT,
     FakeAgent,
     FakeBab,
@@ -1641,6 +1643,8 @@ def test_put_wake_writes_the_env_key_and_says_when_the_manifest_changed(session_
     assert (body["wake"], body["previous_wake"], body["manifest_changed"], body["applied_now"]) == (
         "channel", "mention", True, True
     )
+    # The room's own clock, for the page to tell a later health reading apart.
+    assert body["applied_at"].endswith("Z")
     assert github.captured_gojira is not None
     assert github.captured_gojira["env"]["SLACK_WAKE_MODE"] == "channel"
     # The live deployment gets the same value, in the agent's own namespace.
@@ -1669,7 +1673,7 @@ def test_put_wake_says_applied_now_false_when_the_live_apply_fails(session_facto
 
     response = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "thread"})
 
-    assert (response.status_code, response.json()["applied_now"]) == (200, False)
+    assert (response.status_code, response.json()["applied_now"], response.json()["applied_at"]) == (200, False, None)
     assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["wake"] == "thread"
 
 
@@ -3786,6 +3790,27 @@ def test_agent_connections_group_a_child_a_grant_and_a_lease_under_the_agent_and
     assert [x["id"] for x in rows if x["vendor"] == "github"] == ["github"]
 
 
+def test_access_summary_counts_agents_that_hold_access_without_a_grant_call_per_agent(a2a_room):
+    """Wire shape (admin Overview, 2026-11-01): `GET /api/admin/access/summary` is the
+    Agent connections card's figure, `agents_with_access` over `agents`, from the same
+    reads the pane starts with (connections, leases, requests) and never a grant call
+    per agent, which the Overview must not pay for."""
+    c, h, bab = a2a_room.client, a2a_room.headers, a2a_room.bab
+    bab.put_integration("github", "github", {"installation_id": "151256501", "name": "GitHub"}, GITHUB_LEVELS__connections, "x")
+    r = c.post("/api/agents/asker/access/requests", headers=h,
+               json={"integration": "github", "permissions": ["github_repos_read"], "note": None})
+    assert r.status_code == 201, r.text
+    assert c.get("/api/admin/access/summary", headers=h).json()["agents_with_access"] == 0  # asked is not held
+    c.post("/api/admin/access/decide", headers=h, json={"ids": [r.json()["id"]], "verdict": "approve"})
+
+    grant_calls = []
+    bab.grants = lambda agent, actor, _real=bab.grants: grant_calls.append(agent) or _real(agent, actor)
+    body = c.get("/api/admin/access/summary", headers=h).json()
+    assert (body["agents_with_access"], body["agents"]) == (1, 2)
+    assert body["fetched_at"]
+    assert grant_calls == []
+
+
 def test_agents_entries_never_show_on_the_integrations_page(a2a_room):
     """Wire shape (kobo#310): the permission service's `agents` rows are plumbing behind
     Review and the Access tab; Admin > Integrations lists vendors only."""
@@ -3945,3 +3970,50 @@ def test_agents_audit_export_carries_the_same_window(a2a_room):
     assert lines[0].startswith("id,at,actor,actor_kind,action,") and len(lines) == 3
     assert ",lease.refused," in lines[1] and ",lease.minted," in lines[2]
     assert [r["action"] for r in json_body.json()] == ["lease.refused", "lease.minted"]
+
+
+
+# --- the health block's `rolling` (2026-11-01) ---
+
+_SETTLED_STATUS = FAKE_DEPLOYMENT_STATUS_SETTLED["status"]
+_PROGRESSING = {"type": "Progressing", "status": "True", "reason": "ReplicaSetUpdated"}
+_FINISHED = {"type": "Progressing", "status": "True", "reason": "NewReplicaSetAvailable"}
+
+
+_READY_SINCE = "2026-11-01T09:00:00Z"
+
+
+@pytest.mark.parametrize(
+    ("dep", "state", "rolling", "ready_since"),
+    [
+        # Recreate gap: the old pod is gone, the new one is on the new spec but not ready yet.
+        ({"metadata": {"generation": 2}, "spec": {"replicas": 1},
+          "status": {"observedGeneration": 2, "replicas": 1, "updatedReplicas": 1, "readyReplicas": 0,
+                     "conditions": [_PROGRESSING]}}, "down", True, None),
+        # A change was just asked for: the controller has not caught up with the spec; the old pod still serves.
+        ({"metadata": {"generation": 3}, "spec": {"replicas": 1}, "status": {**_SETTLED_STATUS, "observedGeneration": 2}},
+         "up", True, _READY_SINCE),
+        # Recreate's first step: the old pod is being taken down, nothing is on the new spec yet.
+        ({"metadata": {"generation": 2}, "spec": {"replicas": 1},
+          "status": {"observedGeneration": 2, "replicas": 0, "updatedReplicas": 0, "conditions": [_PROGRESSING]}},
+         "down", True, None),
+        # Crashed after a finished rollout (lumbot's shape): down, and not a restart.
+        ({"metadata": {"generation": 3}, "spec": {"replicas": 1},
+          "status": {"observedGeneration": 3, "replicas": 1, "updatedReplicas": 1, "readyReplicas": 0,
+                     "conditions": [_FINISHED]}}, "down", False, None),
+        (FAKE_DEPLOYMENT_STATUS_SETTLED, "up", False, _READY_SINCE),
+    ],
+    ids=["recreate-gap", "unfinished-generation", "old-pod-going", "crashed-after-rollout", "settled"],
+)
+def test_health_reports_rolling_for_a_recreate_gap_and_an_unfinished_generation_but_not_a_crash(dep, state, rolling, ready_since):
+    """Wire shape: the agent payload's `health.rolling` is true while the agent is
+    mid-restart (a Recreate gap, or a generation the controller has not caught up
+    with), so the page says Restarting and the Slack row's Live waits; it is false
+    for a pod that is simply down, so a crash loop is never dressed as a restart.
+    `ready_since` is when the agent last became available, None while it is not."""
+    kubectl = FakeKubectl(deployment_status={("clio", "clio"): dep})
+
+    verdict = probe_health(kubectl, "clio", now=datetime(2026, 11, 1, 12, 0, tzinfo=UTC))
+
+    assert (verdict.state, verdict.rolling, verdict.ready_since) == (state, rolling, ready_since)
+    assert verdict.body()["rolling"] is rolling

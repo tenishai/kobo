@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
@@ -514,6 +515,60 @@ AGENT_CONNECTIONS_WORKERS = 6
 """How many permission-service calls the pane's builder has in flight at once."""
 
 
+@dataclass(frozen=True)
+class _Holdings:
+    """The three cheap reads behind Admin > Agent connections, grouped per agent:
+    `children` (an agent's own connections, e.g. its GitHub repository set), `leased`
+    (its unexpired leases), `asked` (every agent that ever asked) and `approved`
+    (those with an approved request, which is where grants come from)."""
+    by_id: dict[str, dict]
+    children: dict[str, list[dict]]
+    leased: dict[str, list[dict]]
+    asked: set[str]
+    approved: set[str]
+
+
+def _holdings(bab: BabClient, names: list[str], actor: str, now: datetime) -> _Holdings:
+    """One `integrations()` (children grouped by the agent suffix of their id and
+    their `parent`), one `all_leases()` filtered to the unexpired, one
+    `requests("all")`. Agent-to-agent asks (`agents` vendor) are left out."""
+    integrations = [i for i in bab.integrations(actor) if i.get("vendor") != AGENTS_VENDOR]
+    by_id = {i["integration"]: i for i in integrations}
+    leases = [lease for lease in active_leases(bab, actor, now)
+              if by_id.get(lease.get("integration"), {}).get("vendor") != AGENTS_VENDOR]
+    requests = bab.requests("all", None, actor)
+    asked = {r.get("agent") for r in requests}
+    approved = {r.get("agent") for r in requests if r.get("status") == "approved"
+                and by_id.get(r.get("integration"), {}).get("vendor") != AGENTS_VENDOR}
+
+    children: dict[str, list[dict]] = {n: [] for n in names}
+    for row in integrations:
+        owner = _child_agent(row)
+        if owner in children:
+            children[owner].append(row)
+    leased: dict[str, list[dict]] = {n: [] for n in names}
+    for lease in leases:
+        if lease.get("agent") in leased:
+            leased[lease["agent"]].append(lease)
+    return _Holdings(by_id, children, leased, asked, approved)
+
+
+def agent_access_summary(bab: BabClient, agents: list[dict], actor: str, *, now: datetime | None = None) -> dict:
+    """The admin Overview's Agent connections figure (2026-11-01): how many of the
+    room's agents hold access anywhere right now, from the same three reads
+    `agent_connections` starts with and WITHOUT its `grants(agent)` fan-out, which
+    the Overview (one glance, every open) must not pay for. An agent counts when it
+    has a connection of its own, an unexpired lease, or an approved request: a grant
+    is what an approved request becomes, so this reads as the grant without asking
+    for it. The one way it can run high: a grant revoked after approval still counts
+    its agent until that agent holds nothing else, and the pane itself is exact."""
+    now = now or datetime.now(UTC)
+    names = [a["name"] for a in agents]
+    held = _holdings(bab, names, actor, now)
+    holding = [n for n in names if held.children[n] or held.leased[n] or n in held.approved]
+    return {"agents_with_access": len(holding), "agents": len(names), "fetched_at": now.isoformat()}
+
+
 def _child_agent(row: dict) -> str | None:
     """The agent a child row belongs to, from the id convention `<parent>-<agent>`
     (`child_id`); None for a row that is not a child or whose id does not follow it."""
@@ -534,31 +589,17 @@ def agent_connections(bab: BabClient, agents: list[dict], actor: str, *, now: da
     unexpired leases. An agent with nothing anywhere is listed with an empty
     `vendors`, so the pane is the whole truth.
 
-    Reads: one `integrations()` (children grouped by the agent suffix of their id and
-    their `parent`), one `vendors()` for the labels, one `all_leases()` filtered to
-    the unexpired, one `requests("all")` to learn which agents ever asked, then
-    `grants(agent)` for each agent that has a child, a request or a lease, fanned out
-    on a small thread pool. Agent-to-agent asks (`agents` vendor) are not vendors here."""
+    Reads: `_holdings` (one `integrations()`, one `all_leases()`, one
+    `requests("all")`), one `vendors()` for the labels, then `grants(agent)` for each
+    agent that has a child, a request or a lease, fanned out on a small thread pool.
+    Agent-to-agent asks (`agents` vendor) are not vendors here."""
     from concurrent.futures import ThreadPoolExecutor
 
     now = now or datetime.now(UTC)
-    integrations = [i for i in bab.integrations(actor) if i.get("vendor") != AGENTS_VENDOR]
-    by_id = {i["integration"]: i for i in integrations}
-    labels = {v["vendor"]: v.get("label") or v["vendor"] for v in bab.vendors(actor)}
-    leases = [lease for lease in active_leases(bab, actor, now)
-              if by_id.get(lease.get("integration"), {}).get("vendor") != AGENTS_VENDOR]
-    asked = {r.get("agent") for r in bab.requests("all", None, actor)}
-
     names = [a["name"] for a in agents]
-    children: dict[str, list[dict]] = {n: [] for n in names}
-    for row in integrations:
-        owner = _child_agent(row)
-        if owner in children:
-            children[owner].append(row)
-    leased: dict[str, list[dict]] = {n: [] for n in names}
-    for lease in leases:
-        if lease.get("agent") in leased:
-            leased[lease["agent"]].append(lease)
+    held = _holdings(bab, names, actor, now)
+    by_id, children, leased, asked = held.by_id, held.children, held.leased, held.asked
+    labels = {v["vendor"]: v.get("label") or v["vendor"] for v in bab.vendors(actor)}
 
     busy = [n for n in names if children[n] or leased[n] or n in asked]
     grants: dict[str, list[dict]] = {n: [] for n in names}
@@ -618,6 +659,7 @@ def agent_connections(bab: BabClient, agents: list[dict], actor: str, *, now: da
 __all__ = [
     "A2A_ASK",
     "AGENTS_VENDOR",
+    "agent_access_summary",
     "agent_connections",
     "ROOM_ACTOR",
     "TOKEN_ENV",

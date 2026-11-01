@@ -163,6 +163,7 @@ import {
   draftPersona,
   fetchAccessLeases,
   fetchAccessRequests,
+  fetchAccessSummary,
   fetchAgentConnections,
   fetchActivity,
   fetchAdminAddons,
@@ -850,6 +851,15 @@ export function accessLeasesQuery() {
 
 /** Admin > Agent connections (issue #371): what every agent holds at every
  * vendor right now. Leases run out within the hour, so it is read often. */
+export function accessSummaryQuery() {
+  return queryOptions({
+    queryKey: ["admin", "access", "summary"] as const,
+    queryFn: fetchAccessSummary,
+    staleTime: 15_000,
+    retry: shouldRetry,
+  });
+}
+
 export function agentConnectionsQuery() {
   return queryOptions({
     queryKey: ["admin", "access", "agents"] as const,

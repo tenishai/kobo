@@ -15,6 +15,12 @@ export type AgentHealth = {
   state: "up" | "down";
   reason: string | null;
   checked_at: string;
+  /** Mid-restart (2026-11-01): a change is being applied and the agent is
+   * on its way back. Down and rolling is a restart, not an outage; up and
+   * rolling is the moment before the old one goes. Older rooms omit it. */
+  rolling?: boolean;
+  /** When the agent last came back, null while it is not up. */
+  ready_since?: string | null;
 };
 
 export type AgentSummary = {
@@ -1820,6 +1826,16 @@ export async function fetchAgentConnections(): Promise<AgentConnections> {
   return parse<AgentConnections>(res);
 }
 
+/** The admin Overview's Agent connections figure: how many agents hold
+ * access anywhere right now, from `GET /api/admin/access/summary`, the
+ * room's cheap count (never the pane's full read). */
+export type AccessSummary = { agents_with_access: number; agents: number; fetched_at: string };
+
+export async function fetchAccessSummary(): Promise<AccessSummary> {
+  const res = await fetch("/api/admin/access/summary");
+  return parse<AccessSummary>(res);
+}
+
 export async function fetchAccessLeases(): Promise<AccessLease[]> {
   const res = await fetch("/api/admin/access/leases");
   const body = await parse<{ leases: AccessLease[] }>(res);
@@ -2421,6 +2437,9 @@ export type SlackWakeResult = {
   previous_wake: SlackWake;
   manifest_changed: boolean;
   applied_now?: boolean;
+  /** The room's own clock at the save (when `applied_now`), so a later
+   * health reading is told apart from an older one by `checked_at`. */
+  applied_at?: string | null;
   wiring: string;
 };
 
