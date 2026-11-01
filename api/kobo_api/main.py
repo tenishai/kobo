@@ -3788,11 +3788,22 @@ def create_app(
         if blocked is not None:
             return blocked
         cfg: Config = app.state.config
+        # `cluster` is the alias gojira registered the cluster under; the panel
+        # says where that really is when gojira can tell us (kobo#371 follow-up:
+        # "Deploys to fubo-dev" named the alias, not the cluster).
+        detail = None
+        gojira = getattr(app.state.clients, "gojira", None) if app.state.clients is not None else None
+        if gojira is not None and cfg.gojira_cluster:
+            try:
+                detail = gojira.cluster(cfg.gojira_cluster)
+            except Exception:  # noqa: BLE001 -- a panel fact, never a failure
+                detail = None
         return JSONResponse(
             {
                 "org_repo": cfg.org_repo,
                 "runtime_image": cfg.runtime_image,
                 "cluster": cfg.gojira_cluster,
+                "cluster_detail": detail,
                 "delivery_backend": cfg.delivery_backend,
             }
         )

@@ -1902,6 +1902,24 @@ def _client__api_admin_integrations(tmp_path, fake_storage, config: Config, *, g
     return client, {ASSERTION_HEADER: _sign_whoami(private_key, email="ops@example.com")}
 
 
+def test_admin_room_names_the_real_cluster_behind_the_deploy_alias(tmp_path, fake_storage):
+    """"Deploys to" named the alias gojira registered the cluster under; the panel now
+    says where that is (cluster, project, location) when gojira can tell, and falls back
+    to the alias when it cannot."""
+    client, headers = _client__api_admin_integrations(
+        tmp_path, fake_storage, _config(tmp_path, gojira_cluster="dev-alias"), github=FakeGitHub(), sero=None
+    )
+    gojira = client.app.state.clients.gojira
+    gojira.clusters = [{"name": "dev-alias", "gcp_project": "example-project", "location": "us-east4",
+                        "gke_cluster": "agents-us-east4", "ar_repo": "x"}]
+    body = client.get("/api/admin/room", headers=headers).json()
+    assert body["cluster"] == "dev-alias"
+    assert body["cluster_detail"] == {"name": "dev-alias", "gcp_project": "example-project",
+                                      "location": "us-east4", "gke_cluster": "agents-us-east4"}
+    gojira.clusters = []
+    assert client.get("/api/admin/room", headers=headers).json()["cluster_detail"] is None
+
+
 def _config(tmp_path, **overrides) -> Config:
     values = {
         "workdir": tmp_path / "work", "iap_audience": WHOAMI_AUDIENCE, "operators": ["ops@example.com"],

@@ -1349,6 +1349,14 @@ class GojiraClient(Protocol):
         """
         ...
 
+    def cluster(self, name: str) -> dict | None:
+        """GET {base}/api/v1/clusters, then the one entry whose `name` is the
+        alias this room deploys through (`gojira_cluster`): its real cluster,
+        project and location, so the admin panel can say where agents run
+        instead of repeating the alias. Never raises: unreachable, unauthorised
+        or an alias gojira does not know all read as None."""
+        ...
+
     def delete_app(self, app_id: int, *, delete_namespaces: bool = True) -> dict:
         """DELETE /api/v1/apps/{app_id} (Task 3: agent destruction's
         platform-teardown step); bearer via `_headers()`, same as every
@@ -1455,6 +1463,20 @@ class HttpxGojiraClient:
             log.debug("gojira ping failed", exc_info=True)
             return False
         return resp.status_code == 200
+
+    def cluster(self, name: str) -> dict | None:
+        try:
+            resp = self._client.get(f"{self._base_url}/api/v1/clusters", headers=self._headers())
+            if resp.status_code != 200:
+                return None
+            rows = resp.json().get("clusters") or []
+        except Exception:  # noqa: BLE001 -- a panel fact, never a failure
+            log.debug("gojira clusters lookup failed", exc_info=True)
+            return None
+        for row in rows:
+            if row.get("name") == name:
+                return {k: row.get(k) for k in ("name", "gcp_project", "location", "gke_cluster")}
+        return None
 
     def delete_app(self, app_id: int, *, delete_namespaces: bool = True) -> dict:
         # httpx.Client.delete() deliberately has no json=/content= parameter
