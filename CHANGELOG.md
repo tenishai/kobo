@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.28] - 2026-11-01
+
 ### Changed
 
 - **GitHub per agent: a repository set and a level (#365).** The room's GitHub connection is
