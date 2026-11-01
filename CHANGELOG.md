@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.37] - 2026-11-01
+
 ### Added
 
 - **Move an agent from the old Slack setup to the room-made app (kobo#304, phase 3).** On a
