@@ -5,6 +5,10 @@ The **Slack** tab walks you through connecting the agent to your workspace. The 
 
 If the room itself has no Slack integration yet, the tab is a greyed box with one line, "Ask a kobo admin to add the Slack integration", and no steps, fields or buttons. An admin sets it up under **Admin > Integrations**, on the **Slack** row; the tab works as soon as the values are saved. Nothing an agent owner does can stand in for that.
 
+## When the room makes the app for you
+
+In some rooms Slack is a row on the **Access** tab instead, with the other vendors. There is nothing to copy or paste: pick **Wakes on**, press **Create Slack app**, then **Install to Slack**. Slack asks you to allow the app in your workspace and sends you straight back to the agent's page, now showing the workspace, the channel list and **Wakes on**. Changing **Wakes on** later applies on its own, and **Remove** takes the app out of Slack. An agent connected the older way, from the Slack tab, keeps that tab and keeps working. The rest of this section describes the Slack tab.
+
 ## 1. Where it answers
 
 Add the ID of each channel the agent may answer in, then invite the agent to that channel in Slack with `/invite @agent-name`. Both are needed: the channel list is an allowlist the agent enforces, and the invite is Slack's own permission. Up to eight channels.

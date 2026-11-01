@@ -1495,6 +1495,9 @@ def test_connect_slack_wires_secret_transport_and_secrets_from_returns_sha(
         "app_id": APP_ID, "channels": [CHANNEL], "state": "connected",
         "wake": "mention",
         "available": True,
+        # The paste flow's app keeps the Slack tab (issue #371): `legacy`.
+        "relay": False,
+        "legacy": True,
     }
 
 
@@ -1517,7 +1520,41 @@ def test_get_agent_slack_carries_app_id_and_channels_after_connect(session_facto
         "app_id": APP_ID, "channels": [CHANNEL], "state": "connected",
         "wake": "mention",
         "available": True,
+        # The paste flow's app keeps the Slack tab (issue #371): `legacy`.
+        "relay": False,
+        "legacy": True,
     }
+
+
+def test_get_slack_app_view_carries_the_install_link_while_created_and_not_installed(
+    session_factory__api_slack, config__api_slack
+):
+    """Wire shape: the Access tab's Slack section (issue #371) reads one
+    view: the state (none, created, installed), the workspace once installed,
+    the channels and wake, and the install link only while created."""
+    from datetime import datetime
+
+    from kobo_api.models import SlackRelayApp
+
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    client = _make_client__api_slack(session_factory__api_slack, relay_config)
+    _seed_agent__api_slack(session_factory__api_slack, relay_config, slack_app_id="A0FAKE", slack_channels=[CHANNEL])
+    with session_factory__api_slack() as s:
+        s.add(SlackRelayApp(relay_id="relay-id-for-clio-0000", agent_name=AGENT_NAME, app_id="A0FAKE",
+                            client_id="fake-client-id", client_secret="fake-client-secret",
+                            signing_secret="fake-signing-secret", relay_secret="fake-relay-secret",
+                            created_at=datetime(2026, 11, 1)))
+        s.commit()
+
+    view = client.get(f"/api/agents/{AGENT_NAME}/slack").json()
+
+    assert view["install_url"].startswith("https://slack.com/oauth/v2/authorize?client_id=fake-client-id")
+    assert {k: v for k, v in view.items() if k != "install_url"} == {
+        "enabled": True, "available": True, "state": "created", "app_id": "A0FAKE",
+        "workspace": None, "app_name": None, "channels": [CHANNEL], "wake": "mention", "legacy": False,
+    }
+    detail = client.get(f"/api/agents/{AGENT_NAME}").json()
+    assert (detail["slack"]["relay"], detail["slack"]["legacy"]) == (True, False)
 
 
 def test_put_wake_writes_the_env_key_and_says_when_the_manifest_changed(session_factory__api_slack, config__api_slack):
@@ -3514,6 +3551,7 @@ def test_render_org_yaml_golden_with_computed_defaults():
         "operators": [],
         "admin_groups": [],
         "admin_panel": False,
+        "slack_relay": False,
         "logout_url": None,
         "gateway_config_repo": "",
         "gateway_namespace": "",

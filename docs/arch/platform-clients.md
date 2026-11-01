@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-platform-clients
 updated: 2026-11-01
-anchor: api/kobo_api/clients.py sha=e48f825e6fbf1df796bc326aaedd9cf48ad88aef
-anchor: api/tests/fakes.py sha=54b78f84f7f13ea1df33d189d4c14f275e502ce7
+anchor: api/kobo_api/clients.py sha=fd001d02dcfc7f7bdb144f6fbb3bc00e7ec29a6e
+anchor: api/tests/fakes.py sha=8a225ff4a4bda3056393fc18206f6b9d6af7355e
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
@@ -14,7 +14,7 @@ WHAT / SEAM: api/kobo_api/clients.py. The outside systems in the table below are
 | cloud | `CloudClient` | `GcloudClient` (GSA, WI binding, groups, bucket IAM) | `FakeCloud` |
 | agent | `AgentClient` | `KubectlAgentClient` (port-forward a2a, legacy direct path) | `FakeAgent` |
 | kubectl | `KubectlClient` | `KubectlCLI` (rollout, secrets, ExternalSecret status, `deployment_status_json`/`pods_json` for health.py) | `FakeKubectl` (set `.pods` for pod fixtures) |
-| slack | `SlackClient` + `SlackTokenStore` | `HttpxSlackClient`; `FileSlackTokenStore` / `KubeSlackTokenStore` (deployment config); the room-held pair is a second `HttpxSlackClient` over `room_services.RoomSlackTokenStore`, resolved per request by `room_services.slack_client(clients)` | `FakeSlack` |
+| slack | `SlackClient` + `SlackTokenStore` | `HttpxSlackClient`; `FileSlackTokenStore` / `KubeSlackTokenStore` (deployment config); the room-held pair is a second `HttpxSlackClient` over `room_services.RoomSlackTokenStore`, resolved per request by `room_services.slack_client(clients)`. Methods: `create_app` / `create_app_with_credentials` (apps.manifest.create; the second keeps the client pair and signing secret, `SlackAppCredentials`, for the relay flow kobo#371), `update_app` (apps.manifest.update), `delete_app`, `oauth_access` (oauth.v2.access with the app's client pair in the form, no config token) | `FakeSlack` (records `manifests`, `updates`, `oauth_calls`, `delete_calls`; obvious fake credentials) |
 | image / name | `ImageClient` / `NameClient` | `VertexImageClient` / `VertexNameClient` | `FakeImage` / `FakeName` |
 | storage | `StorageClient` | `HttpxStorageClient` (GCS JSON API), or `DirectoryStorageClient` (`<storage_root>/<bucket>/<key>`, sidecar `<key>.meta.json`, containment-checked; `storage_backend: directory`, #208) | `FakeStorage` |
 | cabal | (concrete) `CabalClient` | same | `FakeCabal` — see switchboard.md |
@@ -27,7 +27,7 @@ INVARIANTS:
 - A new external call gets a Protocol method + a fake method in tests/fakes.py in the same change; the fakes mirror P0-observed backend behavior (e.g. gojira's generated kustomization) so step tests mean something.
 - `GojiraConflict` (409 on create) is distinct from `ClientError` so onboard can decide whether the app is its own.
 CONSUMERS: api/kobo_api/steps.py, provisioner.py, health.py (ready agents probed once a minute; verdict kept in memory per replica), destroy.py, main.py (routes), directory.py, colleagues.py, pairs.py, learnings.py, knowledge.py, slack_setup.py, agent_env.py, mcp/tools/*.py; api/tests/* via tests/fakes.py.
-API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provider(config)`; `probe_slack_token_store(clients)` (boot write-probe of the Slack token Secret); `gsa_email(name, project)`; errors `ClientError`, `GojiraConflict`, `SlackApiError`, `StorageNotFound`, `CabalError`.
+API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provider(config)`; `probe_slack_token_store(clients)` (boot write-probe of the Slack token Secret); `gsa_email(name, project)`; errors `ClientError`, `GojiraConflict`, `SlackApiError`, `StorageNotFound`, `CabalError`; value type `SlackAppCredentials`.
 
 2026-10-12: `GhCLI.repo_exists` reads `gh api repos/{repo}` and compares the `full_name` GitHub answers with; a name GitHub only redirects (a destroyed agent's repo, renamed to `archived-agent-<name>-<id>`) counts as free.
 - `CabalClient.mint_service` (2026-10-24): the generic switchboard mint behind the room's own gateway admin token (`kobo_api.liminal_admin.RoomAdminToken`: sub and persona `kobo-room`, aud `liminal`, `admin:*`). `Clients.liminal_admin` is that admin-plane client, typed loosely to keep `liminal_admin` importing this module and not the reverse.

@@ -70,6 +70,7 @@ ORG_KEYS = frozenset(
         "operators",
         "admin_groups",
         "admin_panel",
+        "slack_relay",
         "logout_url",
         "gateway_config_repo",
         "gateway_namespace",

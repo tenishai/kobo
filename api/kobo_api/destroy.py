@@ -60,6 +60,7 @@ from kobo_api.models import (
     AgentSystemTask,
     AgentUserGrant,
     RepoAccess,
+    SlackRelayApp,
     StepStatus,
     ThreadParticipant,
 )
@@ -505,6 +506,10 @@ def _destroy_slack(ctx: DestroyCtx) -> str:
     `True` means Slack genuinely deleted it just now.
     """
     agent = ctx.agent
+    # A room-made app's relay row (issue #371) goes whatever else happens
+    # here: once the agent is gone the relay must answer 404 for its id, and
+    # a create that failed before Slack answered left a row with no app.
+    ctx.session.query(SlackRelayApp).filter_by(agent_name=agent.name).delete()
     if agent.slack_app_id is None:
         return "no slack app to remove"
 

@@ -385,7 +385,7 @@ def test_enabled_ui_dist_paths_require_the_header_too(session_factory, iap_confi
 
 def test_is_exempt_covers_the_mcp_roots_and_healthz_but_not_lookalikes():
     """Gate (authentication): Is exempt covers the mcp roots and healthz but not lookalikes."""
-    assert EXEMPT_PREFIXES == ("/mcp", "/oauth", "/.well-known", "/broker")
+    assert EXEMPT_PREFIXES == ("/mcp", "/oauth", "/.well-known", "/broker", "/slack/relay", "/slack/oauth")
     # exact healthz (unchanged behavior)
     assert _is_exempt("/api/healthz") is True
     # the MCP roots, exact and as prefixes
@@ -1742,3 +1742,147 @@ def test_auth_regime_names_each_accidental_opening():
     )
     assert clean == [] and "resolver on" in line
 
+
+
+# --- the Slack relay (issue #371): Slack's signature is the credential ----------
+
+RELAY_AGENT = "clio"
+RELAY_ID = "relay-id-for-clio-0000"
+RELAY_SECRET = "fake-relay-secret"
+SIGNING_SECRET = "fake-signing-secret"
+
+
+def _relay_room(tmp_path, *, signing_secret=SIGNING_SECRET, slack_relay=True):
+    """A room with the relay on, one agent and its relay row; the row has
+    no signing secret yet when `signing_secret` is None (the window between
+    minting the id and Slack answering the create)."""
+    from kobo_api.models import Agent, AgentStatus, SlackRelayApp
+
+    engine = create_engine(f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with session_factory() as s:
+        s.add(Agent(name=RELAY_AGENT, persona="helpful-generalist", model_id="vertex_ai/claude-sonnet-4-5",
+                    status=AgentStatus.READY, repo_full_name="example-org/agent-clio", created_by="ops@example.com"))
+        s.add(SlackRelayApp(relay_id=RELAY_ID, agent_name=RELAY_AGENT, app_id="A0FAKE", client_id="fake-client-id",
+                            client_secret="fake-client-secret", signing_secret=signing_secret,
+                            relay_secret=RELAY_SECRET, created_at=__import__("datetime").datetime(2026, 11, 1)))
+        s.commit()
+    config = Config(workdir=tmp_path / "work", slack_relay=slack_relay,
+                    agent_endpoint_template="http://agent-{name}.default.svc.cluster.local")
+    clients = Clients(github=FakeGitHub(), gojira=FakeGojira(), cloud=FakeCloud(), agent=FakeAgent(), kubectl=FakeKubectl())
+    return TestClient(create_app(session_factory, config=config, clients=clients))
+
+
+def _signed(body: bytes, *, secret: str = SIGNING_SECRET, ts: int | None = None) -> dict[str, str]:
+    import hmac as _hmac
+
+    stamp = str(ts if ts is not None else int(time.time()))
+    digest = _hmac.new(secret.encode(), b"v0:" + stamp.encode() + b":" + body, hashlib.sha256).hexdigest()
+    return {"X-Slack-Request-Timestamp": stamp, "X-Slack-Signature": f"v0={digest}", "Content-Type": "application/json"}
+
+
+def _event(event_id: str = "Ev0001") -> bytes:
+    import json as _json
+
+    return _json.dumps({"type": "event_callback", "event_id": event_id, "team_id": "T0FAKE",
+                        "event": {"type": "app_mention", "text": "hi"}}).encode()
+
+
+@pytest.fixture
+def relay_forwards(monkeypatch):
+    """Capture what the relay posts to the agent instead of opening a socket."""
+    from kobo_api import slack_relay
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"accepted": True})
+
+    monkeypatch.setattr(slack_relay, "_http_client", httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(slack_relay, "dedupe", slack_relay.EventDedupe())
+    monkeypatch.setattr(slack_relay, "bucket", slack_relay.TokenBucket())
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("relay_id", "headers", "status"),
+    [
+        ("no-such-relay-id", "signed", 404),
+        (RELAY_ID, "wrong-secret", 401),
+        (RELAY_ID, "stale", 401),
+        (RELAY_ID, "unsigned", 401),
+    ],
+    ids=["unknown-id", "wrong-secret", "stale-timestamp", "unsigned"],
+)
+def test_relay_refuses_without_detail(tmp_path, relay_forwards, relay_id, headers, status):
+    """Authentication (relay): an unknown relay id is a bare 404 and a bad
+    signature a bare 401; neither body says why and nothing is forwarded."""
+    client = _relay_room(tmp_path)
+    body = _event()
+    sent = {
+        "signed": _signed(body),
+        "wrong-secret": _signed(body, secret="not-the-signing-secret"),
+        "stale": _signed(body, ts=int(time.time()) - 3600),
+        "unsigned": {"Content-Type": "application/json"},
+    }[headers]
+
+    response = client.post(f"/slack/relay/{relay_id}", content=body, headers=sent)
+
+    assert response.status_code == status
+    assert response.content == b""
+    assert relay_forwards == []
+
+
+def test_relay_answers_the_challenge_for_a_pending_id_then_demands_a_signature(tmp_path, relay_forwards):
+    """Authentication (relay): Slack verifies the request URL during create,
+    before the signing secret exists, so a pending row answers the challenge;
+    once the secret is stored an unsigned challenge is refused."""
+    import json as _json
+
+    from kobo_api.models import SlackRelayApp
+
+    client = _relay_room(tmp_path, signing_secret=None)
+    challenge = _json.dumps({"type": "url_verification", "challenge": "abc123", "token": "ignored"}).encode()
+
+    pending = client.post(f"/slack/relay/{RELAY_ID}", content=challenge, headers={"Content-Type": "application/json"})
+    assert pending.status_code == 200
+    assert pending.json() == {"challenge": "abc123"}
+
+    with client.app.state.session_factory() as s:
+        s.get(SlackRelayApp, RELAY_ID).signing_secret = SIGNING_SECRET
+        s.commit()
+    assert client.post(f"/slack/relay/{RELAY_ID}", content=challenge, headers={"Content-Type": "application/json"}).status_code == 401
+    assert client.post(f"/slack/relay/{RELAY_ID}", content=challenge, headers=_signed(challenge)).json() == {"challenge": "abc123"}
+
+
+def test_relay_forwards_a_signed_event_once_with_the_agent_header(tmp_path, relay_forwards):
+    """Authentication (relay): a signed event is acked at once and forwarded
+    to the agent's /slack/events with X-Kobo-Relay-Secret; Slack's retry of
+    the same event_id is acked and not forwarded again."""
+    client = _relay_room(tmp_path)
+    body = _event("Ev0042")
+
+    first = client.post(f"/slack/relay/{RELAY_ID}", content=body, headers=_signed(body))
+    retry = client.post(f"/slack/relay/{RELAY_ID}", content=body, headers=_signed(body))
+
+    assert first.json() == {"accepted": True}
+    assert retry.json() == {"accepted": True}
+    assert len(relay_forwards) == 1
+    forwarded = relay_forwards[0]
+    assert str(forwarded.url) == "http://agent-clio.default.svc.cluster.local/slack/events"
+    assert forwarded.headers["X-Kobo-Relay-Secret"] == RELAY_SECRET
+    assert forwarded.content == body
+
+
+def test_relay_is_absent_while_the_switch_is_off(tmp_path, relay_forwards):
+    """Authentication (relay): with `slack_relay` off a known relay id and the
+    install callback are both a bare 404, so a room that has not turned the
+    flow on exposes nothing on its public paths."""
+    client = _relay_room(tmp_path, slack_relay=False)
+    body = _event()
+
+    assert client.post(f"/slack/relay/{RELAY_ID}", content=body, headers=_signed(body)).status_code == 404
+    assert client.get("/slack/oauth/callback?code=x&state=y", follow_redirects=False).status_code == 404
+    assert relay_forwards == []

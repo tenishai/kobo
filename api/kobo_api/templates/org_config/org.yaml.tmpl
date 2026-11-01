@@ -75,6 +75,10 @@ admin_groups: __KOBO_ADMIN_GROUPS__
 # The admin panel (#/admin: add-ons, integrations, connections, roles, people,
 # audit). Off until a room turns it on; its entry shows only to admins.
 admin_panel: __KOBO_ADMIN_PANEL__
+# Slack as a vendor on the Access tab: the room makes an agent's Slack app
+# itself and relays Slack's events to the agent, so no app-level token is
+# pasted. Off until the flow is proven on one room; off changes nothing.
+slack_relay: __KOBO_SLACK_RELAY__
 # Where the account menu's "Log out" goes: the identity proxy's sign-out path
 # (Google's proxy: /_gcp_iap/clear_login_cookie). Unset hides the item.
 logout_url: __KOBO_LOGOUT_URL__

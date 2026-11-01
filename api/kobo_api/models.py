@@ -804,6 +804,49 @@ class AdminSetting(Base):
     updated_by: Mapped[str] = mapped_column(String(320), nullable=False)
 
 
+class SlackRelayApp(Base):
+    """One Slack app the room made for an agent (issue #371): the relay id
+    Slack posts to, and what the relay needs on every event without a
+    round trip to the secrets platform.
+
+    The relay id is minted and the row written BEFORE `apps.manifest.create`
+    is called, because Slack posts its `url_verification` challenge to the
+    request URL during that call and nothing else about the app exists yet;
+    `app_id`, the credentials and `wired_at` fill in as the create and the
+    wiring land, and `installed_at` when the owner finishes Install to
+    Slack. `oauth_state` is the single-use nonce the install link carries
+    (`<relay_id>.<nonce>`), cleared when the callback consumes it.
+
+    What is held here and why (the PR says this too): the signing secret
+    (verifies that an event came from Slack), the relay secret (lets the
+    room post to the agent) and the client secret (exchanges the install
+    code once) are stored as the room's other credentials are, plain in
+    the room's own store. The room has no key for anything encrypted at
+    rest, and its other held tokens live in a Secret in its namespace with
+    the same reach. None of the three can read Slack or post as the agent;
+    the bot token can, and it goes through the agent's secrets lane only and
+    is never written here."""
+
+    __tablename__ = "slack_relay_apps"
+
+    relay_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    agent_name: Mapped[str] = mapped_column(String(63), unique=True, nullable=False)
+    app_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    client_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    client_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signing_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    relay_secret: Mapped[str] = mapped_column(Text, nullable=False)
+    oauth_state: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    oauth_state_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    workspace_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    app_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    wired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    installed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class AdminIntegration(Base):
     """One vendor the room holds a base credential for (an integration: what
     an agent reaches out to). The credential itself lives in the vault at

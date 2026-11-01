@@ -28,6 +28,7 @@ from kobo_api.clients import (
     InstallationRepo,
     RepoAccessInfo,
     SlackApiError,
+    SlackAppCredentials,
     StorageNotFound,
     gsa_email,
 )
@@ -1728,19 +1729,59 @@ class FakeSlack:
         create_error: str | None = None,
         delete_result: bool = True,
         delete_error: str | None = None,
+        update_error: str | None = None,
+        oauth_result: dict | None = None,
+        oauth_error: str | None = None,
     ):
         self._app_id = app_id
         self._create_error = create_error
         self._delete_result = delete_result
         self._delete_error = delete_error
+        self._update_error = update_error
+        self._oauth_result = oauth_result if oauth_result is not None else {
+            "ok": True,
+            "access_token": "xoxb-fake-bot-token",
+            "app_id": app_id,
+            "team": {"id": "T0FAKE", "name": "Fake Workspace"},
+        }
+        self._oauth_error = oauth_error
         self.manifests: list[dict] = []
         self.delete_calls: list[str] = []
+        self.updates: list[tuple[str, dict]] = []
+        self.oauth_calls: list[dict] = []
 
     def create_app(self, manifest: dict) -> str:
+        return self.create_app_with_credentials(manifest).app_id
+
+    def create_app_with_credentials(self, manifest: dict) -> SlackAppCredentials:
         self.manifests.append(manifest)
         if self._create_error is not None:
             raise SlackApiError(f"slack app creation failed: {self._create_error}")
-        return self._app_id
+        # Obvious fakes, never shaped like real Slack material.
+        return SlackAppCredentials(
+            app_id=self._app_id,
+            client_id="fake-client-id",
+            client_secret="fake-client-secret",
+            signing_secret="fake-signing-secret",
+        )
+
+    def update_app(self, app_id: str, manifest: dict) -> None:
+        """Records `(app_id, manifest)` in `updates` (the relay flow's Wakes
+        on change, issue #371); `update_error` makes it raise instead."""
+        self.updates.append((app_id, manifest))
+        if self._update_error is not None:
+            raise SlackApiError(f"slack app update failed: {self._update_error}")
+
+    def oauth_access(
+        self, *, client_id: str, client_secret: str, code: str, redirect_uri: str
+    ) -> dict:
+        """Records the exchange in `oauth_calls` (without the client secret:
+        a test asserts it was the stored one by reading the row, not this
+        list) and answers `oauth_result`; `oauth_error` makes it raise."""
+        self.oauth_calls.append({"client_id": client_id, "code": code, "redirect_uri": redirect_uri})
+        if self._oauth_error is not None:
+            raise SlackApiError(f"slack install failed: {self._oauth_error}")
+        return dict(self._oauth_result)
 
     def delete_app(self, app_id: str) -> bool:
         self.delete_calls.append(app_id)

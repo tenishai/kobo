@@ -148,8 +148,29 @@ def wake_events(mode: str) -> list[str]:
     return events
 
 
-def render_manifest(agent_name: str, persona_first_line: str, *, wake: str = WAKE_MENTION) -> dict:
+def bot_scopes() -> list[str]:
+    """The bot scopes every manifest carries, for the install link the relay
+    flow builds (issue #371): `oauth/v2/authorize` wants them spelled out."""
+    return list(_BOT_SCOPES)
+
+
+def render_manifest(
+    agent_name: str,
+    persona_first_line: str,
+    *,
+    wake: str = WAKE_MENTION,
+    request_url: str | None = None,
+    redirect_url: str | None = None,
+) -> dict:
     """Render a Slack app-manifest dict for `agent_name`.
+
+    `request_url` (issue #371, the relay flow) switches the manifest from
+    Socket Mode to events over HTTPS: `settings.event_subscriptions.
+    request_url` is the room's relay address for this app and
+    `socket_mode_enabled` is false, so no app-level token is ever made.
+    `redirect_url` is where Slack sends the person after Install to Slack
+    (the room's own callback); it is listed under `oauth_config` because
+    the install exchange must name a redirect the app allows.
 
     `wake` picks the event list: `mention` subscribes to app_mention and the
     DM events only; `thread` and `channel` add message.channels and
@@ -166,6 +187,13 @@ def render_manifest(agent_name: str, persona_first_line: str, *, wake: str = WAK
     """
     description = persona_first_line.strip()[:_DESCRIPTION_MAX_LEN]
 
+    oauth_config: dict = {"scopes": {"bot": list(_BOT_SCOPES)}}
+    if redirect_url:
+        oauth_config["redirect_urls"] = [redirect_url]
+    event_subscriptions: dict = {"bot_events": wake_events(wake)}
+    if request_url:
+        event_subscriptions = {"request_url": request_url, **event_subscriptions}
+
     return {
         "display_information": {
             "name": agent_name,
@@ -178,18 +206,12 @@ def render_manifest(agent_name: str, persona_first_line: str, *, wake: str = WAK
                 "always_online": True,
             },
         },
-        "oauth_config": {
-            "scopes": {
-                "bot": list(_BOT_SCOPES),
-            },
-        },
+        "oauth_config": oauth_config,
         "settings": {
-            "event_subscriptions": {
-                "bot_events": wake_events(wake),
-            },
+            "event_subscriptions": event_subscriptions,
             "interactivity": {"is_enabled": False},
             "org_deploy_enabled": False,
-            "socket_mode_enabled": True,
+            "socket_mode_enabled": not request_url,
             "token_rotation_enabled": False,
         },
     }
@@ -369,29 +391,78 @@ def wire_slack(
     only available to the route that calls this. Disclosed in the task
     report.
     """
-    tokens = {"SLACK_BOT_TOKEN": bot_token, "SLACK_APP_TOKEN": app_token}
+    return wire_slack_values(
+        github,
+        kubectl,
+        gojira,
+        repo=repo,
+        name=name,
+        gojira_app_id=gojira_app_id,
+        channels=channels,
+        values={"SLACK_BOT_TOKEN": bot_token, "SLACK_APP_TOKEN": app_token},
+        runtime_image=runtime_image,
+        sero=sero,
+        acting_email=acting_email,
+        on_repin=on_repin,
+    )
+
+
+def wire_slack_values(
+    github: GitHubClient,
+    kubectl: KubectlClient,
+    gojira: GojiraClient,
+    *,
+    repo: str,
+    name: str,
+    gojira_app_id: int,
+    channels: list[str],
+    values: dict[str, str],
+    runtime_image: str,
+    sero: SeroClient | None = None,
+    acting_email: str | None = None,
+    on_repin: Callable[[], None] | None = None,
+    edit_gojira: Callable[[dict], bool] | None = None,
+    message: str = "kobo: connect slack",
+) -> str:
+    """`wire_slack` over any set of Slack values (issue #371): the relay flow
+    delivers the app's five credentials at Create (no app-level token
+    exists), the paste flow its two tokens. Same Secret name, same path,
+    same repository edits and the same reprovision-and-wait; `edit_gojira`,
+    when given, is one more edit of the parsed `gojira.yaml` in the same
+    clone (the relay flow writes the wake mode it was created with), so the
+    choice and the wiring land in one commit."""
     if sero is not None:
         deliver_secret(
             sero,
             acting_email=acting_email,
             agent_name=name,
             purpose="slack",
-            values=tokens,
+            values=values,
             secret_name=f"{name}-slack",
         )
     else:
-        kubectl.apply_secret(name, f"{name}-slack", tokens)
+        kubectl.apply_secret(name, f"{name}-slack", values)
 
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
 
-        _update_agent_yaml_transports(workdir / "bundle" / "agent.yaml", channels)
-        _update_gojira_secrets_from(workdir / "gojira.yaml", name)
+        agent_yaml_path = workdir / "bundle" / "agent.yaml"
+        if not agent_yaml_path.exists():
+            # A repository without the bundle is not one the room composed;
+            # say so as a ClientError (the routes' 502) rather than crash.
+            raise ClientError(f"{repo} has no bundle/agent.yaml to wire Slack into")
+        _update_agent_yaml_transports(agent_yaml_path, channels)
+        gojira_yaml_path = workdir / "gojira.yaml"
+        _update_gojira_secrets_from(gojira_yaml_path, name)
+        if edit_gojira is not None:
+            data = yaml.safe_load(gojira_yaml_path.read_text()) or {}
+            if edit_gojira(data):
+                gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
         previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
         note = repin_commit_note(repo, previous, runtime_image)
 
-        changed = github.commit_push(workdir, f"kobo: connect slack{note}")
+        changed = github.commit_push(workdir, f"{message}{note}")
         if changed:
             gojira.reprovision(gojira_app_id)
         # Always confirm active, even on the no-change path — see the

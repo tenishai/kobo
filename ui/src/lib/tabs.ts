@@ -60,8 +60,17 @@ const RETIRED_TAB_IDS: Record<string, TabId> = {
  * has no way to talk to it) and no Slack (the room did not make its chat
  * app).
  */
-export function primaryTabs(showAccess = false, kind: string = KIND_COMPOSED): TabId[] {
-  const talk: TabId[] = kind === KIND_CONNECTED ? [] : ["chat", "slack"];
+export function primaryTabs(
+  showAccess = false,
+  kind: string = KIND_COMPOSED,
+  opts: { slackRelay?: boolean; slackLegacy?: boolean } = {},
+): TabId[] {
+  // Slack as a vendor on Access (issue #371): when the room makes Slack
+  // apps itself (`slackRelay`), Slack lives on the Access tab and the Slack
+  // tab shows only for an agent whose app came from the paste flow
+  // (`slackLegacy`), which keeps its tab exactly as it was.
+  const slack: TabId[] = opts.slackRelay && !opts.slackLegacy ? [] : ["slack"];
+  const talk: TabId[] = kind === KIND_CONNECTED ? [] : ["chat", ...slack];
   const access: TabId[] = showAccess ? ["access"] : [];
   return [...talk, ...access, "harness", "secrets"];
 }

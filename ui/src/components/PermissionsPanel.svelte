@@ -23,6 +23,7 @@
   import { agentAccessQuery, githubRepositoriesQuery, putGithubRepositoriesMutation, requestAgentAccessMutation, revokeAgentAccessMutation } from "../lib/queries";
   import { serverDate } from "../lib/time";
   import { toast } from "../lib/toast.svelte";
+  import SlackVendor from "./SlackVendor.svelte";
   import VendorMark from "./VendorMark.svelte";
 
   let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
@@ -586,6 +587,10 @@
         {/if}
       </section>
     {/each}
+
+    <!-- Slack (issue #371): the one vendor whose connection is per agent.
+         Renders nothing unless the room makes Slack apps itself. -->
+    <SlackVendor {agentName} {frozen} />
 
     {#if strayGrants.length > 0 || strayPending.length > 0}
       <section class="vendor" aria-label="Elsewhere">

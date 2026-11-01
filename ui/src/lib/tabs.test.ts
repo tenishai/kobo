@@ -57,6 +57,33 @@ describe("the tab model by kind (connected-agents design 2026-09-21)", () => {
   });
 });
 
+describe("the Slack tab when the room makes Slack apps (issue #371)", () => {
+  it("hides the Slack tab for an agent without a paste-flow app", () => {
+    // Slack is a vendor on the Access tab then; a second place would be
+    // two ways to do one thing.
+    expect(primaryTabs(true, "composed", { slackRelay: true, slackLegacy: false })).toEqual([
+      "chat",
+      "access",
+      "harness",
+      "secrets",
+    ]);
+  });
+
+  it("keeps the Slack tab for an agent whose app came from the paste flow", () => {
+    expect(primaryTabs(true, "composed", { slackRelay: true, slackLegacy: true })).toEqual([
+      "chat",
+      "slack",
+      "access",
+      "harness",
+      "secrets",
+    ]);
+  });
+
+  it("keeps the Slack tab for everyone while the switch is off", () => {
+    expect(primaryTabs(false, "composed", { slackRelay: false, slackLegacy: false })).toEqual(primaryTabs());
+  });
+});
+
 describe("harnessSections", () => {
   it("is model and runtime first, then everything the room composed", () => {
     expect(harnessSections()).toEqual([
