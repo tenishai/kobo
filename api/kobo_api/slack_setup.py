@@ -286,14 +286,19 @@ def wait_active(gojira: GojiraClient, app_id: int) -> None:
     )
 
 
-def _update_agent_yaml_transports(agent_yaml_path: Path, channels: list[str]) -> None:
+def _update_agent_yaml_transports(agent_yaml_path: Path, channels: list[str], *, every_channel: bool = False) -> None:
     """Round-trip `bundle/agent.yaml`'s `transports` list: replace every
     existing `{kind: slack, ...}` entry with one `{"kind": "slack",
     "channel": c}` entry per channel in `channels`, order preserved. Every
     other transport (the `a2a` entry every bundle ships with) is left
     untouched, in its original position — this never replaces the list
     wholesale. An empty `channels` list disconnects: no slack entries
-    remain (an agent can be wired to zero channels, e.g. mid-rewire).
+    remain (an agent can be wired to zero channels, e.g. mid-rewire), unless
+    `every_channel` is set: then one `{"kind": "slack"}` entry with no channel
+    is written, which the runtime reads as "answer in every channel the app is
+    invited to". The room-made app (issue #371) is wired that way at Create,
+    before any channel is picked, so its events route exists from the first
+    start; picking channels later narrows it as usual.
 
     `yaml.safe_load`/`safe_dump` round-tripping (not comment-preserving) is
     fine here, same reasoning as `kobo_api.steps._update_gojira_yaml`:
@@ -303,6 +308,8 @@ def _update_agent_yaml_transports(agent_yaml_path: Path, channels: list[str]) ->
     data = yaml.safe_load(agent_yaml_path.read_text()) or {}
     transports = [t for t in data.get("transports", []) if t.get("kind") != "slack"]
     transports.extend({"kind": "slack", "channel": channel} for channel in channels)
+    if not channels and every_channel:
+        transports.append({"kind": "slack"})
     data["transports"] = transports
     agent_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
@@ -423,6 +430,7 @@ def wire_slack_values(
     on_repin: Callable[[], None] | None = None,
     edit_gojira: Callable[[dict], bool] | None = None,
     message: str = "kobo: connect slack",
+    every_channel: bool = False,
 ) -> str:
     """`wire_slack` over any set of Slack values (issue #371): the relay flow
     delivers the app's five credentials at Create (no app-level token
@@ -452,7 +460,7 @@ def wire_slack_values(
             # A repository without the bundle is not one the room composed;
             # say so as a ClientError (the routes' 502) rather than crash.
             raise ClientError(f"{repo} has no bundle/agent.yaml to wire Slack into")
-        _update_agent_yaml_transports(agent_yaml_path, channels)
+        _update_agent_yaml_transports(agent_yaml_path, channels, every_channel=every_channel)
         gojira_yaml_path = workdir / "gojira.yaml"
         _update_gojira_secrets_from(gojira_yaml_path, name)
         if edit_gojira is not None:

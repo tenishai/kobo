@@ -1452,7 +1452,7 @@ def test_create_slack_app_writes_the_five_values_through_the_lane_and_returns_th
     sero, kubectl, slack = FakeSero(), FakeKubectl(), FakeSlack(app_id="A0MADE")
     gojira, app_id = _onboarded_gojira__api_slack()
     client = _make_client(
-        session_factory__api_slack, relay_config, github=_CapturingGitHub__api_slack(), kubectl=kubectl,
+        session_factory__api_slack, relay_config, github=(github := _CapturingGitHub__api_slack()), kubectl=kubectl,
         gojira=gojira, sero=sero, slack=slack, iap_jwks_fetcher=_fetcher(jwk),
     )
     _seed_agent(session_factory__api_slack, relay_config, gojira_app_id=app_id, created_by=OPERATOR_EMAIL)
@@ -1480,6 +1480,10 @@ def test_create_slack_app_writes_the_five_values_through_the_lane_and_returns_th
     assert manifest["settings"]["socket_mode_enabled"] is False
     assert manifest["settings"]["event_subscriptions"]["request_url"].endswith(f"/slack/relay/{row.relay_id}")
     assert "message.channels" in manifest["settings"]["event_subscriptions"]["bot_events"]
+    # No channel picked yet: one open slack block, so the agent's events route
+    # exists from its first start and it answers wherever it is invited.
+    written = yaml.safe_load(github.captured_agent_yaml)["transports"]
+    assert [t for t in written if t.get("kind") == "slack"] == [{"kind": "slack"}]
 
 
 def test_install_callback_stores_the_bot_token_through_the_lane_and_redirects(

@@ -8875,6 +8875,9 @@ def create_app(
                 acting_email=acting_email,
                 edit_gojira=lambda data: _set_env_key(data, WAKE_ENV, mode),
                 message="kobo: slack app made by the room",
+                # No channel picked yet: one open block, so the agent answers in
+                # every channel it is invited to and its events route exists.
+                every_channel=True,
             )
         except ClientError as exc:
             log.warning("slack app wiring failed for agent %s: %s", agent.name, type(exc).__name__)
