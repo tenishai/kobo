@@ -6,6 +6,25 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Harness page now says what an agent really runs on.** The room records what each
+  agent is built on (`Agent.built_runtime_image`, the ref its Dockerfile's `FROM` carries,
+  migration `f2a7c4d9e1b3`): compose writes it at create, every fast-lane commit that re-pins
+  the file (teach notes, uploads, tools, Slack) and `PATCH /api/agents/{name}/runtime` keep
+  it current, and a boot backfill reads each older agent's Dockerfile once (unreadable
+  repositories are retried next boot; never on the request path). The detail payload serves
+  `runtime_image` as that fact when known (the old resolved value otherwise), plus
+  `built_runtime_image` and `runtime_pinned`, and keeps `room_runtime_image`. The Harness
+  page compares the fact with the room's pin: **Runs on v9. The room now builds on v10.**
+  with **Update to current**; **Pinned to v9** with **Move to the room's runtime** for an
+  agent deliberately held; **Checking what it runs on.** until the backfill lands; nothing
+  for a connected agent, which brings its own. Before this the page compared the room's pin
+  with itself for every agent that followed the room, so every agent read "Runtime is up to
+  date" through a room runtime move and the button never appeared. Asking the runtime route
+  for the room's own runtime now clears the agent's hold so it follows the room again,
+  instead of pinning it to that day's runtime for good.
+
 ## [0.3.33] - 2026-11-01
 
 ### Changed

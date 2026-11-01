@@ -8,6 +8,7 @@
     IdentificationCard,
     Lightbulb,
     Lightning,
+    PushPin,
     UserCircle,
     WarningCircle,
     Wrench,
@@ -76,6 +77,8 @@
     model,
     modelLabel,
     runtimeImage = undefined,
+    builtRuntimeImage = undefined,
+    runtimePinned = false,
     roomRuntimeImage = undefined,
     canUpdateRuntime = false,
     colleagueMode = undefined,
@@ -95,11 +98,19 @@
      * the same pair the page header shows. */
     model: string;
     modelLabel: string;
-    /** The image this agent runs on, already resolved server-side against
+    /** The runtime this agent runs on, already resolved server-side against
      * the room's default. `undefined` on a room whose API predates the
      * field, which the Runtime row says plainly rather than guessing. */
     runtimeImage?: string;
-    /** The image the room builds on today. */
+    /** What the agent is built on right now, read from its files
+     * (2026-11-01). `null` until the room has read them once after boot;
+     * `undefined` on an older server. The state line compares this with
+     * the room's, never `runtimeImage`, which for an agent that follows
+     * the room is the room's own pin and so always read as current. */
+    builtRuntimeImage?: string | null;
+    /** Whether the agent deliberately holds a runtime of its own. */
+    runtimePinned?: boolean;
+    /** The runtime the room builds on today. */
     roomRuntimeImage?: string;
     /** Whether the update is this caller's to make: an operator, per the
      * same flag the Convert row reads. The route's own owner-or-operator
@@ -207,10 +218,18 @@
     return "latest";
   }
 
-  // Three states, and the middle one is the only one with a control:
-  // nothing to compare (an older room), current, behind.
-  const runtimeKnown = $derived(Boolean(runtimeImage && roomRuntimeImage));
-  const behind = $derived(runtimeKnown && runtimeImage !== roomRuntimeImage);
+  // The state line compares what the agent is BUILT on with what the room
+  // builds on now. Not `runtimeImage`: for an agent that follows the room
+  // that is the room's pin itself, and comparing the pin with itself said
+  // "up to date" to every agent through a whole runtime move (2026-11-01).
+  // States: nothing to compare (an older room, or a connected agent that
+  // brings its own), not read yet, behind, current; pinned colours the
+  // last two, since a pinned agent stays put when the room moves.
+  const runtimeStated = $derived(Boolean(roomRuntimeImage) && !connected);
+  const behind = $derived(
+    Boolean(builtRuntimeImage) && builtRuntimeImage !== roomRuntimeImage,
+  );
+  const moveLabel = $derived(runtimePinned ? "Move to the room's runtime" : "Update to current");
 
   const queryClient = useQueryClient();
   // svelte-ignore state_referenced_locally
@@ -400,13 +419,22 @@
                 </dd>
               {/if}
             </dl>
-            {#if runtimeKnown && roomRuntimeImage}
-              {#if behind}
+            {#if runtimeStated && roomRuntimeImage}
+              {#if !builtRuntimeImage}
+                <p class="harness__status harness__status--quiet">Checking what it runs on.</p>
+              {:else if behind}
                 <div class="harness__state">
-                  <p class="harness__status harness__status--warn">
-                    <WarningCircle size={15} weight="fill" aria-hidden="true" />
-                    Behind: the room now builds on {versionOf(roomRuntimeImage)}
-                  </p>
+                  {#if runtimePinned}
+                    <p class="harness__status harness__status--pinned">
+                      <PushPin size={15} weight="fill" aria-hidden="true" />
+                      Pinned to {versionOf(builtRuntimeImage)}. The room builds on {versionOf(roomRuntimeImage)}.
+                    </p>
+                  {:else}
+                    <p class="harness__status harness__status--warn">
+                      <WarningCircle size={15} weight="fill" aria-hidden="true" />
+                      Runs on {versionOf(builtRuntimeImage)}. The room now builds on {versionOf(roomRuntimeImage)}.
+                    </p>
+                  {/if}
                   {#if canUpdateRuntime}
                     <button
                       type="button"
@@ -414,15 +442,35 @@
                       disabled={frozen || updateRuntime.isPending}
                       onclick={handleUpdateRuntime}
                     >
-                      {updateRuntime.isPending ? "Updating…" : "Update to current"}
+                      {updateRuntime.isPending ? "Updating…" : moveLabel}
                     </button>
                   {/if}
                 </div>
               {:else}
-                <p class="harness__status">
-                  <CheckCircle size={15} weight="fill" aria-hidden="true" />
-                  Runtime is up to date
-                </p>
+                <div class="harness__state">
+                  <p class="harness__status">
+                    <CheckCircle size={15} weight="fill" aria-hidden="true" />
+                    Runtime is up to date
+                  </p>
+                  {#if runtimePinned}
+                    <!-- Current today, but held: it stays here when the room
+                         moves. The same move clears the hold. -->
+                    <p class="harness__status harness__status--pinned">
+                      <PushPin size={15} weight="fill" aria-hidden="true" />
+                      Pinned to {versionOf(builtRuntimeImage)}. It stays here when the room moves.
+                    </p>
+                    {#if canUpdateRuntime}
+                      <button
+                        type="button"
+                        class="btn btn--quiet"
+                        disabled={frozen || updateRuntime.isPending}
+                        onclick={handleUpdateRuntime}
+                      >
+                        {updateRuntime.isPending ? "Updating…" : moveLabel}
+                      </button>
+                    {/if}
+                  {/if}
+                </div>
               {/if}
             {/if}
             {#if connected}
@@ -699,6 +747,17 @@
 
   .harness__status--warn {
     color: var(--warn);
+  }
+
+  .harness__status--pinned {
+    color: var(--ink);
+  }
+
+  /* Not read yet: a state the room is still finding out, so grey, the
+     one case metadata colour is right for. */
+  .harness__status--quiet {
+    color: var(--muted);
+    font-weight: 400;
   }
 
   .harness__ref {

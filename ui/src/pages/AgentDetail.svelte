@@ -991,6 +991,8 @@
               model={data.model}
               modelLabel={data.model_label}
               runtimeImage={data.runtime_image}
+              builtRuntimeImage={data.built_runtime_image}
+              runtimePinned={data.runtime_pinned}
               roomRuntimeImage={data.room_runtime_image}
               canUpdateRuntime={data.destroy_visible}
               colleagueMode={data.colleague_mode}

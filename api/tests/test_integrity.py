@@ -2920,6 +2920,82 @@ def test_patch_runtime_moves_the_row_so_a_later_repin_does_not_revert_it(session
     assert _runtime_image_for_repo(client.app, REPO__api_runtime) == OTHER_RUNTIME
 
 
+def test_patch_runtime_records_what_the_agent_is_built_on_and_follows_the_room_when_asked_for_its_runtime(
+    session_factory__api_runtime, config__api_runtime
+):
+    """Data integrity (2026-11-01): the runtime route moves both columns. A
+    ref of the agent's own sets the choice and the fact to it; asking for the
+    room's own runtime (the Harness page's Update to current) sets the fact
+    and clears the choice, so the agent follows the room again instead of
+    being pinned to today's pin for good."""
+    client = _make_client__api_runtime(session_factory__api_runtime, config__api_runtime)
+    _seed_agent__api_runtime(session_factory__api_runtime, config__api_runtime)
+
+    assert client.patch(f"/api/agents/{AGENT_NAME}/runtime", json={"runtime_image": OTHER_RUNTIME}).status_code == 200
+    with session_factory__api_runtime() as session:
+        row = session.query(Agent).filter_by(name=AGENT_NAME).one()
+        assert (row.runtime_image, row.built_runtime_image) == (OTHER_RUNTIME, OTHER_RUNTIME)
+
+    response = client.patch(
+        f"/api/agents/{AGENT_NAME}/runtime", json={"runtime_image": config__api_runtime.runtime_image}
+    )
+    assert response.status_code == 200
+    assert response.json()["runtime_pinned"] is False
+    with session_factory__api_runtime() as session:
+        row = session.query(Agent).filter_by(name=AGENT_NAME).one()
+        assert (row.runtime_image, row.built_runtime_image) == (None, config__api_runtime.runtime_image)
+    assert _runtime_image_for_repo(client.app, REPO__api_runtime) == config__api_runtime.runtime_image
+
+
+class _DockerfilesByRepo:
+    """A GitHub that answers `read_file` per repository; the shared fake is
+    keyed by path alone."""
+
+    def __init__(self, files: dict[str, str | None]):
+        self.files = files
+        self.reads: list[str] = []
+
+    def read_file(self, repo: str, path: str, ref: str | None = None) -> str | None:
+        self.reads.append(repo)
+        return self.files.get(repo)
+
+
+def test_boot_backfill_reads_each_agent_s_dockerfile_once_and_leaves_an_unreadable_one_for_next_boot(session_factory):
+    """Data integrity (2026-11-01): the boot backfill fills `built_runtime_image`
+    from the Dockerfile's FROM for every row that has none (the final stage,
+    for a connected agent's multi-stage file), skips a repository it cannot
+    read so the next boot tries again, and never reads a filled row twice."""
+    from kobo_api.runtime_truth import backfill_built_runtime
+
+    with session_factory() as s:
+        for name, repo, kind in (("ward", "acme/ward", KIND_COMPOSED), ("clio", "acme/clio", KIND_CONNECTED), ("lost", "acme/lost", KIND_COMPOSED)):
+            s.add(Agent(name=name, persona="p", model_id="m", status=AgentStatus.READY, repo_full_name=repo, skills=[], kind=kind))
+        s.add(Agent(name="done", persona="p", model_id="m", status=AgentStatus.READY, repo_full_name="acme/done", skills=[],
+                    built_runtime_image="reg.example/agents/runtime:v8"))
+        s.commit()
+    github = _DockerfilesByRepo({
+        "acme/ward": "# Agent image\nFROM reg.example/agents/runtime:v9\nCOPY bundle/ /bundle\n",
+        "acme/clio": "FROM golang:1.22 AS build\nRUN go build\nFROM reg.example/agents/base@sha256:abc\nCOPY --from=build /a /a\n",
+        "acme/lost": None,
+        "acme/done": "FROM reg.example/agents/runtime:v10\n",
+    })
+
+    with session_factory() as s:
+        assert backfill_built_runtime(s, github) == {"filled": 2, "skipped": 1, "no_repo": 0}
+        built = {a.name: a.built_runtime_image for a in s.query(Agent).all()}
+    assert built == {
+        "ward": "reg.example/agents/runtime:v9",
+        "clio": "reg.example/agents/base@sha256:abc",
+        "lost": None,
+        "done": "reg.example/agents/runtime:v8",
+    }
+    assert sorted(github.reads) == ["acme/clio", "acme/lost", "acme/ward"]
+
+    with session_factory() as s:
+        assert backfill_built_runtime(s, github) == {"filled": 0, "skipped": 1, "no_repo": 0}
+    assert github.reads[3:] == ["acme/lost"]
+
+
 def test_patch_runtime_refuses_an_image_this_org_does_not_run(session_factory__api_runtime, config__api_runtime):
     """Data integrity: Patch runtime refuses an image this org does not run."""
     client = _make_client__api_runtime(session_factory__api_runtime, config__api_runtime)
