@@ -1230,7 +1230,10 @@ export type AdminIntegration = {
     /** Google Cloud (kobo#390): a project row names its project; a folder or organization
      * row its `parent_resource`; a project that serves the room's models carries `models`. */
     project?: string; project_number?: string; parent_resource?: string;
-    models?: { provider: string; location: string };
+    /** A cloud's provider and location, or a Self-hosted row's models as its probe left them (kobo#390). */
+    models?: { provider: string; location: string } | SelfHostedModel[];
+    /** Self-hosted models (kobo#390): the endpoint's root (with /v1) and the options sent with every request. */
+    base_url?: string; options?: Record<string, unknown>;
     /** `access`: held by the permission service, never made here. `deployment`: an older
      * install's deployment config stands behind it (kobo#377); Replace moves it into the room. */
     source?: "access" | "deployment";
@@ -1242,10 +1245,13 @@ export type AdminIntegration = {
   updated_at: string;
 };
 
+/** One model of a Self-hosted models row (kobo#390): named by the person, with the probe's verdict. */
+export type SelfHostedModel = { name: string; label: string; ok: boolean; reason: string | null };
+
 export type AdminConnectIntegration = {
   vendor: string;
   name: string;
-  auth?: "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "gcp_parent" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token";
+  auth?: "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "gcp_parent" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token" | "self_hosted_endpoint";
   identity?: Record<string, string>;
   secrets?: Record<string, string>;
   base_access: "read" | "write";
@@ -1381,6 +1387,21 @@ export type OrgAccountsCheck = {
 export async function checkOrgAccounts(integrationId: string): Promise<OrgAccountsCheck> {
   const res = await fetch(`/api/admin/integrations/${encodeURIComponent(integrationId)}/accounts/check`, { method: "POST" });
   return parse<OrgAccountsCheck>(res);
+}
+
+/** Check models on a Self-hosted models row (kobo#390): the connect probe again. */
+export type ModelsCheck = {
+  id: string;
+  models: SelfHostedModel[];
+  answering: number;
+  total: number;
+  state: "applied" | "failed";
+  detail: string | null;
+};
+
+export async function checkSelfHostedModels(integrationId: string): Promise<ModelsCheck> {
+  const res = await fetch(`/api/admin/integrations/${encodeURIComponent(integrationId)}/models/check`, { method: "POST" });
+  return parse<ModelsCheck>(res);
 }
 
 export async function fetchOrgAccounts(integrationId: string): Promise<OrgAccount[]> {

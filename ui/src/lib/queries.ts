@@ -288,6 +288,7 @@ import {
   uploadTooling,
   type Whoami,
   checkOrgAccounts,
+  checkSelfHostedModels,
   type OrgAccountsCheck,
 } from "./api";
 import { detailRefetchInterval, listRefetchInterval } from "./status";
@@ -596,6 +597,16 @@ export function checkOrgAccountsMutation(queryClient: QueryClient) {
     onSuccess: (_out: OrgAccountsCheck, integrationId: string) => {
       queryClient.invalidateQueries({ queryKey: ["admin", "integrations"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "integrations", integrationId, "accounts"] });
+    },
+  };
+}
+
+export function checkSelfHostedModelsMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: (integrationId: string) => checkSelfHostedModels(integrationId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "integrations"] });
+      queryClient.invalidateQueries({ queryKey: ["catalog", "models"] });
     },
   };
 }

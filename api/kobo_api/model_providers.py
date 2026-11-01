@@ -19,6 +19,15 @@ at connect, at disconnect and at boot. A gateway that fails a write leaves
 the provider connected, with the row's `state_detail` saying the gateway did
 not take its models.
 
+A Self-hosted models row (kobo#390, `kobo_api.self_hosted`) is the one
+provider that is only models: its spec carries `base_url`, `options` and
+`models = [{name, label, ok, reason}]` as the connect probe left them, and
+it contributes one deployment per answering model, `model_name` `<row
+slug>-<model slug>`, `model_info.id` `<row id>:<model name>`, LiteLLM's
+`openai/` route at the endpoint with the row's key (read back from the
+room's Secret) and its options as `extra_body`. The catalogue lists them
+under the row's name; the org's `models:` list is untouched.
+
 With the gateway off (`models_gateway_url` empty) nothing in this module is
 reached: the catalogue route answers from `models:` as it always has.
 """
@@ -28,6 +37,7 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -35,7 +45,7 @@ from typing import Any
 import yaml
 from sqlalchemy.orm import Session
 
-from kobo_api import admin_store
+from kobo_api import admin_store, self_hosted
 from kobo_api.clients import (
     ClientError,
     Clients,
@@ -55,7 +65,7 @@ log = logging.getLogger(__name__)
 
 # The provider kinds the room knows, keyed by the prefix of a catalogue
 # entry's id, and what the picker calls the cloud behind each.
-PROVIDER_LABELS: dict[str, str] = {"vertex_ai": "Google Cloud"}
+PROVIDER_LABELS: dict[str, str] = {"vertex_ai": "Google Cloud", self_hosted.VENDOR: self_hosted.LABEL}
 
 # What the picker says under a model nobody serves, and under every model
 # when the gateway itself does not answer.
@@ -84,27 +94,55 @@ def gateway_on(config: Config) -> bool:
 
 @dataclass(frozen=True)
 class Provider:
-    """One connected provider: the integration row that carries it."""
+    """One connected provider: the integration row that carries it. A cloud
+    provider has a `project` and `location`; a self-hosted one has the
+    endpoint's `base_url`, its `options`, the `models` the probe left on
+    the row and, when the endpoint takes a key, the `credential_ref` the
+    room reads it back from."""
 
     row_id: str
     name: str
     provider: str
-    project: str
-    location: str
+    project: str = ""
+    location: str = ""
+    base_url: str = ""
+    options: dict[str, Any] = field(default_factory=dict)
+    models: tuple[dict[str, Any], ...] = ()
+    credential_ref: str | None = None
+
+    @property
+    def self_hosted(self) -> bool:
+        return self.provider == self_hosted.VENDOR
+
+    @property
+    def answering(self) -> list[dict[str, Any]]:
+        """The self-hosted models the probe found answering; the failed ones
+        stay on the row and never reach the gateway."""
+        return [m for m in self.models if m.get("ok") and m.get("name")]
 
 
 def providers_from_rows(rows: list[AdminIntegration]) -> list[Provider]:
     """The providers among the room's integration rows: a connected
-    (`applied`) row whose spec carries `models`. A failed row serves
-    nothing, which is what its state already says."""
+    (`applied`) row whose spec carries `models`, as a cloud's `{provider,
+    location}` or a self-hosted row's list. A failed row serves nothing,
+    which is what its state already says."""
     out: list[Provider] = []
     for row in rows:
         if row.state != admin_store.STATE_APPLIED:
             continue
         spec = row.spec or {}
-        models = spec.get("models") or {}
+        models = spec.get("models")
+        if spec.get("auth") == self_hosted.AUTH and isinstance(models, list):
+            out.append(Provider(
+                row_id=row.id, name=row.name, provider=self_hosted.VENDOR,
+                base_url=str(spec.get("base_url") or ""), options=dict(spec.get("options") or {}),
+                models=tuple(m for m in models if isinstance(m, dict)), credential_ref=row.credential_ref,
+            ))
+            continue
+        if not isinstance(models, dict):
+            continue
         provider = models.get("provider")
-        if provider not in PROVIDER_LABELS:
+        if provider not in PROVIDER_LABELS or provider == self_hosted.VENDOR:
             continue
         out.append(Provider(
             row_id=row.id, name=row.name, provider=provider,
@@ -125,9 +163,13 @@ def gateway_model_name(entry: ModelChoice) -> str:
 
 
 def gateway_model_for(config: Config, model_id: str) -> str:
-    """The gateway name of the catalogue entry `model_id`. An id no longer
-    in the list (an agent created under an older catalogue) is named from
-    the id itself, so a compose never fails on a stale row."""
+    """The gateway name of the catalogue entry `model_id`. A self-hosted id
+    (`self-hosted/<row>/<name>`) names its gateway model by itself. An id no
+    longer in the list (an agent created under an older catalogue) is named
+    from the id itself, so a compose never fails on a stale row."""
+    own = self_hosted.split_catalogue_id(model_id)
+    if own is not None:
+        return self_hosted.gateway_model_name(*own)
     for entry in config.models:
         if entry.id == model_id:
             return gateway_model_name(entry)
@@ -145,9 +187,25 @@ class Desired:
     provider: Provider
 
 
-def desired_models(config: Config, providers: list[Provider]) -> list[Desired]:
+def desired_models(config: Config, providers: list[Provider], keys: dict[str, str | None] | None = None) -> list[Desired]:
+    """One `Desired` per (provider, model). A cloud provider serves the
+    org's entries with its prefix; a self-hosted provider serves the models
+    its probe found answering, with its key from `keys` (by row id; absent
+    means the endpoint takes none)."""
     out: list[Desired] = []
     for provider in providers:
+        if provider.self_hosted:
+            key = (keys or {}).get(provider.row_id)
+            for model in provider.answering:
+                name = str(model["name"])
+                entry = ModelChoice(id=self_hosted.catalogue_id(provider.row_id, name), label=str(model.get("label") or name))
+                out.append(Desired(
+                    gateway_id=f"{provider.row_id}:{name}", model_name=self_hosted.gateway_model_name(provider.row_id, name),
+                    litellm_params=self_hosted.litellm_params(
+                        model_name=name, base_url=provider.base_url, api_key=key, options=provider.options),
+                    entry=entry, provider=provider,
+                ))
+            continue
         for entry in config.models:
             if provider_of(entry.id) != provider.provider:
                 continue
@@ -191,13 +249,33 @@ class SyncResult:
         return f"{text}; {self.failure}" if self.failure else text
 
 
-def sync_gateway(gateway: ModelsGatewayClient, config: Config, rows: list[AdminIntegration]) -> SyncResult:
+KeyReader = Callable[[Provider], str | None]
+
+
+def sync_gateway(gateway: ModelsGatewayClient, config: Config, rows: list[AdminIntegration],
+                 *, key_reader: KeyReader | None = None) -> SyncResult:
     """Make the gateway hold exactly the desired set: add what is missing,
     delete what the room wrote and no longer wants, leave the rest. One
     failed call is recorded and the others still run, so a gateway that
-    refuses one model does not keep the others off."""
+    refuses one model does not keep the others off. A self-hosted row's key
+    comes through `key_reader`; a row whose key cannot be read is left as
+    it is on the gateway (nothing added, nothing deleted) with the failure
+    recorded, never registered with the wrong key."""
     result = SyncResult()
-    desired = {d.gateway_id: d for d in desired_models(config, providers_from_rows(rows))}
+    providers = providers_from_rows(rows)
+    keys: dict[str, str | None] = {}
+    skipped: set[str] = set()
+    for provider in providers:
+        if not provider.self_hosted or not provider.credential_ref:
+            continue
+        try:
+            keys[provider.row_id] = key_reader(provider) if key_reader is not None else None
+            if keys[provider.row_id] is None:
+                raise ClientError("this room has no reader for its Secrets")
+        except ClientError as exc:
+            skipped.add(provider.row_id)
+            result.failure = f"the key for {provider.name} could not be read: {exc}"
+    desired = {d.gateway_id: d for d in desired_models(config, [p for p in providers if p.row_id not in skipped], keys)}
     try:
         current = gateway.list_models()
     except ClientError as exc:
@@ -219,6 +297,8 @@ def sync_gateway(gateway: ModelsGatewayClient, config: Config, rows: list[AdminI
     for gateway_id in sorted(current_ids):
         if not gateway_id or gateway_id in desired or not _ours(gateway_id):
             continue
+        if gateway_id.split(":", 1)[0] in skipped:
+            continue
         try:
             gateway.delete_model(gateway_id)
             result.deleted.append(gateway_id)
@@ -236,8 +316,13 @@ def sync_from_session(session: Session, clients: Clients | None, config: Config)
         return None
     session.flush()
     rows = admin_store.list_integrations(session)
+    kubectl = getattr(clients, "kubectl", None) if clients is not None else None
+
+    def read_key(provider: Provider) -> str | None:
+        return self_hosted.read_key(kubectl, provider.credential_ref)
+
     try:
-        result = sync_gateway(gateway, config, rows)
+        result = sync_gateway(gateway, config, rows, key_reader=read_key)
     except Exception as exc:  # noqa: BLE001 - the filler must never fail a connect or a boot
         log.warning("model gateway: the sync did not run: %s", exc)
         return SyncResult(failure=f"the model gateway sync did not run: {exc}")
@@ -273,6 +358,20 @@ def catalogue(config: Config, rows: list[AdminIntegration], gateway: ModelsGatew
             "gateway_model": gateway_model_name(entry),
             "available": reason is None, "reason": reason,
         })
+    # A self-hosted row's answering models, under the row's own name. A model
+    # the probe marked failed stays on the Integrations row and is not offered.
+    for provider in providers:
+        if not provider.self_hosted:
+            continue
+        for model in provider.answering:
+            name = str(model["name"])
+            models.append({
+                "id": self_hosted.catalogue_id(provider.row_id, name), "label": str(model.get("label") or name),
+                "family": None, "tier": None,
+                "provider": self_hosted.VENDOR, "provider_label": provider.name,
+                "gateway_model": self_hosted.gateway_model_name(provider.row_id, name),
+                "available": ready, "reason": None if ready else REASON_GATEWAY_DOWN,
+            })
     default = next((m["id"] for m in models if m["available"]), None)
     return {"models": models, "default": default, "gateway": True}
 

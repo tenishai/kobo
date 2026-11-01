@@ -18,10 +18,12 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from kobo_api import admin_integrations, admin_store, model_providers, self_hosted
 from kobo_api.clients import (
     CabalClient,
     ChatMessage,
     ClientError,
+    Clients,
     GhCLI,
     HttpxGojiraClient,
     HttpxSlackClient,
@@ -30,6 +32,7 @@ from kobo_api.clients import (
     _build_teach_envelope,
     _post_task,
 )
+from kobo_api.config import Config
 from kobo_api.github_app import InstallationTokenProvider
 from kobo_api.liminal_admin import (
     HttpxLiminalAdminClient,
@@ -38,6 +41,7 @@ from kobo_api.liminal_admin import (
 )
 from kobo_api.sero import HttpxSeroClient
 from kobo_api.slack_setup import render_manifest
+from tests.fakes import FakeKubectl, FakeModelsGateway
 
 # --- from test_clients.py ---
 
@@ -808,3 +812,145 @@ def test_gateway_targets_go_out_as_the_stanza_and_a_plain_404_is_an_older_admin_
     answers["DELETE"] = httpx.Response(200, json={"removed": "acme-tool"})
     assert client.delete_target("acme-tool") == {"removed": "acme-tool"}
     assert captured["url"] == "http://liminal-admin.local/admin/targets/acme-tool"
+
+
+# --- the self-hosted models probe and its gateway registration (kobo#390) ----
+
+
+class SelfHostedServer:
+    """An OpenAI-compatible endpoint as `httpx.MockTransport`: `/v1/models`
+    lists what it serves, `/v1/chat/completions` answers for the models in
+    `alive` and refuses the rest with the server's own sentence. Records
+    every request so a test can read the bodies and headers it was sent."""
+
+    def __init__(self, *, alive: set[str], listed: list[str] | None = None):
+        self.alive = set(alive)
+        self.listed = listed if listed is not None else sorted(alive)
+        self.requests: list[httpx.Request] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if request.url.path.endswith("/v1/models") and request.method == "GET":
+            return httpx.Response(200, json={"object": "list", "data": [{"id": m, "object": "model"} for m in self.listed]})
+        if request.url.path.endswith("/v1/chat/completions"):
+            body = json.loads(request.content)
+            if body["model"] in self.alive:
+                return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "hi"}}]})
+            return httpx.Response(404, json={"error": {"message": f"model {body['model']!r} does not exist", "type": "NotFoundError"}})
+        return httpx.Response(404, json={"error": {"message": "no such route"}})
+
+    def client(self) -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(self.handler))
+
+    def chat_bodies(self) -> list[dict]:
+        return [json.loads(r.content) for r in self.requests if r.url.path.endswith("/chat/completions")]
+
+
+def _self_hosted_room(tmp_path):
+    config = Config(workdir=tmp_path / "work", models_gateway_url="http://models-gateway.models.svc", room_namespace="kobo")
+    gateway = FakeModelsGateway()
+    kubectl = FakeKubectl()
+    clients = Clients(github=None, gojira=None, cloud=None, agent=None, kubectl=kubectl, models_gateway=gateway)
+    return config, clients, gateway, kubectl
+
+
+def test_self_hosted_connect_probes_every_model_and_registers_only_the_answering_ones(session_factory, tmp_path, monkeypatch):
+    """Wire shape the model gateway reads (kobo#390): connecting a Self-hosted
+    models row asks the endpoint `GET /v1/models`, then one short chat
+    completion per named model carrying the row's options; the model that
+    fails is marked on the row with the server's sentence and never reaches
+    the gateway, the ones that answer are registered as `openai/<name>` at
+    the endpoint's `/v1` with the options as `extra_body`."""
+    server = SelfHostedServer(alive={"qwen3-32b", "llama-3-70b"}, listed=["qwen3-32b", "llama-3-70b", "old-model"])
+    monkeypatch.setattr(self_hosted, "http_client", server.client)
+    config, clients, gateway, _ = _self_hosted_room(tmp_path)
+    session = session_factory()
+
+    row = admin_integrations.connect(
+        session, clients, config, vendor="self-hosted", name="Lab GPU pool", base_access="read", credential="", address="",
+        trust="untrusted", actor="ops@example.com", auth="self_hosted_endpoint",
+        identity={"base_url": "http://10.0.0.5", "models": "qwen3-32b = Qwen3 32B\nllama-3-70b\nold-model",
+                  "options": "chat_template_kwargs: {enable_thinking: false}"},
+        secrets={},
+    )
+    session.commit()
+
+    # The probe: the listing, then one completion per model with the options, eight tokens.
+    assert [(r.method, r.url.path) for r in server.requests] == [
+        ("GET", "/v1/models"), ("POST", "/v1/chat/completions"), ("POST", "/v1/chat/completions"), ("POST", "/v1/chat/completions")]
+    assert [b["model"] for b in server.chat_bodies()] == ["qwen3-32b", "llama-3-70b", "old-model"]
+    assert all(b["max_tokens"] == 8 and b["chat_template_kwargs"] == {"enable_thinking": False} for b in server.chat_bodies())
+    assert "authorization" not in server.requests[0].headers
+    # The row: connected, with the verdict per model and the stale entry named.
+    assert row.state == admin_store.STATE_APPLIED
+    assert row.spec["base_url"] == "http://10.0.0.5/v1"
+    assert [(m["name"], m["label"], m["ok"]) for m in row.spec["models"]] == [
+        ("qwen3-32b", "Qwen3 32B", True), ("llama-3-70b", "llama-3-70b", True), ("old-model", "old-model", False)]
+    assert row.spec["models"][2]["reason"] == "HTTP 404: model 'old-model' does not exist"
+    assert "2 of 3 models answer; `old-model` failed: HTTP 404: model 'old-model' does not exist" in row.state_detail
+    assert row.credential_ref is None
+    # The gateway: the two answering models only, under the row's name, with the options where LiteLLM takes them.
+    assert set(gateway.models) == {"lab-gpu-pool:qwen3-32b", "lab-gpu-pool:llama-3-70b"}
+    qwen = gateway.models["lab-gpu-pool:qwen3-32b"]
+    assert qwen["model_name"] == "lab-gpu-pool-qwen3-32b"
+    assert qwen["litellm_params"] == {
+        "model": "openai/qwen3-32b", "api_base": "http://10.0.0.5/v1", "api_key": "no-auth",
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    assert qwen["model_info"] == {"provider": "self-hosted", "integration": "lab-gpu-pool", "label": "Qwen3 32B", "id": "lab-gpu-pool:qwen3-32b"}
+    # An agent's model id names its gateway model by itself.
+    assert model_providers.gateway_model_for(config, "self-hosted/lab-gpu-pool/qwen3-32b") == "lab-gpu-pool-qwen3-32b"
+    session.close()
+
+
+def test_self_hosted_connect_refuses_when_nothing_answers_and_writes_nothing(session_factory, tmp_path, monkeypatch):
+    """Nothing is written for an endpoint that does not answer, or whose
+    named models all fail (kobo#390): the connect is refused with the
+    server's sentence and no row, no Secret and no gateway model exist."""
+    server = SelfHostedServer(alive=set(), listed=["something-else"])
+    monkeypatch.setattr(self_hosted, "http_client", server.client)
+    config, clients, gateway, kubectl = _self_hosted_room(tmp_path)
+    session = session_factory()
+
+    with pytest.raises(admin_integrations.ConnectRefused, match="none of the models answered at 10.0.0.5"):
+        admin_integrations.connect(
+            session, clients, config, vendor="self-hosted", name="Lab", base_access="read", credential="", address="",
+            trust="untrusted", actor="ops@example.com", auth="self_hosted_endpoint",
+            identity={"base_url": "http://10.0.0.5", "models": "gone-model"}, secrets={"api_key": "sk-lab-secret"},
+        )
+
+    assert admin_store.list_integrations(session) == []
+    assert kubectl.secrets_applied == [] and gateway.models == {}
+    session.close()
+
+
+def test_check_models_reprobes_and_flips_a_models_state_on_the_row_and_the_gateway(session_factory, tmp_path, monkeypatch):
+    """Check models (kobo#390) runs the connect probe again: a model that
+    stopped answering is marked failed and comes off the gateway, one that
+    came back is marked ok and goes on; a row whose models all stopped
+    reads Failed and serves nothing."""
+    server = SelfHostedServer(alive={"qwen3-32b"}, listed=["qwen3-32b", "old-model"])
+    monkeypatch.setattr(self_hosted, "http_client", server.client)
+    config, clients, gateway, _ = _self_hosted_room(tmp_path)
+    session = session_factory()
+    admin_integrations.connect(
+        session, clients, config, vendor="self-hosted", name="Lab", base_access="read", credential="", address="",
+        trust="untrusted", actor="ops@example.com", auth="self_hosted_endpoint",
+        identity={"base_url": "https://models.example.internal/v1", "models": "qwen3-32b\nold-model"}, secrets={},
+    )
+    session.commit()
+    assert set(gateway.models) == {"lab:qwen3-32b"}
+
+    server.alive = {"old-model"}
+    out = admin_integrations.check_models(session, clients, config, integration_id="lab", actor="ops@example.com")
+    session.commit()
+    assert (out["answering"], out["total"], out["state"]) == (1, 2, "applied")
+    assert [(m["name"], m["ok"]) for m in out["models"]] == [("qwen3-32b", False), ("old-model", True)]
+    assert set(gateway.models) == {"lab:old-model"}
+    row = session.get(admin_integrations.AdminIntegration, "lab")
+    assert [(m["name"], m["ok"]) for m in row.spec["models"]] == [("qwen3-32b", False), ("old-model", True)]
+
+    server.alive = set()
+    gone = admin_integrations.check_models(session, clients, config, integration_id="lab", actor="ops@example.com")
+    session.commit()
+    assert gone["state"] == "failed" and gateway.models == {}
+    session.close()

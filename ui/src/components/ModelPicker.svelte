@@ -37,9 +37,12 @@
 
   const byProvider = $derived(models.some((m) => m.provider_label));
   // Tiers (2026-09-29): when the room gives any model a tier, only tiered
-  // models are offered, in tier order within each group.
+  // models are offered, in tier order within each group. A self-hosted
+  // model (kobo#390) has no tier, since nobody priced it; it is offered
+  // under its row's name whatever the room's own list does.
+  const SELF_HOSTED = "self-hosted";
   const tiered = $derived(models.some((m) => m.family && m.tier));
-  const offered = $derived(tiered ? models.filter((m) => m.family && m.tier) : models);
+  const offered = $derived(tiered ? models.filter((m) => (m.family && m.tier) || m.provider === SELF_HOSTED) : models);
 
   type Group = { name: string; models: CatalogModel[] };
   const groups = $derived.by((): Group[] => {
@@ -66,7 +69,7 @@
   });
 
   function rowLabel(model: CatalogModel): string {
-    if (!tiered) {
+    if (!tiered || !model.tier) {
       return model.label;
     }
     return byProvider ? `${model.family}, ${tierLabel(model.tier)}` : tierLabel(model.tier);

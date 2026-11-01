@@ -748,7 +748,7 @@ class AdminConnectIntegration(BaseModel):
     # `secrets` (named values stored in the secrets service); see
     # kobo_api.admin_integrations.AUTH_KINDS.
     credential: str = Field(default="", max_length=20000)
-    auth: str = Field(default="token", pattern="^(token|api_keys|aws_role|aws_hub|aws_spoke|gcp_identity|gcp_parent|azure_federated|datadog_service_account|github_app|slack_config_token)$")
+    auth: str = Field(default="token", pattern="^(token|api_keys|aws_role|aws_hub|aws_spoke|gcp_identity|gcp_parent|azure_federated|datadog_service_account|github_app|slack_config_token|self_hosted_endpoint)$")
     identity: dict[str, str] = Field(default_factory=dict)
     secrets: dict[str, str] = Field(default_factory=dict)
     address: str = Field(default="", max_length=500)
@@ -4356,6 +4356,27 @@ def create_app(
         except ClientError as exc:
             session.rollback()
             return _bab_refused(exc)
+        session.commit()
+        return JSONResponse(found)
+
+    @app.post("/api/admin/integrations/{integration_id}/models/check")
+    def admin_check_models(
+        integration_id: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Check models on a Self-hosted models row (kobo#390): the connect probe again,
+        one short answer asked of each named model; the verdict per model replaces the
+        row's and the model gateway follows."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        actor = getattr(request.state, "iap_email", None) or "operator"
+        try:
+            found = admin_integrations_flow.check_models(
+                session, app.state.clients, app.state.config, integration_id=integration_id, actor=actor
+            )
+        except (admin_integrations_flow.ConnectRefused, admin_store.AdminStoreError) as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=409)
         session.commit()
         return JSONResponse(found)
 
