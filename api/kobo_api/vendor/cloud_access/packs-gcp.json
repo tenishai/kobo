@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "_comment": "Google Cloud role packs (kobo#390). The inventory pack is every viewer role the permission service's gcp_*_read catalogue rows name in extra.roles: what an agent granted a read permission on a project may be leased. The models pack is what lets the project's Vertex AI models serve the room. Granted to the permission service's identity on a project, folder or organization; no key is made anywhere.",
+  "packs": [
+    {
+      "id": "inventory",
+      "purpose": "See what exists: resources, configuration and settings across services. Never the data a service holds.",
+      "required": true,
+      "roles": [
+        "roles/artifactregistry.reader",
+        "roles/bigquery.metadataViewer",
+        "roles/bigquery.resourceViewer",
+        "roles/billing.viewer",
+        "roles/browser",
+        "roles/cloudasset.viewer",
+        "roles/cloudfunctions.viewer",
+        "roles/cloudkms.viewer",
+        "roles/cloudsql.viewer",
+        "roles/compute.viewer",
+        "roles/container.viewer",
+        "roles/dataflow.viewer",
+        "roles/dns.reader",
+        "roles/iam.securityReviewer",
+        "roles/logging.viewer",
+        "roles/monitoring.viewer",
+        "roles/networkmanagement.viewer",
+        "roles/pubsub.viewer",
+        "roles/redis.viewer",
+        "roles/run.viewer",
+        "roles/secretmanager.viewer",
+        "roles/securitycenter.findingsViewer",
+        "roles/serviceusage.serviceUsageViewer",
+        "roles/spanner.viewer",
+        "roles/storage.bucketViewer"
+      ]
+    },
+    {
+      "id": "models",
+      "purpose": "Use the project's Vertex AI models as the room's models, so agents think with them.",
+      "required": false,
+      "roles": [
+        "roles/aiplatform.user"
+      ]
+    }
+  ]
+}

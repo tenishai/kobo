@@ -122,6 +122,22 @@ describe("AdminPanel", () => {
     checked: true,
   };
 
+  // The Connect Google Cloud page (kobo#390): the identity to grant and the roles three ways.
+  const GCP_SETUP = {
+    version: "v0.2.0 0503b5b", mode: "project", principal: "access",
+    identity: { email: "access@example.iam.gserviceaccount.com", subject: "102000000000000000000" },
+    identity_note: null,
+    packs: [
+      { id: "inventory", purpose: "See what exists.", required: true, roles: ["roles/compute.viewer"] },
+      { id: "models", purpose: "Use the project's Vertex AI models.", required: false, roles: ["roles/aiplatform.user"] },
+    ],
+    chosen: ["inventory"], roles: ["roles/compute.viewer"], target: "",
+    gcloud: "gcloud projects add-iam-policy-binding <project id> --member=serviceAccount:access@example.iam.gserviceaccount.com --role=roles/compute.viewer",
+    terraform: 'resource "google_project_iam_member" "kobo_access" {}',
+    vertex_default_location: "us-east5",
+    checked: true,
+  };
+
   beforeEach(() => {
     vi.unstubAllGlobals();
     stubFetch({
@@ -130,6 +146,7 @@ describe("AdminPanel", () => {
       "/api/admin/room": { org_repo: "example/kobo-config", runtime_image: "registry/daedalus-runtime@sha256:789b43aa", cluster: "agents-dev", delivery_backend: "deployed" },
       // Listed before the integrations list: the stub matches by substring, first wins.
       "/api/admin/integrations/aws/setup": AWS_SETUP,
+      "/api/admin/integrations/gcp/setup": GCP_SETUP,
       "/api/admin/integrations": { integrations: [GITHUB_FROM_DEPLOYMENT] },
       "/api/admin/roles": ROLES,
       "/api/admin/connections": CONNECTIONS,
@@ -277,6 +294,35 @@ describe("AdminPanel", () => {
     expect(screen.getByRole("button", { name: "Connect" })).toBeTruthy();
     expect(screen.queryByLabelText(/token/i)).toBeNull();
     expect(document.querySelector("#integration-form input[type=password]")).toBeNull();
+  });
+
+  it("Google Cloud is its own sheet: the identity to grant, the roles three ways, then a project and its Vertex AI models", async () => {
+    // kobo#390. No key anywhere: the form submits the project under `gcp_identity`, with
+    // the models fields when the Vertex AI box is ticked.
+    navigate({ page: "admin", pane: "integrations" });
+    renderWithClient(AdminPanel);
+    await fireEvent.click(await screen.findByRole("button", { name: "Add integration" }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Add Google Cloud" }));
+    expect(await screen.findByRole("heading", { name: "Connect Google Cloud" })).toBeTruthy();
+    expect(await screen.findByText("access@example.iam.gserviceaccount.com")).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /A project/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: /A folder or organization/ })).toBeTruthy();
+    for (const method of [/gcloud/, /Terraform/, /By hand/]) expect(screen.getByRole("radio", { name: method })).toBeTruthy();
+    expect(screen.getByText(/gcloud projects add-iam-policy-binding/)).toBeTruthy();
+    expect(document.querySelector("#integration-form input[type=password]")).toBeNull();
+    await fireEvent.input(screen.getByLabelText("Name for this connection"), { target: { value: "Example prod" } });
+    await fireEvent.input(screen.getByLabelText("Project id"), { target: { value: "example-prod-1234" } });
+    await fireEvent.click(screen.getByLabelText(/Vertex AI models in the room/));
+    const location = (await screen.findByLabelText("Location")) as HTMLInputElement;
+    expect(location.value).toBe("us-east5");
+    await fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    const post = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url) === "/api/admin/integrations" && init?.method === "POST");
+    expect(post).toBeTruthy();
+    const body = JSON.parse(String(post?.[1]?.body));
+    expect(body.vendor).toBe("gcp");
+    expect(body.auth).toBe("gcp_identity");
+    expect(body.identity).toEqual({ project: "example-prod-1234", models_provider: "vertex_ai", models_location: "us-east5" });
+    expect(body.secrets).toEqual({});
   });
 
   it("People reads the real lists and the real queue", async () => {

@@ -747,7 +747,7 @@ class AdminConnectIntegration(BaseModel):
     # `secrets` (named values stored in the secrets service); see
     # kobo_api.admin_integrations.AUTH_KINDS.
     credential: str = Field(default="", max_length=20000)
-    auth: str = Field(default="token", pattern="^(token|api_keys|aws_role|aws_hub|aws_spoke|gcp_identity|azure_federated|datadog_service_account|github_app|slack_config_token)$")
+    auth: str = Field(default="token", pattern="^(token|api_keys|aws_role|aws_hub|aws_spoke|gcp_identity|gcp_parent|azure_federated|datadog_service_account|github_app|slack_config_token)$")
     identity: dict[str, str] = Field(default_factory=dict)
     secrets: dict[str, str] = Field(default_factory=dict)
     address: str = Field(default="", max_length=500)
@@ -4293,9 +4293,28 @@ def create_app(
         except admin_integrations_flow.ConnectRefused as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
 
+    @app.get("/api/admin/integrations/gcp/setup")
+    def admin_gcp_setup(request: Request, packs: str = "", integration: str = "gcp", mode: str = "project",
+                        target: str = "") -> JSONResponse:
+        """The Connect Google Cloud page (kobo#390): the permission service's identity to
+        grant, the packs, and the roles bound three ways (gcloud, Terraform, the list)."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        wanted = [p.strip() for p in packs.split(",") if p.strip()]
+        safe_id = re.sub(r"[^a-z0-9-]", "", integration.lower())[:64] or "gcp"
+        safe_target = re.sub(r"[^a-z0-9/-]", "", target.strip().lower())[:80]
+        try:
+            return JSONResponse(admin_integrations_flow.gcp_setup(
+                app.state.clients, integration_id=safe_id, packs=wanted, actor=_bab_actor(request),
+                mode=mode, target=safe_target))
+        except admin_integrations_flow.ConnectRefused as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+
     @app.get("/api/admin/integrations/{integration_id}/accounts")
     def admin_org_accounts(integration_id: str, request: Request) -> JSONResponse:
-        """An AWS organization's accounts as its hub sees them, each connected or not."""
+        """An AWS organization's accounts as its hub sees them, or a Google Cloud folder's
+        or organization's projects (kobo#390), each connected or not."""
         blocked = _admin_panel_gate(request)
         if blocked is not None:
             return blocked
@@ -4312,7 +4331,8 @@ def create_app(
         integration_id: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
         """Check an organization\'s accounts through its hub and connect the ones that
-        carry the spoke role (#275). Run at connect time and from the Integrations pane."""
+        carry the spoke role (#275), or a Google Cloud folder's projects and connect the ones
+        the identity can read (kobo#390). Run at connect time and from the Integrations pane."""
         blocked = _admin_panel_gate(request)
         if blocked is not None:
             return blocked

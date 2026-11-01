@@ -53,6 +53,18 @@ permission service on goes on to the service's Secret, the probe and the two
 MCP targets as before (`spec.room_only` marks a row made without it).
 Neither has a "service" row any more; both are added, replaced and removed
 like every other connection.
+
+Google Cloud (kobo#390) is the second cloud through the permission service and
+the simplest: no role to create, no trust to federate. The service's own
+service account is granted the role pack directly on a project (the common
+case, `gcp_identity`) or on a folder or organization (`gcp_parent`, the AWS
+hub's shape: the projects under it the identity can read connect under it,
+`register_accounts`). The service probes the project before anything is
+written (`POST /probe/gcp`); the row is held there with the read ceiling, and
+nothing goes to the gateway. A project may also serve the room's models: with
+the Vertex AI box ticked the row's spec carries `models = {provider:
+"vertex_ai", location}` and the probe checks the identity reaches Vertex AI
+there; the room's model gateway (the next lane) reads that spec.
 """
 
 from __future__ import annotations
@@ -103,7 +115,11 @@ AUTH_KINDS = {
     # the hub assumes with an external id. Never an assume across organizations.
     "aws_hub": "an AWS organization: the hub role in its management account",
     "aws_spoke": "an AWS account under a connected organization: the role its hub assumes",
-    "gcp_identity": "workload identity, optionally impersonating a service account",
+    # Google Cloud (kobo#390): the permission service's own identity, granted the role pack
+    # directly on a project (optionally acting as a narrower service account there), or on
+    # a folder or organization whose readable projects then connect under it.
+    "gcp_identity": "a Google Cloud project the permission service's identity is granted on, optionally acting as a service account",
+    "gcp_parent": "a Google Cloud folder or organization: the projects under it the identity can read connect under it",
     "azure_federated": "an app registration federated to the gateway's identity",
     # Datadog through the permission service (kobo#322): the room holds the service
     # account's API key and a management application key (scoped to
@@ -179,6 +195,20 @@ _AWS_ACCOUNT_ID = re.compile(r"^\d{12}$")
 _AWS_ROLE_ARN = re.compile(r"^arn:aws:iam::\d{12}:role/[\w+=,.@/-]+$")
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _GUID = re.compile(r"^[0-9a-fA-F-]{32,36}$")
+GCP_AUTH = "gcp_identity"
+GCP_PARENT_AUTH = "gcp_parent"
+GCP_AUTHS = frozenset({GCP_AUTH, GCP_PARENT_AUTH})
+# A project id as Google issues them: 6 to 30 characters, lowercase letter first, letters,
+# digits and hyphens, no trailing hyphen. A parent is `folders/<number>` or `organizations/<number>`.
+_GCP_PROJECT = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+_GCP_PARENT = re.compile(r"^(folders|organizations)/\d+$")
+# A Vertex AI location: a region (`us-east5`, `europe-west4`) or `global`.
+_GCP_LOCATION = re.compile(r"^(global|[a-z]+-[a-z]+\d+)$")
+# The one model provider a Google Cloud project offers the room (kobo#390), and where its
+# models are served from unless the person says otherwise.
+MODELS_PROVIDER_VERTEX = "vertex_ai"
+VERTEX_DEFAULT_LOCATION = "us-east5"
+VERTEX_GLOBAL = "global"
 
 
 def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> None:
@@ -200,10 +230,21 @@ def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> 
             raise ConnectRefused("an AWS account needs the ARN of the role its organization's hub assumes")
         if not _AWS_ACCOUNT_ID.match(identity.get("account_id", "").strip()):
             raise ConnectRefused("an AWS account needs its 12-digit account id")
-    if auth == "gcp_identity":
+    if auth == GCP_AUTH:
+        if not _GCP_PROJECT.match(identity.get("project", "").strip()):
+            raise ConnectRefused("Google Cloud needs the project's id: 6 to 30 lowercase letters, digits and hyphens, "
+                                 "starting with a letter (my-project-1234, not its name or number)")
         sa = identity.get("service_account", "").strip()
         if sa and not _EMAIL.match(sa):
             raise ConnectRefused("the service account to act as must be its email address")
+        provider = identity.get("models_provider", "").strip()
+        if provider and provider != MODELS_PROVIDER_VERTEX:
+            raise ConnectRefused(f"a Google Cloud project serves models through Vertex AI; {provider!r} is not a provider here")
+        location = identity.get("models_location", "").strip()
+        if provider and location and not _GCP_LOCATION.match(location):
+            raise ConnectRefused(f"{location!r} is not a Vertex AI location; a region such as {VERTEX_DEFAULT_LOCATION}, or global")
+    if auth == GCP_PARENT_AUTH and not _GCP_PARENT.match(identity.get("parent_resource", "").strip()):
+        raise ConnectRefused("a Google Cloud folder or organization is named folders/<number> or organizations/<number>")
     if auth == "azure_federated" and not (
         _GUID.match(identity.get("client_id", "").strip()) and _GUID.match(identity.get("tenant_id", "").strip())
     ):
@@ -997,12 +1038,16 @@ def _connect_datadog(
     return _attach_mcp_target(session, clients, config, row, detail=detail, waiting=waiting, actor=actor, label="Datadog\'s MCP server")
 
 
-def _org_or_refused(bab, parent: str, actor: str) -> dict:
-    """The connected organization an account hangs under, with its hub role."""
+_PARENT_LABEL = {"aws": "AWS organizations", "gcp": "Google Cloud folders or organizations"}
+
+
+def _org_or_refused(bab, parent: str, actor: str, vendor: str | None = "aws") -> dict:
+    """The connected organization (AWS) or folder or organization (Google Cloud) an
+    account or project hangs under. `vendor=None` takes whichever vendor's it is."""
     for i in bab.integrations(actor):
-        if i["integration"] == parent and i.get("kind") == "org":
+        if i["integration"] == parent and i.get("kind") == "org" and (vendor is None or i.get("vendor") == vendor):
             return i
-    raise ConnectRefused(f"{parent!r} is not one of the room's connected AWS organizations")
+    raise ConnectRefused(f"{parent!r} is not one of the room's connected {_PARENT_LABEL.get(vendor or '', 'organizations')}")
 
 
 def _org_hub(bab, parent: str, actor: str) -> str:
@@ -1117,6 +1162,147 @@ def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
     }
 
 
+def vertex_models_url(project: str, location: str) -> str:
+    """The one Vertex AI read the probe makes: list one publisher model in the project at
+    the location. Regional locations have their own host; `global` uses the plain one."""
+    host = "aiplatform.googleapis.com" if location == VERTEX_GLOBAL else f"{location}-aiplatform.googleapis.com"
+    return f"https://{host}/v1/projects/{project}/locations/{location}/publishers/google/models?pageSize=1"
+
+
+def gcp_setup(clients: Clients | None, *, integration_id: str, packs: list[str] | None, actor: str = "operator@room",
+              mode: str = cloud_access.GCP_PROJECT_MODE, target: str = "") -> dict[str, Any]:
+    """Everything the Connect Google Cloud page shows (kobo#390): the identity to grant
+    (the permission service's service account), the packs, and the roles bound three
+    ways: `gcloud` commands, Terraform, and the plain list. `mode` is `project` (the
+    common case) or `parent` (a folder or organization, whose readable projects connect
+    under it); `target` is the id typed so far, so the snippets read whole. The models
+    pack is a project's alone: a folder cannot serve Vertex AI."""
+    bab = _bab(clients)
+    mode = cloud_access.GCP_PARENT_MODE if mode == cloud_access.GCP_PARENT_MODE else cloud_access.GCP_PROJECT_MODE
+    identity: dict[str, str] | None = None
+    identity_note: str | None = None
+    if bab is None:
+        identity_note = "Google Cloud connects through the permission service; turn Access on first"
+    else:
+        try:
+            got = bab.identity("gcp", actor)
+            identity = {"email": str(got.get("email") or ""), "subject": str(got.get("subject") or "")}
+        except ClientError as exc:
+            identity_note = str(exc)
+    chosen = cloud_access.gcp_chosen_packs(packs)
+    if mode == cloud_access.GCP_PARENT_MODE:
+        chosen = [p for p in chosen if p != cloud_access.GCP_MODELS_PACK]
+    roles = cloud_access.gcp_roles(chosen)
+    email = (identity or {}).get("email", "")
+    return {
+        "version": cloud_access.version(),
+        "mode": mode,
+        "principal": "access",
+        "identity": identity,
+        "identity_note": identity_note,
+        "packs": cloud_access.gcp_packs(),
+        "chosen": chosen,
+        "roles": roles,
+        "target": target,
+        "gcloud": cloud_access.gcloud_snippet(email, target, roles, mode),
+        "terraform": cloud_access.gcp_terraform_snippet(email, target, roles, mode),
+        "vertex_default_location": VERTEX_DEFAULT_LOCATION,
+        "checked": bab is not None,
+    }
+
+
+def _connect_gcp(
+    session: Session, clients: Clients | None, config: Config, bab, *, vendor: str, name: str, base_access: str,
+    trust: str, actor: str, auth: str, identity: dict[str, str],
+) -> AdminIntegration:
+    """Google Cloud through the permission service (kobo#390), the AWS shape without
+    the role: the service's own identity is granted on the project, so the probe is
+    the service reading the project (and, with models ticked, Vertex AI there), and
+    nothing is written until it does. A folder or organization is the hub shape: no
+    ceiling of its own, its readable projects connect under it. Leases come from the
+    service; the gateway has nothing to learn."""
+    if bab is None:
+        raise ConnectRefused("Google Cloud connects through the permission service; turn Access on first")
+    row_id = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")[:64]
+    base_spec: dict[str, Any] = {
+        "address": "", "trust": trust if trust in ("trusted", "untrusted") else "untrusted", "auth": auth, "secret_keys": [],
+    }
+    if auth == GCP_PARENT_AUTH:
+        parent_resource = identity["parent_resource"]
+        spec = {**base_spec, "kind": "org", "parent_resource": parent_resource, "identity": {"parent_resource": parent_resource}}
+        row = admin_store.put_integration(
+            session, vendor=vendor, name=name, base_access=base_access, spec=spec, credential_ref=None, actor=actor,
+            integration_id=row_id,
+        )
+        detail = f"{parent_resource} is held as a {parent_resource.split('/', 1)[0][:-1]} in the permission service"
+        try:
+            # Nothing is granted on a folder or organization; its projects carry the ceilings.
+            bab.put_integration(row.id, vendor, {"parent_resource": parent_resource, "name": name}, [], actor)
+        except ClientError as exc:
+            admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED,
+                                              detail=f"{detail}; the permission service refused: {exc}")
+            return row
+        try:
+            found = register_accounts(session, clients, config, org_id=row.id, actor=actor)
+            detail += (f"; {len(found['connected'])} project(s) the identity can read are connected, "
+                       f"{len(found['without_role'])} it cannot read yet")
+        except ClientError as exc:
+            detail += f"; its projects could not be checked yet: {exc}"
+        admin_store.set_integration_state(session, row.id, state=admin_store.STATE_APPLIED, detail=detail)
+        return row
+
+    project = identity["project"]
+    service_account = identity.get("service_account") or None
+    parent_id = identity.get("parent") or None
+    if parent_id:
+        _org_or_refused(bab, parent_id, actor, vendor="gcp")
+    models: dict[str, str] | None = None
+    if identity.get("models_provider") == MODELS_PROVIDER_VERTEX:
+        models = {"provider": MODELS_PROVIDER_VERTEX, "location": identity.get("models_location") or VERTEX_DEFAULT_LOCATION}
+    body: dict[str, Any] = {"project": project, "service_account": service_account}
+    if models:
+        # The probe reaches Vertex AI at the location too, with the identity's own token;
+        # the service does the read, since the token is its to mint, never the room's.
+        body["vertex_location"] = models["location"]
+        body["vertex_url"] = vertex_models_url(project, models["location"])
+    try:
+        probe = bab.probe("gcp", actor, what=f"the project {project}", **body)
+    except ClientError as exc:
+        raise ConnectRefused(f"{exc}; grant the room's identity the roles on this page on the project and connect again") from exc
+    spec = {
+        **base_spec,
+        "kind": "account", "project": project,
+        "identity": {k: v for k, v in identity.items() if k in ("project", "service_account", "parent")},
+    }
+    if probe.get("project_number"):
+        spec["project_number"] = str(probe["project_number"])
+    if parent_id:
+        spec["parent"] = parent_id
+    if models:
+        spec["models"] = models
+    row = admin_store.put_integration(
+        session, vendor=vendor, name=name, base_access=base_access, spec=spec, credential_ref=None, actor=actor,
+        integration_id=row_id,
+    )
+    detail = f"Google Cloud agreed: the permission service reached project {project}"
+    if probe.get("project_number"):
+        detail += f" (number {probe['project_number']})"
+    detail += f" as {probe.get('subject') or 'its identity'}" + (f", acting as {service_account}" if service_account else "")
+    if models:
+        detail += (f"; Vertex AI answers at {models['location']}, so its models serve the room" if probe.get("vertex")
+                   else f"; Vertex AI at {models['location']} was not checked by the permission service, the models are taken at their word")
+    try:
+        bab.put_integration(row.id, vendor, {"project": project, "service_account": service_account, "name": name},
+                            bab_mod.read_permissions(bab, vendor, actor), actor, parent=parent_id)
+    except ClientError as exc:
+        admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED,
+                                          detail=f"{detail}; the permission service refused: {exc}")
+        return row
+    detail += "; connected in the permission service, agents may ask for its read permissions"
+    admin_store.set_integration_state(session, row.id, state=admin_store.STATE_APPLIED, detail=detail)
+    return row
+
+
 def connect(
     session: Session,
     clients: Clients | None,
@@ -1152,6 +1338,9 @@ def connect(
     if auth == GITHUB_AUTH:
         return _connect_github(session, clients, config, bab, vendor=vendor, name=name, base_access=base_access,
                                address=address, trust=trust, actor=actor, identity=identity, secrets=secrets)
+    if auth in GCP_AUTHS:
+        return _connect_gcp(session, clients, config, bab, vendor=vendor, name=name, base_access=base_access,
+                            trust=trust, actor=actor, auth=auth, identity=identity)
     probe: dict[str, str] | None = None
     hub_role_arn: str | None = None
     if auth in ("aws_hub", "aws_spoke") and bab is None:
@@ -1295,7 +1484,9 @@ def register_accounts(session: Session, clients: Clients | None, config: Config,
     bab = _bab(clients)
     if bab is None:
         raise ConnectRefused("checking an organization\'s accounts needs the permission service")
-    org = _org_or_refused(bab, org_id, actor)
+    org = _org_or_refused(bab, org_id, actor, vendor=None)
+    if org.get("vendor") == "gcp":
+        return _register_projects(session, bab, org_id=org_id, actor=actor)
     # An organization connected before external ids were per organization has none in
     # the permission service; give it its id now (the same derivation the set-up page
     # shows), so discover can probe its accounts. Its spoke rows keep their own ids.
@@ -1333,6 +1524,49 @@ def register_accounts(session: Session, clients: Clients | None, config: Config,
             session, row.id, state=admin_store.STATE_APPLIED,
             detail="found through the organization\'s hub: the account carries the role; connected in the permission service, "
                    "agents may ask for its read permissions")
+        entry["integration"] = row.id
+        out["connected"].append(entry)
+    return out
+
+
+def _register_projects(session: Session, bab, *, org_id: str, actor: str) -> dict[str, Any]:
+    """The Google Cloud half of `register_accounts` (kobo#390): the permission service
+    lists the projects under the folder or organization and says which its identity can
+    read; those connect (a row here, a project under the parent there, the read ceiling),
+    the rest are reported under `without_role` so the page can say which still need the
+    grant. Safe to run again: connected projects are left alone."""
+    found = bab.discover_accounts(org_id, actor)
+    taken = {r.id for r in admin_store.list_integrations(session)} | {i["integration"] for i in bab.integrations(actor)}
+    ceiling: list[str] | None = None
+    out: dict[str, Any] = {"organization": org_id, "connected": [], "without_role": [], "already": []}
+    for a in found.get("accounts", []):
+        project = str(a.get("project") or a["id"])
+        entry = {"id": project, "name": a.get("name") or project, "integration": a.get("integration"), "reason": a.get("reason")}
+        if a.get("connected"):
+            out["already"].append(entry)
+            continue
+        if not a.get("reachable"):
+            out["without_role"].append(entry)
+            continue
+        base = re.sub(r"[^a-z0-9-]", "-", str(entry["name"]).lower()).strip("-")[:60] or project
+        row_id = base if base not in taken else f"{base}-{project[-4:]}"
+        taken.add(row_id)
+        if ceiling is None:
+            ceiling = bab_mod.read_permissions(bab, "gcp", actor)
+        bab.put_integration(row_id, "gcp", {"project": project, "service_account": None, "name": entry["name"]}, ceiling, actor,
+                            parent=org_id)
+        spec: dict[str, Any] = {"address": "", "trust": "untrusted", "auth": GCP_AUTH, "kind": "account", "parent": org_id,
+                                "project": project, "identity": {"parent": org_id, "project": project}, "secret_keys": []}
+        if a.get("project_number"):
+            spec["project_number"] = str(a["project_number"])
+        row = admin_store.put_integration(
+            session, vendor="gcp", name=str(entry["name"]), base_access="read", spec=spec,
+            credential_ref=None, actor=actor, integration_id=row_id,
+        )
+        admin_store.set_integration_state(
+            session, row.id, state=admin_store.STATE_APPLIED,
+            detail="found under its folder or organization: the identity can read the project; connected in the "
+                   "permission service, agents may ask for its read permissions")
         entry["integration"] = row.id
         out["connected"].append(entry)
     return out

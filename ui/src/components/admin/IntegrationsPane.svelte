@@ -1,14 +1,16 @@
 <script lang="ts">
   // What agents reach out to. With the permission service on, a cloud is an
-  // organization row (its hub role) with the accounts connected under it, and a
-  // service vendor is one connection; agents are granted permissions per account
-  // or connection under Permissions. Without it, a row is one credential served
-  // through the gateway with a lane per agent under Connections.
+  // organization row (its hub role) with the accounts connected under it, or a
+  // Google Cloud project, or a folder with its projects under it (kobo#390), and a
+  // service vendor is one connection; agents are granted permissions per account,
+  // project or connection under Permissions. Without it, a row is one credential
+  // served through the gateway with a lane per agent under Connections.
   import { untrack } from "svelte";
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import Modal from "../Modal.svelte";
   import VendorMark from "../VendorMark.svelte";
   import AwsConnect from "./AwsConnect.svelte";
+  import ConnectGoogleCloudSheet from "./ConnectGoogleCloudSheet.svelte";
   import {
     errorMessage,
     type AdminIntegration,
@@ -52,10 +54,10 @@
   const childrenOf = $derived((org: AdminIntegration) => all.filter((i) => i.spec.parent === org.id));
   const visibleRoots = $derived(roots.filter((r) => matches(r) || childrenOf(r).some(matches)));
   const connected = $derived(new Set(all.map((i) => i.vendor)));
-  // A second AWS organization is a second row, so AWS stays addable.
+  // A second AWS organization, or a second Google Cloud project, is a second row, so both stay addable.
   const addable = $derived(
     catalog
-      .filter((c) => c.id === "aws" || !connected.has(c.id))
+      .filter((c) => c.id === "aws" || c.id === "gcp" || !connected.has(c.id))
       .slice()
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })),
   );
@@ -63,7 +65,7 @@
   let catalogOpen = $state(false);
   let form = $state<{
     entry: CatalogEntry;
-    mode: "role" | "org" | "other" | "replace";
+    mode: "role" | "org" | "gcp" | "other" | "replace";
     parent: AdminIntegration | null;
     vendor: string;
     name: string;
@@ -74,6 +76,11 @@
   } | null>(null);
   let formError = $state<string | null>(null);
   let removing = $state<AdminIntegration | null>(null);
+  // The Google Cloud sheet's own choices (kobo#390): a project or a folder, and whether
+  // the project's Vertex AI models serve the room.
+  let gcpMode = $state<"project" | "parent">("project");
+  let useVertex = $state(false);
+  const VERTEX_DEFAULT_LOCATION = "us-east5";
 
   // Datadog through the permission service (kobo#327): the gateway gets Datadog's
   // hosted MCP server as a target, so the address field stays and follows the Site
@@ -117,34 +124,45 @@
     catalogOpen = false;
     formError = null;
     const entry = preset ?? OTHER;
+    gcpMode = "project";
+    useVertex = false;
     form = {
       entry,
-      mode: replacing ? "replace" : entry.id === "aws" ? "org" : "other",
+      mode: replacing ? "replace" : entry.id === "aws" ? "org" : entry.id === "gcp" ? "gcp" : "other",
       parent: null,
       vendor: entry.id,
-      name: replacing?.name || (entry.id === "aws" ? "" : entry.name),
+      name: replacing?.name || (entry.id === "aws" || entry.id === "gcp" ? "" : entry.name),
       address: entry.address ?? "",
       base_access: "read",
       trust: "untrusted",
-      // The AWS sheet binds the pasted ARN to `role_arn` whatever the catalogue field is called.
-      values: entry.id === "aws" ? { role_arn: "" } : Object.fromEntries(entry.fields.map((f) => [f.key, ""])),
+      // The AWS sheet binds the pasted ARN to `role_arn` whatever the catalogue field is called;
+      // the Google Cloud sheet owns its fields the same way.
+      values: entry.id === "aws" ? { role_arn: "" }
+        : entry.id === "gcp" ? { project: "", service_account: "", parent_resource: "", models_location: VERTEX_DEFAULT_LOCATION }
+        : Object.fromEntries(entry.fields.map((f) => [f.key, ""])),
     };
   }
 
+  // The noun under a cloud's parent row: AWS accounts, Google Cloud projects.
+  const childNoun = (i: AdminIntegration): string => (i.vendor === "gcp" ? "project" : "account");
+
   function handleCheck(org: AdminIntegration): void {
     checking = org.id;
+    const noun = childNoun(org);
     check.mutate(org.id, {
       onSuccess: (out) => {
         checked = { ...checked, [org.id]: out };
         const n = out.connected.length;
         toast.success(
-          n === 0 ? "No new accounts" : `${n} account${n === 1 ? "" : "s"} connected`,
+          n === 0 ? `No new ${noun}s` : `${n} ${noun}${n === 1 ? "" : "s"} connected`,
           out.without_role.length
-            ? `${out.without_role.length} still without the role. Deploy the template to them and check again.`
-            : "Every account the hub can see carries the role.",
+            ? (org.vendor === "gcp"
+              ? `${out.without_role.length} the identity cannot read yet. Grant it the roles there and check again.`
+              : `${out.without_role.length} still without the role. Deploy the template to them and check again.`)
+            : (org.vendor === "gcp" ? "The identity can read every project under it." : "Every account the hub can see carries the role."),
         );
       },
-      onError: (err: unknown) => toast.error("Could not check the accounts", errorMessage(err, "Try again.")),
+      onError: (err: unknown) => toast.error(`Could not check the ${noun}s`, errorMessage(err, "Try again.")),
       onSettled: () => (checking = null),
     });
   }
@@ -160,6 +178,18 @@
     if (form.mode === "org") {
       auth = "aws_hub";
       identity.hub_role_arn = (form.values.role_arn ?? "").trim();
+    } else if (form.mode === "gcp" && gcpMode === "parent") {
+      auth = "gcp_parent";
+      identity.parent_resource = (form.values.parent_resource ?? "").trim();
+    } else if (form.mode === "gcp") {
+      auth = "gcp_identity";
+      identity.project = (form.values.project ?? "").trim();
+      const sa = (form.values.service_account ?? "").trim();
+      if (sa) identity.service_account = sa;
+      if (useVertex) {
+        identity.models_provider = "vertex_ai";
+        identity.models_location = (form.values.models_location ?? "").trim() || VERTEX_DEFAULT_LOCATION;
+      }
     } else {
       for (const f of form.entry.fields) {
         const v = (form.values[f.key] ?? "").trim();
@@ -213,12 +243,17 @@
 
   const when = whenDay;
   function kindLabel(i: AdminIntegration): string {
-    if (i.spec.kind === "org") return "organization";
-    if (i.spec.kind === "account" || i.spec.parent) return "account";
-    return i.vendor === "aws" ? "account" : "connection";
+    if (i.spec.kind === "org") {
+      if (i.vendor !== "gcp") return "organization";
+      return i.spec.parent_resource?.startsWith("organizations/") ? "organization" : "folder";
+    }
+    if (i.spec.kind === "account" || i.spec.parent) return childNoun(i);
+    return i.vendor === "aws" || i.vendor === "gcp" ? childNoun(i) : "connection";
   }
+  const modelsLabel = (i: AdminIntegration): string | null =>
+    i.spec.models ? `Models: ${i.spec.models.provider === "vertex_ai" ? "Vertex AI" : i.spec.models.provider}, ${i.spec.models.location}` : null;
   const formTitle = $derived(
-    !form ? "" : form.mode === "org" ? "Connect an AWS organization" : form.mode === "replace" ? `Replace ${form.name}` : `Add ${form.name || "an integration"}`,
+    !form ? "" : form.mode === "org" ? "Connect an AWS organization" : form.mode === "gcp" ? "Connect Google Cloud" : form.mode === "replace" ? `Replace ${form.name}` : `Add ${form.name || "an integration"}`,
   );
   const fromDeployment = (i: AdminIntegration): boolean => i.spec.source === "deployment";
   const roomOwn = (i: AdminIntegration): boolean => ROOM_VENDORS.has(i.vendor) && i.spec.source !== "access";
@@ -228,9 +263,10 @@
   <div>
     <h2 id="integrations-heading" class="page__title">Integrations</h2>
     <p class="page__lead">
-      The vendors agents can reach. A cloud is an organization with the accounts connected under it;
-      a service vendor is one connection. Slack and GitHub connect the same way, and the room's own
-      needs ride the same credential. What each agent may do there is granted under Permissions.
+      The vendors agents can reach. A cloud is an organization with the accounts connected under it,
+      or a project, or a folder with its projects under it; a service vendor is one connection. Slack
+      and GitHub connect the same way, and the room's own needs ride the same credential. What each
+      agent may do there is granted under Permissions.
     </p>
   </div>
 
@@ -251,7 +287,7 @@
         </thead>
         <tbody>
           {#if all.length === 0 && !search.trim()}
-            <tr><td colspan="5"><p class="panel__empty">Nothing connected yet. Add an integration: Slack so the room can make agents' Slack apps, GitHub for the room's own pull requests, an AWS organization, or a vendor the room holds one connection to.</p></td></tr>
+            <tr><td colspan="5"><p class="panel__empty">Nothing connected yet. Add an integration: Slack so the room can make agents' Slack apps, GitHub for the room's own pull requests, an AWS organization, a Google Cloud project, or a vendor the room holds one connection to.</p></td></tr>
           {/if}
           {#each visibleRoots as i (i.id)}
             <tr>
@@ -261,6 +297,9 @@
                   <div class="who__text">
                     <span class="name">{i.name}</span>
                     {#if i.spec.address}<span class="quiet addr">{i.spec.address}</span>{/if}
+                    {#if i.spec.project}<span class="quiet addr">{i.spec.project}</span>{/if}
+                    {#if i.spec.parent_resource}<span class="quiet addr">{i.spec.parent_resource}</span>{/if}
+                    {#if modelsLabel(i)}<span class="addr">{modelsLabel(i)}</span>{/if}
                     {#if i.vendor === "slack"}<span class="quiet addr">Lets the room create agents' Slack apps.</span>{/if}
                     {#if i.vendor === "github" && i.spec.source !== "access"}<span class="quiet addr">The room's own pull requests and agent repositories{i.spec.room_only ? "" : "; what each agent may reach is picked on its Access tab"}.</span>{/if}
                     {#if i.spec.source === "access" && i.spec.kind !== "org"}<span class="quiet addr">in the permission service{i.spec.ceiling?.length ? `, ${i.spec.ceiling.length} permission${i.spec.ceiling.length === 1 ? "" : "s"} agents may ask for` : ""}</span>{/if}
@@ -283,7 +322,7 @@
               <td class="panel__cell--right">
                 {#if i.spec.kind === "org"}
                   <button type="button" class="btn btn--quiet" disabled={checking !== null} onclick={() => handleCheck(i)}>
-                    {checking === i.id ? "Checking…" : "Check accounts"}
+                    {checking === i.id ? "Checking…" : `Check ${childNoun(i)}s`}
                   </button>
                 {/if}
                 {#if i.spec.pull_request}
@@ -311,11 +350,13 @@
                     <div class="who__text">
                       <span class="name">{c.name}</span>
                       {#if c.spec.account_id}<span class="quiet addr">{c.spec.account_id}</span>{/if}
+                      {#if c.spec.project}<span class="quiet addr">{c.spec.project}</span>{/if}
+                      {#if modelsLabel(c)}<span class="addr">{modelsLabel(c)}</span>{/if}
                       {#if c.spec.ceiling?.length}<span class="quiet addr">{c.spec.ceiling.length} permission{c.spec.ceiling.length === 1 ? "" : "s"} agents may ask for</span>{/if}
                     </div>
                   </div>
                 </td>
-                <td><span class="chip">account</span></td>
+                <td><span class="chip">{childNoun(c)}</span></td>
                 <td>
                   <span class="status status--{STATE[c.state]?.tone ?? "warn"}" title={c.state_detail ?? ""}>
                     <span class="status__dot" aria-hidden="true"></span>{STATE[c.state]?.label ?? c.state}
@@ -339,14 +380,14 @@
                     </div>
                   </div>
                 </td>
-                <td><span class="chip">account</span></td>
+                <td><span class="chip">{childNoun(i)}</span></td>
                 <td>
                   <span class="status status--warn" title={w.reason ?? ""}>
-                    <span class="status__dot" aria-hidden="true"></span>No role yet
+                    <span class="status__dot" aria-hidden="true"></span>{i.vendor === "gcp" ? "Not granted yet" : "No role yet"}
                   </span>
                 </td>
                 <td class="quiet"></td>
-                <td class="panel__cell--right quiet">Deploy the template, then check again</td>
+                <td class="panel__cell--right quiet">{i.vendor === "gcp" ? "Grant the identity the roles, then check again" : "Deploy the template, then check again"}</td>
               </tr>
             {/each}
           {:else}
@@ -376,7 +417,7 @@
   </div>
 </Modal>
 
-<Modal open={form !== null} title={formTitle} size={form?.vendor === "aws" ? "wide" : "default"} onclose={() => (form = null)}>
+<Modal open={form !== null} title={formTitle} size={form?.vendor === "aws" || form?.vendor === "gcp" ? "wide" : "default"} onclose={() => (form = null)}>
   {#if form && form.mode === "org"}
     <form id="integration-form" class="form" onsubmit={submitConnect}>
       <label class="field">
@@ -385,6 +426,28 @@
       </label>
       <AwsConnect bind:roleArn={form.values.role_arn} mode="org" integration={slug(form.name) || "aws"} />
       {#if formError}<p class="page__foot fail">{formError}</p>{/if}
+    </form>
+  {:else if form && form.mode === "gcp"}
+    <form id="integration-form" class="form" onsubmit={submitConnect}>
+      <label class="field">
+        <span>Name for this connection</span>
+        <input id="integration-name" type="text" bind:value={form.name} placeholder={gcpMode === "parent" ? "e.g. example-platform" : "e.g. example-prod"} required autocomplete="off" />
+      </label>
+      <ConnectGoogleCloudSheet
+        bind:mode={gcpMode}
+        bind:project={form.values.project}
+        bind:serviceAccount={form.values.service_account}
+        bind:parentResource={form.values.parent_resource}
+        bind:useVertex
+        bind:location={form.values.models_location}
+        integration={slug(form.name) || "gcp"}
+      />
+      {#if formError}<p class="page__foot fail">{formError}</p>{/if}
+      {#if connect.isPending}
+        <p class="page__foot busy" role="status"><span class="spin" aria-hidden="true"></span>
+          {gcpMode === "parent" ? "Saving the folder, then checking its projects." : "Checking the project with Google Cloud."}
+        </p>
+      {/if}
     </form>
   {:else if form}
     <form id="integration-form" class="form" onsubmit={submitConnect}>
@@ -459,15 +522,17 @@
   {#snippet footer()}
     <button type="button" class="btn" onclick={() => (form = null)}>Cancel</button>
     <button type="submit" form="integration-form" class="btn btn--primary" disabled={connect.isPending}>
-      {#if connect.isPending}<span class="spin spin--btn" aria-hidden="true"></span>{form?.vendor === "aws" ? "Checking with AWS…" : form && SERVICE_AUTHS.has(form.entry.auth) && (form.entry.auth !== GITHUB_AUTH || accessOn) ? `Checking with ${VENDOR_OF_AUTH[form.entry.auth]}…` : "Saving…"}
-      {:else}{form?.vendor === "aws" ? "Connect" : form?.mode === "replace" ? "Replace" : "Add"}{/if}
+      {#if connect.isPending}<span class="spin spin--btn" aria-hidden="true"></span>{form?.vendor === "aws" ? "Checking with AWS…" : form?.vendor === "gcp" ? "Checking with Google Cloud…" : form && SERVICE_AUTHS.has(form.entry.auth) && (form.entry.auth !== GITHUB_AUTH || accessOn) ? `Checking with ${VENDOR_OF_AUTH[form.entry.auth]}…` : "Saving…"}
+      {:else}{form?.vendor === "aws" || form?.vendor === "gcp" ? "Connect" : form?.mode === "replace" ? "Replace" : "Add"}{/if}
     </button>
   {/snippet}
 </Modal>
 
 <Modal open={removing !== null} title={removing ? `Remove ${removing.name}?` : ""} size="narrow" onclose={() => (removing = null)}>
   <p class="page__lead">
-    {#if removing?.spec.kind === "org"}
+    {#if removing?.spec.kind === "org" && removing.vendor === "gcp"}
+      The folder or organization is removed from the permission service. Its projects must be removed first.
+    {:else if removing?.spec.kind === "org"}
       The organization is removed from the permission service. Its accounts must be removed first.
     {:else if removing?.vendor === "slack"}
       The room forgets its Slack config tokens. Agents keep the Slack apps they already have, but no new app can be connected until Slack is added again, or the deployment config carries a pair; every agent's Slack row greys out until then.

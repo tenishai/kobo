@@ -1,5 +1,6 @@
 """The cloud-access release the room ships: what an account owner gets on the
-Connect AWS page (design 2026-10-25, cloud access for integrations).
+Connect AWS page, and a project owner on the Connect Google Cloud page (design
+2026-10-25, cloud access for integrations; kobo#390 for Google Cloud).
 
 `tenishai/cloud-access` is private while the suite is, so the room does not
 link to it: a pinned release is vendored under `vendor/cloud_access/` and the
@@ -7,6 +8,13 @@ page is rendered from those bytes. The packs file is the contract (which
 read-only access each pack is); the CloudFormation template is served as is;
 the Terraform snippet points at the module source so an owner whose
 organisation can read the repo applies it from there.
+
+Google Cloud has no role to create and no trust to federate: the permission
+service's own service account is granted directly on the project, folder or
+organization (the way Wiz does it), so `packs-gcp.json` is a list of roles per
+pack and the page renders three ways to bind them to that one member: the
+`gcloud` commands, Terraform `google_*_iam_member` resources, and the plain
+list for a console.
 """
 
 from __future__ import annotations
@@ -191,3 +199,81 @@ def cloudformation_parameters(subject: str, integration_id: str, packs: list[str
     for pack, name in optional.items():
         params[name] = "Enabled" if pack in packs else "Disabled"
     return params
+
+
+# ---- Google Cloud (kobo#390) --------------------------------------------------
+
+GCP_REQUIRED_PACK = "inventory"
+GCP_MODELS_PACK = "models"
+# What a grant target is: a project id, `folders/<number>` or `organizations/<number>`.
+GCP_PROJECT_MODE = "project"
+GCP_PARENT_MODE = "parent"
+
+
+@lru_cache(maxsize=1)
+def gcp_packs() -> list[dict[str, Any]]:
+    """One entry per pack: id, purpose, required, and the roles it binds."""
+    raw = json.loads((_DIR / "packs-gcp.json").read_text())
+    return [{"id": p["id"], "purpose": p.get("purpose", ""), "required": bool(p.get("required")),
+             "roles": list(p.get("roles") or [])} for p in raw["packs"]]
+
+
+def gcp_chosen_packs(wanted: list[str] | None) -> list[str]:
+    known = [p["id"] for p in gcp_packs()]
+    picked = [p for p in (wanted or []) if p in known]
+    return [GCP_REQUIRED_PACK] + [p for p in known if p in picked and p != GCP_REQUIRED_PACK]
+
+
+def gcp_roles(packs: list[str]) -> list[str]:
+    """Every role the chosen packs bind, once each, in pack order."""
+    out: list[str] = []
+    for p in gcp_packs():
+        if p["id"] in packs:
+            out.extend(r for r in p["roles"] if r not in out)
+    return out
+
+
+def _gcp_target(target: str, mode: str) -> tuple[str, str]:
+    """`(kind, bare id)` of a grant target: a project id, or a folder's or
+    organization's number. A blank target keeps a placeholder so the snippets
+    still read whole before the person has typed one."""
+    if mode == GCP_PARENT_MODE:
+        if target.startswith("folders/"):
+            return "folder", target.split("/", 1)[1]
+        if target.startswith("organizations/"):
+            return "organization", target.split("/", 1)[1]
+        return "folder", "<folder number>"
+    return "project", target or "<project id>"
+
+
+def gcloud_snippet(email: str, target: str, roles: list[str], mode: str = GCP_PROJECT_MODE) -> str:
+    """One `add-iam-policy-binding` per role, on the project, folder or organization."""
+    kind, bare = _gcp_target(target, mode)
+    member = f"serviceAccount:{email or '<identity email>'}"
+    head = {
+        "project": f"gcloud projects add-iam-policy-binding {bare}",
+        "folder": f"gcloud resource-manager folders add-iam-policy-binding {bare}",
+        "organization": f"gcloud organizations add-iam-policy-binding {bare}",
+    }[kind]
+    return "".join(f"{head} \\\n  --member={member} --role={role} --condition=None\n" for role in roles)
+
+
+def gcp_terraform_snippet(email: str, target: str, roles: list[str], mode: str = GCP_PROJECT_MODE) -> str:
+    """`google_<kind>_iam_member` per role, from one local list, so the owner's
+    pipeline reviews the roles once and binds them to the one member."""
+    kind, bare = _gcp_target(target, mode)
+    resource = {"project": "google_project_iam_member", "folder": "google_folder_iam_member",
+                "organization": "google_organization_iam_member"}[kind]
+    where = {"project": f'project = "{bare}"', "folder": f'folder  = "folders/{bare}"', "organization": f'org_id  = "{bare}"'}[kind]
+    role_list = "\n".join(f'    "{r}",' for r in roles)
+    return (
+        "locals {\n"
+        f"  kobo_roles = [\n{role_list}\n  ]\n"
+        "}\n\n"
+        f'resource "{resource}" "kobo_access" {{\n'
+        "  for_each = toset(local.kobo_roles)\n\n"
+        f"  {where}\n"
+        "  role    = each.value\n"
+        f'  member  = "serviceAccount:{email or "<identity email>"}"\n'
+        "}\n"
+    )
