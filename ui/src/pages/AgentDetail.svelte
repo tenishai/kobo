@@ -83,7 +83,7 @@
     uploadAvatarMutation,
   } from "../lib/queries";
   import { formatHash, navigate, route } from "../lib/router.svelte";
-  import { isUpdating } from "../lib/delivery.svelte";
+  import { isRestarting, isUpdating } from "../lib/delivery.svelte";
   import { isDestroyComplete, isFrozen } from "../lib/status";
   import {
     DEFAULT_HARNESS_SECTION,
@@ -258,6 +258,16 @@
   const updating = $derived.by((): boolean => {
     void agent.data?.health?.checked_at;
     return isUpdating(name);
+  });
+
+  // Is the agent mid-restart? The cluster's own word (`health.rolling`: a
+  // change is being applied, the agent is on its way back), or a restart a
+  // panel on this page asked for (a Wakes on save, lib/delivery) that the
+  // room's check has not caught up with yet. Read as Restarting, in amber,
+  // where an outage would read Down (2026-11-01).
+  const restarting = $derived.by((): boolean => {
+    void agent.data?.health?.checked_at;
+    return agent.data?.health?.rolling === true || isRestarting(name);
   });
 
   // The hash decides, when it names a tab this agent actually has; otherwise
@@ -571,7 +581,7 @@
             <div class="agent-detail__title">
               <h1 class="agent-detail__name">{data.name}</h1>
               <span class="agent-detail__status">
-                <StatusBadge status={data.status} health={data.health} {updating} />
+                <StatusBadge status={data.status} health={data.health} {updating} {restarting} />
               </span>
               <!-- The same marker the dashboard card carries, in the same
                    words, so the two pages agree about what this agent is. -->
@@ -876,6 +886,14 @@
         <p class="waiting-banner__message">
           Updating: the changes you made are on their way. Controls come back when it lands.
         </p>
+      </div>
+    {:else if data.status === "ready" && restarting}
+      <!-- A change is being applied and the agent is on its way back: the
+           cluster's own word (`health.rolling`) or a restart this page
+           asked for (lib/delivery). An agent deploys one at a time, so it
+           is genuinely off for a minute by design; amber, not red. -->
+      <div class="waiting-banner" role="status">
+        <p class="waiting-banner__message">This agent is restarting. Back in about a minute.</p>
       </div>
     {:else if data.status === "ready" && data.health?.state === "down"}
       <!-- Setup finished, pod is not running: the cluster's own verdict

@@ -17,15 +17,17 @@
   //
   // The row's header carries an honest state once installed: Live (the
   // agent is ready and nothing is pending), Applying your change (a Wakes
-  // on save restarts the agent; the state turns Live only when the room's
-  // next health check finds it up again, lib/slackWake), or the amber note
-  // that a saved choice waits for the agent's next restart.
+  // on save restarts the agent; the state turns Live only when a health
+  // check taken after the save finds it up and not restarting, and a
+  // short settle has passed, lib/slackWake; the same words while the
+  // cluster says the agent is mid-restart for any reason), or the amber
+  // note that a saved choice waits for the agent's next restart.
   //
   // Renders nothing unless the room makes Slack apps itself (the agent's
   // `slack.relay`); an agent with an app from the Slack tab's paste flow
   // keeps that tab and this block says so instead of offering a second app.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { errorMessage, type SlackWake } from "../lib/api";
+  import { errorMessage, type SlackWake, type SlackWakeResult } from "../lib/api";
   import {
     agentQuery,
     createSlackAppMutation,
@@ -34,6 +36,7 @@
     slackAppQuery,
   } from "../lib/queries";
   import { clearHashQuery, hashQuery } from "../lib/router.svelte";
+  import { beginRestart, endRestart } from "../lib/delivery.svelte";
   import { watchWakeLive } from "../lib/slackWake";
   import VendorMark from "./VendorMark.svelte";
 
@@ -83,9 +86,11 @@
   // --- Wakes on: local before the app exists, saved on pick after ----------
   //
   // A save reaches the running agent at once (the route restarts it with
-  // the choice) and the header follows it: Applying your change while the
-  // room's next health check of the agent is awaited, Live once that check
-  // finds it up. The choices stay locked meanwhile, so a second pick cannot
+  // the choice) and the header follows it: Applying your change while a
+  // health check taken after the save that finds the agent up and not
+  // restarting is awaited (plus a short settle), Live once it lands. The
+  // page's header reads Restarting meanwhile (lib/delivery's restarts).
+  // The choices stay locked meanwhile, so a second pick cannot
   // land while the first is still applying. When the live change was
   // refused (`applied_now` false) the choice is saved and waits for the
   // agent's next restart; the header says so, in amber, for as long as the
@@ -98,21 +103,27 @@
   let stopWakeWatch: (() => void) | null = null;
   const wakeLocked = $derived(frozen || saveWake.isPending || create.isPending || wakeApplying);
 
-  function watchWake(): void {
+  function watchWake(result: SlackWakeResult): void {
     stopWakeWatch?.();
     wakeApplying = true;
+    beginRestart(agentName);
     const settle = () => {
       wakeApplying = false;
       stopWakeWatch = null;
+      endRestart(agentName);
     };
     stopWakeWatch = watchWakeLive({
       baseline: agent.data?.health?.checked_at ?? null,
+      since: result.applied_at ?? null,
       read: async () => (await queryClient.fetchQuery(agentQuery(agentName))).health,
       onLive: settle,
       onGiveUp: settle,
     });
   }
-  $effect(() => () => stopWakeWatch?.());
+  $effect(() => () => {
+    stopWakeWatch?.();
+    endRestart(agentName);
+  });
 
   async function pickWake(next: SlackWake): Promise<void> {
     if (wakeLocked || next === wakeShown) return;
@@ -122,7 +133,7 @@
     try {
       const result = await saveWake.mutateAsync(next);
       wakeWaitsForRestart = !result.applied_now;
-      if (result.applied_now) watchWake();
+      if (result.applied_now) watchWake(result);
     } catch (err) {
       wake = null;
       wakeError = errorMessage(err, "Couldn't save how it wakes up. Try again.");
@@ -172,6 +183,8 @@
     if (wakeApplying) return { text: "Applying your change. Give it a minute.", tone: "warn" };
     if (wakeWaitsForRestart) return { text: "Saved. Takes effect when the agent next restarts.", tone: "warn" };
     const detail = agent.data;
+    // Mid-restart by the cluster's own word: a change is going in, not an outage.
+    if (detail?.health?.rolling) return { text: "Applying your change", tone: "warn" };
     if (detail?.health?.state === "down") return { text: "Down", tone: "fail" };
     if (detail?.status === "ready") return { text: "Live", tone: "ok" };
     return { text: "Not ready yet", tone: "warn" };

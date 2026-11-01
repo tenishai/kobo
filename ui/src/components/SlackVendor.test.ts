@@ -11,6 +11,7 @@ import { fireEvent, screen, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import SlackVendor from "./SlackVendor.svelte";
+import { WAKE_POLL_MS, WAKE_SETTLE_MS } from "../lib/slackWake";
 import { renderWithClient, stubFetch } from "../test-utils/render";
 
 const AGENT = {
@@ -133,24 +134,61 @@ describe("SlackVendor", () => {
   const checkedAt = (at: string) => ({ ...AGENT, health: { state: "up", reason: null, checked_at: at } });
   const radio = (name: RegExp) => screen.getByRole("radio", { name }) as HTMLInputElement;
 
-  it("reads Applying with Wakes on locked, and Live again only when the room's next check finds the agent up", async () => {
-    // Contract: a saved choice restarts the agent (`applied_now`), so two
-    // picks cannot race, and the header goes back to Live only on a health
-    // reading taken after the save, never on the one already in hand.
-    let answerDetail!: (value: Response) => void;
-    const { json } = roomAfterWakeSave(
-      { wake: "channel", previous_wake: "thread", manifest_changed: false, applied_now: true, wiring: "env" },
-      new Promise<Response>((resolve) => (answerDetail = resolve)),
+  it("reads Applying with Wakes on locked, and Live only after a check past the save finds it back, plus a settle", async () => {
+    // Contract (live means live, 2026-11-01): a saved choice restarts the
+    // agent (`applied_now`), so two picks cannot race; the header goes back
+    // to Live only on a health reading taken after the save that is up and
+    // not restarting, and then only after the settle, never on a rolling
+    // reading and never on the one already in hand. Everything after the
+    // click runs on a fake clock, because the watch is timers all the way.
+    const readings = [
+      { ...AGENT, health: { state: "down", reason: "0 of 1 running", checked_at: "2026-11-01T10:01:00Z", rolling: true } },
+      checkedAt("2026-11-01T10:01:05Z"),
+    ];
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/slack/wake")) {
+          return json({ wake: "channel", previous_wake: "thread", manifest_changed: false, applied_now: true,
+                        applied_at: "2026-11-01T10:00:30Z", wiring: "env" });
+        }
+        if (url.includes("/slack")) return json(INSTALLED);
+        return json(readings.length > 1 ? readings.shift() : readings[0]);
+      }),
     );
+    const rendered = renderWithClient(SlackVendor, { agentName: "clio" });
+    rendered.client.setQueryData(["agents", "clio"], checkedAt("2026-11-01T10:00:00Z"));
+    const channel = await screen.findByRole("radio", { name: /Every message in the channel/ });
+    const status = () => screen.getByRole("status").textContent?.trim();
 
-    await fireEvent.click(await screen.findByRole("radio", { name: /Every message in the channel/ }));
+    vi.useFakeTimers();
+    try {
+      await fireEvent.click(channel);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(status()).toBe("Applying your change. Give it a minute.");
+      expect(radio(/Mentions only/).disabled).toBe(true);
 
-    await waitFor(() => expect(screen.getByRole("status").textContent?.trim()).toBe("Applying your change. Give it a minute."));
-    expect(radio(/Mentions only/).disabled).toBe(true);
+      // The first reading after the save says the agent is still restarting; the
+      // next poll finds it back, and even that is not Live until the settle passes.
+      await vi.advanceTimersByTimeAsync(WAKE_POLL_MS + WAKE_SETTLE_MS - 1);
+      expect(status()).toBe("Applying your change. Give it a minute.");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(status()).toBe("Live");
+      expect(radio(/Mentions only/).disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
-    answerDetail(json(checkedAt("2026-11-01T10:01:00Z")));
-    await waitFor(() => expect(screen.getByRole("status").textContent?.trim()).toBe("Live"));
-    expect(radio(/Mentions only/).disabled).toBe(false);
+  it("reads Applying your change, not Down, while the cluster says the agent is mid-restart", async () => {
+    // A restart from anywhere (a model change in another tab) is the agent on
+    // its way back, which the row says in the same words as its own save.
+    room(INSTALLED, { ...AGENT, health: { state: "down", reason: "0 of 1 running", checked_at: "2026-11-01T10:01:00Z", rolling: true } });
+    await screen.findByRole("radio", { name: /Every message in the channel/ });
+    expect(screen.getByRole("status").textContent?.trim()).toBe("Applying your change");
   });
 
   it("says a saved choice waits for the agent's next restart when it could not be applied now", async () => {

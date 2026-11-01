@@ -47,3 +47,30 @@ export function isUpdating(agent: string, now: number = Date.now()): boolean {
   }
   return current.phase === "pending" || current.phase === "building" || current.phase === "rolling";
 }
+
+// --- Restarts this page asked for -----------------------------------------
+//
+// A Wakes on save (SlackVendor, SlackPanel) restarts the agent at once. The
+// room's own health check catches up within a minute and says `rolling`;
+// until it does, this page already knows, so the header reads Restarting
+// instead of Down from the first second. Same honesty rules as above: only
+// a restart this page saw start, forgotten after `STALE_MS` so a watcher
+// that stopped without saying so can never mask a real outage for long.
+
+const restarts = $state<Record<string, number>>({});
+
+/** A panel just restarted `agent` with a change. */
+export function beginRestart(agent: string): void {
+  restarts[agent] = Date.now();
+}
+
+/** The watch over that restart ended (live, gave up, or unmounted). */
+export function endRestart(agent: string): void {
+  delete restarts[agent];
+}
+
+/** True while a restart this page asked for is still being watched. */
+export function isRestarting(agent: string, now: number = Date.now()): boolean {
+  const at = restarts[agent];
+  return at !== undefined && now - at <= STALE_MS;
+}

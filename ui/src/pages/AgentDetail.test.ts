@@ -418,6 +418,23 @@ describe("AgentDetail tabs", () => {
     expect(screen.getByLabelText("App ID")).not.toBeNull();
   });
 
+  it("reads Restarting, in amber, while the cluster says the agent is mid-restart, never Down", async () => {
+    // A change the owner asked for takes the agent off for a minute by
+    // design (2026-11-01): the banner and the header pill say restarting,
+    // and the red Down banner with its dashboard link stays away.
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        health: { state: "down", reason: "0 of 1 running", checked_at: "2026-11-01T10:01:00Z", rolling: true },
+      },
+    });
+    renderWithClient(AgentDetail);
+    expect(await screen.findByText("This agent is restarting. Back in about a minute.")).toBeTruthy();
+    expect(screen.queryByText(/^This agent is down/)).toBeNull();
+    expect(screen.getByText("restarting")).toBeTruthy();
+  });
+
   it("freezes every control while a change this page pushed is still on its way", async () => {
     // Mutation gate (issue #290): a save that is building or rolling rests
     // the controls the way destroy does, and the banner says why. Reading

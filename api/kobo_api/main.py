@@ -87,6 +87,7 @@ from kobo_api.bab import AGENTS_VENDOR as BAB_AGENTS_VENDOR
 from kobo_api.bab import ROOM_ACTOR as BAB_ROOM_ACTOR
 from kobo_api.bab import active_leases as bab_active_leases
 from kobo_api.bab import actor_for as bab_actor_for
+from kobo_api.bab import agent_access_summary as bab_agent_access_summary
 from kobo_api.bab import agent_connections as bab_agent_connections
 from kobo_api.bab import build_bab
 from kobo_api.bab import child_repositories as github_access_child_repositories
@@ -4239,6 +4240,25 @@ def create_app(
         session.close()
         try:
             return JSONResponse(bab_agent_connections(bab, agents, _bab_actor(request)))
+        except ClientError as exc:
+            return _bab_refused(exc)
+
+    @app.get("/api/admin/access/summary")
+    def admin_access_summary(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        """The admin Overview's Agent connections card: how many agents hold access
+        anywhere right now, counted from the reads the pane's builder starts with and
+        none of its per-agent grant calls (`bab.agent_access_summary`). Same session
+        rule as the pane: the agent list is read and the session closed first."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        bab, off = _bab_or_404()
+        if off is not None:
+            return off
+        agents = [{"name": a.name} for a in session.query(Agent).all()]
+        session.close()
+        try:
+            return JSONResponse(bab_agent_access_summary(bab, agents, _bab_actor(request)))
         except ClientError as exc:
             return _bab_refused(exc)
 
@@ -9377,12 +9397,16 @@ def create_app(
         )
         session.commit()
         log.info("agent %s wakes in Slack on %s (was %s)", agent.name, mode, previous)
+        # `applied_at` is the room's own clock, so the page can tell a
+        # health reading taken after this save from one another replica
+        # took before it (both carry the room's `checked_at`).
         return JSONResponse(
             {
                 "wake": mode,
                 "previous_wake": previous,
                 "manifest_changed": manifest_changed,
                 "applied_now": applied_now,
+                "applied_at": rfc3339(datetime.now(UTC)) if applied_now else None,
                 "wiring": result.how,
             }
         )
