@@ -2508,6 +2508,21 @@ export async function removeSlackApp(name: string): Promise<{ removed: boolean }
   return parse<{ removed: boolean }>(res);
 }
 
+/** What the move answers: the new app and its install link, like Create,
+ * plus whether the room managed to remove the old app at Slack. */
+export type SlackMoveResult = { app_id: string; install_url: string; old_app_removed: boolean };
+
+/**
+ * `POST /api/agents/{name}/slack/move` (issue #304, phase 3): a legacy agent
+ * (an app from the Slack tab) gets a room-made app in its place. The old app
+ * is removed, the new one is created with the agent's current Wakes on and
+ * its saved channels, and the owner installs it as usual.
+ */
+export async function moveSlackApp(name: string): Promise<SlackMoveResult> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/slack/move`, { method: "POST" });
+  return parse<SlackMoveResult>(res);
+}
+
 /** The three directory fields an Edit details save/Regenerate hands back,
  * always alongside the pushed commit's sha (persona-metadata plan Task 3) —
  * `PATCH .../metadata` and `POST .../metadata/regenerate` share this exact

@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import yaml
@@ -431,6 +431,7 @@ def wire_slack_values(
     edit_gojira: Callable[[dict], bool] | None = None,
     message: str = "kobo: connect slack",
     every_channel: bool = False,
+    remove_keys: Sequence[str] = (),
 ) -> str:
     """`wire_slack` over any set of Slack values (issue #371): the relay flow
     delivers the app's five credentials at Create (no app-level token
@@ -438,7 +439,14 @@ def wire_slack_values(
     same repository edits and the same reprovision-and-wait; `edit_gojira`,
     when given, is one more edit of the parsed `gojira.yaml` in the same
     clone (the relay flow writes the wake mode it was created with), so the
-    choice and the wiring land in one commit."""
+    choice and the wiring land in one commit.
+
+    `remove_keys` names values the same delivery takes out of the Secret
+    (the move from Socket Mode to the relay, issue #304: the app-level token
+    and the old bot token go as the new app's five values arrive, so the
+    runtime takes the HTTP way in at its next start). Through the lane that
+    is one `put` with `remove`; the direct write replaces the Secret's data
+    with `values` whole, so anything not named is gone by construction."""
     if sero is not None:
         deliver_secret(
             sero,
@@ -447,6 +455,7 @@ def wire_slack_values(
             purpose="slack",
             values=values,
             secret_name=f"{name}-slack",
+            remove=list(remove_keys) or None,
         )
     else:
         kubectl.apply_secret(name, f"{name}-slack", values)

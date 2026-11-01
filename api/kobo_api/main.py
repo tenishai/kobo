@@ -8765,7 +8765,9 @@ def create_app(
     # the room's relay (kobo_api.slack_relay) instead of Socket Mode, so no
     # app-level token is ever made; Install to Slack is Slack's own install
     # page with a single-use state, and the callback stores the bot token.
-    # Existing agents keep the paste flow above untouched (#304 owner rule).
+    # An agent from the paste flow above keeps working as it is until its
+    # owner moves it (`POST .../slack/move`, phase 3 of #304); the Slack tab
+    # goes once no agent on the room runs the old way.
 
     def _relay_row(session: Session, agent: Agent) -> SlackRelayApp | None:
         return session.query(SlackRelayApp).filter_by(agent_name=agent.name).first()
@@ -8789,7 +8791,8 @@ def create_app(
             "enabled": True,
             "available": room_credentials.slack_configured(app.state.clients),
             "state": state,
-            "app_id": row.app_id if row is not None else None,
+            # A legacy agent's old app id is shown on the row it is moved from.
+            "app_id": row.app_id if row is not None else agent.slack_app_id,
             "install_url": None,
             "workspace": row.workspace_name if row is not None else None,
             "app_name": row.app_name if row is not None else None,
@@ -8875,6 +8878,41 @@ def create_app(
             if refusal is not None:
                 return JSONResponse({"error": refusal}, status_code=409)
 
+        previous_wake = effective_wake(agent)
+        made = _make_room_slack_app(request, session, agent, slack, mode, row=row, acting_email=acting_email)
+        if isinstance(made, JSONResponse):
+            return made
+        row, install = made
+        audit.record(
+            session, request=request, action="slack.app.create", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, summary=f"{audit.who(request)} created a Slack app for agent {agent.name}",
+            detail={"app_id": row.app_id, "wake": mode, "previous_wake": previous_wake},
+        )
+        session.commit()
+        return JSONResponse({"app_id": row.app_id, "install_url": install})
+
+    def _make_room_slack_app(
+        request: Request,
+        session: Session,
+        agent: Agent,
+        slack,
+        mode: str,
+        *,
+        row: SlackRelayApp | None,
+        acting_email: str | None,
+        remove_keys: tuple[str, ...] = (),
+        message: str = "kobo: slack app made by the room",
+    ) -> JSONResponse | tuple[SlackRelayApp, str]:
+        """The room-made app, from nothing to install link: mint and commit
+        the relay row, create the app at Slack from the manifest, store the
+        five values through the agent's Slack secret (taking `remove_keys`
+        out in the same write) and wire the repository with the open
+        transport block and the wake mode. Shared by Create and by the move
+        from the old setup (issue #304, phase 3), which differ only in what
+        comes before (the old app's removal) and in `remove_keys`. Returns
+        the row and the install url, or the error answer to send."""
+        cfg: Config = app.state.config
+        clients = app.state.clients
         base = slack_relay.public_base_url(request, cfg)
         if row is None:
             row = SlackRelayApp(
@@ -8885,7 +8923,6 @@ def create_app(
                 created_at=datetime.now(UTC).replace(tzinfo=None),
             )
             session.add(row)
-        previous_wake = effective_wake(agent)
         agent.slack_wake = mode
         session.commit()
 
@@ -8937,10 +8974,12 @@ def create_app(
                 sero=clients.sero,
                 acting_email=acting_email,
                 edit_gojira=lambda data: _set_env_key(data, WAKE_ENV, mode),
-                message="kobo: slack app made by the room",
+                message=message,
                 # No channel picked yet: one open block, so the agent answers in
                 # every channel it is invited to and its events route exists.
+                # A moved agent's saved channels stay and still narrow it.
                 every_channel=True,
+                remove_keys=remove_keys,
             )
         except ClientError as exc:
             log.warning("slack app wiring failed for agent %s: %s", agent.name, type(exc).__name__)
@@ -8948,20 +8987,90 @@ def create_app(
         row.wired_at = datetime.now(UTC).replace(tzinfo=None)
         agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
         state_token = slack_relay.mint_state(row)
+        install = slack_relay.install_url(row.client_id or "", state_token, slack_relay.callback_url(base))
+        return row, install
+
+    # The two values the old setup put in the agent's Slack secret: the
+    # app-level token Socket Mode needs and the bot token of the old app.
+    # Both go at the move; the runtime picks Socket Mode whenever the
+    # app-level token is present, so leaving it would keep the old way in.
+    _LEGACY_SLACK_KEYS = ("SLACK_APP_TOKEN", "SLACK_BOT_TOKEN")
+
+    @app.post("/api/agents/{name}/slack/move")
+    def move_slack_app(
+        name: str,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Move an agent from the old Slack setup (an app from the Slack tab,
+        Socket Mode, an app-level token) to the room-made app (issue #304,
+        phase 3; owner ruling 2026-11-01). The old app is deleted at Slack
+        with the room's config token, as destroy does; when that fails the
+        move still goes ahead, since the old app may already be gone or
+        belong to a token the room never held, and the answer says so
+        (`old_app_removed`). Then the same path as Create, with the agent's
+        current Wakes on and its saved channels, while the two old values
+        leave the agent's Slack secret in the same write. The owner installs
+        the new app as usual. Only a legacy agent may be moved: 409 for one
+        with no Slack app or one already on the new setup."""
+        cfg: Config = app.state.config
+        if not cfg.slack_relay:
+            return _relay_off()
+        agent = _ready_agent_or_error(
+            session, request, name, not_ready_message="agent is not ready for Slack changes yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+
+        clients = app.state.clients
+        slack = room_credentials.slack_client(clients)
+        if slack is None:
+            return JSONResponse({"error": "Slack is not configured"}, status_code=503)
+        if _relay_row(session, agent) is not None:
+            return JSONResponse({"error": "This agent already uses the new Slack setup."}, status_code=409)
+        if agent.slack_app_id is None:
+            return JSONResponse({"error": "This agent has no Slack app to move."}, status_code=409)
+
+        acting_email = getattr(request.state, "iap_email", None) or agent.created_by
+        if clients.sero is not None:
+            refusal = acting_email_refusal(agent.name, acting_email)
+            if refusal is not None:
+                return JSONResponse({"error": refusal}, status_code=409)
+
+        old_app_id = agent.slack_app_id
+        try:
+            old_app_removed = bool(slack.delete_app(old_app_id))
+        except ClientError as exc:
+            log.warning("slack move: old app delete failed for agent %s: %s", agent.name, exc)
+            old_app_removed = False
+        if not old_app_removed:
+            log.info("slack move: old app for agent %s not removed by the room; the move goes on", agent.name)
+
+        mode = effective_wake(agent)
+        made = _make_room_slack_app(
+            request, session, agent, slack, mode, row=None, acting_email=acting_email,
+            remove_keys=_LEGACY_SLACK_KEYS, message="kobo: moved to the new Slack setup",
+        )
+        if isinstance(made, JSONResponse):
+            return made
+        row, install = made
+        # The old bot token is gone, so the agent is not wired to Slack until
+        # the owner installs the new app; the callback sets this back.
+        agent.slack_wired = False
         audit.record(
-            session, request=request, action="slack.app.create", target_kind="agent", target_id=agent.name,
-            agent_name=agent.name, summary=f"{audit.who(request)} created a Slack app for agent {agent.name}",
-            detail={"app_id": row.app_id, "wake": mode, "previous_wake": previous_wake},
+            session, request=request, action="slack.move", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name,
+            summary=f"{audit.who(request)} moved agent {agent.name} to the new Slack setup",
+            detail={"app_id": row.app_id, "old_app_id": old_app_id, "old_app_removed": old_app_removed, "wake": mode},
         )
         session.commit()
-        return JSONResponse(
-            {
-                "app_id": row.app_id,
-                "install_url": slack_relay.install_url(
-                    row.client_id or "", state_token, slack_relay.callback_url(base)
-                ),
-            }
-        )
+        return JSONResponse({"app_id": row.app_id, "install_url": install, "old_app_removed": old_app_removed})
 
     @app.delete("/api/agents/{name}/slack/app")
     def remove_slack_app(

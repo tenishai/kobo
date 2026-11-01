@@ -8,6 +8,23 @@ All notable changes to kobo are documented here. The format follows
 
 ### Added
 
+- **Move an agent from the old Slack setup to the room-made app (kobo#304, phase 3).** On a
+  legacy agent (one whose Slack app came from the Slack tab, with an app-level token), the
+  Slack row on the Access tab reads **Connected the old way** with its app id and offers one
+  button, **Move to the new Slack setup**. `POST /api/agents/{name}/slack/move`
+  (owner-or-operator, behind `slack_relay`) deletes the old app with the room's config token,
+  as destroy does, then runs Create's path: the relay id is minted, the app is created from the
+  manifest with the agent's current Wakes on, the five create-time values go to the agent's
+  Slack secret in the same write that takes `SLACK_APP_TOKEN` and the old `SLACK_BOT_TOKEN` out
+  (so the runtime takes the HTTP way in at its next start), the open transport block and the
+  wiring land in one commit, and the saved channels stay and still narrow it. The answer is
+  Create's (`app_id`, `install_url`) plus `old_app_removed`; a failure deleting the old app is
+  reported as `old_app_removed: false` and does not stop the move, since the old app may already
+  be gone. The owner presses Install to Slack as usual. Audit action `slack.move`; 409 for an
+  agent that is not legacy. Per the owner ruling of 2026-11-01 the dev agents still on Socket
+  Mode may be moved freely. The Slack tab already hides itself for a moved agent; its full
+  removal, along with the Slack tab's guide text, is a later cleanup once dev has moved.
+
 - **Connect Google Cloud (kobo#390).** Admin > Integrations > Add integration > Google Cloud is
   its own sheet, modelled on the AWS one: pick **A project** (the common case) or **A folder or
   organization**, and the page shows the room's identity (the permission service's service

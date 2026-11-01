@@ -140,10 +140,11 @@ class SeroClient(Protocol):
         `acting_email`'s behalf. Existing keys at that path that are not
         named here are left alone.
 
-        `remove` names keys to take away in the same call, which only the
-        Secrets panel ever passes: the room's own two deliveries (the
-        colleague pass, the Slack tokens) add and replace and never remove.
-        A key named on both sides is refused by the platform, which is why
+        `remove` names keys to take away in the same call: the Secrets
+        panel passes it, and so does the one delivery that replaces a Slack
+        setup (`deliver_secret(remove=...)`, the move from Socket Mode to the
+        relay, issue #304); the room's other deliveries add and replace and
+        never remove. A key named on both sides is refused by the platform, which is why
         `kobo_api.agent_env.write_refusal` catches that first and answers
         the person instead.
 
@@ -655,12 +656,16 @@ def deliver_secret(
     purpose: str,
     values: dict[str, str],
     secret_name: str,
+    remove: list[str] | None = None,
 ) -> None:
     """Store `values` for `agent_name` and make its namespace carry them as
     the Secret `secret_name` -- the lane's replacement for one
     `KubectlClient.apply_secret` call, shared by both delivery sites
     (`kobo_api.colleagues.deliver_pass`, `kobo_api.slack_setup.wire_slack`)
-    so the path shape and the ordering are stated once.
+    so the path shape and the ordering are stated once. `remove` names keys
+    the same write takes away (the move to the relay drops the app-level
+    token and the old bot token while it stores the new app's values, so
+    the agent never restarts with both setups in hand).
 
     `purpose` is the last segment of the path (`apps/<agent>/<purpose>`):
     `cabal` for the colleague pass, `slack` for the Slack tokens. The
@@ -685,7 +690,7 @@ def deliver_secret(
         raise ClientError(refusal)
     email = acting_email.strip()
     path = f"apps/{agent_name}/{purpose}"
-    sero.put_secret(email, path, values)
+    sero.put_secret(email, path, values, remove=list(remove) if remove else None)
     # Only after the value is stored: a sync for a path with nothing at it
     # would deliver an empty Secret over a good one.
     sero.ensure_synced(email, agent_name, path, agent_name, secret_name)

@@ -33,12 +33,16 @@
   //
   // Renders nothing unless the room makes Slack apps itself (the agent's
   // `slack.relay`); an agent with an app from the Slack tab's paste flow
-  // keeps that tab and this row says so instead of offering a second app.
+  // (`legacy`) keeps that tab, and this row shows the old app with one
+  // button, Move to the new Slack setup (issue #304, phase 3): the room
+  // removes the old app, makes a new one and the row becomes the created
+  // state above, Install to Slack and all. Channels and Wakes on carry over.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { errorMessage, type SlackWake, type SlackWakeResult } from "../lib/api";
   import {
     agentQuery,
     createSlackAppMutation,
+    moveSlackAppMutation,
     removeSlackAppMutation,
     setSlackWakeMutation,
     slackAppQuery,
@@ -78,6 +82,7 @@
   const view = createQuery(() => ({ ...slackAppQuery(agentName), enabled: relayOn }));
   const create = createMutation(() => createSlackAppMutation(queryClient, agentName));
   const remove = createMutation(() => removeSlackAppMutation(queryClient, agentName));
+  const move = createMutation(() => moveSlackAppMutation(queryClient, agentName));
   const saveWake = createMutation(() => setSlackWakeMutation(queryClient, agentName));
 
   const WAKE_OPTIONS: { value: SlackWake; label: string; help: string }[] = [
@@ -156,6 +161,26 @@
     }
   }
 
+  // --- Move from the old setup (issue #304, phase 3) ----------------------------
+  //
+  // One press. The route removes the old app, makes the new one and answers
+  // like Create; the queries refresh and the row reads "App made; install it
+  // to finish". When the room could not remove the old app (it may already
+  // be gone, or belong to a token the room never held) the answer says so
+  // and the note stays on the row until the person leaves it.
+  let moveError = $state<string | null>(null);
+  let oldAppKept = $state(false);
+
+  async function handleMove(): Promise<void> {
+    moveError = null;
+    try {
+      const result = await move.mutateAsync();
+      oldAppKept = !result.old_app_removed;
+    } catch (err) {
+      moveError = errorMessage(err, "Couldn't move the Slack setup. Try again.");
+    }
+  }
+
   // --- Remove, in two presses ----------------------------------------------------
   let removing = $state(false);
   let removeError = $state<string | null>(null);
@@ -175,7 +200,11 @@
     const data = view.data;
     if (!data) return { text: "", tone: "ink" };
     if (!data.available) return { text: "Not connected to the room", tone: "ink" };
-    if (data.legacy) return { text: "Connected from the Slack tab", tone: "ink" };
+    if (data.legacy) {
+      return move.isPending
+        ? { text: "Moving", tone: "warn" }
+        : { text: `Connected the old way${data.app_id ? `: ${data.app_id}` : ""}`, tone: "ink" };
+    }
     if (data.state === "created") {
       return installing && !installFailed
         ? { text: "Installing", tone: "warn" }
@@ -267,10 +296,27 @@
         <p class="copy copy--fail" role="alert">Installing to Slack did not finish. Try Install to Slack again.</p>
       {/if}
 
+      {#if oldAppKept && data.state !== "installed"}
+        <p class="copy">
+          The room could not confirm the old app was removed. If it is still listed in Slack, remove it there.
+        </p>
+      {/if}
+
       {#if !data.available}
         <p class="copy">Ask a kobo admin to add the Slack connection under Admin › Integrations. Nothing here works until then.</p>
       {:else if data.legacy}
-        <p class="copy">This agent's Slack app was set up on the Slack tab and keeps working there.</p>
+        <p class="copy">
+          This agent's Slack app was set up on the Slack tab. The room makes a new app and you install it once; the
+          old app is removed. Channels and Wakes on carry over.
+        </p>
+        <div class="row">
+          <button type="button" class="btn btn--primary" disabled={frozen || move.isPending} onclick={handleMove}>
+            {move.isPending ? "Moving…" : "Move to the new Slack setup"}
+          </button>
+          {#if moveError}
+            <span class="copy copy--fail" role="alert">{moveError}</span>
+          {/if}
+        </div>
       {:else if data.state === "none"}
         <p class="copy">
           The room makes a Slack app for this agent and connects it. Pick how it wakes up first: the choice decides
