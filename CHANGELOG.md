@@ -6,6 +6,18 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Agent to agent picks by team.** On the Harness tab, **Request another team's agent**
+  now opens a list grouped by team (name, how many agents, a chevron); a team opens into
+  compact rows with a checkbox, the agent's name and one line on what it does. Tick one or
+  many across teams and one **Request access** sends a request per agent, with a toast
+  saying how many went out. An agent already asked, or not ready, shows its state in place
+  of the box. The viewer's own team never appears. The table below gains Team and Date
+  columns and a plain empty sentence. `GET /api/agents/{name}/requestable` answers `group`
+  on each `already` row, leaves same-group agents out of `not_ready`, and names the group
+  it leaves out as `paired_group`.
+
 ## [0.3.31] - 2026-11-01
 
 ### Added

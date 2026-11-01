@@ -11684,8 +11684,14 @@ def create_app(
         - Any agent `name` already has a PENDING or ACCEPTED invite
           toward -- same "in flight" definition `create_invite`'s own
           duplicate-request 409 check uses. These are surfaced instead
-          under `already`, `{"name", "status"}` each, so the UI can render
-          "already asked" rather than silently omitting them.
+          under `already`, `{"name", "group", "status"}` each, so the UI
+          can render "already asked" in that agent's team rather than
+          silently omitting them.
+
+        `paired_group` names the group whose agents are already paired
+        with `name` and so never appear here (null for an agent with no
+        group or one in the commons): the picker groups by team, and this
+        is the team it leaves out.
         """
         agent = _visible_agent_or_404(session, request, name)
         if isinstance(agent, JSONResponse):
@@ -11702,13 +11708,16 @@ def create_app(
         )
         # Agents that exist but cannot be asked yet (#273): named with their
         # state, so an empty picker explains itself instead of reading as
-        # "there is nobody here". Same bare name+group as `requestable`.
+        # "there is nobody here". Same bare name+group as `requestable`, and
+        # the same same-group exclusion: a colleague the room pairs on its
+        # own needs nothing here, ready or not.
         not_ready = [
             {"name": other.name, "group": other.group_name, "status": str(other.status)}
             for other in session.query(Agent)
             .filter(Agent.status != AgentStatus.READY, Agent.name != agent.name)
             .order_by(Agent.id)
             .all()
+            if not implicitly_paired(agent.group_name, other.group_name)
         ]
 
         in_flight_status = {
@@ -11743,7 +11752,7 @@ def create_app(
                 continue
             in_flight = in_flight_status.get(other.name)
             if in_flight is not None:
-                already.append({"name": other.name, "status": in_flight})
+                already.append({"name": other.name, "group": other.group_name, "status": in_flight})
                 continue
             requestable.append(
                 {
@@ -11755,8 +11764,16 @@ def create_app(
                 }
             )
 
+        paired_group = (
+            agent.group_name if implicitly_paired(agent.group_name, agent.group_name) else None
+        )
         return JSONResponse(
-            {"requestable": requestable, "already": already, "not_ready": not_ready}
+            {
+                "requestable": requestable,
+                "already": already,
+                "not_ready": not_ready,
+                "paired_group": paired_group,
+            }
         )
 
     @app.post("/api/invites/{invite_id}/accept")
