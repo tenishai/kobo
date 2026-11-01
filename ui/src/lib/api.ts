@@ -280,8 +280,8 @@ export type Whoami = {
   /** True when the permission service is on; the Harness then has no
    * Identity and access section (#292). */
   access_on?: boolean;
-  /** True when the room holds a GitHub app for pull requests, from the room
-   * or the deployment config; the Repositories card greys out on false (#304). */
+  /** True when the room holds a GitHub app for its own pull requests (skills,
+   * tooling), from the room or the deployment config (#304). */
   github_available?: boolean;
   logout_url?: string | null;
 };
@@ -1523,11 +1523,19 @@ export type AccessPermission = {
   name: string;
   tier: "read" | "mutate" | "destroy" | string;
   description: string | null;
+  /** What the row is called on the page (GitHub's "Read", "Review pull
+   * requests", "Open pull requests"); null for a row named by its id. */
+  label: string | null;
 };
 
 /** One account, project or subscription of a cloud vendor, or the single
  * connection of a service vendor. `connected` is whether the permission
- * service can mint for it yet; `ceiling` is the most any agent may hold there. */
+ * service can mint for it yet; `ceiling` is the most any agent may hold there.
+ *
+ * GitHub (issue #365) has exactly one account per agent: the agent's own
+ * repository set (`has_repo_set` true, `id` the child integration the
+ * requests target, `repositories` filled) or, before one is saved, a
+ * placeholder carrying the connection's id with no repositories. */
 export type AccessAccount = {
   id: string;
   name: string;
@@ -1536,6 +1544,8 @@ export type AccessAccount = {
   /** The organization row this account sits under, when it does. */
   organization: string | null;
   account_id: string | null;
+  repositories: string[];
+  has_repo_set: boolean;
 };
 
 /** One vendor in the picker: a cloud (accounts underneath) or a service (one
@@ -1584,6 +1594,8 @@ export type AccessRequest = {
   /** Added by the room on the Review pane: the agent's owner and team. */
   owner?: string | null;
   team?: string | null;
+  /** A GitHub request's repository set (issue #365), for the reviewer. */
+  repositories?: string[];
 };
 
 export type AgentAccess = {
@@ -1608,6 +1620,44 @@ export type AccessLease = {
 };
 
 export type AgentLeases = { available: boolean; leases: AccessLease[]; note?: string };
+
+/** One repository the room's GitHub installation can see (issue #365). */
+export type GithubRepository = {
+  full_name: string;
+  private: boolean;
+  default_branch: string | null;
+};
+
+/** `GET /api/agents/{name}/github/repositories`: the installation's
+ * repositories with the agent's current set marked. `available` false means
+ * the room cannot list them (no GitHub connection, or the vendor refused)
+ * and `note` says so in a sentence. */
+export type GithubRepositories = {
+  available: boolean;
+  repositories: GithubRepository[];
+  selected: string[];
+  note: string | null;
+};
+
+export async function fetchGithubRepositories(name: string): Promise<GithubRepositories> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/github/repositories`);
+  return parse<GithubRepositories>(res);
+}
+
+/** Writes or replaces the agent's repository set. `integration` is the child
+ * the agent's GitHub permission requests then target. 422 with a sentence on
+ * an empty set or a repository the installation cannot see. */
+export async function putGithubRepositories(
+  name: string,
+  repositories: string[],
+): Promise<{ integration: string; repositories: string[]; changed: boolean }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/github/repositories`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repositories }),
+  });
+  return parse(res);
+}
 
 export async function fetchAgentAccess(name: string): Promise<AgentAccess> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/access`);
@@ -2682,46 +2732,6 @@ export async function fetchRecommendedSkills(
 export async function fetchBuildLog(name: string): Promise<BuildLog> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/build-log`);
   return parse<BuildLog>(res);
-}
-
-/** One repo-access grant row (agent PR broker). */
-export interface RepoAccessRow {
-  id: number;
-  agent: string;
-  repository: string;
-  status: "requested" | "approved" | "revoked";
-  requested_by: string;
-  decided_by: string | null;
-}
-
-export async function listRepoAccess(status?: string): Promise<{ results: RepoAccessRow[] }> {
-  const q = status ? `?status=${encodeURIComponent(status)}` : "";
-  const res = await fetch(`/api/repo-access${q}`);
-  return parse<{ results: RepoAccessRow[] }>(res);
-}
-
-export async function requestRepoAccess(
-  name: string,
-  repositories: string[],
-): Promise<{ requested: { id: number; repository: string; status: string }[] }> {
-  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/repo-access`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repositories }),
-  });
-  return parse(res);
-}
-
-export async function decideRepoAccess(
-  ids: number[],
-  decision: "approved" | "revoked",
-): Promise<{ decided: RepoAccessRow[] }> {
-  const res = await fetch("/api/repo-access/decide", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids, decision }),
-  });
-  return parse(res);
 }
 
 // --- Secrets and environment (design 2026-09-22) -----------------------------

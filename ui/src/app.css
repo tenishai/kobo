@@ -1224,6 +1224,84 @@ textarea.field__input {
   font-size: 0.8rem;
 }
 
+/* A settings row (2026-10-31): what it is and its action on the left, the
+   list itself on the right, a rule between rows. The Access tab is built
+   from these, both halves of it (who can reach the agent, what it can
+   reach), so the row lives here rather than in either component. */
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  gap: var(--space-xl);
+  width: 100%;
+  padding: var(--space-lg) 0 var(--space-sm);
+  border-top: 1px solid var(--border);
+}
+
+.settings-row__head {
+  align-content: start;
+  gap: var(--space-xs);
+}
+
+.settings-row__head .panel__subheading {
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.settings-row__head .panel__lead {
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.settings-row__head .panel__tools {
+  margin-top: var(--space-xs);
+}
+
+.settings-row__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* The lists sit in a bordered card with a tinted header row. */
+.settings-row__body .panel__table {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.settings-row__body .panel__table th {
+  height: 2.4rem;
+  padding: 0 var(--space-md);
+  background: var(--bg);
+  vertical-align: middle;
+}
+
+.settings-row__body .panel__table td {
+  height: 3rem;
+  padding: var(--space-2xs) var(--space-md);
+}
+
+.settings-row__body .panel__table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.settings-row__body .panel__empty {
+  padding: var(--space-lg) var(--space-md);
+}
+
+@media (max-width: 52rem) {
+  .settings-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-sm);
+  }
+}
+
 /* The bordered table card. Rows are a little taller than a panel table and
    the last border is dropped, so the card itself is the frame. */
 .table-card {
