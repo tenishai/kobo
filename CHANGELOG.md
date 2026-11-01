@@ -6,6 +6,30 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Slack and GitHub are connections, not service rows (kobo#377).** The two rows that were
+  always at the top of Admin > Integrations (**Slack**, the config token pair the room creates
+  agents' Slack apps with; **GitHub**, the app behind the room's pull requests and agent
+  repositories) are gone, and with them the `service` kind and the **Set up** button. Each is
+  now an ordinary connection added through **Add integration**: pick Slack and paste the
+  pair, or pick GitHub and paste the app id, installation id and private key, with the same
+  checks as before; the row shows logo, name, kind `connection`, status, Added by and when,
+  **Replace** and **Remove** like every vendor. The room's own needs read the credential from
+  the connection through one accessor module (`kobo_api.room_credentials`); the credential
+  stays in the room's own Secret, where the service rows kept it, so a rollback to 0.3.35
+  reads the same bytes. A fresh room shows an empty table. An older install's deployment
+  config (`slack_tokens_*`, `pr_app_*`) still stands behind a vendor with no row, shown as a
+  row marked **set in the deployment config** with **Replace** to move it into the room. At
+  boot, once and idempotent, a Secret left by a service row becomes the connection row
+  (logged in one line); where both already exist the connection wins and adopts the Secret.
+  The Slack row on an agent's Access tab and the Slack tab read **Ask a kobo admin to add
+  the Slack connection** until one exists. Overview's **N vendors connected** counts them
+  with the rest. GitHub keeps its permission service connection unchanged; Slack is not a
+  leased vendor and gets no permission service row. The `GET`/`PUT`/`DELETE
+  /api/admin/room-services*` routes are retired; `kobo_api.room_services` stays as the
+  Secret store behind the connections for one release.
+
 ## [0.3.35] - 2026-11-01
 
 ### Fixed

@@ -800,11 +800,11 @@
   </div>
 
   {#if !slackAvailable}
-    <!-- The room has no Slack integration (#304): the whole body is one
-         greyed box, no fields and no buttons, until an admin sets it up. -->
+    <!-- The room has no Slack connection (#304, kobo#377): the whole body is one
+         greyed box, no fields and no buttons, until an admin adds it. -->
     <div class="panel__locked" role="status">
-      <p class="panel__locked-text">Ask a kobo admin to add the Slack integration.</p>
-      <p class="panel__locked-where">Admin &gt; Integrations &gt; Slack.</p>
+      <p class="panel__locked-text">Ask a kobo admin to add the Slack connection.</p>
+      <p class="panel__locked-where">Admin &gt; Integrations &gt; Add integration &gt; Slack.</p>
     </div>
   {:else if firstRun}
     <!-- "Where it answers" comes first: the manifest in the next step

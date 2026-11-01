@@ -66,7 +66,7 @@ from kobo_api.models import (
 )
 from kobo_api.pairs import sync_dispatch_pairs_best_effort
 from kobo_api.provisioner import _get_or_create_step, _Heartbeat
-from kobo_api.room_services import SLACK_NOT_SET_UP, slack_client
+from kobo_api.room_credentials import SLACK_NOT_SET_UP, slack_client
 from kobo_api.steps import refresh_colleague_rosters
 
 if TYPE_CHECKING:

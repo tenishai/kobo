@@ -240,7 +240,7 @@
       {/if}
 
       {#if !data.available}
-        <p class="copy">Ask a room admin to add the Slack integration under Admin › Integrations. Nothing here works until then.</p>
+        <p class="copy">Ask a kobo admin to add the Slack connection under Admin › Integrations. Nothing here works until then.</p>
       {:else if data.legacy}
         <p class="copy">This agent's Slack app was set up on the Slack tab and keeps working there.</p>
       {:else if data.state === "none"}

@@ -112,6 +112,8 @@ def backfill_landed(session: Session) -> int:
     return fixed
 
 
+# Rows recorded before kobo#377 folded the service rows into connections still read
+# back with their own sentences.
 _SERVICE_LABELS = {"slack": "Slack", "github": "the GitHub app"}
 
 

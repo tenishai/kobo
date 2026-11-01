@@ -36,9 +36,9 @@ from kobo_api import (
     gateway_lane,
     gateway_prs,
     github_access,
+    room_credentials,
     slack_relay,
 )
-from kobo_api import room_services as room_services_store
 from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
     MANAGED_PURPOSES,
@@ -733,20 +733,6 @@ class AdminRoleBody(BaseModel):
     models: list[str] = Field(default_factory=list)
 
 
-class RoomServiceValues(BaseModel):
-    """The fields for one room service (issue #284): the Slack pair, or
-    the GitHub app's three. Which are required is the service's business
-    (kobo_api.room_services.validate); the values are stored, never echoed."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    config_token: str = Field(default="", max_length=4000)
-    refresh_token: str = Field(default="", max_length=4000)
-    app_id: str = Field(default="", max_length=64)
-    installation_id: str = Field(default="", max_length=64)
-    private_key: str = Field(default="", max_length=20000)
-
-
 class AdminConnectIntegration(BaseModel):
     """Connect one vendor from the admin panel: a name, how wide the room
     holds it, the credential (stored in the secrets add-on, never here), the
@@ -760,7 +746,7 @@ class AdminConnectIntegration(BaseModel):
     # `secrets` (named values stored in the secrets service); see
     # kobo_api.admin_integrations.AUTH_KINDS.
     credential: str = Field(default="", max_length=20000)
-    auth: str = Field(default="token", pattern="^(token|api_keys|aws_role|aws_hub|aws_spoke|gcp_identity|azure_federated|datadog_service_account|github_app)$")
+    auth: str = Field(default="token", pattern="^(token|api_keys|aws_role|aws_hub|aws_spoke|gcp_identity|azure_federated|datadog_service_account|github_app|slack_config_token)$")
     identity: dict[str, str] = Field(default_factory=dict)
     secrets: dict[str, str] = Field(default_factory=dict)
     address: str = Field(default="", max_length=500)
@@ -4378,6 +4364,11 @@ def create_app(
                     })
             except ClientError as exc:
                 log.warning("bab integrations unavailable for the Integrations pane: %s", exc)
+        # Slack and GitHub are connections like the rest (kobo#377). An older install whose
+        # deployment config still carries one shows it as a row marked so, with Replace to
+        # move it into the room; a row whose values the room no longer holds says so.
+        rows.extend(room_credentials.deployment_rows({r["id"] for r in rows}, app.state.clients, app.state.config))
+        room_credentials.annotate(rows, app.state.clients, app.state.config)
         return JSONResponse({"integrations": rows})
 
     @app.post("/api/admin/integrations", status_code=201)
@@ -4420,103 +4411,6 @@ def create_app(
             return JSONResponse({"error": str(exc)}, status_code=404)
         session.commit()
         return JSONResponse(outcome)
-
-    # --- Room services (issue #284): the room's own Slack pair and GitHub app ---
-
-    def _room_services():
-        clients = app.state.clients
-        return getattr(clients, "room_services", None) if clients is not None else None
-
-    def _room_service_status(service: str) -> dict:
-        services = _room_services()
-        if services is not None:
-            return services.status(service).to_dict()
-        return room_services_store.deployment_status(app.state.config, service).to_dict()
-
-    def _room_services_body() -> dict:
-        services = _room_services()
-        return {
-            "can_store": services is not None,
-            "note": None if services is not None else room_services_store.NOWHERE_TO_STORE,
-            "services": {service: _room_service_status(service) for service in room_services_store.SERVICES},
-        }
-
-    @app.get("/api/admin/room-services")
-    def admin_room_services(request: Request) -> JSONResponse:
-        """Status for both room services: configured, from where, when and
-        by whom. Never a value."""
-        blocked = _admin_panel_gate(request)
-        if blocked is not None:
-            return blocked
-        return JSONResponse(_room_services_body())
-
-    @app.put("/api/admin/room-services/{service}")
-    def admin_put_room_service(
-        service: str, payload: RoomServiceValues, request: Request, session: Session = Depends(get_session)  # noqa: B008
-    ) -> JSONResponse:
-        """Set up or replace one service with the pasted values: stored in
-        the room's own Secret, audited without the values, live at once."""
-        blocked = _admin_panel_gate(request)
-        if blocked is not None:
-            return blocked
-        if service not in room_services_store.SERVICES:
-            return JSONResponse({"error": f"no room service called {service!r}"}, status_code=404)
-        services = _room_services()
-        if services is None:
-            return JSONResponse({"error": room_services_store.NOWHERE_TO_STORE}, status_code=409)
-        try:
-            values = room_services_store.validate(service, payload.model_dump())
-        except room_services_store.RoomServiceRefused as exc:
-            return JSONResponse({"error": str(exc)}, status_code=400)
-        actor = getattr(request.state, "iap_email", None) or "operator"
-        before = services.status(service).to_dict()
-        try:
-            after = services.put(service, values, actor=actor).to_dict()
-        except ClientError as exc:
-            log.warning("room service %s could not be stored: %s", service, exc)
-            return JSONResponse(
-                {"error": "The room could not store the values in its own secret store. Check the room's logs."},
-                status_code=502,
-            )
-        admin_store.record(
-            session, request=request, actor=actor, action="room_service.set", object_type="room_service", object_id=service,
-            before=before, after=after, landed=admin_store.LANDED_APPLIED,
-        )
-        session.commit()
-        return JSONResponse(_room_services_body())
-
-    @app.delete("/api/admin/room-services/{service}")
-    def admin_delete_room_service(
-        service: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
-    ) -> JSONResponse:
-        """Take back the room-held values; the deployment config, if any,
-        is what the room uses afterwards."""
-        blocked = _admin_panel_gate(request)
-        if blocked is not None:
-            return blocked
-        if service not in room_services_store.SERVICES:
-            return JSONResponse({"error": f"no room service called {service!r}"}, status_code=404)
-        services = _room_services()
-        if services is None:
-            return JSONResponse({"error": room_services_store.NOWHERE_TO_STORE}, status_code=409)
-        before = services.status(service).to_dict()
-        if before["source"] != "room":
-            return JSONResponse({"error": f"the room holds no values of its own for {service}"}, status_code=404)
-        actor = getattr(request.state, "iap_email", None) or "operator"
-        try:
-            services.delete(service)
-        except ClientError as exc:
-            log.warning("room service %s could not be removed: %s", service, exc)
-            return JSONResponse(
-                {"error": "The room could not remove the values from its own secret store. Check the room's logs."},
-                status_code=502,
-            )
-        admin_store.record(
-            session, request=request, actor=actor, action="room_service.remove", object_type="room_service", object_id=service,
-            before=before, after=services.status(service).to_dict(), landed=admin_store.LANDED_APPLIED,
-        )
-        session.commit()
-        return JSONResponse(_room_services_body())
 
     @app.get("/api/admin/mcp/revocations")
     def admin_mcp_revocations(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
@@ -6636,7 +6530,7 @@ def create_app(
             "channels": channels,
             "state": derive_state(channels, wired=agent.slack_wired),
             "wake": effective_wake(agent),
-            "available": room_services_store.slack_configured(slack_clients),
+            "available": room_credentials.slack_configured(slack_clients),
             "relay": bool(cfg.slack_relay),
             "legacy": agent.slack_app_id is not None and relay_row is None,
         }
@@ -6994,18 +6888,14 @@ def create_app(
         agent = session.query(Agent).filter(Agent.name == name).one_or_none()
         return agent.pass_minted_at if agent is not None else None
 
-    def _github_app() -> room_services_store.GitHubAppCredentials | None:
+    def _github_app() -> room_credentials.GitHubAppCredentials | None:
         """The room's GitHub app for pull requests (the one `/api/whoami`
-        reports as `github_available`): the one a room admin set up as the
-        GitHub integration (Admin > Integrations) first, else the three
-        pr_app_* config values (kobo_api.room_services, issue #284). Resolved
-        per request, so a paste needs no restart. The agent-facing token
-        broker that minted with it retired (kobo#365)."""
-        clients = app.state.clients
-        services = getattr(clients, "room_services", None) if clients is not None else None
-        if services is not None:
-            return services.github_app()
-        return room_services_store.github_app_from_config(app.state.config)
+        reports as `github_available`): the GitHub connection's app (Admin >
+        Integrations, kobo#377) first, else the three pr_app_* config values
+        (kobo_api.room_credentials). Resolved per request, so an Add needs no
+        restart. The agent-facing token broker that minted with it retired
+        (kobo#365)."""
+        return room_credentials.github_app(app.state.clients, app.state.config)
 
     # --- Agent Jira read broker (2026-09-04, AREQ lane) -------------------------
 
@@ -8870,7 +8760,7 @@ def create_app(
             state = "installed"
         view: dict = {
             "enabled": True,
-            "available": room_services_store.slack_configured(app.state.clients),
+            "available": room_credentials.slack_configured(app.state.clients),
             "state": state,
             "app_id": row.app_id if row is not None else None,
             "install_url": None,
@@ -8937,7 +8827,7 @@ def create_app(
             return gate
 
         clients = app.state.clients
-        slack = room_services_store.slack_client(clients)
+        slack = room_credentials.slack_client(clients)
         if slack is None:
             return JSONResponse({"error": "Slack is not configured"}, status_code=503)
         mode = payload.wake.strip().lower()
@@ -9073,7 +8963,7 @@ def create_app(
 
         clients = app.state.clients
         if row.app_id is not None:
-            slack = room_services_store.slack_client(clients)
+            slack = room_credentials.slack_client(clients)
             if slack is None:
                 return JSONResponse({"error": "Slack is not configured"}, status_code=503)
             try:
@@ -9134,7 +9024,7 @@ def create_app(
             return gate
 
         clients = app.state.clients
-        if not room_services_store.slack_configured(clients):
+        if not room_credentials.slack_configured(clients):
             return JSONResponse({"error": "Slack is not configured"}, status_code=503)
 
         # Two-lane Slack (2026-08-17): the channel list is whatever's
@@ -9371,7 +9261,7 @@ def create_app(
         # PERSON. The paste flow keeps its sentence.
         relay_row = _relay_row(session, agent) if app.state.config.slack_relay else None
         if manifest_changed and relay_row is not None and relay_row.app_id is not None:
-            slack = room_services_store.slack_client(clients)
+            slack = room_credentials.slack_client(clients)
             if slack is None:
                 return JSONResponse({"error": "Slack is not configured"}, status_code=503)
             base = slack_relay.public_base_url(request, app.state.config)
@@ -12571,6 +12461,23 @@ def _backfill_audit_landed(session_factory) -> None:
         session.close()
 
 
+def _fold_service_rows(session_factory, clients, config: Config) -> None:
+    """A room whose Secret still stands behind a Slack or GitHub service row
+    (before kobo#377) gets the connection row made from it, once
+    (`room_credentials.migrate_service_rows`). Never fails the boot."""
+    session = session_factory()
+    try:
+        moved = room_credentials.migrate_service_rows(session, clients, config)
+        session.commit()
+        if moved:
+            log.info("integrations: %s", "; ".join(moved))
+    except Exception:
+        session.rollback()
+        log.warning("the service-row fold was skipped this boot", exc_info=True)
+    finally:
+        session.close()
+
+
 def build_default_app() -> FastAPI:
     """Wire the real config, org config, database, and platform clients."""
     configure_room_logging()
@@ -12640,6 +12547,9 @@ def build_default_app() -> FastAPI:
     # startup logs, whether the room can do it at all. Fail-soft by
     # design -- see the probe's own docstring.
     probe_slack_token_store(clients)
+    # The Slack and GitHub service rows fold into connections (kobo#377): once,
+    # idempotent, fail-soft, one log line when something moved.
+    _fold_service_rows(session_factory, clients, config)
     # Boot-time dispatch-pairs resync (final-review fix round, HIGH-2a): a
     # no-op if the switchboard isn't wired, fail-soft otherwise -- see
     # `_boot_sync_dispatch_pairs`'s own docstring for why this belongs

@@ -6479,33 +6479,86 @@ def _config(tmp_path, **overrides) -> Config:
     return Config(**values)
 
 
-def test_room_values_win_over_deployment_config_and_removal_falls_back(tmp_path):
-    """Data integrity: Room values win over deployment config and removal falls back."""
+SLACK_BODY = {"vendor": "slack", "name": "Slack", "base_access": "read", "auth": "slack_config_token", "identity": {},
+              "secrets": {"CONFIG_TOKEN": SLACK_PAIR["config_token"], "REFRESH_TOKEN": SLACK_PAIR["refresh_token"]}}
+GITHUB_BODY = {"vendor": "github", "name": "GitHub", "base_access": "read", "auth": "github_app",
+               "identity": {"app_id": GITHUB_APP["app_id"], "installation_id": GITHUB_APP["installation_id"]},
+               "secrets": {"PRIVATE_KEY": GITHUB_APP["private_key"]}}
+
+
+def test_slack_and_github_connect_like_vendors_and_the_room_reads_the_connection(tmp_path):
+    """Data integrity (kobo#377): an app the deployment config carries is a row marked from
+    the deployment config; Add Slack makes the row and the room can call Slack; Add GitHub
+    makes the row and the room's own pull requests mint with it; Remove falls back to the
+    deployment config, exactly as the service rows did."""
+    from kobo_api import room_credentials
     key = tmp_path / "pr-app.pem"
     key.write_text("-----BEGIN RSA PRIVATE KEY-----\ndeployment\n-----END RSA PRIVATE KEY-----")
     config = _config(tmp_path, pr_app_id="1", pr_app_installation_id="2", pr_app_private_key_path=key)
     client, _, headers = _client__api_room_services(tmp_path, config, kubectl=None)
     clients = client.app.state.clients
-    services = clients.room_services
 
-    assert slack_client(clients) is None
-    assert client.get("/api/admin/room-services", headers=headers()).json()["services"] == {
-        "slack": {"configured": False, "source": "none", "updated_at": None, "updated_by": None},
-        "github": {"configured": True, "source": "deployment", "updated_at": None, "updated_by": None},
-    }
-    assert services.github_app().app_id == "1"
+    def rows():
+        return {r["id"]: r for r in client.get("/api/admin/integrations", headers=headers()).json()["integrations"]}
 
-    client.put("/api/admin/room-services/github", json=GITHUB_APP, headers=headers())
-    client.put("/api/admin/room-services/slack", json=SLACK_PAIR, headers=headers())
-    creds = services.github_app()
-    assert (creds.source, creds.app_id, creds.pem()) == ("room", GITHUB_APP["app_id"], GITHUB_APP["private_key"])
-    # Slack is resolved per request: the room-held pair is what the client rotates against.
+    assert slack_client(clients) is None and not room_credentials.slack_configured(clients)
+    listed = rows()
+    assert list(listed) == ["github"]
+    assert listed["github"]["spec"]["source"] == "deployment" and listed["github"]["state_detail"] == room_credentials.FROM_DEPLOYMENT
+    assert room_credentials.github_app(clients, config).app_id == "1"
+
+    assert client.post("/api/admin/integrations", json=SLACK_BODY, headers=headers()).status_code == 201
+    assert room_credentials.slack_configured(clients)
+    # Slack is resolved per request: the connection's pair is what the client rotates against.
     assert slack_client(clients).token_store.read() == (SLACK_PAIR["config_token"], SLACK_PAIR["refresh_token"])
 
-    removed = client.delete("/api/admin/room-services/github", headers=headers())
-    assert removed.status_code == 200
-    assert removed.json()["services"]["github"]["source"] == "deployment"
-    assert services.github_app().app_id == "1"
+    added = client.post("/api/admin/integrations", json=GITHUB_BODY, headers=headers())
+    assert added.status_code == 201, added.text
+    creds = room_credentials.github_app(clients, config)
+    assert (creds.source, creds.app_id, creds.pem()) == ("room", GITHUB_APP["app_id"], GITHUB_APP["private_key"])
+    assert client.get("/api/whoami", headers=headers()).json()["github_available"] is True
+    listed = rows()
+    assert sorted(listed) == ["github", "slack"]
+    assert all(r["state"] == "applied" and "source" not in r["spec"] for r in listed.values())
+
+    removed = client.delete("/api/admin/integrations/github", headers=headers())
+    assert removed.status_code == 200 and removed.json()["secret"] == "removed", removed.text
+    assert room_credentials.github_app(clients, config).app_id == "1"
+    assert rows()["github"]["spec"]["source"] == "deployment"
+
+
+def test_the_boot_fold_turns_a_service_row_into_a_connection_once(tmp_path):
+    """Data integrity (kobo#377): a room whose Secret still stands behind an old service row
+    gets the connection row made from it at boot, once; a second boot changes nothing; a
+    connection that already exists adopts the Secret as its credential. The Secrets stay as
+    they were, so a rollback reads them."""
+    from kobo_api import room_credentials
+    from kobo_api.models import AdminIntegration
+    client, kubectl, headers = _client__api_room_services(tmp_path, _config(tmp_path), kubectl=None)
+    clients, config = client.app.state.clients, client.app.state.config
+    clients.room_services.put("slack", SLACK_PAIR, actor="ops@example.com")
+    clients.room_services.put("github", GITHUB_APP, actor="ops@example.com")
+    session = sessionmaker(bind=create_engine(f"sqlite:///{tmp_path}/kobo.db"), expire_on_commit=False)()
+
+    first = room_credentials.migrate_service_rows(session, clients, config)
+    session.commit()
+    assert len(first) == 2
+    rows = {r["id"]: r for r in client.get("/api/admin/integrations", headers=headers()).json()["integrations"]}
+    assert sorted(rows) == ["github", "slack"] and all(r["state"] == "applied" for r in rows.values())
+    assert rows["github"]["credential_ref"] == "secret:kobo/kobo-room-github-app"
+    assert rows["github"]["spec"]["identity"]["app_id"] == GITHUB_APP["app_id"] and rows["github"]["created_by"] == "ops@example.com"
+    assert room_credentials.slack_configured(clients) and room_credentials.github_app(clients, config).pem() == GITHUB_APP["private_key"]
+
+    assert room_credentials.migrate_service_rows(session, clients, config) == []
+
+    row = session.get(AdminIntegration, "github")
+    row.credential_ref = None
+    session.commit()
+    assert room_credentials.migrate_service_rows(session, clients, config) == ["github connection adopted the room's GitHub values"]
+    session.commit()
+    assert session.get(AdminIntegration, "github").credential_ref == "secret:kobo/kobo-room-github-app"
+    assert ("kobo", "kobo-room-slack") in kubectl.secrets and ("kobo", "kobo-room-github-app") in kubectl.secrets
+    session.close()
 
 
 # --- from test_admin_store.py ---

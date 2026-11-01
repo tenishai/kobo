@@ -474,15 +474,15 @@ describe("SlackPanel", () => {
     }
   });
 
-  it("greys out with one sentence when the room has no Slack integration", () => {
-    // The room's gate (#304): no fields, no buttons, only who to ask.
+  it("greys out with one sentence when the room has no Slack connection", () => {
+    // The room's gate (#304, kobo#377): no fields, no buttons, only who to ask.
     renderWithClient(SlackPanel, {
       agentName: "warden",
       slack: { ...IDLE_SLACK, available: false },
       frozen: false,
     });
 
-    expect(screen.getByText("Ask a kobo admin to add the Slack integration.")).not.toBeNull();
+    expect(screen.getByText("Ask a kobo admin to add the Slack connection.")).not.toBeNull();
     expect(document.querySelectorAll("input, textarea, button")).toHaveLength(0);
   });
 

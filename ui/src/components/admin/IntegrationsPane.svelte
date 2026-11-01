@@ -13,9 +13,6 @@
     errorMessage,
     type AdminIntegration,
     type OrgAccountsCheck,
-    type RoomServiceId,
-    type RoomServiceStatus,
-    type RoomServiceValues,
   } from "../../lib/api";
   import { toast } from "../../lib/toast.svelte";
   import {
@@ -23,11 +20,8 @@
     checkOrgAccountsMutation,
     connectAdminIntegrationMutation,
     disconnectAdminIntegrationMutation,
-    putRoomServiceMutation,
-    removeRoomServiceMutation,
-    roomServicesQuery,
   } from "../../lib/queries";
-  import { OTHER, catalogFor, type CatalogEntry } from "../../lib/admin/catalog";
+  import { OTHER, ROOM_VENDORS, catalogFor, type CatalogEntry } from "../../lib/admin/catalog";
   import { whenDay } from "../../lib/time";
 
   // `accessOn`: the permission service is on, so Datadog connects as a service account
@@ -46,90 +40,10 @@
   let checked = $state<Record<string, OrgAccountsCheck>>({});
   let checking = $state<string | null>(null);
 
-  // The room's own two services (#284, rows in this table since #304): the
-  // Slack config tokens it creates agents' Slack apps with and the GitHub app
-  // that opens their pull requests. Always listed, never "added"; pasted
-  // once, read live; a value the deployment config carries reads Connected
-  // too, with Replace to move it into the room (the room's value wins; an
-  // older install's lane, not a fresh one's). Remove calls the room-services DELETE, never
-  // a vendor disconnect.
-  const roomServices = createQuery(() => (roomServicesQuery()));
-  const putService = createMutation(() => (putRoomServiceMutation(queryClient)));
-  const removeService = createMutation(() => (removeRoomServiceMutation(queryClient)));
-  type ServiceField = { key: keyof RoomServiceValues; label: string; secret: boolean; multiline?: boolean; placeholder?: string };
-  const ROOM_SERVICES: { id: RoomServiceId; name: string; summary: string; where: string; fields: ServiceField[] }[] = [
-    {
-      id: "slack",
-      name: "Slack",
-      summary: "Lets the room create agents' Slack apps.",
-      where: "Both values come from api.slack.com/apps, under Your App Configuration Tokens: generate a token for your workspace and paste the pair. Every Slack app the room creates belongs to the account that generated the token, so use a dedicated kobo account rather than your own: create a Slack user for kobo in your workspace, sign in as it at api.slack.com/apps, generate the token there, and keep its sign-in with the room's operators. The token pair rotates on its own once pasted.",
-      fields: [
-        { key: "config_token", label: "App configuration token", secret: true, placeholder: "xoxe.xoxp-..." },
-        { key: "refresh_token", label: "Refresh token", secret: true, placeholder: "xoxe-..." },
-      ],
-    },
-    {
-      id: "github",
-      name: "GitHub",
-      summary: "Opens the room's own pull requests: skills and tooling. What each agent may reach on GitHub is picked on its Access tab.",
-      where: "App ID and the private key come from the app's settings page on GitHub (Developer settings, GitHub Apps); the installation ID is the number at the end of the installation's URL under Install App.",
-      fields: [
-        { key: "app_id", label: "App ID", secret: false, placeholder: "123456" },
-        { key: "installation_id", label: "Installation ID", secret: false, placeholder: "12345678" },
-        { key: "private_key", label: "Private key (PEM)", secret: true, multiline: true, placeholder: "-----BEGIN RSA PRIVATE KEY-----" },
-      ],
-    },
-  ];
-  const SERVICE_STATE: Record<RoomServiceStatus["source"], { tone: "on" | "warn"; label: string }> = {
-    room: { tone: "on", label: "Set up" },
-    deployment: { tone: "on", label: "Connected" },
-    none: { tone: "warn", label: "Not set up" },
-  };
-  let serviceForm = $state<{ id: RoomServiceId; values: Record<string, string> } | null>(null);
-  let serviceError = $state<string | null>(null);
-  let removingService = $state<RoomServiceId | null>(null);
-  const serviceDef = $derived((id: RoomServiceId) => ROOM_SERVICES.find((s) => s.id === id)!);
-  const serviceStatus = $derived((id: RoomServiceId): RoomServiceStatus | null => roomServices.data?.services[id] ?? null);
-
-  function openService(id: RoomServiceId): void {
-    serviceError = null;
-    serviceForm = { id, values: Object.fromEntries(serviceDef(id).fields.map((f) => [f.key, ""])) };
-  }
-
-  function submitService(event: SubmitEvent): void {
-    event.preventDefault();
-    if (!serviceForm) return;
-    serviceError = null;
-    const values: RoomServiceValues = {};
-    for (const f of serviceDef(serviceForm.id).fields) values[f.key] = (serviceForm.values[f.key] ?? "").trim();
-    const name = serviceDef(serviceForm.id).name;
-    putService.mutate(
-      { service: serviceForm.id, values },
-      {
-        onSuccess: () => {
-          toast.success(`${name} set up`, "Agents can use it now.");
-          serviceForm = null;
-        },
-        onError: (err: unknown) => (serviceError = errorMessage(err, "Could not store the values. Try again.")),
-      },
-    );
-  }
-
-  function handleRemoveService(id: RoomServiceId): void {
-    removingService = null;
-    const name = serviceDef(id).name;
-    removeService.mutate(id, {
-      onSuccess: () => toast.success(`${name} removed`),
-      onError: (err: unknown) => toast.error(`Could not remove ${name}`, errorMessage(err, "Try again.")),
-    });
-  }
-
-  function whenBy(s: RoomServiceStatus): string {
-    if (s.source !== "room") return "";
-    const at = whenDay(s.updated_at);
-    return [at, s.updated_by ? `by ${s.updated_by}` : ""].filter(Boolean).join(" ");
-  }
-
+  // Slack and GitHub are rows like the rest (kobo#377): added through the catalog,
+  // replaced by an Add with new values, removed like any connection. The room's own
+  // needs read their credential from the row. An older install whose deployment config
+  // still carries one shows it as a row marked so, with Replace and no Remove.
   let search = $state("");
   const all = $derived(integrations.data ?? []);
   const matches = $derived((i: AdminIntegration) => i.name.toLowerCase().includes(search.trim().toLowerCase()));
@@ -137,7 +51,6 @@
   const roots = $derived(all.filter((i) => i.spec.kind !== "account" && !i.spec.parent));
   const childrenOf = $derived((org: AdminIntegration) => all.filter((i) => i.spec.parent === org.id));
   const visibleRoots = $derived(roots.filter((r) => matches(r) || childrenOf(r).some(matches)));
-  const visibleServices = $derived(ROOM_SERVICES.filter((s) => s.name.toLowerCase().includes(search.trim().toLowerCase())));
   const connected = $derived(new Set(all.map((i) => i.vendor)));
   // A second AWS organization is a second row, so AWS stays addable.
   const addable = $derived(
@@ -150,7 +63,7 @@
   let catalogOpen = $state(false);
   let form = $state<{
     entry: CatalogEntry;
-    mode: "role" | "org" | "other";
+    mode: "role" | "org" | "other" | "replace";
     parent: AdminIntegration | null;
     vendor: string;
     name: string;
@@ -167,11 +80,14 @@
   // field until the person types their own.
   const DATADOG_AUTH = "datadog_service_account";
   const GITHUB_AUTH = "github_app";
+  const SLACK_AUTH = "slack_config_token";
   // Connections through the permission service: the keys go to it alone, the
   // vendor's MCP server becomes a gateway target, and the read/write choice does
   // not apply (the ceiling is the read permissions agents are granted).
   const SERVICE_AUTHS = new Set([DATADOG_AUTH, GITHUB_AUTH]);
   const VENDOR_OF_AUTH: Record<string, string> = { [DATADOG_AUTH]: "Datadog", [GITHUB_AUTH]: "GitHub" };
+  // The room's own two (kobo#377): the values are held by the room itself, no read/write choice.
+  const ROOM_AUTHS = new Set([GITHUB_AUTH, SLACK_AUTH]);
   function datadogMcpAddress(site: string): string {
     return `https://mcp.${site.trim() || "datadoghq.com"}/v1`;
   }
@@ -197,16 +113,16 @@
     return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   }
 
-  function openConnect(preset: CatalogEntry | null): void {
+  function openConnect(preset: CatalogEntry | null, replacing: AdminIntegration | null = null): void {
     catalogOpen = false;
     formError = null;
     const entry = preset ?? OTHER;
     form = {
       entry,
-      mode: entry.id === "aws" ? "org" : "other",
+      mode: replacing ? "replace" : entry.id === "aws" ? "org" : "other",
       parent: null,
       vendor: entry.id,
-      name: entry.id === "aws" ? "" : entry.name,
+      name: replacing?.name || (entry.id === "aws" ? "" : entry.name),
       address: entry.address ?? "",
       base_access: "read",
       trust: "untrusted",
@@ -237,6 +153,7 @@
     event.preventDefault();
     if (!form) return;
     formError = null;
+    const replacing = form.mode === "replace";
     const identity: Record<string, string> = {};
     const secrets: Record<string, string> = {};
     let auth: string = form.entry.auth;
@@ -263,7 +180,7 @@
       },
       {
         onSuccess: (row) => {
-          toast.success(`${row.name} connected`, row.state_detail ?? undefined);
+          toast.success(replacing ? `${row.name} replaced` : `${row.name} connected`, row.state_detail ?? undefined);
           form = null;
         },
         onError: (err: unknown) => {
@@ -271,6 +188,13 @@
         },
       },
     );
+  }
+
+  /** Replace (kobo#377): the same Add, with new values, over the row the room holds
+   * or the one the deployment config stands behind; the room's value wins. */
+  function openReplace(row: AdminIntegration): void {
+    const entry = catalog.find((c) => c.id === row.vendor);
+    if (entry) openConnect(entry, row);
   }
 
   function handleDisconnect(row: AdminIntegration): void {
@@ -294,17 +218,19 @@
     return i.vendor === "aws" ? "account" : "connection";
   }
   const formTitle = $derived(
-    !form ? "" : form.mode === "org" ? "Connect an AWS organization" : `Add ${form.name || "an integration"}`,
+    !form ? "" : form.mode === "org" ? "Connect an AWS organization" : form.mode === "replace" ? `Replace ${form.name}` : `Add ${form.name || "an integration"}`,
   );
+  const fromDeployment = (i: AdminIntegration): boolean => i.spec.source === "deployment";
+  const roomOwn = (i: AdminIntegration): boolean => ROOM_VENDORS.has(i.vendor) && i.spec.source !== "access";
 </script>
 
 <section class="panel page" aria-labelledby="integrations-heading">
   <div>
     <h2 id="integrations-heading" class="page__title">Integrations</h2>
     <p class="page__lead">
-      The vendors agents can reach, and the two services the room itself uses: Slack and GitHub.
-      A cloud is an organization with the accounts connected under it; a service vendor is one connection.
-      What each agent may do there is granted under Permissions.
+      The vendors agents can reach. A cloud is an organization with the accounts connected under it;
+      a service vendor is one connection. Slack and GitHub connect the same way, and the room's own
+      needs ride the same credential. What each agent may do there is granted under Permissions.
     </p>
   </div>
 
@@ -324,52 +250,8 @@
           <tr><th>Name</th><th>Kind</th><th>Status</th><th>Added</th><th class="panel__cell--right"></th></tr>
         </thead>
         <tbody>
-          {#each visibleServices as svc (svc.id)}
-            {@const s = serviceStatus(svc.id)}
-            <tr>
-              <td>
-                <div class="who">
-                  <VendorMark id={svc.id} name={svc.name} size={16} />
-                  <div class="who__text">
-                    <span class="name">{svc.name}</span>
-                    <span class="quiet addr">{svc.summary}</span>
-                  </div>
-                </div>
-              </td>
-              <td><span class="chip">service</span></td>
-              <td>
-                {#if s}
-                  <span class="status status--{SERVICE_STATE[s.source].tone}">
-                    <span class="status__dot" aria-hidden="true"></span>{SERVICE_STATE[s.source].label}
-                  </span>
-                {:else if roomServices.isError}
-                  <span class="quiet">Could not read</span>
-                {:else}
-                  <span class="quiet">Reading…</span>
-                {/if}
-              </td>
-              <td class="quiet">{s ? whenBy(s) : ""}</td>
-              <td class="panel__cell--right">
-                {#if s?.source === "deployment"}
-                  <!-- The deployment config carries it (an older install). A value pasted here
-                       is held by the room and wins, the way a fresh install does it. -->
-                  <span class="quiet" title="Set in the deployment config. Replace to hold it in the room instead; the room's value wins.">set in the deployment config</span>
-                  {#if roomServices.data?.can_store}
-                    <button type="button" class="btn btn--quiet" onclick={() => openService(svc.id)}>Replace</button>
-                  {/if}
-                {:else if s && roomServices.data && !roomServices.data.can_store}
-                  <span class="quiet" title={roomServices.data.note ?? ""}>nowhere to store it on this room</span>
-                {:else if s?.source === "room"}
-                  <button type="button" class="btn btn--quiet" onclick={() => openService(svc.id)}>Replace</button>
-                  <button type="button" class="btn btn--quiet" disabled={removeService.isPending} onclick={() => (removingService = svc.id)}>Remove</button>
-                {:else if s}
-                  <button type="button" class="btn btn--quiet" onclick={() => openService(svc.id)}>Set up</button>
-                {/if}
-              </td>
-            </tr>
-          {/each}
           {#if all.length === 0 && !search.trim()}
-            <tr><td colspan="5"><p class="panel__empty">Nothing connected yet. Add an integration: an AWS organization, or a vendor the room holds one connection to.</p></td></tr>
+            <tr><td colspan="5"><p class="panel__empty">Nothing connected yet. Add an integration: Slack so the room can make agents' Slack apps, GitHub for the room's own pull requests, an AWS organization, or a vendor the room holds one connection to.</p></td></tr>
           {/if}
           {#each visibleRoots as i (i.id)}
             <tr>
@@ -379,6 +261,8 @@
                   <div class="who__text">
                     <span class="name">{i.name}</span>
                     {#if i.spec.address}<span class="quiet addr">{i.spec.address}</span>{/if}
+                    {#if i.vendor === "slack"}<span class="quiet addr">Lets the room create agents' Slack apps.</span>{/if}
+                    {#if i.vendor === "github" && i.spec.source !== "access"}<span class="quiet addr">The room's own pull requests and agent repositories{i.spec.room_only ? "" : "; what each agent may reach is picked on its Access tab"}.</span>{/if}
                     {#if i.spec.source === "access" && i.spec.kind !== "org"}<span class="quiet addr">in the permission service{i.spec.ceiling?.length ? `, ${i.spec.ceiling.length} permission${i.spec.ceiling.length === 1 ? "" : "s"} agents may ask for` : ""}</span>{/if}
                   </div>
                 </div>
@@ -405,7 +289,17 @@
                 {#if i.spec.pull_request}
                   <a class="btn btn--quiet" href={i.spec.pull_request} target="_blank" rel="noreferrer">Pull request</a>
                 {/if}
-                <button type="button" class="btn btn--quiet" disabled={disconnect.isPending} onclick={() => (removing = i)}>Remove</button>
+                {#if fromDeployment(i)}
+                  <!-- The deployment config carries it (an older install). A value pasted here
+                       is held by the room and wins, the way a fresh install does it. -->
+                  <span class="quiet" title="Set in the deployment config. Replace to hold it in the room instead; the room's value wins.">set in the deployment config</span>
+                  <button type="button" class="btn btn--quiet" onclick={() => openReplace(i)}>Replace</button>
+                {:else}
+                  {#if roomOwn(i)}
+                    <button type="button" class="btn btn--quiet" onclick={() => openReplace(i)}>Replace</button>
+                  {/if}
+                  <button type="button" class="btn btn--quiet" disabled={disconnect.isPending} onclick={() => (removing = i)}>Remove</button>
+                {/if}
               </td>
             </tr>
             {#each childrenOf(i).filter((c) => !search.trim() || matches(c) || matches(i)) as c (c.id)}
@@ -456,7 +350,7 @@
               </tr>
             {/each}
           {:else}
-            {#if visibleServices.length === 0}
+            {#if search.trim()}
               <tr><td colspan="5"><p class="panel__empty">No integration matches that.</p></td></tr>
             {/if}
           {/each}
@@ -501,18 +395,24 @@
       {#each form.entry.fields as f (f.key)}
         <label class="field">
           <span>{f.label}{#if f.optional} <span class="quiet">(optional)</span>{/if}</span>
-          <input
-            id="integration-{f.key}"
-            type={f.secret ? "password" : "text"}
-            bind:value={form.values[f.key]}
-            autocomplete="off"
-            placeholder={f.placeholder ?? ""}
-            required={!f.optional}
-          />
+          {#if f.multiline}
+            <textarea id="integration-{f.key}" rows="6" bind:value={form.values[f.key]} placeholder={f.placeholder ?? ""} autocomplete="off" spellcheck="false" required={!f.optional}></textarea>
+          {:else}
+            <input
+              id="integration-{f.key}"
+              type={f.secret ? "password" : "text"}
+              bind:value={form.values[f.key]}
+              autocomplete="off"
+              placeholder={f.placeholder ?? ""}
+              required={!f.optional}
+            />
+          {/if}
         </label>
       {/each}
       {#if form.entry.note}<p class="page__foot">{form.entry.note}</p>{/if}
-      {#if form.entry.auth === DATADOG_AUTH}
+      {#if form.entry.auth === SLACK_AUTH}
+        <!-- Nothing for the gateway and no read/write choice: the pair is the room's own. -->
+      {:else if form.entry.auth === DATADOG_AUTH}
         <label class="field">
           <span>Datadog MCP server</span>
           <input id="integration-address" type="url" bind:value={form.address} placeholder="https://mcp.datadoghq.com/v1" />
@@ -540,12 +440,16 @@
       {#if formError}<p class="page__foot fail">{formError}</p>{/if}
       {#if connect.isPending}
         <p class="page__foot busy" role="status"><span class="spin" aria-hidden="true"></span>
-          {#if SERVICE_AUTHS.has(form.entry.auth)}Checking with {VENDOR_OF_AUTH[form.entry.auth]}, then adding its MCP server to the gateway. This can take up to a minute.
+          {#if form.entry.auth === SLACK_AUTH}Checking the room can keep the pair, then saving it.
+          {:else if form.entry.auth === GITHUB_AUTH && !accessOn}Saving the app for the room.
+          {:else if SERVICE_AUTHS.has(form.entry.auth)}Checking with {VENDOR_OF_AUTH[form.entry.auth]}, then adding its MCP server to the gateway. This can take up to a minute.
           {:else if form.vendor === "aws"}Checking the role with AWS.
           {:else}Storing the credential and adding the target to the gateway. This can take a moment.{/if}
         </p>
       {/if}
-      {#if SERVICE_AUTHS.has(form.entry.auth)}
+      {#if ROOM_AUTHS.has(form.entry.auth)}
+        <p class="page__foot">The values are kept by the room itself and never shown again{#if form.entry.auth === GITHUB_AUTH && accessOn}; the permission service checks the app with GitHub before anything is saved{/if}.</p>
+      {:else if SERVICE_AUTHS.has(form.entry.auth)}
         <p class="page__foot">The keys are kept for the permission service alone and never shown again; it checks them with {VENDOR_OF_AUTH[form.entry.auth]} before anything is saved.</p>
       {:else if form.entry.fields.some((f) => f.secret)}
         <p class="page__foot">Secret values are stored in the room's secrets service and never shown again.</p>
@@ -555,48 +459,9 @@
   {#snippet footer()}
     <button type="button" class="btn" onclick={() => (form = null)}>Cancel</button>
     <button type="submit" form="integration-form" class="btn btn--primary" disabled={connect.isPending}>
-      {#if connect.isPending}<span class="spin spin--btn" aria-hidden="true"></span>{form?.vendor === "aws" ? "Checking with AWS…" : form && SERVICE_AUTHS.has(form.entry.auth) ? `Checking with ${VENDOR_OF_AUTH[form.entry.auth]}…` : "Adding…"}
-      {:else}{form?.vendor === "aws" ? "Connect" : "Add"}{/if}
+      {#if connect.isPending}<span class="spin spin--btn" aria-hidden="true"></span>{form?.vendor === "aws" ? "Checking with AWS…" : form && SERVICE_AUTHS.has(form.entry.auth) && (form.entry.auth !== GITHUB_AUTH || accessOn) ? `Checking with ${VENDOR_OF_AUTH[form.entry.auth]}…` : "Saving…"}
+      {:else}{form?.vendor === "aws" ? "Connect" : form?.mode === "replace" ? "Replace" : "Add"}{/if}
     </button>
-  {/snippet}
-</Modal>
-
-<Modal open={serviceForm !== null} title={serviceForm ? `${serviceStatus(serviceForm.id)?.source === "room" ? "Replace" : "Set up"} ${serviceDef(serviceForm.id).name}` : ""} onclose={() => (serviceForm = null)}>
-  {#if serviceForm}
-    {@const def = serviceDef(serviceForm.id)}
-    <form id="room-service-form" class="form" onsubmit={submitService}>
-      <p class="page__lead">{def.where}</p>
-      {#each def.fields as f (f.key)}
-        <label class="field">
-          <span>{f.label}</span>
-          {#if f.multiline}
-            <textarea id="room-service-{f.key}" rows="6" bind:value={serviceForm.values[f.key]} placeholder={f.placeholder ?? ""} autocomplete="off" spellcheck="false" required></textarea>
-          {:else}
-            <input id="room-service-{f.key}" type={f.secret ? "password" : "text"} bind:value={serviceForm.values[f.key]} placeholder={f.placeholder ?? ""} autocomplete="off" required />
-          {/if}
-        </label>
-      {/each}
-      {#if serviceError}<p class="page__foot fail">{serviceError}</p>{/if}
-      <p class="page__foot">The values are kept in the room's own secret store and never shown again.</p>
-    </form>
-  {/if}
-  {#snippet footer()}
-    <button type="button" class="btn" onclick={() => (serviceForm = null)}>Cancel</button>
-    <button type="submit" form="room-service-form" class="btn btn--primary" disabled={putService.isPending}>{putService.isPending ? "Saving…" : "Save"}</button>
-  {/snippet}
-</Modal>
-
-<Modal open={removingService !== null} title={removingService ? `Remove ${serviceDef(removingService).name}?` : ""} size="narrow" onclose={() => (removingService = null)}>
-  <p class="page__lead">
-    {#if removingService === "slack"}
-      The room forgets its Slack config tokens. Agents keep the Slack apps they already have, but no new app can be connected until a pair is set again, or the deployment config carries one; every agent's Slack tab greys out until then.
-    {:else}
-      The room forgets the GitHub app. The room's own pull requests (skills, tooling) stop until an app is set again, or the deployment config carries one.
-    {/if}
-  </p>
-  {#snippet footer()}
-    <button type="button" class="btn" onclick={() => (removingService = null)}>Cancel</button>
-    <button type="button" class="btn btn--danger" onclick={() => removingService && handleRemoveService(removingService)}>Remove</button>
   {/snippet}
 </Modal>
 
@@ -604,6 +469,10 @@
   <p class="page__lead">
     {#if removing?.spec.kind === "org"}
       The organization is removed from the permission service. Its accounts must be removed first.
+    {:else if removing?.vendor === "slack"}
+      The room forgets its Slack config tokens. Agents keep the Slack apps they already have, but no new app can be connected until Slack is added again, or the deployment config carries a pair; every agent's Slack row greys out until then.
+    {:else if removing?.vendor === "github" && removing.spec.source !== "access"}
+      The room forgets the GitHub app. Its own pull requests (skills, tooling) stop until GitHub is added again, or the deployment config carries an app{#if !removing.spec.room_only}; the connection is removed from the permission service and every grant on it is revoked, and GitHub's tools come off the gateway{/if}.
     {:else}
       The connection is removed from the permission service and every grant on it is revoked; any credential is deleted from the secrets service and the vendor removed from the gateway.
     {/if}
