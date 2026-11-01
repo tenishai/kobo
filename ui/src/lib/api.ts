@@ -1429,7 +1429,9 @@ export async function fetchAdminPeople(): Promise<AdminPeople> {
  * target, in one sentence, with where the request came from and how far
  * the action has landed where it projects. */
 export type AuditRow = {
-  id: number;
+  // A number from the room's own log; "lease:<id>" or "event:<id>" on the
+  // Agents tab, whose rows come from the permission service.
+  id: number | string;
   at: string;
   actor: string;
   actor_kind: "person" | "room" | "agent";
@@ -1488,6 +1490,29 @@ export async function fetchAdminAudit(filters: AuditFilters, cursor: string | nu
 /** The link the Export buttons open: the current filter as a file. */
 export function auditExportUrl(filters: AuditFilters, format: "csv" | "json"): string {
   return `/api/admin/audit/export${auditQueryString(filters, { format })}`;
+}
+
+/** The Audit page's Agents tab (kobo#371): what agents did with their
+ * connections, read live from the permission service in the same row shape,
+ * with the facets its selects offer. One window, newest first, no cursor. */
+export type AuditAgentsPage = {
+  rows: AuditRow[];
+  total_in_window: number;
+  agents: string[];
+  outcomes: string[];
+};
+
+/** The Agents tab's filters: the people filters without actor and action. */
+export type AuditAgentsFilters = Pick<AuditFilters, "q" | "agent" | "outcome" | "since" | "until">;
+
+export async function fetchAdminAuditAgents(filters: AuditAgentsFilters): Promise<AuditAgentsPage> {
+  const res = await fetch(`/api/admin/audit/agents${auditQueryString(filters)}`);
+  return parse<AuditAgentsPage>(res);
+}
+
+/** The Agents tab's Export: the same window as a file. */
+export function auditAgentsExportUrl(filters: AuditAgentsFilters, format: "csv" | "json"): string {
+  return `/api/admin/audit/agents${auditQueryString(filters, { format })}`;
 }
 
 /** The facts the panel's rail shows about this room. */

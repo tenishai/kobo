@@ -3695,3 +3695,67 @@ def test_a_request_on_a_github_child_carries_the_repository_set_for_review(a2a_r
     gh = next(v for v in page["vendors"] if v["id"] == "github")
     assert gh["accounts"][0]["id"] == "github-asker" and gh["accounts"][0]["has_repo_set"] is True
     assert [g["integration"] for g in page["grants"]] == ["github-asker"]
+
+
+# --- the Audit page's Agents tab (kobo#371) ---
+
+
+def _agents_audit(a2a_room):
+    bab = a2a_room.bab
+    bab.put_integration("aws-prod", "aws", {"role_arn": "arn:aws:iam::111111111111:role/Access"}, ["aws_inventory_read"], "ops@example.com")
+    bab._leases.append({"id": 7, "agent": "asker", "integration": "aws-prod", "permissions": ["aws_inventory_read"],
+                        "task": "count instances", "minter": "aws", "via": "gateway",
+                        "issued_at": "2026-10-30T12:00:00", "expires_at": "2026-10-30T13:00:00"})
+    bab._events.append({"id": 3, "at": "2026-10-30T12:05:00", "kind": "lease.refused", "actor": "asker",
+                        "detail": {"agent": "asker", "integration": "aws-prod", "permissions": ["aws_ecs_update_service"],
+                                   "reason": "not granted", "via": None}})
+    bab._events.append({"id": 4, "at": "2026-10-30T12:10:00", "kind": "lease.failed", "actor": "oracle",
+                        "detail": {"agent": "oracle", "integration": "aws-prod", "permissions": ["aws_inventory_read"],
+                                   "reason": "the vendor is away", "error": "the vendor is away", "via": "gateway"}})
+    bab._events.append({"id": 5, "at": "2026-10-30T12:11:00", "kind": "sweep", "actor": "ops@example.com", "detail": {}})
+    return a2a_room.client, a2a_room.headers
+
+
+def test_agents_audit_merges_leases_and_refusals_into_audit_rows(a2a_room):
+    """Wire shape (kobo#371): the Agents tab reads the permission service's leases and its
+    refused and failed events as one list, newest first, in the room's audit row shape with
+    one sentence each; its facets are the agents and outcomes in the window, and the filters
+    the pane sends (agent, outcome, q) narrow it."""
+    c, h = _agents_audit(a2a_room)
+
+    body = c.get("/api/admin/audit/agents", headers=h).json()
+
+    assert set(body) == {"rows", "total_in_window", "agents", "outcomes"}
+    assert body["total_in_window"] == 3 and body["agents"] == ["asker", "oracle"] and body["outcomes"] == ["failed", "ok", "refused"]
+    assert [(r["action"], r["outcome"], r["summary"]) for r in body["rows"]] == [
+        ("lease.failed", "failed", "oracle could not borrow read on AWS aws-prod: the vendor is away"),
+        ("lease.refused", "refused", "asker was refused write on AWS aws-prod: not granted"),
+        ("lease.minted", "ok", "asker borrowed read on AWS aws-prod for 1h: count instances"),
+    ]
+    minted = body["rows"][2]
+    assert set(minted) >= {"id", "at", "actor", "actor_kind", "action", "target_kind", "target_id", "agent_name",
+                           "summary", "outcome", "source", "detail", "landed", "request_ip"}
+    assert (minted["actor"], minted["actor_kind"], minted["agent_name"]) == ("agent:asker", "agent", "asker")
+    assert (minted["target_kind"], minted["target_id"], minted["source"]) == ("integration", "aws-prod", "permission-service")
+    assert minted["at"] == "2026-10-30T12:00:00Z" and minted["detail"]["expires_at"] == "2026-10-30T13:00:00Z"
+    assert minted["detail"]["permissions"] == ["aws_inventory_read"] and minted["detail"]["via"] == "gateway"
+    assert [r["action"] for r in c.get("/api/admin/audit/agents?agent=asker", headers=h).json()["rows"]] == ["lease.refused", "lease.minted"]
+    assert [r["action"] for r in c.get("/api/admin/audit/agents?outcome=ok", headers=h).json()["rows"]] == ["lease.minted"]
+    assert [r["action"] for r in c.get("/api/admin/audit/agents?q=vendor", headers=h).json()["rows"]] == ["lease.failed"]
+    assert c.get("/api/admin/audit/agents?since=2026-10-30T12:04:00Z&until=2026-10-30T12:09:00Z", headers=h).json()["total_in_window"] == 1
+
+
+def test_agents_audit_export_carries_the_same_window(a2a_room):
+    """Wire shape (kobo#371): `format=csv|json` on the Agents route hands the same filtered
+    window back as a file, CSV with a header or a JSON array, named apart from the people export."""
+    c, h = _agents_audit(a2a_room)
+
+    csv_body = c.get("/api/admin/audit/agents?agent=asker&format=csv", headers=h)
+    json_body = c.get("/api/admin/audit/agents?agent=asker&format=json", headers=h)
+
+    assert csv_body.headers["content-type"].startswith("text/csv")
+    assert "audit-agents-" in csv_body.headers["content-disposition"]
+    lines = csv_body.text.strip().splitlines()
+    assert lines[0].startswith("id,at,actor,actor_kind,action,") and len(lines) == 3
+    assert ",lease.refused," in lines[1] and ",lease.minted," in lines[2]
+    assert [r["action"] for r in json_body.json()] == ["lease.refused", "lease.minted"]
