@@ -3944,8 +3944,9 @@ def create_app(
         name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
     ) -> JSONResponse:
         """The repositories the agent may be given (the room App installation's,
-        through the room App) and the set it holds (its child's spec), for the
-        Access tab's GitHub step (kobo#365). Owner, manager or operator."""
+        read from the room's warm listing, kobo#368) with their count, and the
+        set it holds (its child's spec), for the Access tab's GitHub step
+        (kobo#365). Owner, manager or operator."""
         bab, blocked = _bab_or_404()
         if blocked is not None:
             return blocked
@@ -3963,17 +3964,21 @@ def create_app(
             return _bab_refused(exc)
         selected = github_access_child_repositories(child)
         if conn is None:
-            return JSONResponse({"available": False, "repositories": [], "selected": selected,
+            return JSONResponse({"available": False, "repositories": [], "total": 0, "selected": selected,
                                  "note": github_access.NO_CONNECTION})
+        # The warm listing the connect form searches (kobo#368), never a walk
+        # of the installation per open; `total` lets the picker say how many
+        # the room can see while it shows only the matches for what is typed.
         try:
-            repos = github_access.installation_repositories(app.state.clients)
+            repos = github_access.installation_repositories(app.state.clients, app.state.repo_index)
         except ClientError as exc:
-            return JSONResponse({"available": False, "repositories": [], "selected": selected,
+            return JSONResponse({"available": False, "repositories": [], "total": 0, "selected": selected,
                                  "note": f"the room could not list the installation's repositories: {exc}"})
         return JSONResponse({
             "available": True,
             "repositories": [{"full_name": r.full_name, "private": r.private, "default_branch": r.default_branch or None}
                              for r in repos],
+            "total": len(repos),
             "selected": selected,
             "note": None,
         })
@@ -4007,7 +4012,7 @@ def create_app(
         if conn is None:
             return JSONResponse({"error": github_access.NO_CONNECTION}, status_code=404)
         try:
-            available = github_access.installation_repositories(app.state.clients)
+            available = github_access.installation_repositories(app.state.clients, app.state.repo_index)
         except ClientError as exc:
             return JSONResponse({"error": f"the room could not list the installation's repositories: {exc}"}, status_code=502)
         strays = github_access.strays(wanted, available)

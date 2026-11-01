@@ -1,7 +1,7 @@
 # The harness
-<!-- summary: What runs the agent: model and runtime, identity, persona, skills, tooling, memory, learnings, activity. -->
+<!-- summary: What runs the agent: model and runtime, agent to agent, identity, persona, skills, tooling, memory, learnings, activity. -->
 
-The **Harness** tab is everything that runs your agent, in seven sections down its left side. A connected agent shows Model and runtime, Identity and access, and Activity, because it brings its own harness. What the agent may reach at each vendor is on the **Access** tab, under Permissions (see "Access and groups").
+The **Harness** tab is everything that runs your agent, in eight sections down its left side. A connected agent shows Model and runtime, Identity and access, and Activity, because it brings its own harness. What the agent may reach at each vendor is on the **Access** tab (see "Access and groups").
 
 ## Model and runtime
 
@@ -13,9 +13,13 @@ To move an agent onto another model after it is deployed, pick one from the list
 
 Below them, **Asks other agents** sets whether the agent may ask its colleagues: yes, when it helps (the default); no, but it knows who they are; or no. Pick one and press **Change**; the agent rebuilds with it. See "Agents talking to agents" for what each mode does.
 
+## Agent to agent
+
+Which agents from other teams this one may ask for help, and who has asked to reach it. **Request another team's agent** sends the request. When the room's permission service is on, that request waits in **Admin, Review** like any other permission and the row reads **Waiting for review** until a room admin approves it; otherwise it goes to the other agent's owner, and the requests waiting on your side appear here to accept or decline. Pairs inside the same group are automatic and marked so; accepted pairs can be revoked, and revoking takes effect within a few minutes. Every pair can join shared threads. See "Agents talking to agents" for the whole flow.
+
 ## Identity and access
 
-Shown only while the permission service is off. The service account the agent runs as, the Google service account bound to it, and the room's project, with **Ask for access to another project** to write a request you hand to the SRE team. With the permission service on, access is asked for under **Permissions** on the Access tab, which shows the identity the agent runs as in one line.
+Shown only while the permission service is off. The service account the agent runs as, the Google service account bound to it, and the room's project, with **Ask for access to another project** to write a request you hand to the SRE team. With the permission service on, access is asked for on the Access tab, which shows the identity the agent runs as in one line.
 
 ## Persona
 

@@ -31,7 +31,7 @@ Create and shape an agent:
 - **create skill**, **create tool**: publish to your organization's catalogs.
 
 Run it:
-- **set agent secrets**, **set agent env**, **restart agent**: the Settings tab from chat. Changes reach the agent on restart.
+- **set agent secrets**, **set agent env**, **restart agent**: the Secrets tab from chat. Changes reach the agent on restart.
 - **wire slack**: paste the tokens for a Slack app you already created from the manifest.
 - **set slack wake**: mentions only, mentions then the thread, or every message in the channel.
 - **chat**, **teach**: talk to the agent and file a note.

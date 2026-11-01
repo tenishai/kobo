@@ -32,7 +32,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from kobo_api import admin_store
-from kobo_api.clients import COMMIT_AUTHOR_EMAIL, BranchComparison, ClientError, Clients
+from kobo_api.clients import (
+    COMMIT_AUTHOR_EMAIL,
+    BranchComparison,
+    ClientError,
+    Clients,
+    InstallationRepo,
+)
 from kobo_api.composer import BundleSpec, compose
 from kobo_api.config import SHARED_GROUP, Config, GroupChoice, MCPConfig
 from kobo_api.connect_scan import REPO_NOT_IN_ORG, scan_repo
@@ -70,6 +76,7 @@ from kobo_api.pairs import (
 from kobo_api.personas import seed_default_personas
 from kobo_api.provisioner import Ctx, run_pipeline
 from kobo_api.purpose_tags import encode_tags
+from kobo_api.repo_search import RepoIndex
 from kobo_api.slack_state import encode_channels
 from kobo_api.steps import (
     AccessStep,
@@ -6254,8 +6261,11 @@ def test_the_access_tab_shows_github_as_the_agents_own_repository_set(tmp_path, 
     some; the room writes the child `<connection>-<agent>` under the connection with every
     level in its ceiling, and from then on the Access tab shows the child, never the
     connection and never another agent's child. Strays, an empty set and a room without
-    GitHub are refused; the room-wide picker still shows the connection alone."""
-    c, h, bab, _, _ = _github_room(tmp_path, fake_storage)
+    GitHub are refused; the room-wide picker still shows the connection alone. The listing
+    comes from the room's warm index (kobo#368): one cold read fills it, the save never walks
+    GitHub again, the payload carries `total`, and a room whose index holds a listing never
+    asks the client at all."""
+    c, h, bab, github, _ = _github_room(tmp_path, fake_storage)
     page = c.get("/api/agents/ledger/access", headers=h).json()
     gh = next(v for v in page["vendors"] if v["id"] == "github")
     assert gh["accounts"] == [{"id": "github", "name": "GitHub", "connected": True, "ceiling": GITHUB_LEVELS, "organization": None,
@@ -6267,7 +6277,9 @@ def test_the_access_tab_shows_github_as_the_agents_own_repository_set(tmp_path, 
     listing = c.get("/api/agents/ledger/github/repositories", headers=h).json()
     assert listing["available"] is True and listing["selected"] == [] and listing["note"] is None
     assert [r["full_name"] for r in listing["repositories"]] == ["acme/infra", "acme/web", "example-org/agent-ledger"]
+    assert listing["total"] == 3
     assert set(listing["repositories"][0]) == {"full_name", "private", "default_branch"}
+    assert github.calls.count("list_installation_repos") == 1
 
     r = c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/web", "acme/infra"]})
     assert r.status_code == 200, r.text
@@ -6291,6 +6303,19 @@ def test_the_access_tab_shows_github_as_the_agents_own_repository_set(tmp_path, 
 
     same = c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/infra", "acme/web"]})
     assert same.json()["changed"] is False
+    # Three reads and two saves so far, one walk of GitHub: the rest came out of the warm listing.
+    assert github.calls.count("list_installation_repos") == 1
+
+    class WarmIndex:
+        def listing(self, now=None):
+            return [InstallationRepo(full_name="acme/warm", archived=False, private=True, default_branch="main", pushed_at="")]
+
+    c.app.state.repo_index = WarmIndex()
+    warm = c.get("/api/agents/ledger/github/repositories", headers=h).json()
+    assert [r["full_name"] for r in warm["repositories"]] == ["acme/warm"] and warm["total"] == 1
+    assert c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/warm"]}).status_code == 200
+    assert github.calls.count("list_installation_repos") == 1
+    c.app.state.repo_index = RepoIndex(github)
     stray = c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/infra", "acme/nope"]})
     assert stray.status_code == 422 and stray.json()["strays"] == ["acme/nope"] and "acme/nope" in stray.json()["error"]
     assert c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": []}).status_code == 422

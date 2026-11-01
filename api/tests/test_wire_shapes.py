@@ -52,6 +52,7 @@ from kobo_api.personas import (
     seed_default_personas,
 )
 from kobo_api.purpose_tags import encode_tags
+from kobo_api.repo_search import RepoIndex
 from kobo_api.slack_state import encode_channels
 from kobo_api.steps import (
     _colleague_roster,
@@ -3677,6 +3678,7 @@ def test_a_request_on_a_github_child_carries_the_repository_set_for_review(a2a_r
     levels = ["github_pulls_review", "github_pulls_write", "github_repos_read"]
     bab.put_integration("github", "github", {"installation_id": "151256501", "name": "GitHub"}, levels, "ops@example.com")
     c.app.state.clients.github = FakeGitHub(existing_repos={"acme/infra", "acme/web"})
+    c.app.state.repo_index = RepoIndex(c.app.state.clients.github)
     put = c.put("/api/agents/asker/github/repositories", headers=h, json={"repositories": ["acme/infra"]})
     assert put.status_code == 200, put.text
     r = c.post("/api/agents/asker/access/requests", headers=h,
