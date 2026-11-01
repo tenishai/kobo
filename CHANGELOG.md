@@ -25,6 +25,8 @@ All notable changes to kobo are documented here. The format follows
   for the room's own runtime now clears the agent's hold so it follows the room again,
   instead of pinning it to that day's runtime for good.
 
+## [0.3.33] - 2026-11-01
+
 ### Changed
 
 - **A room-made Slack app answers wherever it is invited.** The Slack row on the Access tab
