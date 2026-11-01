@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.34] - 2026-11-01
+
 ### Fixed
 
 - **The admin panel's "Deploys to" names the cluster, not the alias.** It read the name the
