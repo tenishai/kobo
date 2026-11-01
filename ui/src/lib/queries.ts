@@ -163,6 +163,7 @@ import {
   draftPersona,
   fetchAccessLeases,
   fetchAccessRequests,
+  fetchAgentConnections,
   fetchActivity,
   fetchAdminAddons,
   fetchRoomServices,
@@ -170,8 +171,10 @@ import {
   removeRoomService,
   type RoomServiceId,
   type RoomServiceValues,
+  type AuditAgentsFilters,
   type AuditFilters,
   fetchAdminAudit,
+  fetchAdminAuditAgents,
   fetchAdminAwsSetup,
   fetchAdminConnections,
   fetchAdminIntegrations,
@@ -733,6 +736,14 @@ export function adminAuditQuery(filters: AuditFilters, cursor: string | null = n
   });
 }
 
+export function adminAuditAgentsQuery(filters: AuditAgentsFilters) {
+  return queryOptions({
+    queryKey: ["admin", "audit-agents", filters] as const,
+    queryFn: () => fetchAdminAuditAgents(filters),
+    staleTime: 15_000,
+  });
+}
+
 export function adminRoomQuery() {
   return {
     queryKey: ["admin", "room"],
@@ -835,6 +846,29 @@ export function accessLeasesQuery() {
     staleTime: 15_000,
     retry: shouldRetry,
   });
+}
+
+/** Admin > Agent connections (issue #371): what every agent holds at every
+ * vendor right now. Leases run out within the hour, so it is read often. */
+export function agentConnectionsQuery() {
+  return queryOptions({
+    queryKey: ["admin", "access", "agents"] as const,
+    queryFn: fetchAgentConnections,
+    staleTime: 15_000,
+    retry: shouldRetry,
+  });
+}
+
+/** Revoke from the Agent connections pane: the same DELETE the agent's Access
+ * tab uses, so the pane's list and that agent's own view both refresh. */
+export function revokeAgentConnectionMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: ({ agent, grantId }: { agent: string; grantId: number }) => revokeAgentAccess(agent, grantId),
+    onSuccess: (_result: unknown, { agent }: { agent: string; grantId: number }) => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "access"] });
+      queryClient.invalidateQueries({ queryKey: ["agents", agent, "access"] });
+    },
+  };
 }
 
 export function decideAccessMutation(queryClient: QueryClient) {

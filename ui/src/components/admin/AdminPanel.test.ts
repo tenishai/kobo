@@ -192,6 +192,25 @@ describe("AdminPanel", () => {
     expect(screen.getByTitle("live at the gateway").textContent).toMatch(/datadog/);
   });
 
+  it("with the permission service on, the page is Agent connections and reads what every agent holds", async () => {
+    // Issue #371: the same id, the newer page; the old lanes page stays for a room with Access off.
+    vi.unstubAllGlobals();
+    stubFetch({
+      "/api/whoami": ADMIN_WHOAMI,
+      "/api/admin/addons": { addons: [{ id: "access", name: "Access", summary: "", state: "on", detail: "", keys: [], owner: "" }] },
+      "/api/admin/room-services": ROOM_SERVICES,
+      "/api/admin/room": { org_repo: "example/kobo-config", runtime_image: "r", cluster: "c", delivery_backend: "deployed" },
+      "/api/admin/access/agents": { agents: [{ name: "janus", team: null, status: "ready", vendors: [] }], fetched_at: "2026-11-01T10:00:00Z" },
+    });
+    navigate({ page: "admin", pane: "connections" });
+    renderWithClient(AdminPanel);
+    expect(await screen.findByRole("heading", { name: "Agent connections" })).toBeTruthy();
+    expect(await screen.findByRole("link", { name: "Agent connections" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Connections" })).toBeNull();
+    expect(await screen.findByText("janus")).toBeTruthy();
+    expect(screen.getByText("No agent holds anything yet.")).toBeTruthy();
+  });
+
   it("Integrations starts empty and offers the catalog", async () => {
     navigate({ page: "admin", pane: "integrations" });
     renderWithClient(AdminPanel);

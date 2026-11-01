@@ -2464,6 +2464,9 @@ class FakeBab:
         self._requests: dict[int, dict] = {}
         self._grants: dict[int, dict] = {}
         self._leases: list[dict] = []
+        # The ledger's events (kobo#371), as `GET /events` lists them; a test
+        # appends rows shaped like the service's.
+        self._events: list[dict] = []
         self._integrations = integrations if integrations is not None else [
             {"integration": "aws-prod", "vendor": "aws", "ceiling": ["aws_inventory_read", "aws_cloudtrail_lake_query"],
              "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"},
@@ -2609,6 +2612,15 @@ class FakeBab:
     def all_leases(self, since, actor):
         self._guard()
         return [dict(lease) for lease in self._leases]
+
+    def events(self, since, until, kinds, agent, limit, actor):
+        self._guard()
+        rows = [dict(e) for e in self._events
+                if (not kinds or e["kind"] in kinds)
+                and (not agent or (e.get("detail") or {}).get("agent") == agent)
+                and (since is None or e["at"] >= since.isoformat())
+                and (until is None or e["at"] < until.isoformat())]
+        return sorted(rows, key=lambda e: e["id"], reverse=True)[:limit]
 
     def aws_identity(self, actor):
         self._guard()

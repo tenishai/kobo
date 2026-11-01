@@ -1451,7 +1451,9 @@ export async function fetchAdminPeople(): Promise<AdminPeople> {
  * target, in one sentence, with where the request came from and how far
  * the action has landed where it projects. */
 export type AuditRow = {
-  id: number;
+  // A number from the room's own log; "lease:<id>" or "event:<id>" on the
+  // Agents tab, whose rows come from the permission service.
+  id: number | string;
   at: string;
   actor: string;
   actor_kind: "person" | "room" | "agent";
@@ -1510,6 +1512,29 @@ export async function fetchAdminAudit(filters: AuditFilters, cursor: string | nu
 /** The link the Export buttons open: the current filter as a file. */
 export function auditExportUrl(filters: AuditFilters, format: "csv" | "json"): string {
   return `/api/admin/audit/export${auditQueryString(filters, { format })}`;
+}
+
+/** The Audit page's Agents tab (kobo#371): what agents did with their
+ * connections, read live from the permission service in the same row shape,
+ * with the facets its selects offer. One window, newest first, no cursor. */
+export type AuditAgentsPage = {
+  rows: AuditRow[];
+  total_in_window: number;
+  agents: string[];
+  outcomes: string[];
+};
+
+/** The Agents tab's filters: the people filters without actor and action. */
+export type AuditAgentsFilters = Pick<AuditFilters, "q" | "agent" | "outcome" | "since" | "until">;
+
+export async function fetchAdminAuditAgents(filters: AuditAgentsFilters): Promise<AuditAgentsPage> {
+  const res = await fetch(`/api/admin/audit/agents${auditQueryString(filters)}`);
+  return parse<AuditAgentsPage>(res);
+}
+
+/** The Agents tab's Export: the same window as a file. */
+export function auditAgentsExportUrl(filters: AuditAgentsFilters, format: "csv" | "json"): string {
+  return `/api/admin/audit/agents${auditQueryString(filters, { format })}`;
 }
 
 /** The facts the panel's rail shows about this room. */
@@ -1576,6 +1601,10 @@ export type AccessVendor = {
   id: string;
   kind: "cloud" | "service" | string;
   label: string;
+  /** Whether the ROOM is connected to this vendor (issue #371): a cloud with at
+   * least one connected account, a service with a connection. The Access tab
+   * lists connected vendors only. */
+  connected: boolean;
   account_noun: string | null;
   organizations: { id: string; name: string }[];
   accounts: AccessAccount[];
@@ -1732,6 +1761,48 @@ export async function decideAccessRequests(
   });
   const body = await parse<{ results: AccessDecision[] }>(res);
   return body.results;
+}
+
+/** One agent's holdings at one vendor, for Admin > Agent connections (issue
+ * #371): its own connections there (a GitHub repository set), what it holds
+ * and what is leased right now. */
+export type AgentVendorHoldings = {
+  vendor: string;
+  label: string;
+  connections: { id: string; name: string; repositories: string[] }[];
+  grants: {
+    id: number;
+    integration: string;
+    permission: string;
+    tier: string | null;
+    expires_at: string | null;
+    granted_by: string;
+    state: "active" | "expired" | string;
+  }[];
+  leases: {
+    id: number;
+    integration: string;
+    permissions: string[];
+    task: string | null;
+    issued_at: string;
+    expires_at: string;
+    via: string | null;
+  }[];
+};
+
+export type AgentConnectionsEntry = {
+  name: string;
+  team: string | null;
+  status: string;
+  /** Empty for an agent that holds nothing anywhere; it is still listed. */
+  vendors: AgentVendorHoldings[];
+};
+
+export type AgentConnections = { agents: AgentConnectionsEntry[]; fetched_at: string };
+
+export async function fetchAgentConnections(): Promise<AgentConnections> {
+  const res = await fetch("/api/admin/access/agents");
+  return parse<AgentConnections>(res);
 }
 
 export async function fetchAccessLeases(): Promise<AccessLease[]> {
