@@ -31,10 +31,17 @@
   // of Cancel and Save, so the answer to "did that land?" is beside the
   // button that asked. Regenerate stays with the field it rewrites, and
   // stays quiet -- Save is the one filled button here.
+  //
+  // The two changes there is no way back from (issue #368) sit at the
+  // bottom of this dialog, under the fields: Convert to connected
+  // (ConvertRow) and Destroy this agent (DangerZone), each behind its own
+  // confirm, each only when the page says the caller may make it. They were
+  // rows of the Settings tab until that tab became Secrets.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { derived, writable } from "svelte/store";
+  import ConvertRow from "./ConvertRow.svelte";
+  import DangerZone from "./DangerZone.svelte";
   import Modal from "./Modal.svelte";
-  import { errorMessage } from "../lib/api";
+  import { errorMessage, KIND_COMPOSED } from "../lib/api";
   import {
     deliveryQuery,
     patchMetadataMutation,
@@ -49,12 +56,27 @@
     capability,
     frozen = false,
     showTrigger = true,
+    status = "ready",
+    error = null,
+    kind = KIND_COMPOSED,
+    canConvert = false,
+    canDestroy = false,
   }: {
     agentName: string;
     team: string;
     purposeTags: string[];
     capability: string | null;
     frozen?: boolean;
+    /** The agent's status and own error, for the destroy row's three states. */
+    status?: string;
+    error?: string | null;
+    kind?: string;
+    /** Whether the convert row is this caller's to see: an operator, an
+     * agent the room composed, and a status that has settled. Worked out
+     * by the page, which is where the agent's own row lives. */
+    canConvert?: boolean;
+    /** The same `destroy_visible` gate the Danger zone has always had. */
+    canDestroy?: boolean;
     /** Whether to draw this component's own "Edit details" button.
      * AgentDetail turns it off (page-shell wave, 2026-09-23): the trigger
      * there is an item in the header's overflow menu, and it calls
@@ -456,11 +478,54 @@
       <p class="field__status field__status--error" role="alert">{saveError}</p>
     {/if}
   </form>
+
+  {#if canConvert || canDestroy}
+    <div class="metadata-form__oneway">
+      <h3 class="metadata-form__oneway-heading">No way back</h3>
+      {#if canConvert}
+        <div class="metadata-form__oneway-row">
+          <ConvertRow {agentName} />
+        </div>
+      {/if}
+      {#if canDestroy}
+        <div class="metadata-form__oneway-row">
+          <DangerZone {agentName} {status} {error} {kind} />
+        </div>
+      {/if}
+    </div>
+  {/if}
 </Modal>
 
 <style>
   .metadata-details__trigger {
     align-self: flex-start;
+  }
+
+  /* The one-way changes, under a rule at the foot of the dialog. */
+  .metadata-form__oneway {
+    display: flex;
+    flex-direction: column;
+    margin-top: var(--space-lg);
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--border);
+  }
+
+  .metadata-form__oneway-heading {
+    margin: 0 0 var(--space-xs);
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .metadata-form__oneway-row {
+    padding: var(--space-sm) 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .metadata-form__oneway-row:last-child {
+    border-bottom: none;
   }
 
   .metadata-form__capability-row {

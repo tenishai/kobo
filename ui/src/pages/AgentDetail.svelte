@@ -13,14 +13,15 @@
   // decision lives in tabs.ts, pure and unit-tested; this file only hides
   // the header lines that have no source.
   //
-  // Tabs (harness wave, 2026-09-23): five on one row, no menu at the end of
-  // it. Chat, Slack, Access and Settings are what they were; Harness is the
-  // new one, and it holds the five sections that used to be tabs hidden
-  // behind More -- persona, skills, tooling, memory, learnings -- plus the
-  // model and the runtime image the agent actually runs on. Secrets is a
-  // section of Settings now, above the build log. Which tab is showing, and
-  // which Harness section, both live in the hash:
-  // `#/agents/<name>/harness/skills`.
+  // Tabs (harness wave, 2026-09-23; reshaped by issue #368): five on one
+  // row, no menu at the end of it. Chat and Slack are what they were. Access
+  // is the vendors the agent can reach. Harness holds the sections that used
+  // to be tabs hidden behind More -- persona, skills, tooling, memory,
+  // learnings -- plus the model and runtime, and Agent to agent (the pairs
+  // that used to be on Access). Secrets is the agent's secrets and
+  // variables, nothing else. Which tab is showing, and which Harness
+  // section, both live in the hash: `#/agents/<name>/harness/skills`; the
+  // retired `settings` segment still lands on Secrets.
   //
   // Header (page-shell wave, 2026-09-23): two lines, not eight. Line one is
   // the avatar, the name, the status, the connected marker, and on the far
@@ -29,9 +30,12 @@
   // group, who made it, persona, observability -- with the capability
   // sentence as the one ink line under it and at most three chips below
   // that. The rest of an agent's identity lives in Edit details, which is
-  // where it is edited. Below the header: a failed-status retry banner and
-  // the step checklist (pre-ready only), above the tab bar. The Danger zone
-  // and Convert both moved into the Settings tab.
+  // where it is edited. The header's buttons (issue #368): the repository,
+  // Health, Build log (a sheet), Owners (who may see and manage it, a
+  // sheet, with a count) and Edit details, whose foot holds the two changes
+  // there is no way back from. Below the header: a failed-status retry
+  // banner and the step checklist (pre-ready only), above the tab bar; a
+  // failed agent's destroy sits there too, since its tabs are dead.
   // All polling is `agentQuery`'s own adaptive cadence (status.ts): this
   // component only renders whatever state that query is in, same
   // loading/error/populated split Dashboard already uses.
@@ -43,11 +47,13 @@
     Camera,
     CaretRight,
     ChatCircle,
-    GearSix,
+    Key,
     PencilSimple,
+    Scroll,
     ShieldCheck,
     SlackLogo,
     Stack,
+    Users,
   } from "phosphor-svelte";
   import AccessPanel from "../components/AccessPanel.svelte";
   import BuildLogCard from "../components/BuildLogCard.svelte";
@@ -57,10 +63,10 @@
   import ErrorState from "../components/ErrorState.svelte";
   import HarnessPanel from "../components/HarnessPanel.svelte";
   import MetadataDetails from "../components/MetadataDetails.svelte";
+  import OwnersSheet from "../components/OwnersSheet.svelte";
   import RequestAccessCard from "../components/RequestAccessCard.svelte";
   import SecretsPanel from "../components/SecretsPanel.svelte";
   import Skeleton from "../components/Skeleton.svelte";
-  import SettingsPanel from "../components/SettingsPanel.svelte";
   import SlackPanel from "../components/SlackPanel.svelte";
   import StatusBadge from "../components/StatusBadge.svelte";
   import StepChecklist from "../components/StepChecklist.svelte";
@@ -69,6 +75,7 @@
   import {
     agentQuery,
     generateAvatarMutation,
+    grantsQuery,
     invitesQuery,
     observabilityQuery,
     personasSearchQuery,
@@ -83,9 +90,9 @@
     defaultTab,
     harnessSections,
     isHarnessSection,
-    isTabId,
     primaryTabs,
     TAB_LABELS,
+    tabFromHash,
     type HarnessSectionId,
     type TabId,
   } from "../lib/tabs";
@@ -115,6 +122,14 @@
   // exactly as real as the server's own gate on this route, nothing a
   // client-side flag could fake or fall out of sync with.
   const invites = createQuery(() => (invitesQuery(name)));
+
+  // The Owners button's count (issue #368): the per-person grants, read
+  // only once the probe above says the caller may see them. The sheet reads
+  // the same key, so this costs no second request.
+  const grants = createQuery(() => ({ ...grantsQuery(name), enabled: invites.isSuccess }));
+  const ownersCount = $derived(grants.data?.length ?? 0);
+  let ownersOpen = $state(false);
+  let buildLogOpen = $state(false);
 
   // The org's observability catalog (Task 6, observability-catalog
   // addendum): a dashboard base URL + project, both `null` unless the room
@@ -257,14 +272,14 @@
       return;
     }
     const visible = primaryTabs(invites.isSuccess, data.kind);
-    const fromHash =
-      !tabDisabled && isTabId(route.tab) && visible.includes(route.tab) ? route.tab : null;
+    const named = tabDisabled ? null : tabFromHash(route.tab);
+    const fromHash = named !== null && visible.includes(named) ? named : null;
     if (fromHash !== null) {
       activeTab = fromHash;
       if (
         fromHash === "harness" &&
         isHarnessSection(route.section) &&
-        harnessSections(data.kind).includes(route.section)
+        harnessSections(data.kind, { canAdminister: invites.isSuccess }).includes(route.section)
       ) {
         harnessSection = route.section;
       }
@@ -452,6 +467,8 @@
          possible either way; `tabDisabled` is a different question. -->
     {@const frozen = isFrozen(data.status) || updating}
     {@const connected = data.kind === KIND_CONNECTED}
+    {@const destroyAboveTabs =
+      data.destroy_visible && (data.status === "failed" || data.status === "destroy_failed")}
     {@const personaMatch = personaSoul.data?.find((p) => p.id === data.persona) ?? null}
     {@const personaLine = personaMatch
       ? `${personaMatch.name} -- ${personaMatch.description}`
@@ -597,6 +614,34 @@
               <ArrowUpRight size={12} weight="bold" aria-hidden="true" />
             </a>
           {/if}
+          <!-- The last build, as the build itself told it, in a sheet
+               (issue #368). Every agent has one, whoever is looking. -->
+          <button
+            type="button"
+            class="agent-detail__action"
+            aria-haspopup="dialog"
+            onclick={() => (buildLogOpen = true)}
+          >
+            <Scroll size={13} weight="bold" aria-hidden="true" />
+            Build log
+          </button>
+          {#if invites.isSuccess}
+            <!-- Who may see and manage this agent besides its owner: a
+                 sheet, for the callers who may administer it (the same
+                 probe that shows the Access tab). -->
+            <button
+              type="button"
+              class="agent-detail__action"
+              aria-haspopup="dialog"
+              onclick={() => (ownersOpen = true)}
+            >
+              <Users size={13} weight="bold" aria-hidden="true" />
+              Owners
+              {#if ownersCount > 0}
+                <span class="agent-detail__count">{ownersCount}</span>
+              {/if}
+            </button>
+          {/if}
           {#if !connected}
             <!-- The editor lives in the Harness tab's Persona section, so
                  this brings the page there before opening it: a modal
@@ -699,6 +744,16 @@
       </dl>
     </header>
 
+    <BuildLogCard agentName={data.name} open={buildLogOpen} onclose={() => (buildLogOpen = false)} />
+    {#if invites.isSuccess}
+      <OwnersSheet
+        agentName={data.name}
+        open={ownersOpen}
+        onclose={() => (ownersOpen = false)}
+        frozen={frozen}
+      />
+    {/if}
+
     <!-- Whatever the last portrait action said, on one line under the
          header. A toast would slide away while somebody was still reading
          it, and this is the only place the answer lives. -->
@@ -756,6 +811,14 @@
           capability={data.capability}
           frozen={frozen}
           showTrigger={false}
+          status={data.status}
+          error={data.error}
+          kind={data.kind}
+          canConvert={!updating &&
+            data.destroy_visible &&
+            (data.status === "ready" || data.status === "failed")}
+          canDestroy={data.destroy_visible &&
+            (data.status === "ready" || data.status === "destroying")}
         />
       </section>
     {/snippet}
@@ -829,24 +892,22 @@
          not ready, and not on its way out. -->
     {#if tabDisabled}
       <StepChecklist steps={data.steps} />
-      <!-- While the tabs are still dead the build log stays beside the
-           checklist, because that is exactly when somebody needs it and
-           the Settings tab it otherwise lives in cannot be opened. -->
-      <BuildLogCard agentName={data.name} />
-      <!-- The destroy lives in Settings too, and a failed agent cannot open
-           Settings, so a setup that never finished could not be taken back
-           out of the room. Failed only: the room refuses a destroy while an
-           agent is still being built. -->
-      {#if data.status === "failed" && data.destroy_visible}
-        <div class="agent-detail__danger">
-          <DangerZone
-            agentName={data.name}
-            status={data.status}
-            error={data.error}
-            kind={data.kind}
-          />
-        </div>
-      {/if}
+    {/if}
+    <!-- The destroy lives at the foot of Edit details, which a failed agent
+         cannot open (its tabs are dead) and a destroy that failed cannot
+         either (the editor rests while frozen). For those two it sits here,
+         above the tabs, so a setup that never finished can still be taken
+         back out of the room. Never while an agent is still being built:
+         the room refuses a destroy mid-build. -->
+    {#if destroyAboveTabs}
+      <div class="agent-detail__danger">
+        <DangerZone
+          agentName={data.name}
+          status={data.status}
+          error={data.error}
+          kind={data.kind}
+        />
+      </div>
     {/if}
 
     {@const primary = primaryTabs(invites.isSuccess, data.kind)}
@@ -886,7 +947,7 @@
               {:else if tab === "harness"}
                 <Stack class="detail-tabs__icon" size={15} aria-hidden="true" />
               {:else}
-                <GearSix class="detail-tabs__icon" size={15} aria-hidden="true" />
+                <Key class="detail-tabs__icon" size={15} aria-hidden="true" />
               {/if}
               {TAB_LABELS[tab]}
               <!-- The pending-learnings count rides on Harness, which is
@@ -935,13 +996,12 @@
               capability={data.capability}
               purposeTags={data.purpose_tags}
               identity={data.identity ?? null}
+              canAdminister={invites.isSuccess}
               bind:section={harnessSection}
               persona={connected ? undefined : personaSection}
             />
-          {:else if tab === "settings"}
-            <!-- The page's back office: secrets and environment, the build
-                 log every agent has, and the two changes there is no way
-                 back from.
+          {:else if tab === "secrets"}
+            <!-- The agent's secrets and variables (issue #368), nothing else.
                  `active`: every tabpanel here stays mounted when another tab
                  is picked, and SecretsPanel's two reads reach the secrets
                  platform and the agent's repository. Without it, opening any
@@ -950,20 +1010,22 @@
             <SecretsPanel
               agentName={data.name}
               frozen={frozen}
-              active={activeTab === "settings"}
+              active={activeTab === "secrets"}
               deployed={data.status === "ready"}
             />
-            <SettingsPanel
-              agentName={data.name}
-              status={data.status}
-              error={data.error}
-              kind={data.kind}
-              canConvert={!connected &&
-                !updating &&
-                data.destroy_visible &&
-                (data.status === "ready" || data.status === "failed")}
-              canDestroy={data.destroy_visible && data.status !== "failed"}
-            />
+            {#if connected && data.destroy_visible && (data.status === "ready" || data.status === "destroying")}
+              <!-- A connected agent has no Edit details (nothing the room
+                   composed to edit), so its destroy keeps a row here at the
+                   foot of its last tab. -->
+              <section class="panel agent-detail__oneway" aria-label="No way back">
+                <DangerZone
+                  agentName={data.name}
+                  status={data.status}
+                  error={data.error}
+                  kind={data.kind}
+                />
+              </section>
+            {/if}
           {:else if tab === "slack"}
             <SlackPanel
               agentName={data.name}
@@ -971,10 +1033,8 @@
               frozen={frozen}
             />
           {:else}
-            <!-- Who can reach this agent, and what it can reach (issue #365):
-                 the permissions it holds at each vendor moved here from the
-                 Harness, and the GitHub repository set replaced the
-                 Repositories card. -->
+            <!-- What this agent can reach (issues #365 and #368): the vendors,
+                 what it holds at each, and the picker that asks for more. -->
             <AccessPanel
               agentName={data.name}
               groupName={data.group_name}
@@ -1120,7 +1180,7 @@
 
   .agent-detail__capability {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink);
     font-size: 0.92rem;
   }
 
@@ -1324,6 +1384,26 @@
   .agent-detail__action:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  /* The Owners count, a small pill inside the button. */
+  .agent-detail__count {
+    display: inline-flex;
+    min-width: 1.15rem;
+    height: 1.15rem;
+    align-items: center;
+    justify-content: center;
+    padding: 0 0.3rem;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--ink);
+    font-family: var(--font-display-mono);
+    font-size: 0.65rem;
+    font-weight: 600;
+  }
+
+  .agent-detail__oneway {
+    margin-top: var(--space-lg);
   }
 
   .agent-detail__menu-list {

@@ -7,7 +7,7 @@
   import { untrack } from "svelte";
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import Modal from "../Modal.svelte";
-  import { vendorMark } from "../../lib/admin/logos";
+  import VendorMark from "../VendorMark.svelte";
   import AwsConnect from "./AwsConnect.svelte";
   import {
     errorMessage,
@@ -328,8 +328,13 @@
             {@const s = serviceStatus(svc.id)}
             <tr>
               <td>
-                <span class="name">{svc.name}</span>
-                <span class="quiet addr">{svc.summary}</span>
+                <div class="who">
+                  <VendorMark id={svc.id} name={svc.name} size={16} />
+                  <div class="who__text">
+                    <span class="name">{svc.name}</span>
+                    <span class="quiet addr">{svc.summary}</span>
+                  </div>
+                </div>
               </td>
               <td><span class="chip">service</span></td>
               <td>
@@ -369,9 +374,14 @@
           {#each visibleRoots as i (i.id)}
             <tr>
               <td>
-                <span class="name">{i.name}</span>
-                {#if i.spec.address}<span class="quiet addr">{i.spec.address}</span>{/if}
-                {#if i.spec.source === "access" && i.spec.kind !== "org"}<span class="quiet addr">in the permission service{i.spec.ceiling?.length ? `, ${i.spec.ceiling.length} permission${i.spec.ceiling.length === 1 ? "" : "s"} agents may ask for` : ""}</span>{/if}
+                <div class="who">
+                  <VendorMark id={i.vendor} name={i.name} size={16} />
+                  <div class="who__text">
+                    <span class="name">{i.name}</span>
+                    {#if i.spec.address}<span class="quiet addr">{i.spec.address}</span>{/if}
+                    {#if i.spec.source === "access" && i.spec.kind !== "org"}<span class="quiet addr">in the permission service{i.spec.ceiling?.length ? `, ${i.spec.ceiling.length} permission${i.spec.ceiling.length === 1 ? "" : "s"} agents may ask for` : ""}</span>{/if}
+                  </div>
+                </div>
               </td>
               <td><span class="chip">{kindLabel(i)}</span></td>
               <td>
@@ -401,10 +411,15 @@
             {#each childrenOf(i).filter((c) => !search.trim() || matches(c) || matches(i)) as c (c.id)}
               <tr class="child">
                 <td>
-                  <span class="child__tick" aria-hidden="true">└</span>
-                  <span class="name">{c.name}</span>
-                  {#if c.spec.account_id}<span class="quiet addr">{c.spec.account_id}</span>{/if}
-                  {#if c.spec.ceiling?.length}<span class="quiet addr">{c.spec.ceiling.length} permission{c.spec.ceiling.length === 1 ? "" : "s"} agents may ask for</span>{/if}
+                  <div class="who">
+                    <span class="child__tick" aria-hidden="true">└</span>
+                    <VendorMark id={c.vendor || i.vendor} name={c.name} size={14} />
+                    <div class="who__text">
+                      <span class="name">{c.name}</span>
+                      {#if c.spec.account_id}<span class="quiet addr">{c.spec.account_id}</span>{/if}
+                      {#if c.spec.ceiling?.length}<span class="quiet addr">{c.spec.ceiling.length} permission{c.spec.ceiling.length === 1 ? "" : "s"} agents may ask for</span>{/if}
+                    </div>
+                  </div>
                 </td>
                 <td><span class="chip">account</span></td>
                 <td>
@@ -421,9 +436,14 @@
             {#each checked[i.id]?.without_role ?? [] as w (w.id)}
               <tr class="child child--waiting">
                 <td>
-                  <span class="child__tick" aria-hidden="true">└</span>
-                  <span class="name">{w.name}</span>
-                  <span class="quiet addr">{w.id}</span>
+                  <div class="who">
+                    <span class="child__tick" aria-hidden="true">└</span>
+                    <VendorMark id={i.vendor} name={w.name} size={14} />
+                    <div class="who__text">
+                      <span class="name">{w.name}</span>
+                      <span class="quiet addr">{w.id}</span>
+                    </div>
+                  </div>
                 </td>
                 <td><span class="chip">account</span></td>
                 <td>
@@ -450,21 +470,8 @@
   <p class="catalog__lead">Pick a vendor. The room holds one connection to it and lends agents only what you grant under Permissions.</p>
   <div class="catalog">
     {#each addable as c (c.id)}
-      {@const mark = vendorMark(c.id, c.name)}
       <div class="catalog__card">
-        {#if mark.kind === "path"}
-          <span class="catalog__tile" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="22" height="22" fill={mark.hex ? `#${mark.hex}` : "currentColor"}>
-              <path d={mark.path} />
-            </svg>
-          </span>
-        {:else}
-          <span
-            class="catalog__tile catalog__tile--initials"
-            style={mark.hex ? `background:${mark.hex};color:#fff;border-color:${mark.hex}` : undefined}
-            aria-hidden="true">{mark.text}</span
-          >
-        {/if}
+        <VendorMark id={c.id} name={c.name} size={22} />
         <div class="catalog__text">
           <span class="catalog__name">{c.name}</span>
           <p class="catalog__desc">{c.summary}</p>
@@ -613,7 +620,10 @@
   .spin--btn { margin-right: 0.4rem; vertical-align: -0.1em; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  .child td:first-child { padding-left: 1.75rem; }
+  .child td:first-child { padding-left: 1.25rem; }
+  /* The mark beside the name, the name and its line under it to the right. */
+  .who { display: flex; align-items: center; gap: var(--space-sm); min-width: 0; }
+  .who__text { display: flex; flex-direction: column; min-width: 0; }
   .child--waiting .name { color: var(--muted); font-weight: 500; }
   .child__tick { margin-right: 0.35rem; color: var(--muted); }
   .name { font-weight: 600; }
@@ -634,7 +644,7 @@
   /* The vendor catalog: a two-column grid of cards. */
   .catalog__lead {
     margin: 0 0 var(--space-md);
-    color: var(--muted);
+    color: var(--ink);
     font-size: 0.875rem;
   }
 
@@ -662,26 +672,6 @@
   }
 
 
-  .catalog__tile {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 2.5rem;
-    height: 2.5rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--panel);
-    color: var(--ink);
-  }
-
-  .catalog__tile--initials {
-    background: var(--accent-soft);
-    font-family: var(--font-display-mono);
-    font-size: 0.85rem;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-  }
-
   .catalog__text {
     min-width: 0;
   }
@@ -694,7 +684,7 @@
 
   .catalog__desc {
     margin: 0.15rem 0 0;
-    color: var(--muted);
+    color: var(--ink);
     font-size: 0.8rem;
     line-height: 1.45;
   }

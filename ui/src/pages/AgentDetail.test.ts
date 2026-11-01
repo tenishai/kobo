@@ -53,6 +53,9 @@ const BASE_ROUTES = {
     unreadable: false,
   },
   "/api/agents/warden/env": { env: {} },
+  // Edit details reads the team options the moment it opens (issue #368 put
+  // the destroy and convert rows at its foot, so more tests open it).
+  "/api/teams": { teams: [], default: "shared" },
   "/api/agents/warden": READY_AGENT,
   "/api/personas/search": { results: [] },
   "/api/": {},
@@ -130,7 +133,7 @@ describe("AgentDetail tabs", () => {
 
     // Ready is the one status where every tab trigger is reachable — none
     // of them dead-end into a 409, so none should be disabled.
-    for (const label of ["Chat", "Slack", "Access", "Harness", "Settings"]) {
+    for (const label of ["Chat", "Slack", "Access", "Harness", "Secrets"]) {
       expect((screen.getByRole("tab", { name: label }) as HTMLButtonElement).disabled).toBe(
         false,
       );
@@ -149,8 +152,9 @@ describe("AgentDetail tabs", () => {
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
 
-    // They are not tabs any more, and there is no menu left to open.
-    for (const label of ["Learnings", "Memory", "Skills", "Tooling", "Secrets"]) {
+    // They are not tabs any more, and there is no menu left to open. Nor
+    // is Settings: that tab is Secrets now (issue #368).
+    for (const label of ["Learnings", "Memory", "Skills", "Tooling", "Settings"]) {
       expect(screen.queryByRole("tab", { name: label })).toBeNull();
     }
     expect(screen.queryByRole("button", { name: /^More ▾/ })).toBeNull();
@@ -175,13 +179,33 @@ describe("AgentDetail tabs", () => {
     expect(chatTab.getAttribute("aria-selected")).toBe("false");
     expect(chatTab.hasAttribute("disabled")).toBe(true);
     expect(screen.getByText("Clone the repo")).not.toBeNull();
+    // The build log is a header button (issue #368), there at every status.
     expect(screen.getByRole("button", { name: /build log/i })).not.toBeNull();
   });
 
+  it("opens the build log in a sheet from the header, and reads it only then", async () => {
+    // Listed before the bare agent route: the stub matches by substring.
+    stubFetch({
+      "/api/agents/warden/build-log": {
+        run: { conclusion: "success", status: "completed", head_sha: "abcdef1234567" },
+        log: "step one\nstep two",
+      },
+      ...BASE_ROUTES,
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/build-log"))).toBe(false);
+
+    await fireEvent.click(screen.getByRole("button", { name: /build log/i }));
+    const dialog = await screen.findByRole("dialog", { name: "Build log" });
+    expect(await within(dialog).findByText("success")).not.toBeNull();
+    expect(within(dialog).getByText(/step two/)).not.toBeNull();
+  });
+
   it("offers the destroy on a failed agent, above the tabs it cannot open", async () => {
-    // The destroy lives in Settings, and a failed agent's tabs are all dead,
-    // so there was no way to ask for it. It sits beside the build log now,
-    // which is above the tabs for the same reason.
+    // The destroy lives at the foot of Edit details, and a failed agent's
+    // tabs are all dead, so there was no way to ask for it. It sits above
+    // the tabs for one, under the checklist.
     stubFetch({
       ...BASE_ROUTES,
       "/api/agents/warden": {
@@ -195,9 +219,26 @@ describe("AgentDetail tabs", () => {
     renderWithClient(AgentDetail);
     const destroy = await screen.findByRole("button", { name: "Destroy" });
     expect(destroy.closest('[role="tabpanel"]')).toBeNull();
-    expect((screen.getByRole("tab", { name: "Settings" }) as HTMLButtonElement).disabled).toBe(
+    expect((screen.getByRole("tab", { name: "Secrets" }) as HTMLButtonElement).disabled).toBe(
       true,
     );
+    expect(screen.getAllByText("Destroy this agent")).toHaveLength(1);
+  });
+
+  it("offers the destroy above the tabs again when a destroy failed, since the editor rests while frozen", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": {
+        ...READY_AGENT,
+        status: "destroy_failed",
+        error: "the cloud identity would not go",
+        destroy_visible: true,
+      },
+    });
+    renderWithClient(AgentDetail);
+    const again = await screen.findByRole("button", { name: "Destroy again" });
+    expect(again.closest('[role="tabpanel"]')).toBeNull();
+    expect(screen.getByText("the cloud identity would not go")).not.toBeNull();
     expect(screen.getAllByText("Destroy this agent")).toHaveLength(1);
   });
 
@@ -249,8 +290,13 @@ describe("AgentDetail tabs", () => {
       "/api/agents/warden": { ...READY_AGENT, status: "provisioning", destroy_visible: true },
     });
     renderWithClient(AgentDetail);
-    await screen.findByRole("tab", { name: "Settings" });
+    await screen.findByRole("tab", { name: "Secrets" });
     expect(screen.queryByRole("button", { name: "Destroy" })).toBeNull();
+    // Not behind Edit details either: the editor opens while building, and
+    // a destroy row there would be one the room refuses.
+    await fireEvent.click(screen.getByRole("button", { name: /Edit details/ }));
+    await screen.findByRole("dialog", { name: "Edit details" });
+    expect(screen.queryByText("Destroy this agent")).toBeNull();
   });
 
   it("disables every tab trigger while provisioning, so a click can't dead-end into a 409", async () => {
@@ -263,7 +309,7 @@ describe("AgentDetail tabs", () => {
     expect(chatTab.getAttribute("aria-selected")).toBe("false");
 
     const harnessTab = screen.getByRole("tab", { name: "Harness" }) as HTMLButtonElement;
-    const settingsTab = screen.getByRole("tab", { name: "Settings" }) as HTMLButtonElement;
+    const settingsTab = screen.getByRole("tab", { name: "Secrets" }) as HTMLButtonElement;
     const slackTab = screen.getByRole("tab", { name: "Slack" }) as HTMLButtonElement;
     expect((chatTab as HTMLButtonElement).disabled).toBe(true);
     expect(harnessTab.disabled).toBe(true);
@@ -315,15 +361,26 @@ describe("AgentDetail tabs", () => {
   });
 
   it("ignores a hash naming a tab this room does not have", async () => {
-    // A stale bookmark from before the harness wave. Secrets is a section
-    // of Settings now, not a tab, so the page falls back to its default
-    // rather than selecting nothing.
-    location.hash = "#/agents/warden/secrets";
+    // A stale bookmark from before the harness wave: the page falls back to
+    // its default rather than selecting nothing.
+    location.hash = "#/agents/warden/overview";
     window.dispatchEvent(new Event("hashchange"));
     renderWithClient(AgentDetail);
 
     const chatTab = await screen.findByRole("tab", { name: "Chat" });
     expect(chatTab.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("lands a bookmark to the old Settings tab on Secrets (issue #368)", async () => {
+    location.hash = "#/agents/warden/settings";
+    window.dispatchEvent(new Event("hashchange"));
+    renderWithClient(AgentDetail);
+
+    const secretsTab = await screen.findByRole("tab", { name: "Secrets" });
+    expect(secretsTab.getAttribute("aria-selected")).toBe("true");
+    await vi.waitFor(() => {
+      expect(location.hash).toBe("#/agents/warden/secrets");
+    });
   });
 
   it("preserves the selected tab across a destroy transition", async () => {
@@ -443,32 +500,47 @@ describe("AgentDetail tabs", () => {
     // content reachable even though it's not "ready"; only per-panel
     // CONTROLS (like the avatar button above) freeze, never the tabs
     // themselves.
-    for (const label of ["Chat", "Slack", "Harness", "Settings"]) {
+    for (const label of ["Chat", "Slack", "Harness", "Secrets"]) {
       expect((screen.getByRole("tab", { name: label }) as HTMLButtonElement).disabled).toBe(
         false,
       );
     }
   });
 
-  it("keeps the destroy out of every other tab, and puts it in Settings", async () => {
+  it("keeps the destroy out of every tab: it lives at the foot of Edit details (issue #368)", async () => {
     stubFetch({
       ...BASE_ROUTES,
-      "/api/agents/warden": { ...READY_AGENT, status: "destroying", destroy_visible: true },
+      "/api/agents/warden": { ...READY_AGENT, destroy_visible: true },
     });
     renderWithClient(AgentDetail);
     await screen.findByRole("tab", { name: "Chat" });
 
     // It used to be a sibling of the tab strip, so it rendered under
     // whichever tab somebody had open -- including Chat, which is where
-    // most visits start.
-    const chatPanel = document.getElementById("panel-chat") as HTMLElement;
-    expect(chatPanel.textContent).not.toContain("Destroy this agent");
+    // most visits start. Then a Settings row; now behind Edit details.
+    for (const id of ["panel-chat", "panel-secrets", "panel-harness"]) {
+      expect(document.getElementById(id)?.textContent).not.toContain("Destroy this agent");
+    }
 
-    await fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
-    const settingsPanel = document.getElementById("panel-settings") as HTMLElement;
-    expect(settingsPanel.hasAttribute("hidden")).toBe(false);
-    expect(within(settingsPanel).getByText("Destroy this agent")).not.toBeNull();
-    expect(within(settingsPanel).getByText("Destroying this agent…")).not.toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: /Edit details/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit details" });
+    expect(within(dialog).getByText("Destroy this agent")).not.toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Destroy" })).not.toBeNull();
+  });
+
+  it("keeps a connected agent's destroy at the foot of Secrets, since it has no Edit details", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...READY_AGENT, kind: "connected", destroy_visible: true },
+    });
+    renderWithClient(AgentDetail);
+    await screen.findByRole("heading", { name: "warden" });
+    expect(screen.queryByRole("button", { name: /Edit details/ })).toBeNull();
+
+    await fireEvent.click(screen.getByRole("tab", { name: "Secrets" }));
+    const secrets = document.getElementById("panel-secrets") as HTMLElement;
+    expect(within(secrets).getByText("Destroy this agent")).not.toBeNull();
+    expect(within(secrets).getByRole("button", { name: "Destroy" })).not.toBeNull();
   });
 
   it('shows a "Download the portrait" link, with the per-agent filename, when has_avatar is true', async () => {
@@ -719,6 +791,7 @@ describe("AgentDetail Access tab (access-control Task C2)", () => {
             enforcement: { attested: false, locked: false, locked_file: null },
           },
           "/api/agents/warden/grants": { grants: [] },
+          "/api/teams": { teams: [], default: "shared" },
           "/api/agents/warden": READY_AGENT,
           "/api/whoami": {
             email: "me@example.com",
@@ -742,7 +815,7 @@ describe("AgentDetail Access tab (access-control Task C2)", () => {
     );
   }
 
-  it("owner/operator (invites 200): the Access tab shows, and its People/Other agents sections render", async () => {
+  it("owner/operator (invites 200): the Access tab shows the vendors, Owners is in the header and Agent to agent in the Harness", async () => {
     stubAccessProbe(200, { incoming: [], outgoing: [] });
     renderWithClient(AgentDetail);
 
@@ -751,24 +824,83 @@ describe("AgentDetail Access tab (access-control Task C2)", () => {
     await fireEvent.click(accessTab);
 
     const panel = document.getElementById("panel-access") as HTMLElement;
-    expect(within(panel).getByText("People")).not.toBeNull();
-    expect(within(panel).getByText("Other agents")).not.toBeNull();
     // No group on this fixture (group_name: null) -- the no-group fact
     // line, not the "Everyone in <group>" one.
     expect(within(panel).getByText(/This agent is not in a group\./)).not.toBeNull();
+    expect(await within(panel).findByText("What this agent can reach")).not.toBeNull();
+    // People and Other agents left the tab (issue #368).
+    expect(within(panel).queryByText("People")).toBeNull();
+    expect(within(panel).queryByText("Other agents")).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "Add person" })).toBeNull();
+
+    // Owners: a header button, with no count while nobody has been added,
+    // opening the sheet.
+    const owners = screen.getByRole("button", { name: "Owners" });
+    expect(owners.closest(".agent-detail__header")).not.toBeNull();
+    await fireEvent.click(owners);
+    expect(await screen.findByRole("dialog", { name: "Owners" })).not.toBeNull();
+    expect(screen.getByLabelText("Add someone by email")).not.toBeNull();
+
+    // Agent to agent: a Harness section for this caller.
+    await fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    await fireEvent.click(screen.getByRole("tab", { name: "Harness" }));
+    await fireEvent.click(harnessItem("Agent to agent"));
+    expect(
+      within(document.getElementById("harness-a2a") as HTMLElement).getByRole("button", {
+        name: "Request another team's agent",
+      }),
+    ).not.toBeNull();
 
     // A caller who already administers this agent isn't shown the
     // request-access affordance meant for someone else's agent.
     expect(screen.queryByText("Request colleague access")).toBeNull();
   });
 
-  it("stranger (invites 403): no Access tab, but the Request colleague access card renders instead", async () => {
+  it("counts the owners on the header button", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const routes: Record<string, unknown> = {
+          ...BASE_ROUTES,
+          "/api/agents/warden/grants": {
+            grants: [
+              { email: "a@example.com", role: "view", added_by: "o@example.com" },
+              { email: "b@example.com", role: "manage", added_by: "o@example.com" },
+            ],
+          },
+        };
+        for (const [needle, payload] of Object.entries(routes)) {
+          if (url.includes(needle)) {
+            return new Response(JSON.stringify(payload), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      }),
+    );
+    renderWithClient(AgentDetail);
+
+    const owners = await screen.findByRole("button", { name: /^Owners/ });
+    await waitFor(() => expect(owners.textContent?.replace(/\s+/g, " ").trim()).toBe("Owners 2"));
+  });
+
+  it("stranger (invites 403): no Access tab, no Owners button, no Agent to agent, but the Request colleague access card renders instead", async () => {
     stubAccessProbe(403, { error: "Only this agent's owner or a room operator can change it." });
     renderWithClient(AgentDetail);
 
     await screen.findByRole("tab", { name: "Chat" });
     expect(await screen.findByText("Request colleague access")).not.toBeNull();
     expect(screen.queryByRole("tab", { name: "Access" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Owners/ })).toBeNull();
+    await fireEvent.click(screen.getByRole("tab", { name: "Harness" }));
+    expect(
+      within(screen.getByRole("navigation", { name: "Harness sections" })).queryByRole("button", {
+        name: /Agent to agent/,
+      }),
+    ).toBeNull();
   });
 
   it("a caller who owns nothing sees the explanatory copy in the request-access card, not a picker", async () => {
@@ -804,7 +936,7 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     stubFetch({ ...BASE_ROUTES, "/api/agents/warden": CONNECTED_AGENT });
   });
 
-  it("renders no chat or slack, and keeps Harness and Settings", async () => {
+  it("renders no chat or slack, and keeps Harness and Secrets", async () => {
     renderWithClient(AgentDetail);
 
     // The header renders for every kind, so it is the wait point here --
@@ -813,14 +945,12 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     expect(screen.queryByRole("tab", { name: "Chat" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Slack" })).toBeNull();
     // Harness survives because a connected agent still runs on something,
-    // and Settings because a build log, the secrets a team's own service
-    // has exactly as much of, and a destroy belong to any workload the room
-    // deploys.
+    // and Secrets because a team's own service has exactly as many of them.
     const row = document.querySelector(".detail-tabs__list") as HTMLElement;
     expect(within(row).getAllByRole("tab").map((t) => t.textContent?.trim())).toEqual([
       "Access",
       "Harness",
-      "Settings",
+      "Secrets",
     ]);
   });
 
@@ -829,9 +959,12 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
 
     await fireEvent.click(await screen.findByRole("tab", { name: "Harness" }));
     const nav = screen.getByRole("navigation", { name: "Harness sections" });
+    // Agent to agent is here too: this caller administers the agent (the
+    // invites stub answers 200), and pairs are about reaching agents.
     expect(within(nav).getAllByRole("button").map((b) => b.textContent?.trim())).toEqual([
       "Model and runtime",
       "Identity and access",
+      "Agent to agent",
       "Activity",
     ]);
     expect(
@@ -908,20 +1041,20 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
     stubFetch({ ...BASE_ROUTES, "/api/agents/warden": OPERATOR_VIEW });
   });
 
-  /** Opens the Settings tab, where both one-way changes live since the
-   * page-shell wave, and returns its panel. */
-  async function openSettings(): Promise<HTMLElement> {
-    await screen.findByRole("tab", { name: "Settings" });
-    await fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
-    return document.getElementById("panel-settings") as HTMLElement;
+  /** Opens Edit details, where both one-way changes live since issue #368,
+   * and returns its dialog. */
+  async function openEditDetails(): Promise<HTMLElement> {
+    await screen.findByRole("tab", { name: "Chat" });
+    await fireEvent.click(screen.getByRole("button", { name: /Edit details/ }));
+    return screen.findByRole("dialog", { name: "Edit details" });
   }
 
   it("offers the action to an operator looking at a composed, ready agent", async () => {
     renderWithClient(AgentDetail);
-    const settings = await openSettings();
+    const dialog = await openEditDetails();
 
-    expect(within(settings).getByText("Convert to connected")).not.toBeNull();
-    expect(within(settings).getByRole("button", { name: "Convert" })).not.toBeNull();
+    expect(within(dialog).getByText("Convert to connected")).not.toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Convert" })).not.toBeNull();
   });
 
   it("keeps the action out of every other tab, where it used to render", async () => {
@@ -934,7 +1067,7 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
 
   it("asks no run mode question, since a composed agent already serves web traffic", async () => {
     renderWithClient(AgentDetail);
-    await openSettings();
+    await openEditDetails();
     await fireEvent.click(screen.getByRole("button", { name: "Convert" }));
 
     expect(screen.queryByRole("radio")).toBeNull();
@@ -963,20 +1096,16 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
     }
   });
 
-  // The three refusals below read the Settings panel's own text rather
-  // than asking for a visible control: every panel on this page stays
-  // mounted while hidden, so "the button is not reachable" would pass even
-  // for a row that is there and merely behind another tab. The row has to
-  // be absent, not hidden.
+  // The three refusals below open the editor and read its text: the row
+  // has to be absent, not merely behind something.
 
   it("hides the action from a caller who is not an operator", async () => {
     stubFetch({ ...BASE_ROUTES, "/api/agents/warden": READY_AGENT });
     renderWithClient(AgentDetail);
 
-    await screen.findByRole("heading", { name: "warden" });
-    const settings = document.getElementById("panel-settings") as HTMLElement;
-    expect(settings.textContent).toContain("Build log");
-    expect(settings.textContent).not.toContain("Convert to connected");
+    const dialog = await openEditDetails();
+    expect(dialog.textContent).not.toContain("Convert to connected");
+    expect(dialog.textContent).not.toContain("No way back");
   });
 
   it("hides the action on an agent that is already connected", async () => {
@@ -987,8 +1116,9 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
     renderWithClient(AgentDetail);
 
     await screen.findByRole("heading", { name: "warden" });
-    const settings = document.getElementById("panel-settings") as HTMLElement;
-    expect(settings.textContent).not.toContain("Convert to connected");
+    // No editor at all for one, and the text is nowhere on the page.
+    expect(screen.queryByRole("button", { name: /Edit details/ })).toBeNull();
+    expect(screen.queryByText("Convert to connected")).toBeNull();
   });
 
   it("hides the action while the agent is still being provisioned", async () => {
@@ -999,7 +1129,8 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
     renderWithClient(AgentDetail);
 
     await screen.findByRole("heading", { name: "warden" });
-    const settings = document.getElementById("panel-settings") as HTMLElement;
-    expect(settings.textContent).not.toContain("Convert to connected");
+    await fireEvent.click(screen.getByRole("button", { name: /Edit details/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit details" });
+    expect(dialog.textContent).not.toContain("Convert to connected");
   });
 });

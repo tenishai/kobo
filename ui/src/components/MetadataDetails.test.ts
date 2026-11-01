@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, waitFor } from "@testing-library/svelte";
+import { fireEvent, screen, waitFor, within } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import MetadataDetails from "./MetadataDetails.svelte";
 import { renderWithClient, stubFetch } from "../test-utils/render";
@@ -10,6 +10,87 @@ const BASE_PROPS = {
   purposeTags: ["billing", "support"],
   capability: "Answers billing questions.",
 };
+
+describe("MetadataDetails: the two changes there is no way back from (issue #368)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    stubFetch({
+      "/api/teams": { teams: [], default: "shared" },
+      "/api/": {},
+    });
+  });
+
+  it("offers neither to a caller who may make neither", async () => {
+    renderWithClient(MetadataDetails, BASE_PROPS);
+    await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
+    await screen.findByLabelText("Persona source");
+
+    expect(screen.queryByText("No way back")).toBeNull();
+    expect(screen.queryByText("Convert to connected")).toBeNull();
+    expect(screen.queryByText("Destroy this agent")).toBeNull();
+  });
+
+  it("puts Convert and Destroy at the foot of the dialog, each behind its own confirm", async () => {
+    renderWithClient(MetadataDetails, { ...BASE_PROPS, canConvert: true, canDestroy: true, status: "ready" });
+    await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
+    await screen.findByLabelText("Persona source");
+
+    const dialog = screen.getByRole("dialog", { name: "Edit details" });
+    expect(within(dialog).getByText("No way back")).not.toBeNull();
+    expect(within(dialog).getByText("Convert to connected")).not.toBeNull();
+    expect(within(dialog).getByText("Destroy this agent")).not.toBeNull();
+    // Closed: no confirm paragraph, nothing to press by accident.
+    expect(screen.queryByRole("button", { name: "Convert this agent" })).toBeNull();
+    expect(screen.queryByLabelText(/to confirm/)).toBeNull();
+
+    await fireEvent.click(within(dialog).getByRole("button", { name: "Destroy" }));
+    expect(await screen.findByLabelText("Type clio to confirm")).not.toBeNull();
+    expect(
+      (screen.getByRole("button", { name: "Destroy this agent" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("converts through the same route, with the same run mode, on confirm", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/convert-to-connected")) {
+          return new Response(JSON.stringify({ name: "clio", kind: "connected", run_mode: "http" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ teams: [], default: "shared" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    renderWithClient(MetadataDetails, { ...BASE_PROPS, canConvert: true });
+    await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
+    await screen.findByLabelText("Persona source");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Convert" }));
+    expect(
+      screen.getByText(/The room stops editing this agent: no chat, memory, learnings, skills, tooling or Slack from here/),
+    ).not.toBeNull();
+    // Still no run mode question: a composed agent already serves web
+    // traffic, and the route refuses anything else.
+    expect(screen.queryByRole("radio")).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Convert this agent" }));
+
+    await waitFor(() => {
+      const call = vi
+        .mocked(fetch)
+        .mock.calls.find(([url]) => String(url).includes("/convert-to-connected"));
+      expect(call).toBeDefined();
+      const init = (call as [RequestInfo | URL, RequestInit])[1];
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(String(init.body))).toEqual({ run_mode: "http" });
+    });
+  });
+});
 
 describe("MetadataDetails — Edit details modal (persona-metadata plan)", () => {
   beforeEach(() => {

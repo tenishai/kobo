@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
-// What this agent can reach (issue #365): the picker walks vendor, then
-// account, then permissions; ticking a row must not move it (the first
-// version's accordion closed on every tick). GitHub stops at the agent's
-// repository set first, saves it, and only then offers the level; the
-// request targets the set (the child integration), never the connection.
+// What this agent can reach (issue #365, opened on the vendors by #368): one
+// block per vendor with its logo and what the agent holds there; the picker
+// opens under the vendor and walks account, then permissions; ticking a row
+// must not move it (the first version's accordion closed on every tick).
+// GitHub stops at the agent's repository set first, saves it, and only then
+// offers the level; the request targets the set (the child integration),
+// never the connection. The repository list draws the picked ones, then the
+// best matches for the typed query, never every repository the room sees.
 import { fireEvent, screen, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -88,6 +91,17 @@ const REPOSITORIES = {
   ],
   selected: [],
   note: null,
+  total: 3,
+};
+
+/** A room with far more repositories than the picker should ever draw. */
+const MANY_REPOSITORIES = {
+  ...REPOSITORIES,
+  repositories: [
+    ...REPOSITORIES.repositories,
+    ...Array.from({ length: 120 }, (_, i) => ({ full_name: `acme-eng/svc-${String(i).padStart(3, "0")}`, private: true, default_branch: "main" })),
+  ],
+  total: 2279,
 };
 
 type Route = { status?: number; body: unknown } | ((init: RequestInit | undefined) => { status?: number; body: unknown });
@@ -128,6 +142,8 @@ describe("PermissionsPanel", () => {
 
     const aws = await screen.findByRole("button", { name: /AWS/ });
     expect(aws.textContent).toContain("1 of 2 accounts connected");
+    // Every vendor block carries its mark.
+    expect(aws.querySelector(".vendor-mark")).not.toBeNull();
     await fireEvent.click(aws);
 
     // The unconnected account is shown but cannot be opened.
@@ -182,7 +198,7 @@ describe("PermissionsPanel", () => {
     expect(screen.getByLabelText(/monitors/)).not.toBeNull();
   });
 
-  it("names held and waiting rows by their label, with a GitHub set's repositories", async () => {
+  it("lists held and waiting rows under their vendor, by label, with a GitHub set's repositories", async () => {
     stubFetch({
       "/api/agents/ledger/access": {
         ...ACCESS,
@@ -199,16 +215,40 @@ describe("PermissionsPanel", () => {
     });
     renderWithClient(PermissionsPanel, { agentName: "ledger" });
 
-    const held = within(await screen.findByRole("region", { name: "Held" }));
-    expect(held.getByText("Read")).not.toBeNull();
-    expect(held.getByText("ledger's repositories")).not.toBeNull();
-    expect(held.getByText("2 repositories")).not.toBeNull();
-    expect(held.getByText("acme-eng/billing")).not.toBeNull();
+    // Under GitHub, not in a Held table of their own: the grant, then the
+    // request waiting for review.
+    const github = within(await screen.findByRole("region", { name: "GitHub" }));
+    expect(github.getByText("Read")).not.toBeNull();
+    expect(github.getAllByText("ledger's repositories")).toHaveLength(2);
+    expect(github.getAllByText("2 repositories")).toHaveLength(2);
+    expect(github.getAllByText("acme-eng/billing")).toHaveLength(2);
+    expect(github.getByText("Review pull requests")).not.toBeNull();
+    expect(github.getByText("waiting for review")).not.toBeNull();
+    expect(github.getByText(/asked by owner@example.com/)).not.toBeNull();
+    expect(github.getByRole("button", { name: /GitHub/ }).textContent).toContain("1 held");
+    // The other vendors hold nothing, and say so; the ask grant is a pair
+    // under Agent to agent, not a row here.
+    const aws = within(screen.getByRole("region", { name: "AWS" }));
+    expect(aws.getByText("Nothing held yet.")).not.toBeNull();
     expect(screen.queryByText("auditor")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Held" })).toBeNull();
+  });
 
-    const waiting = within(screen.getByRole("region", { name: "Waiting for review" }));
-    expect(waiting.getByText("Review pull requests")).not.toBeNull();
-    expect(waiting.getByText("2 repositories")).not.toBeNull();
+  it("shuts a vendor's picker on a second click, and never opens one that is not connected", async () => {
+    stubFetch({ "/api/agents/ledger/access": { ...ACCESS, vendors: [{ ...ACCESS.vendors[1], accounts: [{ ...ACCESS.vendors[1].accounts[0], connected: false }] }, ACCESS.vendors[0]] } });
+    renderWithClient(PermissionsPanel, { agentName: "ledger" });
+
+    const datadog = await screen.findByRole("button", { name: /Datadog/ });
+    expect((datadog as HTMLButtonElement).disabled).toBe(true);
+    expect(datadog.textContent).toContain("not connected yet");
+
+    const aws = screen.getByRole("button", { name: /AWS/ });
+    await fireEvent.click(aws);
+    expect(aws.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: /acme-audit/ })).not.toBeNull();
+    await fireEvent.click(aws);
+    expect(aws.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: /acme-audit/ })).toBeNull();
   });
 });
 
@@ -235,8 +275,10 @@ describe("PermissionsPanel: GitHub (issue #365)", () => {
     await fireEvent.click(github);
 
     // The repository step, not the permissions: searchable, nothing ticked,
-    // Save dead until something is.
+    // Save dead until something is. The placeholder says how many the room
+    // can see, from the payload's total.
     const search = await screen.findByLabelText("Find a repository");
+    expect(search.getAttribute("placeholder")).toBe("Find a repository (3 the room can see)");
     expect(screen.queryByLabelText("Find a permission")).toBeNull();
     const save = screen.getByRole("button", { name: "Save repositories" }) as HTMLButtonElement;
     expect(save.disabled).toBe(true);
@@ -254,9 +296,11 @@ describe("PermissionsPanel: GitHub (issue #365)", () => {
     await vi.waitFor(() => expect(putCalls()).toHaveLength(1));
     expect(JSON.parse(String(putCalls()[0].body))).toEqual({ repositories: ["acme-eng/ledger", "acme-eng/billing"] });
 
-    // On to the level: the three rows by label, each with its sentence,
-    // Open pull requests greyed because this set's ceiling stops at Review.
+    // On to the level, with a clear done state for the save: the three rows
+    // by label, each with its sentence, Open pull requests greyed because
+    // this set's ceiling stops at Review.
     const read = await screen.findByLabelText(/^Read/);
+    expect(screen.getByText("Repositories saved. Pick the level next.")).not.toBeNull();
     expect(screen.getByText("Read, plus comment on and review pull requests")).not.toBeNull();
     const review = screen.getByLabelText(/Review pull requests/) as HTMLInputElement;
     const open = screen.getByLabelText(/Open pull requests/) as HTMLInputElement;
@@ -322,6 +366,35 @@ describe("PermissionsPanel: GitHub (issue #365)", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "Change repositories" }));
     expect(screen.getByLabelText("Find a repository")).not.toBeNull();
+  });
+
+  it("draws the picked repositories first, then at most forty matches for the typed query", async () => {
+    stubRoutes({
+      "/api/agents/ledger/access": { body: { ...ACCESS, vendors: [...ACCESS.vendors.slice(0, 2), GITHUB_SET] } },
+      "/api/agents/ledger/github/repositories": { body: { ...MANY_REPOSITORIES, selected: ["acme-eng/ledger", "acme-eng/billing"] } },
+    });
+    renderWithClient(PermissionsPanel, { agentName: "ledger" });
+
+    await fireEvent.click(await screen.findByRole("button", { name: /GitHub/ }));
+    const search = await screen.findByLabelText("Find a repository");
+    expect(search.getAttribute("placeholder")).toBe("Find a repository (2279 the room can see)");
+
+    // Nothing typed: the two picked, then the first forty of the rest, and
+    // a line saying how many more there are.
+    let boxes = screen.getAllByRole("checkbox");
+    expect(boxes).toHaveLength(42);
+    expect((boxes[0] as HTMLInputElement).checked).toBe(true);
+    expect((boxes[1] as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(/81 more match/)).not.toBeNull();
+
+    // Typing narrows the rest; the picked stay, so they can be unticked.
+    await fireEvent.input(search, { target: { value: "svc-00" } });
+    boxes = screen.getAllByRole("checkbox");
+    expect(boxes).toHaveLength(12);
+    expect(screen.getByLabelText(/acme-eng\/ledger/)).not.toBeNull();
+    expect(screen.getByLabelText(/svc-009/)).not.toBeNull();
+    expect(screen.queryByLabelText(/svc-010/)).toBeNull();
+    expect(screen.queryByText(/more match/)).toBeNull();
   });
 
   it("shows the note and no list when the room cannot list repositories", async () => {

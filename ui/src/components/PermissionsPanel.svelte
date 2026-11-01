@@ -1,36 +1,39 @@
 <script lang="ts">
-  // What this agent can reach (the Access tab's second half, issue #365;
-  // the Permissions section of the Harness until then). Three settings
-  // rows: Held, Waiting for review, and Ask for more. The picker walks the
-  // way access is granted: the vendor first (AWS, Google Cloud, Azure,
-  // Datadog, GitHub, ...), then for a cloud the account, project or
-  // subscription, then a searchable list of permissions. One Confirm sends
-  // the request to the room's reviewers (Admin > Review). Approved
-  // permissions are grants the agent borrows an hour of access against; the
-  // decisions are the reviewers', never this page's.
+  // What this agent can reach (the Access tab, issue #365; opened on the
+  // vendors by issue #368). One block per vendor the room is connected to,
+  // with its logo: what the agent holds there (each grant with its tier,
+  // expiry, who granted it and Revoke) and what is waiting for review, then
+  // the picker to ask for more, opened in place under the vendor. The
+  // picker walks the way access is granted: for a cloud the account,
+  // project or subscription, then a searchable list of permissions. One
+  // Confirm sends the request to the room's reviewers (Admin > Review).
+  // Approved permissions are grants the agent borrows an hour of access
+  // against; the decisions are the reviewers', never this page's.
   //
   // GitHub is the one vendor with a step of its own. An agent reaches
   // GitHub through its own repository set (one set per agent, written here
-  // and replaced here), so picking GitHub lists the room installation's
-  // repositories first; Save writes the set, and only then does the level
-  // (Read, Review pull requests, Open pull requests) get picked. The request
-  // targets the set, never the room's connection.
-  //
-  // Mounted inside AccessPanel, after Who can reach this agent. The rows use
-  // the shared settings-row classes (app.css) so the two halves of the tab
-  // read as one.
+  // and replaced here), so opening GitHub lists repositories first; Save
+  // writes the set, and only then does the level (Read, Review pull
+  // requests, Open pull requests) get picked. The request targets the set,
+  // never the room's connection. The list never draws every repository the
+  // room can see: the ones already picked come first, then the best matches
+  // for what was typed, the way the connect-a-repo field works.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { errorMessage, type AccessAccount, type AccessGrant, type AccessPermission, type AccessRequest, type AccessVendor, type AgentIdentity } from "../lib/api";
+  import { errorMessage, type AccessAccount, type AccessGrant, type AccessPermission, type AccessRequest, type AccessVendor, type GithubRepository } from "../lib/api";
   import { agentAccessQuery, githubRepositoriesQuery, putGithubRepositoriesMutation, requestAgentAccessMutation, revokeAgentAccessMutation } from "../lib/queries";
   import { serverDate } from "../lib/time";
   import { toast } from "../lib/toast.svelte";
+  import VendorMark from "./VendorMark.svelte";
 
-  let { agentName, identity = null }: { agentName: string; identity?: AgentIdentity | null } = $props();
+  let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
 
   const GITHUB = "github";
-  /** Asking another agent is a permission too, but it is shown under Other
-   * agents, where the pair it makes lives; the tables here leave it out. */
+  /** Asking another agent is a permission too, but it is shown under the
+   * Harness's Agent to agent section, where the pair it makes lives; the
+   * tables here leave it out. */
   const ASK_PERMISSION = "a2a_ask";
+  /** How many repository matches the picker draws at once. */
+  const REPO_SHOWN = 40;
 
   const queryClient = useQueryClient();
   // agentName is read once: AgentDetail remounts the tab's panels on a
@@ -39,9 +42,9 @@
   const ask = createMutation(() => (requestAgentAccessMutation(queryClient, agentName)));
   const revoke = createMutation(() => (revokeAgentAccessMutation(queryClient, agentName)));
 
-  // Where the picker is: nothing (vendors), a vendor (its accounts, or for
-  // GitHub its repositories), or an account (its permissions). Explicit
-  // state, so ticking a box changes nothing here.
+  // Where the picker is: nothing (every vendor shut), a vendor (its
+  // accounts, or for GitHub its repositories), or an account (its
+  // permissions). Explicit state, so ticking a box changes nothing here.
   let vendorId = $state<string | null>(null);
   let accountId = $state<string | null>(null);
   let query = $state("");
@@ -75,8 +78,8 @@
     }
     return map;
   });
-  /** Every account by id, so a table row can name it and, for a GitHub
-   * set, list its repositories. */
+  /** Every account by id, so a row can name it and, for a GitHub set, list
+   * its repositories. */
   const accounts = $derived.by(() => {
     const map = new Map<string, AccessAccount>();
     for (const v of vendors) {
@@ -84,12 +87,34 @@
     }
     return map;
   });
+  /** Which vendor an account (a grant's or a request's `integration`)
+   * belongs to. A vendor's own id counts too: a service vendor's one
+   * connection is often named by it. */
+  const vendorOf = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const v of vendors) {
+      map.set(v.id, v.id);
+      for (const a of v.accounts) map.set(a.id, v.id);
+    }
+    return map;
+  });
+
+  function grantsAt(v: AccessVendor): AccessGrant[] {
+    return grants.filter((g) => vendorOf.get(g.integration) === v.id);
+  }
+  function pendingAt(v: AccessVendor): AccessRequest[] {
+    return pending.filter((r) => vendorOf.get(r.integration) === v.id);
+  }
+  /** Grants and requests naming an account no vendor claims any more: shown
+   * at the end rather than lost. */
+  const strayGrants = $derived(grants.filter((g) => !vendorOf.has(g.integration)));
+  const strayPending = $derived(pending.filter((r) => !vendorOf.has(r.integration)));
 
   function heldAt(accountIdOrVendor: string): number {
     return grants.filter((g) => g.state !== "expired" && g.integration === accountIdOrVendor).length;
   }
-  function heldForVendor(v: AccessVendor): number {
-    return v.accounts.reduce((n, a) => n + heldAt(a.id), 0);
+  function connectedCount(v: AccessVendor): number {
+    return v.accounts.filter((a) => a.connected).length;
   }
 
   function openVendor(v: AccessVendor): void {
@@ -98,9 +123,17 @@
     picked = [];
     repoDraft = null;
     repoError = null;
+    repoSaved = false;
     // A service vendor is one connection: go straight to its permissions.
     // GitHub stops at its repositories first.
     accountId = v.kind === "service" && v.accounts.length === 1 && v.id !== GITHUB ? v.accounts[0].id : null;
+  }
+  function toggleVendor(v: AccessVendor): void {
+    if (vendorId === v.id) {
+      closePicker();
+    } else {
+      openVendor(v);
+    }
   }
   function openAccount(a: AccessAccount): void {
     if (!a.connected) return;
@@ -118,11 +151,12 @@
     query = "";
     picked = [];
   }
-  function toVendors(): void {
+  function closePicker(): void {
     accountId = null;
     vendorId = null;
     picked = [];
     query = "";
+    repoSaved = false;
   }
 
   type RowState = "held" | "waiting" | "above" | "open";
@@ -196,16 +230,36 @@
   let repoDraft = $state<string[] | null>(null);
   let repoError = $state<string | null>(null);
   let repoQuery = $state("");
+  /** True right after a save landed, until the picker moves on or shuts:
+   * the level step says the set is saved. */
+  let repoSaved = $state(false);
 
   const repoSelected = $derived(repos.data?.selected ?? []);
   const repoChecked = $derived(repoDraft ?? repoSelected);
   const repoChanged = $derived(
     repoChecked.length !== repoSelected.length || repoChecked.some((r) => !repoSelected.includes(r)),
   );
-  const repoMatches = $derived.by(() => {
-    const q = repoQuery.trim().toLowerCase();
+  const repoTotal = $derived(repos.data?.total ?? repos.data?.repositories.length ?? 0);
+  /** The rows the picker draws: what is picked first (every one of them,
+   * so each can be unticked), then the best matches for the typed query,
+   * capped. A name that starts with the query ranks above one that merely
+   * contains it. */
+  const repoRows = $derived.by(() => {
     const all = repos.data?.repositories ?? [];
-    return q ? all.filter((r) => r.full_name.toLowerCase().includes(q)) : all;
+    const byName = new Map(all.map((r) => [r.full_name, r]));
+    const q = repoQuery.trim().toLowerCase();
+    const pickedRows: GithubRepository[] = repoChecked.map(
+      (name) => byName.get(name) ?? { full_name: name, private: true, default_branch: null },
+    );
+    const rest = all.filter((r) => !repoChecked.includes(r.full_name) && (!q || r.full_name.toLowerCase().includes(q)));
+    if (q) {
+      rest.sort((a, b) => {
+        const ai = a.full_name.toLowerCase().indexOf(q);
+        const bi = b.full_name.toLowerCase().indexOf(q);
+        return ai - bi || a.full_name.localeCompare(b.full_name);
+      });
+    }
+    return { picked: pickedRows, matches: rest.slice(0, REPO_SHOWN), more: Math.max(0, rest.length - REPO_SHOWN) };
   });
 
   function toggleRepo(fullName: string): void {
@@ -218,6 +272,7 @@
     saveRepos.mutate([...repoChecked], {
       onSuccess: (res) => {
         repoDraft = null;
+        repoSaved = true;
         // The set is the account the request targets: step on to the level.
         accountId = res.integration;
         picked = [];
@@ -271,6 +326,25 @@
   function requestLabels(r: AccessRequest): string {
     return (r.permissions ?? []).filter((p) => p !== ASK_PERMISSION).map(label).join(", ");
   }
+  /** The highest tier a request asks for, for its chip. */
+  function requestTier(r: AccessRequest): string {
+    const tiers = Object.keys(r.tiers ?? {});
+    for (const t of ["destroy", "mutate", "read"]) if (tiers.includes(t)) return t;
+    return tiers[0] ?? "read";
+  }
+  /** One line about a vendor's connection, under its name. */
+  function connectionNote(v: AccessVendor): string {
+    const connected = connectedCount(v);
+    if (v.kind === "cloud") {
+      return `${connected} of ${v.accounts.length} ${v.account_noun ?? "account"}${v.accounts.length === 1 ? "" : "s"} connected`;
+    }
+    if (v.id === GITHUB && connected) {
+      return v.accounts[0]?.has_repo_set
+        ? count(v.accounts[0].repositories.length, "repository", "repositories")
+        : "no repositories picked yet";
+    }
+    return connected ? "one connection" : "not connected yet";
+  }
 </script>
 
 {#snippet repoList(repositories: string[])}
@@ -282,250 +356,271 @@
   </details>
 {/snippet}
 
+<!-- What the agent holds at one vendor and what is waiting there: one table,
+     held rows then waiting rows, or one quiet line when there is nothing. -->
+{#snippet heldTable(rows: AccessGrant[], asked: AccessRequest[], canDecide: boolean)}
+  {#if rows.length === 0 && asked.length === 0}
+    <p class="vendor__none">Nothing held yet.</p>
+  {:else}
+    <table class="panel__table vendor__table">
+      <thead><tr><th scope="col">Permission</th><th scope="col">Where</th><th scope="col">Tier</th><th scope="col">Expires</th><th scope="col">Granted by</th><th scope="col" class="panel__cell--right"><span class="panel__sr">Revoke</span></th></tr></thead>
+      <tbody>
+        {#each rows as g (g.id)}
+          {@const set = repoSet(g.integration)}
+          <tr class:quiet={g.state === "expired"}>
+            <td><span class="perm" class:perm--named={labels.has(g.permission)} title={g.permission}>{label(g.permission)}</span></td>
+            <td>
+              {where(g.integration)}
+              {#if set}{@render repoList(set)}{/if}
+            </td>
+            <td><span class="tier tier--{g.tier}">{g.tier}</span></td>
+            <td>{expires(g)}</td>
+            <td class="quiet">{g.granted_by}</td>
+            <td class="panel__cell--right">
+              {#if canDecide}
+                <button type="button" class="btn btn--quiet btn--danger" disabled={frozen || revoke.isPending} onclick={() => handleRevoke(g)}>Revoke now</button>
+              {/if}
+            </td>
+          </tr>
+        {/each}
+        {#each asked as r (r.id)}
+          {@const set = r.repositories ?? repoSet(r.integration)}
+          <tr class="vendor__waiting">
+            <td><span class="perm" class:perm--named={r.permissions.some((p) => labels.has(p))}>{requestLabels(r)}</span></td>
+            <td>
+              {where(r.integration)}
+              {#if set}{@render repoList(set)}{/if}
+            </td>
+            <td><span class="tier tier--{requestTier(r)}">{requestTier(r)}</span></td>
+            <td><span class="quiet">waiting for review</span></td>
+            <td class="quiet">asked by {r.requested_by}{#if r.note}: “{r.note}”{/if}</td>
+            <td></td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {/if}
+{/snippet}
+
 {#if access.isPending}
-  <section class="settings-row" aria-labelledby="permissions-heading">
-    <div class="panel__header settings-row__head">
-      <h4 id="permissions-heading" class="panel__subheading">Permissions</h4>
-    </div>
-    <div class="settings-row__body"><p class="panel__note">Reading the permissions…</p></div>
-  </section>
+  <p class="panel__note">Reading the permissions…</p>
 {:else if access.isError}
-  <section class="settings-row" aria-labelledby="permissions-heading">
-    <div class="panel__header settings-row__head">
-      <h4 id="permissions-heading" class="panel__subheading">Permissions</h4>
-    </div>
-    <div class="settings-row__body"><p class="panel__note">{errorMessage(access.error, "Access is off for this room.")}</p></div>
-  </section>
+  <p class="panel__note">{errorMessage(access.error, "Access is off for this room.")}</p>
 {:else if access.data}
-  <section class="settings-row" aria-labelledby="permissions-held-heading">
-    <div class="panel__header settings-row__head">
-      <h4 id="permissions-held-heading" class="panel__subheading">Held</h4>
-      <p class="panel__lead">
+  <div class="vendors">
+    <div class="vendors__head">
+      <h3 class="panel__subheading">What this agent can reach</h3>
+      <p class="vendors__lead">
         What this agent may do at each vendor. It holds no standing credential: when a task
         needs one, it borrows an hour of access scoped to exactly these permissions, and the
         vendor's audit trail names the agent.
-      </p>
-      {#if identity}
-        <p class="panel__note">Runs as <code>{identity.gsa_email}</code>.</p>
-      {/if}
-    </div>
-    <div class="settings-row__body">
-      {#if grants.length === 0}
-        <table class="panel__table">
-          <thead><tr><th scope="col">Permission</th><th scope="col">Where</th><th scope="col">Expires</th></tr></thead>
-          <tbody><tr><td class="panel__empty" colspan="3">Nothing yet. Ask for more below.</td></tr></tbody>
-        </table>
-      {:else}
-        <table class="panel__table">
-          <thead><tr><th scope="col">Permission</th><th scope="col">Where</th><th scope="col">Tier</th><th scope="col">Expires</th><th scope="col">Granted by</th><th scope="col" class="panel__cell--right"><span class="panel__sr">Revoke</span></th></tr></thead>
-          <tbody>
-            {#each grants as g (g.id)}
-              {@const set = repoSet(g.integration)}
-              <tr class:quiet={g.state === "expired"}>
-                <td><span class="perm" class:perm--named={labels.has(g.permission)} title={g.permission}>{label(g.permission)}</span></td>
-                <td>
-                  {where(g.integration)}
-                  {#if set}{@render repoList(set)}{/if}
-                </td>
-                <td><span class="tier tier--{g.tier}">{g.tier}</span></td>
-                <td>{expires(g)}</td>
-                <td class="quiet">{g.granted_by}</td>
-                <td class="panel__cell--right">
-                  {#if access.data.can_decide}
-                    <button type="button" class="btn btn--quiet btn--danger" disabled={revoke.isPending} onclick={() => handleRevoke(g)}>Revoke now</button>
-                  {/if}
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {/if}
-    </div>
-  </section>
-
-  {#if pending.length > 0}
-    <section class="settings-row" aria-labelledby="permissions-waiting-heading">
-      <div class="panel__header settings-row__head">
-        <h4 id="permissions-waiting-heading" class="panel__subheading">Waiting for review</h4>
-        <p class="panel__lead">Asked for and not yet decided. The room's reviewers decide in Admin, Review.</p>
-      </div>
-      <div class="settings-row__body">
-        <table class="panel__table">
-          <thead><tr><th scope="col">Permissions</th><th scope="col">Where</th><th scope="col">Asked by</th></tr></thead>
-          <tbody>
-            {#each pending as r (r.id)}
-              {@const set = r.repositories ?? repoSet(r.integration)}
-              <tr>
-                <td><span class="perm" class:perm--named={r.permissions.some((p) => labels.has(p))}>{requestLabels(r)}</span></td>
-                <td>
-                  {where(r.integration)}
-                  {#if set}{@render repoList(set)}{/if}
-                </td>
-                <td class="quiet">{r.requested_by}{#if r.note}: “{r.note}”{/if}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  {/if}
-
-  <section class="settings-row" aria-labelledby="permissions-ask-heading">
-    <div class="panel__header settings-row__head">
-      <h4 id="permissions-ask-heading" class="panel__subheading">Ask for more</h4>
-      <p class="panel__lead">
-        Pick a vendor, then what the agent needs there. One Confirm sends the request to the
-        room's reviewers.
+        {#if vendors.length > 0 && access.data.can_request}
+          Open a vendor to ask for more; one Confirm sends the request to the room's reviewers.
+        {:else if vendors.length > 0}
+          The agent's owner or a room operator asks for more; you can see what it holds.
+        {/if}
       </p>
     </div>
-    <div class="settings-row__body">
-      {#if vendors.length === 0}
-        <p class="panel__empty">No vendor is connected to the room yet.</p>
-      {:else if !access.data.can_request}
-        <p class="panel__note">The agent's owner or a room operator asks; you can see what it holds.</p>
-      {:else if !vendor}
-        <!-- Level 1: the vendors -->
-        <div class="table-card picker">
-          {#each vendors as v (v.id)}
-            {@const connected = v.accounts.filter((a) => a.connected).length}
-            <button type="button" class="row-link" onclick={() => openVendor(v)} disabled={connected === 0}>
-              <span class="row-link__name">{v.label}</span>
-              <span class="row-link__note">
-                {#if v.kind === "cloud"}
-                  {connected} of {v.accounts.length} {v.account_noun ?? "account"}{v.accounts.length === 1 ? "" : "s"} connected
-                {:else if v.id === GITHUB && connected}
-                  {#if v.accounts[0]?.has_repo_set}
-                    {count(v.accounts[0].repositories.length, "repository", "repositories")}
-                  {:else}
-                    no repositories picked yet
-                  {/if}
-                {:else if connected}
-                  one connection
+
+    {#if vendors.length === 0}
+      <p class="panel__empty">No vendor is connected to the room yet.</p>
+    {/if}
+
+    {#each vendors as v (v.id)}
+      {@const connected = connectedCount(v)}
+      {@const open = vendorId === v.id}
+      {@const canOpen = access.data.can_request && connected > 0}
+      <section class="vendor" class:vendor--open={open} aria-label={v.label}>
+        <button
+          type="button"
+          class="vendor__head"
+          aria-expanded={canOpen ? open : undefined}
+          disabled={!canOpen || frozen}
+          title={connected === 0 ? "Not connected yet; a room admin connects it on Admin › Integrations" : ""}
+          onclick={() => toggleVendor(v)}
+        >
+          <VendorMark id={v.id} name={v.label} size={18} />
+          <span class="vendor__name">{v.label}</span>
+          <span class="vendor__note">
+            {connectionNote(v)}
+            {#if grantsAt(v).filter((g) => g.state !== "expired").length} · {grantsAt(v).filter((g) => g.state !== "expired").length} held{/if}
+          </span>
+          {#if canOpen}
+            <span class="vendor__action">{open ? "Close" : "Ask for more"}</span>
+          {/if}
+        </button>
+
+        {@render heldTable(grantsAt(v), pendingAt(v), access.data.can_decide)}
+
+        {#if open && vendor}
+          <div class="vendor__picker">
+            {#if isGithub && !account}
+              <!-- GitHub: the agent's repositories -->
+              {#if repos.isPending}
+                <p class="panel__note">Reading the repositories…</p>
+              {:else if repos.isError}
+                <p class="panel__note panel__note--fail">{errorMessage(repos.error, "The repositories could not be read.")}</p>
+              {:else if repos.data && !repos.data.available}
+                <p class="panel__note">{repos.data.note ?? "The room cannot list repositories right now."}</p>
+              {:else if repos.data}
+                <p class="vendor__copy">
+                  Which repositories this agent may reach. One set per agent; the level you pick next
+                  applies to every repository in it. Saving a changed set replaces the old one.
+                </p>
+                <div class="search">
+                  <input class="field__input" type="search" placeholder={`Find a repository (${repoTotal} the room can see)`} bind:value={repoQuery} aria-label="Find a repository" disabled={frozen} />
+                </div>
+                {#if repoRows.picked.length === 0 && repoRows.matches.length === 0}
+                  <p class="panel__empty">{repoQuery.trim() ? `Nothing matches “${repoQuery}”.` : "Type part of a repository's name to find it."}</p>
                 {:else}
-                  not connected yet
+                  <div class="services">
+                    {#if repoRows.picked.length > 0}
+                      <p class="group">Picked</p>
+                      {#each repoRows.picked as r (r.full_name)}
+                        <label class="svc svc--repo">
+                          <input type="checkbox" checked={true} disabled={frozen || saveRepos.isPending} onchange={() => toggleRepo(r.full_name)} />
+                          <span class="svc__name">{r.full_name}</span>
+                          <span class="svc__desc quiet">{r.private ? "private" : "public"}{#if r.default_branch} · {r.default_branch}{/if}</span>
+                        </label>
+                      {/each}
+                    {/if}
+                    {#if repoRows.matches.length > 0}
+                      {#if repoRows.picked.length > 0}<p class="group">{repoQuery.trim() ? "Matches" : "More"}</p>{/if}
+                      {#each repoRows.matches as r (r.full_name)}
+                        <label class="svc svc--repo">
+                          <input type="checkbox" checked={false} disabled={frozen || saveRepos.isPending} onchange={() => toggleRepo(r.full_name)} />
+                          <span class="svc__name">{r.full_name}</span>
+                          <span class="svc__desc quiet">{r.private ? "private" : "public"}{#if r.default_branch} · {r.default_branch}{/if}</span>
+                        </label>
+                      {/each}
+                    {/if}
+                    {#if repoRows.more > 0}
+                      <p class="panel__note services__more">{repoRows.more} more match{repoRows.more === 1 ? "es" : ""}. Keep typing to narrow the list.</p>
+                    {/if}
+                  </div>
                 {/if}
-                {#if heldForVendor(v)} · {heldForVendor(v)} held{/if}
-              </span>
-              <span class="row-link__chevron" aria-hidden="true">›</span>
-            </button>
-          {/each}
-        </div>
-        <p class="panel__note">A cloud is connected one {vendors.find((v) => v.kind === "cloud")?.account_noun ?? "account"} at a time. Datadog, Atlassian and the like are one connection each. GitHub is a set of repositories per agent.</p>
-      {:else if isGithub && !account}
-        <!-- Level 2, GitHub: the agent's repositories -->
-        <nav class="crumbs" aria-label="Where you are"><button type="button" class="crumb" onclick={toVendors}>‹ Vendors</button><span class="crumb crumb--here">{vendor.label}</span></nav>
-        {#if repos.isPending}
-          <p class="panel__note">Reading the repositories…</p>
-        {:else if repos.isError}
-          <p class="panel__note panel__note--fail">{errorMessage(repos.error, "The repositories could not be read.")}</p>
-        {:else if repos.data && !repos.data.available}
-          <p class="panel__note">{repos.data.note ?? "The room cannot list repositories right now."}</p>
-        {:else if repos.data}
-          <p class="panel__note">
-            Which repositories this agent may reach. One set per agent; the level you pick next
-            applies to every repository in it. Saving a changed set replaces the old one.
-          </p>
-          <div class="search">
-            <input class="field__input" type="search" placeholder={`Find a repository (${repos.data.repositories.length} the room can see)`} bind:value={repoQuery} aria-label="Find a repository" />
-          </div>
-          {#if repoMatches.length === 0}
-            <p class="panel__empty">Nothing matches “{repoQuery}”.</p>
-          {:else}
-            <div class="services">
-              {#each repoMatches as r (r.full_name)}
-                <label class="svc svc--repo">
-                  <input type="checkbox" checked={repoChecked.includes(r.full_name)} disabled={saveRepos.isPending} onchange={() => toggleRepo(r.full_name)} />
-                  <span class="svc__name">{r.full_name}</span>
-                  <span class="svc__desc quiet">{r.private ? "private" : "public"}{#if r.default_branch} · {r.default_branch}{/if}</span>
-                </label>
-              {/each}
-            </div>
-          {/if}
-          <div class="confirm" class:confirm--live={repoChanged}>
-            <span class="confirm__count">{repoChecked.length} picked</span>
-            {#if repoError}
-              <span class="panel__note panel__note--fail confirm__error" role="alert">{repoError}</span>
-            {:else if repoChecked.length === 0}
-              <span class="panel__note confirm__error">Pick at least one repository.</span>
+                <div class="confirm" class:confirm--live={repoChanged}>
+                  <span class="confirm__count">{repoChecked.length} picked</span>
+                  {#if repoError}
+                    <span class="panel__note panel__note--fail confirm__error" role="alert">{repoError}</span>
+                  {:else if saveRepos.isPending}
+                    <span class="panel__note confirm__error" role="status">Saving the set…</span>
+                  {:else if repoChecked.length === 0}
+                    <span class="panel__note confirm__error">Pick at least one repository.</span>
+                  {:else}
+                    <span class="confirm__spacer"></span>
+                  {/if}
+                  {#if githubAccount?.has_repo_set && !repoChanged}
+                    <button type="button" class="btn btn--primary" disabled={frozen} onclick={chooseLevel}>Choose the level</button>
+                  {:else}
+                    <button type="button" class="btn btn--primary" disabled={frozen || !repoChanged || repoChecked.length === 0 || saveRepos.isPending} onclick={saveRepositories}>
+                      {saveRepos.isPending ? "Saving…" : "Save repositories"}
+                    </button>
+                  {/if}
+                </div>
+              {/if}
+            {:else if !account}
+              <!-- A cloud's accounts -->
+              <p class="vendor__copy">Pick the {vendor.account_noun ?? "account"} the agent needs something in.</p>
+              <div class="table-card picker">
+                {#each vendor.accounts as a (a.id)}
+                  <button type="button" class="row-link" disabled={!a.connected || frozen} onclick={() => openAccount(a)} title={a.connected ? "" : "Not connected yet; a room admin connects it on Admin › Integrations"}>
+                    <span class="row-link__name">{a.name}{#if a.organization}<span class="quiet org"> · {vendor.organizations.find((o) => o.id === a.organization)?.name ?? a.organization}</span>{/if}</span>
+                    <span class="row-link__note">{a.connected ? `${heldAt(a.id)} held` : "not connected yet"}</span>
+                    <span class="row-link__chevron" aria-hidden="true">›</span>
+                  </button>
+                {/each}
+              </div>
             {:else}
-              <span class="confirm__spacer"></span>
-            {/if}
-            {#if githubAccount?.has_repo_set && !repoChanged}
-              <button type="button" class="btn btn--primary" onclick={chooseLevel}>Choose the level</button>
-            {:else}
-              <button type="button" class="btn btn--primary" disabled={!repoChanged || repoChecked.length === 0 || saveRepos.isPending} onclick={saveRepositories}>
-                {saveRepos.isPending ? "Saving…" : "Save repositories"}
-              </button>
+              <!-- The permissions -->
+              <nav class="crumbs" aria-label="Where you are">
+                {#if vendor.kind !== "service"}<button type="button" class="crumb" onclick={back}>‹ {vendor.account_noun ? `${vendor.account_noun.slice(0, 1).toUpperCase()}${vendor.account_noun.slice(1)}s` : "Accounts"}</button>{/if}
+                {#if isGithub}
+                  <span class="crumb crumb--here">{count(account.repositories.length, "repository", "repositories")}</span>
+                {:else}
+                  <span class="crumb crumb--here">{account.name}</span>
+                {/if}
+              </nav>
+              {#if isGithub}
+                {#if repoSaved}
+                  <p class="vendor__saved" role="status">Repositories saved. Pick the level next.</p>
+                {/if}
+                <p class="panel__note repo-set">
+                  <span class="repo-set__list" title={account.repositories.join("\n")}>{account.repositories.join(", ")}</span>
+                  <button type="button" class="crumb" disabled={frozen} onclick={back}>Change repositories</button>
+                </p>
+                <p class="vendor__copy">
+                  The levels add up: Review includes Read, Open pull requests includes Review. The
+                  agent can never approve a pull request it opened.
+                </p>
+              {/if}
+              <div class="search">
+                <input class="field__input" type="search" placeholder={`Find a permission (${offeredCount} this connection allows)`} bind:value={query} aria-label="Find a permission" disabled={frozen} />
+              </div>
+              {#if matches.length === 0}
+                <p class="panel__empty">Nothing matches “{query}”.</p>
+              {:else}
+                <div class="services">
+                  {#each matches as g (g.name)}
+                    {#if !isGithub || matches.length > 1}<p class="group">{g.name}</p>{/if}
+                    {#each g.permissions as p (p.name)}
+                      {@const st = rowState(account, p)}
+                      <label class="svc svc--{st}">
+                        <input type="checkbox" disabled={frozen || st !== "open"} checked={st === "held" || picked.includes(p.name)} onchange={() => toggle(p.name)} />
+                        <span class="svc__name" class:svc__name--named={p.label}>{permLabel(p)}</span>
+                        <span class="svc__desc quiet">{p.description ?? ""}</span>
+                        <span class="svc__why quiet">{WHY[st]}</span>
+                      </label>
+                    {/each}
+                  {/each}
+                </div>
+              {/if}
+              <div class="confirm" class:confirm--live={picked.length > 0}>
+                <span class="confirm__count">{picked.length} selected</span>
+                <input class="field__input" type="text" placeholder="Why (optional), for the reviewer" bind:value={note} disabled={frozen} />
+                <button type="button" class="btn btn--primary" disabled={frozen || ask.isPending || picked.length === 0} onclick={confirm}>Confirm request</button>
+              </div>
+              <p class="panel__note">Read access means configuration and listings, never the data a service holds. Requests go to the room's reviewers (Admin › Review).</p>
             {/if}
           </div>
         {/if}
-      {:else if !account}
-        <!-- Level 2: a cloud's accounts -->
-        <nav class="crumbs" aria-label="Where you are"><button type="button" class="crumb" onclick={back}>‹ Vendors</button><span class="crumb crumb--here">{vendor.label}</span></nav>
-        <div class="table-card picker">
-          {#each vendor.accounts as a (a.id)}
-            <button type="button" class="row-link" onclick={() => openAccount(a)} disabled={!a.connected} title={a.connected ? "" : "Not connected yet; a room admin connects it on Admin › Integrations"}>
-              <span class="row-link__name">{a.name}{#if a.organization}<span class="quiet org"> · {vendor.organizations.find((o) => o.id === a.organization)?.name ?? a.organization}</span>{/if}</span>
-              <span class="row-link__note">{a.connected ? `${heldAt(a.id)} held` : "not connected yet"}</span>
-              <span class="row-link__chevron" aria-hidden="true">›</span>
-            </button>
-          {/each}
+      </section>
+    {/each}
+
+    {#if strayGrants.length > 0 || strayPending.length > 0}
+      <section class="vendor" aria-label="Elsewhere">
+        <div class="vendor__head vendor__head--plain">
+          <span class="vendor__name">Elsewhere</span>
+          <span class="vendor__note">on a connection the room no longer lists</span>
         </div>
-      {:else}
-        <!-- Level 3: the permissions -->
-        <nav class="crumbs" aria-label="Where you are">
-          <button type="button" class="crumb" onclick={toVendors}>‹ Vendors</button>
-          {#if vendor.kind !== "service"}<button type="button" class="crumb" onclick={back}>{vendor.label}</button>{/if}
-          {#if isGithub}
-            <button type="button" class="crumb" onclick={back}>{vendor.label}</button>
-            <span class="crumb crumb--here">{count(account.repositories.length, "repository", "repositories")}</span>
-          {:else}
-            <span class="crumb crumb--here">{account.name}</span>
-          {/if}
-        </nav>
-        {#if isGithub}
-          <p class="panel__note repo-set">
-            <span class="repo-set__list" title={account.repositories.join("\n")}>{account.repositories.join(", ")}</span>
-            <button type="button" class="crumb" onclick={back}>Change repositories</button>
-          </p>
-          <p class="panel__note">
-            The levels add up: Review includes Read, Open pull requests includes Review. The
-            agent can never approve a pull request it opened.
-          </p>
-        {/if}
-        <div class="search">
-          <input class="field__input" type="search" placeholder={`Find a permission (${offeredCount} this connection allows)`} bind:value={query} aria-label="Find a permission" />
-        </div>
-        {#if matches.length === 0}
-          <p class="panel__empty">Nothing matches “{query}”.</p>
-        {:else}
-          <div class="services">
-            {#each matches as g (g.name)}
-              {#if !isGithub || matches.length > 1}<p class="group">{g.name}</p>{/if}
-              {#each g.permissions as p (p.name)}
-                {@const st = rowState(account, p)}
-                <label class="svc svc--{st}">
-                  <input type="checkbox" disabled={st !== "open"} checked={st === "held" || picked.includes(p.name)} onchange={() => toggle(p.name)} />
-                  <span class="svc__name" class:svc__name--named={p.label}>{permLabel(p)}</span>
-                  <span class="svc__desc quiet">{p.description ?? ""}</span>
-                  <span class="svc__why quiet">{WHY[st]}</span>
-                </label>
-              {/each}
-            {/each}
-          </div>
-        {/if}
-        <div class="confirm" class:confirm--live={picked.length > 0}>
-          <span class="confirm__count">{picked.length} selected</span>
-          <input class="field__input" type="text" placeholder="Why (optional), for the reviewer" bind:value={note} />
-          <button type="button" class="btn btn--primary" disabled={ask.isPending || picked.length === 0} onclick={confirm}>Confirm request</button>
-        </div>
-        <p class="panel__note">Read access means configuration and listings, never the data a service holds. Requests go to the room's reviewers (Admin › Review).</p>
-      {/if}
-    </div>
-  </section>
+        {@render heldTable(strayGrants, strayPending, access.data.can_decide)}
+      </section>
+    {/if}
+  </div>
 {/if}
 
 <style>
+  .vendors { display: flex; flex-direction: column; gap: var(--space-md); }
+  .vendors__head { display: flex; flex-direction: column; gap: var(--space-2xs); }
+  .vendors__lead { margin: 0; max-width: 60rem; color: var(--ink); font-size: 0.9rem; line-height: 1.5; }
+  .vendor { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
+  .vendor--open { border-color: var(--ring); }
+  .vendor__head { display: flex; align-items: center; gap: var(--space-sm); width: 100%; padding: var(--space-sm) var(--space-md); border: 0; border-bottom: 1px solid var(--border); background: var(--bg); color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+  .vendor__head:hover:not(:disabled) { background: var(--accent-soft); }
+  .vendor__head:disabled { cursor: default; }
+  .vendor__head--plain { cursor: default; }
+  .vendor__name { font-size: 0.95rem; font-weight: 600; }
+  .vendor__note { flex: 1; min-width: 0; color: var(--muted); font-size: 0.82rem; }
+  .vendor__action { flex-shrink: 0; color: var(--accent, var(--ink)); font-size: 0.85rem; font-weight: 500; }
+  .vendor__none { margin: 0; padding: var(--space-sm) var(--space-md); color: var(--muted); font-size: 0.85rem; }
+  .vendor__table { border: 0; }
+  .vendor__table th { padding-left: var(--space-md); padding-right: var(--space-md); }
+  .vendor__table td { padding-left: var(--space-md); padding-right: var(--space-md); }
+  .vendor__table tbody tr:last-child td { border-bottom: none; }
+  .vendor__waiting td { color: var(--ink); }
+  .vendor__picker { display: flex; flex-direction: column; gap: var(--space-sm); padding: var(--space-md); border-top: 1px solid var(--border); }
+  .vendor__copy { margin: 0; color: var(--ink); font-size: 0.9rem; line-height: 1.5; }
+  .vendor__saved { margin: 0; color: var(--ok); font-size: 0.85rem; font-weight: 500; }
   .perm { font-family: var(--font-mono); font-size: 0.85rem; font-weight: 600; }
   .perm--named { font-family: inherit; font-size: 0.9rem; }
   .quiet { color: var(--muted); font-size: 0.85rem; }
@@ -540,15 +635,16 @@
   .picker .row-link { width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--border); cursor: pointer; font: inherit; color: inherit; }
   .picker .row-link:last-child { border-bottom: 0; }
   .picker .row-link:disabled { cursor: default; }
-  .crumbs { display: flex; align-items: center; gap: var(--space-xs); margin: 0 0 var(--space-sm); }
+  .crumbs { display: flex; align-items: center; gap: var(--space-xs); margin: 0; }
   .crumb { background: none; border: 0; padding: 0; font: inherit; color: var(--accent, var(--ink)); cursor: pointer; }
   .crumb--here { color: var(--ink); font-weight: 600; cursor: default; }
   .crumb + .crumb::before { content: "›"; margin-right: var(--space-xs); color: var(--muted); }
   .repo-set { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-xs); }
   .repo-set__list { font-family: var(--font-mono); font-size: 0.8rem; overflow-wrap: anywhere; }
-  .search { margin: 0 0 var(--space-sm); }
+  .search { margin: 0; }
   .search .field__input { width: 100%; }
   .services { max-height: 26rem; overflow: auto; padding: 0 var(--space-xs); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+  .services__more { padding: var(--space-xs) 0; }
   .group { margin: var(--space-sm) 0 var(--space-2xs); color: var(--muted); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
   .svc { display: grid; grid-template-columns: auto 10rem minmax(0, 1fr) auto; gap: var(--space-sm); align-items: baseline; padding: var(--space-2xs) 0; cursor: pointer; }
   .svc--repo { grid-template-columns: auto minmax(0, 1fr) auto; }
@@ -558,7 +654,7 @@
   .svc__name--named { font-family: inherit; font-size: 0.9rem; }
   .svc__desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .svc__why { white-space: nowrap; }
-  .confirm { position: sticky; bottom: 0; display: flex; align-items: center; gap: var(--space-sm); margin-top: var(--space-sm); padding: var(--space-sm); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel, var(--bg)); }
+  .confirm { position: sticky; bottom: 0; display: flex; align-items: center; gap: var(--space-sm); margin: 0; padding: var(--space-sm); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel, var(--bg)); }
   .confirm--live { border-color: var(--accent, var(--border)); }
   .confirm__count { min-width: 6rem; color: var(--muted); font-size: 0.9rem; }
   .confirm__error, .confirm__spacer { flex: 1; font-size: 0.85rem; }
@@ -567,5 +663,6 @@
   @media (max-width: 48rem) {
     .svc { grid-template-columns: auto minmax(0, 1fr); }
     .svc__desc, .svc__why { grid-column: 2; }
+    .vendor__head { flex-wrap: wrap; }
   }
 </style>

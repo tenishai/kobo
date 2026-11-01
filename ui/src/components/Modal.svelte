@@ -59,15 +59,20 @@
     return Array.from(dialogEl.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
   }
 
+  // A dialog can open over another (the destroy confirm over Edit details,
+  // issue #368). The key is handled once, by the dialog that has it, so an
+  // Escape in the confirm does not also close the editor behind it.
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       onclose();
       return;
     }
     if (event.key !== "Tab") {
       return;
     }
+    event.stopPropagation();
 
     const focusable = focusables();
     if (focusable.length === 0) {

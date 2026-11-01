@@ -1051,6 +1051,10 @@
     font-size: 0.85rem;
   }
 
+  .secrets__lead {
+    color: var(--ink);
+  }
+
   .secrets__note--fail {
     color: var(--fail);
   }

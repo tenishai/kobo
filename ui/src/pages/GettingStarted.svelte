@@ -433,7 +433,7 @@
 
   .guide__summary {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink);
     font-size: 1rem;
   }
 

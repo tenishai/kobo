@@ -270,7 +270,7 @@
     min-height: calc(2 * 1.45em);
     margin: 0;
     overflow: hidden;
-    color: var(--muted);
+    color: var(--ink);
     font-size: 0.82rem;
     line-height: 1.45;
     -webkit-box-orient: vertical;
