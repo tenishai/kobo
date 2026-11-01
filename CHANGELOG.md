@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.39] - 2026-11-01
+
 ### Added
 
 - **Self-hosted models (kobo#390).** A fourth kind under Admin, Integrations, and the one that is
