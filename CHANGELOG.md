@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.31] - 2026-11-01
+
 ### Added
 
 - **Slack as a vendor on Access (#371, phase 2 of #304), behind `slack_relay`.** With the
