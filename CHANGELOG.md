@@ -20,6 +20,30 @@ All notable changes to kobo are documented here. The format follows
   and the sentence, `BabClient.events(...)` the new read (bab `GET /events`). The people
   route and its export are unchanged.
 
+### Changed
+
+- **Agent connections leave the Integrations table and get their own page (#371).** `GET
+  /api/admin/integrations` no longer appends a permission-service row that has a `parent`
+  (an agent's GitHub repository set, kobo#365), so the Integrations table is the room's
+  connections only. A new admin page, **Agent connections** (the `connections` id with the
+  permission service on; the older lanes page keeps the id when it is off), is one card per
+  agent the room knows, newest activity first, with one row per vendor: the agent's own
+  connections there, what it holds (permission, tier, expires, granted by) and what it is
+  borrowing right now (permissions, task, issued, ends, via). **Revoke** calls the existing
+  `DELETE /api/agents/{name}/access/grants/{grant_id}`; a search box narrows by agent, vendor
+  or repository; `#/admin/connections/<agent>` puts that agent's card first. Served by `GET
+  /api/admin/access/agents` (admin gate): one `integrations()` for the children, one
+  `all_leases()` filtered to the unexpired, `grants()` per agent that has a child, a request
+  or a lease, fanned out on a thread pool of six after the room's own table is read and the
+  session closed (the 2026-10-01 pool rule). An agent with nothing is still listed.
+- **The Access tab lists the vendors the room has connected, nothing else (#371).** `picker()`
+  carries `connected` per vendor (a cloud with a connected account, a service or GitHub with a
+  parentless connection); `PermissionsPanel` draws those alone. The "0 of 0 projects
+  connected" subtitles are gone; GitHub keeps its repository count because that is about the
+  agent. With nothing connected the tab says so and links the word Integrations into the admin
+  panel for someone who may open it. `GET /api/access/picker` carries the same field; the
+  Review pane is unchanged.
+
 ## [0.3.29] - 2026-11-01
 
 ### Changed

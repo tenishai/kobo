@@ -5381,6 +5381,9 @@ def test_ask_review_hold_revoke_and_the_topology_push(tmp_path, fake_storage):
     # old org file named but nothing is connected to is not a vendor here.
     assert "gcp" not in vendors
     assert (aws["kind"], aws["label"], aws["account_noun"]) == ("cloud", "AWS", "account")
+    # The vendor says whether the room is connected to it at all (kobo#371): a cloud
+    # with one connected account is; a service with no connection is not.
+    assert aws["connected"] is True and dd["connected"] is False
     # Connected accounts only (#301): the org file's other names are not offered.
     assert [(a["id"], a["connected"]) for a in aws["accounts"]] == [("aws-prod", True)]
     assert aws["accounts"][0]["ceiling"] == ["aws_cloudtrail_lake_query", "aws_inventory_read"]
@@ -6268,6 +6271,7 @@ def test_the_access_tab_shows_github_as_the_agents_own_repository_set(tmp_path, 
     c, h, bab, github, _ = _github_room(tmp_path, fake_storage)
     page = c.get("/api/agents/ledger/access", headers=h).json()
     gh = next(v for v in page["vendors"] if v["id"] == "github")
+    assert gh["connected"] is True  # a parentless connection exists (kobo#371)
     assert gh["accounts"] == [{"id": "github", "name": "GitHub", "connected": True, "ceiling": GITHUB_LEVELS, "organization": None,
                                "account_id": None, "repositories": [], "has_repo_set": False}]
     assert {p["name"]: p["label"] for g in gh["groups"] for p in g["permissions"]} == {

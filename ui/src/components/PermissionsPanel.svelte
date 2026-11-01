@@ -20,7 +20,8 @@
   // for what was typed, the way the connect-a-repo field works.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { errorMessage, type AccessAccount, type AccessGrant, type AccessPermission, type AccessRequest, type AccessVendor, type GithubRepository } from "../lib/api";
-  import { agentAccessQuery, githubRepositoriesQuery, putGithubRepositoriesMutation, requestAgentAccessMutation, revokeAgentAccessMutation } from "../lib/queries";
+  import { agentAccessQuery, githubRepositoriesQuery, putGithubRepositoriesMutation, requestAgentAccessMutation, revokeAgentAccessMutation, whoamiQuery } from "../lib/queries";
+  import { formatHash } from "../lib/router.svelte";
   import { serverDate } from "../lib/time";
   import { toast } from "../lib/toast.svelte";
   import VendorMark from "./VendorMark.svelte";
@@ -41,6 +42,11 @@
   const access = createQuery(() => (agentAccessQuery(agentName)));
   const ask = createMutation(() => (requestAgentAccessMutation(queryClient, agentName)));
   const revoke = createMutation(() => (revokeAgentAccessMutation(queryClient, agentName)));
+  // Read only when the empty state is drawn, to know whether its word
+  // Integrations may link into the admin panel; the normal view reads the
+  // access route and nothing else.
+  const whoami = createQuery(() => ({ ...whoamiQuery(), enabled: access.isSuccess && (access.data?.vendors ?? []).every((v) => !v.connected) }));
+  const canOpenAdmin = $derived(Boolean(whoami.data?.operator && whoami.data?.admin_panel));
 
   // Where the picker is: nothing (every vendor shut), a vendor (its
   // accounts, or for GitHub its repositories), or an account (its
@@ -55,7 +61,10 @@
   const pending = $derived(
     (access.data?.pending ?? []).filter((r) => (r.permissions ?? []).some((p) => p !== ASK_PERMISSION)),
   );
-  const vendors = $derived(access.data?.vendors ?? []);
+  // The vendors the ROOM is connected to, nothing else (issue #371): an owner
+  // can do nothing with an unconnected vendor, so it is not listed. As admins
+  // connect more under Integrations, more appear here.
+  const vendors = $derived((access.data?.vendors ?? []).filter((v) => v.connected));
   const vendor = $derived(vendors.find((v) => v.id === vendorId) ?? null);
   const account = $derived(vendor?.accounts.find((a) => a.id === accountId) ?? null);
   const isGithub = $derived(vendor?.id === GITHUB);
@@ -113,10 +122,6 @@
   function heldAt(accountIdOrVendor: string): number {
     return grants.filter((g) => g.state !== "expired" && g.integration === accountIdOrVendor).length;
   }
-  function connectedCount(v: AccessVendor): number {
-    return v.accounts.filter((a) => a.connected).length;
-  }
-
   function openVendor(v: AccessVendor): void {
     vendorId = v.id;
     query = "";
@@ -332,18 +337,13 @@
     for (const t of ["destroy", "mutate", "read"]) if (tiers.includes(t)) return t;
     return tiers[0] ?? "read";
   }
-  /** One line about a vendor's connection, under its name. */
-  function connectionNote(v: AccessVendor): string {
-    const connected = connectedCount(v);
-    if (v.kind === "cloud") {
-      return `${connected} of ${v.accounts.length} ${v.account_noun ?? "account"}${v.accounts.length === 1 ? "" : "s"} connected`;
-    }
-    if (v.id === GITHUB && connected) {
-      return v.accounts[0]?.has_repo_set
-        ? count(v.accounts[0].repositories.length, "repository", "repositories")
-        : "no repositories picked yet";
-    }
-    return connected ? "one connection" : "not connected yet";
+  /** GitHub's one line under its name is about the AGENT, not the room: how
+   * many repositories it may reach. Other vendors' name and mark stand alone. */
+  function connectionNote(v: AccessVendor): string | null {
+    if (v.id !== GITHUB) return null;
+    return v.accounts[0]?.has_repo_set
+      ? count(v.accounts[0].repositories.length, "repository", "repositories")
+      : "no repositories picked yet";
   }
 </script>
 
@@ -423,27 +423,30 @@
     </div>
 
     {#if vendors.length === 0}
-      <p class="panel__empty">No vendor is connected to the room yet.</p>
+      <p class="panel__empty">
+        No vendors are connected yet. A kobo admin adds them under
+        {#if canOpenAdmin}<a href={formatHash({ page: "admin", pane: "integrations" })}>Integrations</a>{:else}Integrations{/if}.
+      </p>
     {/if}
 
     {#each vendors as v (v.id)}
-      {@const connected = connectedCount(v)}
       {@const open = vendorId === v.id}
-      {@const canOpen = access.data.can_request && connected > 0}
+      {@const canOpen = access.data.can_request}
+      {@const vendorNote = connectionNote(v)}
+      {@const heldCount = grantsAt(v).filter((g) => g.state !== "expired").length}
       <section class="vendor" class:vendor--open={open} aria-label={v.label}>
         <button
           type="button"
           class="vendor__head"
           aria-expanded={canOpen ? open : undefined}
           disabled={!canOpen || frozen}
-          title={connected === 0 ? "Not connected yet; a room admin connects it on Admin › Integrations" : ""}
           onclick={() => toggleVendor(v)}
         >
           <VendorMark id={v.id} name={v.label} size={18} />
           <span class="vendor__name">{v.label}</span>
           <span class="vendor__note">
-            {connectionNote(v)}
-            {#if grantsAt(v).filter((g) => g.state !== "expired").length} · {grantsAt(v).filter((g) => g.state !== "expired").length} held{/if}
+            {#if vendorNote}{vendorNote}{/if}
+            {#if heldCount}{#if vendorNote} · {/if}{heldCount} held{/if}
           </span>
           {#if canOpen}
             <span class="vendor__action">{open ? "Close" : "Ask for more"}</span>
