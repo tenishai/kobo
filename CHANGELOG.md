@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.29] - 2026-11-01
+
 ### Changed
 
 - **The repository picker reads the warm listing (#368).** `GET` and `PUT
