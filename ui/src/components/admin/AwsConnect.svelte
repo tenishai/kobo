@@ -24,7 +24,7 @@
     accountId = null,
   }: {
     roleArn?: string;
-    mode?: "role" | "org" | "account";
+    mode?: "role" | "org" | "account" | "models";
     useBedrock?: boolean;
     bedrockRegion?: string;
     /** Offer the choice between an organization and one account at the top. */
@@ -44,10 +44,16 @@
     enabled: mode !== "account" || Boolean(parent && accountId),
   }));
 
-  const SHAPES: { id: "org" | "role"; name: string; what: string }[] = [
+  const SHAPES: { id: "org" | "role" | "models"; name: string; what: string }[] = [
     { id: "org", name: "An organization", what: "Its management account's hub role, then every account under it." },
     { id: "role", name: "One account", what: "A role in one account the room assumes directly; it can serve Bedrock models too." },
+    { id: "models", name: "Bedrock models only", what: "A role in one account that serves Bedrock models to the room; agents are granted nothing there." },
   ];
+  // The models-only shape has the Bedrock tick implied: the role is for models and nothing else.
+  const modelsOnly = $derived(mode === "models");
+  $effect(() => {
+    if (mode === "models") useBedrock = true;
+  });
 
   type Method = "Terraform" | "CloudFormation" | "By hand";
   const METHODS: { id: Method; what: string }[] = [
@@ -81,7 +87,7 @@
 {/snippet}
 
 {#if pickShape && mode !== "account"}
-  <div class="methods methods--two" role="radiogroup" aria-label="What you connect">
+  <div class="methods methods--shapes" role="radiogroup" aria-label="What you connect">
     {#each SHAPES as sh (sh.id)}
       <button type="button" role="radio" class="method" aria-checked={mode === sh.id} onclick={() => (mode = sh.id)}>
         <span class="method__name">{sh.name}</span>
@@ -111,6 +117,11 @@
         Read-only in account <code>{s.account_id}</code>: configuration, never data. The role trusts the organization's
         hub with the organization's external id.
       </p>
+    {:else if s.mode === "models"}
+      <p class="step__text">
+        Models only: the role may call the account's Bedrock models for the room and nothing else. Agents are granted
+        nothing in this account, so it is not offered on any agent's Access tab.
+      </p>
     {:else}
       <p class="step__text">
         Read-only across the account: configuration, never data.
@@ -134,10 +145,12 @@
     {/if}
 
     {#if bedrockHere}
-      <label class="check">
-        <input id="integration-models" type="checkbox" bind:checked={useBedrock} />
-        <span>Use this account's Bedrock models in the room</span>
-      </label>
+      {#if !modelsOnly}
+        <label class="check">
+          <input id="integration-models" type="checkbox" bind:checked={useBedrock} />
+          <span>Use this account's Bedrock models in the room</span>
+        </label>
+      {/if}
       {#if useBedrock}
         <label class="field field--inset">
           <span>Region</span>
@@ -160,9 +173,12 @@
       <h3 class="step__title">{s.mode === "org" ? "In the management account" : "In the account"}</h3>
       {#if method === "Terraform"}
         {@render code("tf", s.terraform)}
-        <p class="hint">Apply, then paste the <code>{s.mode === "org" ? "kobo_hub_role_arn" : "kobo_role_arn"}</code> output below.{#if s.bedrock_policy} The second resource is the Bedrock permissions on the same role.{/if}</p>
+        <p class="hint">Apply, then paste the <code>{s.mode === "org" ? "kobo_hub_role_arn" : "kobo_role_arn"}</code> output below.{#if s.bedrock_policy && s.mode !== "models"} The second resource is the Bedrock permissions on the same role.{/if}</p>
       {:else if method === "CloudFormation"}
-        {#if s.mode === "org"}
+        {#if s.mode === "models"}
+          {@render code("bedrock", s.bedrock_policy ?? "", "Copy Bedrock policy")}
+          <p class="hint">No template for a models-only role: create the role with the trust policy under By hand and this Bedrock policy.</p>
+        {:else if s.mode === "org"}
           {@render code("perm", s.permissions_policy ?? "", "Copy permissions")}
           <p class="hint">No template for the hub yet: create the role with the trust policy under By hand and this permissions policy.</p>
         {:else}
@@ -179,6 +195,9 @@
         {#if s.mode === "org" && s.permissions_policy}
           {@render code("perm", s.permissions_policy, "Copy permissions")}
           <p class="hint">A role named <code>{s.role_name}</code> with this trust policy and this permissions policy.</p>
+        {:else if s.mode === "models"}
+          <p class="hint">A role named <code>{s.role_name}</code> with this trust policy and this Bedrock policy, nothing else.</p>
+          {@render code("bedrock", s.bedrock_policy ?? "", "Copy Bedrock policy")}
         {:else}
           <p class="hint">A role named <code>{s.role_name}</code> with this trust policy, <code>ViewOnlyAccess</code> and <code>SecurityAudit</code>{#if s.bedrock_policy}, and this Bedrock policy{/if}.</p>
           {#if s.bedrock_policy}
@@ -212,7 +231,7 @@
       {#if s.mode === "account"}
         Connect asks the permission service to reach the role through the organization's hub once; nothing is saved until AWS agrees.
       {:else if s.checked}
-        Connect asks {s.principal === "access" ? "the permission service" : "the gateway"} to assume the role once; nothing is saved until AWS agrees.{#if s.mode === "org"} Then its accounts are checked for the spoke role.{/if}{#if bedrockHere && useBedrock} Its Bedrock models in {bedrockRegion.trim() || s.bedrock_default_region || "us-east-1"} are then put on the room's model list and checked the first time an agent uses one.{/if}
+        Connect asks {s.principal === "access" ? "the permission service" : "the gateway"} to assume the role once; nothing is saved until AWS agrees.{#if s.mode === "org"} Then its accounts are checked for the spoke role.{/if}{#if bedrockHere && useBedrock} Its Bedrock models in {bedrockRegion.trim() || s.bedrock_default_region || "us-east-1"} are then put on the room's model list and checked the first time an agent uses one.{/if}{#if modelsOnly} No agent is offered this account.{/if}
       {:else}
         The room cannot check the role with AWS from here; it is saved as given.
       {/if}
@@ -224,7 +243,7 @@
   .sheet { display: flex; flex-direction: column; gap: var(--space-md); }
   .block { display: flex; flex-direction: column; gap: var(--space-sm); }
   .methods { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-sm); }
-  .methods--two { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: var(--space-md); }
+  .methods--shapes { margin-bottom: var(--space-md); }
   .check { display: flex; align-items: center; gap: var(--space-sm); color: var(--ink); cursor: pointer; }
   .check input { margin: 0; }
   .field--inset { padding-left: var(--space-md); }

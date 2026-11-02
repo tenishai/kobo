@@ -35,6 +35,9 @@ MODULE_SOURCE = "git::https://github.com/tenishai/cloud-access.git//aws/terrafor
 HUB_MODULE_SOURCE = "git::https://github.com/tenishai/cloud-access.git//aws/hub"
 HUB_ROLE_NAME = "KoboAccess-Hub"
 ROLE_NAME = "KoboAccess-Role"
+# A role that serves Bedrock models to the room and nothing else (kobo#390 models-only
+# shape): the Bedrock permissions, no read packs, and agents are granted nothing there.
+MODELS_ROLE_NAME = "KoboModels-Bedrock"
 AUDIENCE = "sts.amazonaws.com"
 GOOGLE_ISSUER = "accounts.google.com"
 REQUIRED_PACK = "inventory"
@@ -319,14 +322,31 @@ def bedrock_permissions_policy() -> str:
     return json.dumps({"Version": "2012-10-17", "Statement": bedrock_statements()}, indent=2)
 
 
-def bedrock_terraform_snippet(module_name: str = "kobo_access") -> str:
+def bedrock_terraform_snippet(module_name: str = "kobo_access", role_ref: str | None = None) -> str:
     """One inline policy on the role the module made, appended under the
-    module block. The role's name is the last segment of its ARN."""
+    module block. The role's name is the last segment of its ARN; `role_ref`
+    names the role another way (a resource's own `.name`)."""
     policy = "\n".join("    " + line for line in bedrock_permissions_policy().splitlines())
+    role = role_ref or f"basename(module.{module_name}.role_arn)"
     return (
         f'resource "aws_iam_role_policy" "kobo_bedrock" {{\n'
         f'  name   = "{BEDROCK_POLICY_NAME}"\n'
-        f"  role   = basename(module.{module_name}.role_arn)\n"
+        f"  role   = {role}\n"
         f"  policy = <<-EOT\n{policy}\n  EOT\n"
         "}\n"
+    )
+
+
+def models_role_terraform_snippet(subject: str, audience: str = AUDIENCE) -> str:
+    """A role that serves Bedrock models and nothing else: the room's trust
+    policy and the Bedrock permissions, no module and no read packs, so the
+    account carries nothing an agent could be granted."""
+    trust = "\n".join("    " + line for line in trust_policy(subject, audience).splitlines())
+    return (
+        f'resource "aws_iam_role" "kobo_models" {{\n'
+        f'  name               = "{MODELS_ROLE_NAME}"\n'
+        f"  assume_role_policy = <<-EOT\n{trust}\n  EOT\n"
+        "}\n\n"
+        + bedrock_terraform_snippet(role_ref="aws_iam_role.kobo_models.name")
+        + '\noutput "kobo_role_arn" {\n  value = aws_iam_role.kobo_models.arn\n}\n'
     )

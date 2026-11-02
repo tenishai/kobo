@@ -7,6 +7,7 @@ All notable changes to kobo are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Bedrock models only**, a third choice on the AWS sheet: a role that holds the Bedrock permissions and nothing else (its own Terraform, trust policy and Bedrock policy; no template). The row reads "Models only: Bedrock, <region>", connects in the permission service with an empty ceiling, and the Access picker leaves out any account with nothing to grant, so no agent is offered an account it could not use.
 - A new agent reads its own repository on GitHub: with the permission service on and GitHub connected, the Access step (was Model access) writes the agent's repository set as its own repository and approves Read on it, and the wiring step puts the lane's allow entry into the bundle in the same commit; the owner adds repositories or raises the level on the Access tab as before.
 
 ### Fixed

@@ -1236,6 +1236,8 @@ export type AdminIntegration = {
      * kobo#405; an AWS account's `region` and the role the gateway assumes), or a Self-hosted
      * row's models as its probe left them (kobo#390). */
     models?: { provider: string; project?: string; location?: string; region?: string; role_arn?: string } | SelfHostedModel[];
+    /** An AWS account connected for its Bedrock models only: no ceiling, never offered to an agent. */
+    models_only?: boolean;
     /** Self-hosted models (kobo#390): the endpoint's root (with /v1) and the options sent with every request. */
     base_url?: string; options?: Record<string, unknown>;
     /** `access`: held by the permission service, never made here. `deployment`: an older
@@ -1341,7 +1343,7 @@ export type AdminAwsSetup = {
   version: string;
   /** `role`: one flat role the room assumes; `org`: an organization's hub role in its
    * management account; `account`: a member account's role that the hub assumes. */
-  mode: "role" | "org" | "account";
+  mode: "role" | "org" | "account" | "models";
   role_name: string;
   audience: string;
   /** account mode: the organization and the hub the account's role must trust. */
@@ -1377,7 +1379,7 @@ export type AdminAwsSetup = {
 
 export type AwsSetupRequest = {
   packs: string[];
-  mode?: "role" | "org" | "account";
+  mode?: "role" | "org" | "account" | "models";
   integration?: string;
   parent?: string;
   account_id?: string;
