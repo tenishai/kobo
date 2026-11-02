@@ -6,6 +6,24 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Bedrock models through the AWS connection (kobo#390).** The Connect AWS sheet now offers
+  **One account** beside **An organization**: a role in one account the room assumes directly,
+  named by the person (a second direct account is a second row). An account's sheet (and a member
+  account's role, through the API) carries **Use this account's Bedrock models in the room** with a
+  region (us-east-1 unless said otherwise); ticked, the row's spec carries
+  `models = {provider: "bedrock", region, role_arn}` and the role's snippets gain the Bedrock
+  permissions block (an `aws_iam_role_policy` under the Terraform module, one JSON policy for
+  CloudFormation and by hand; the trust policy is unchanged). The org's `models:` list names the
+  Bedrock entries (`bedrock/<model id or inference profile id>`); the model gateway serves each
+  through every ticked account by assuming its role with the room's own identity token
+  (`aws_role_name`, `aws_web_identity_token`, `aws_session_name: kobo-gateway`), so nothing is
+  stored. The catalogue lists them under **AWS** (naming the accounts when several serve), with
+  "Ask a kobo admin to connect AWS with Bedrock" while none does; the Services row counts the
+  accounts as providers. The permission service has no Bedrock read yet, so the row says the models
+  are registered and not yet checked with AWS; an organization's hub never carries the tick.
+
 ### Fixed
 - Check accounts no longer times out on an organization of a few dozen accounts: the room waits up to two minutes for the permission service to probe them (its other calls keep the fifteen-second wait).
 

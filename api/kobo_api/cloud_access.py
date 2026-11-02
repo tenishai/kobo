@@ -15,6 +15,12 @@ organization (the way Wiz does it), so `packs-gcp.json` is a list of roles per
 pack and the page renders three ways to bind them to that one member: the
 `gcloud` commands, Terraform `google_*_iam_member` resources, and the plain
 list for a console.
+
+Bedrock (kobo#390) rides an AWS account's role: when the Connect AWS sheet has
+the Bedrock box ticked, the role's snippets gain one more permissions block
+(`bedrock_permissions_policy`, `bedrock_terraform_snippet`) so a new install
+can build the role the room's model gateway assumes. The trust policy is
+unchanged: the role already trusts the room's identity.
 """
 
 from __future__ import annotations
@@ -275,5 +281,52 @@ def gcp_terraform_snippet(email: str, target: str, roles: list[str], mode: str =
         f"  {where}\n"
         "  role    = each.value\n"
         f'  member  = "serviceAccount:{email or "<identity email>"}"\n'
+        "}\n"
+    )
+
+
+# ---- Bedrock through an AWS account (kobo#390) ---------------------------------
+
+BEDROCK_DEFAULT_REGION = "us-east-1"
+BEDROCK_POLICY_NAME = "KoboModels-Bedrock"
+# What the room's model gateway needs on the role: to read the catalogue (the
+# foundation models and the inference profiles the role can see) and to call
+# them, streaming or not. Invocation is allowed on every region's models and
+# profiles because a cross-region inference profile calls a model in another
+# region than the one named on the row.
+BEDROCK_READ_ACTIONS = (
+    "bedrock:ListFoundationModels", "bedrock:GetFoundationModel",
+    "bedrock:ListInferenceProfiles", "bedrock:GetInferenceProfile",
+)
+BEDROCK_INVOKE_ACTIONS = (
+    "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream",
+    "bedrock:Converse", "bedrock:ConverseStream",
+)
+BEDROCK_INVOKE_RESOURCES = ("arn:aws:bedrock:*::foundation-model/*", "arn:aws:bedrock:*:*:inference-profile/*")
+
+
+def bedrock_statements() -> list[dict[str, Any]]:
+    return [
+        {"Sid": "BedrockCatalogue", "Effect": "Allow", "Action": list(BEDROCK_READ_ACTIONS), "Resource": "*"},
+        {"Sid": "BedrockInvoke", "Effect": "Allow", "Action": list(BEDROCK_INVOKE_ACTIONS),
+         "Resource": list(BEDROCK_INVOKE_RESOURCES)},
+    ]
+
+
+def bedrock_permissions_policy() -> str:
+    """For an owner who builds the role by hand, or attaches it after a
+    CloudFormation stack: the Bedrock permissions alone, as one policy."""
+    return json.dumps({"Version": "2012-10-17", "Statement": bedrock_statements()}, indent=2)
+
+
+def bedrock_terraform_snippet(module_name: str = "kobo_access") -> str:
+    """One inline policy on the role the module made, appended under the
+    module block. The role's name is the last segment of its ARN."""
+    policy = "\n".join("    " + line for line in bedrock_permissions_policy().splitlines())
+    return (
+        f'resource "aws_iam_role_policy" "kobo_bedrock" {{\n'
+        f'  name   = "{BEDROCK_POLICY_NAME}"\n'
+        f"  role   = basename(module.{module_name}.role_arn)\n"
+        f"  policy = <<-EOT\n{policy}\n  EOT\n"
         "}\n"
     )

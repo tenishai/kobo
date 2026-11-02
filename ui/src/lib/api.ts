@@ -1230,8 +1230,10 @@ export type AdminIntegration = {
     /** Google Cloud (kobo#390): a project row names its project; a folder or organization
      * row its `parent_resource`; a project that serves the room's models carries `models`. */
     project?: string; project_number?: string; parent_resource?: string;
-    /** A cloud's provider and location, or a Self-hosted row's models as its probe left them (kobo#390). */
-    models?: { provider: string; location: string } | SelfHostedModel[];
+    /** A cloud's provider and where (a Google Cloud project's `location`, an AWS account's
+     * `region` and the role the gateway assumes), or a Self-hosted row's models as its probe
+     * left them (kobo#390). */
+    models?: { provider: string; location?: string; region?: string; role_arn?: string } | SelfHostedModel[];
     /** Self-hosted models (kobo#390): the endpoint's root (with /v1) and the options sent with every request. */
     base_url?: string; options?: Record<string, unknown>;
     /** `access`: held by the permission service, never made here. `deployment`: an older
@@ -1308,6 +1310,11 @@ export type AdminAwsSetup = {
   trust_policy: string;
   /** The room can ask the gateway to try the role before saving it. */
   checked: boolean;
+  /** Bedrock (kobo#390), role and account modes: the region the room calls unless the person
+   * says otherwise, and, when the box is ticked, the permissions block as one policy (the
+   * Terraform snippet carries it inline). Null when the box is not ticked. */
+  bedrock_default_region?: string;
+  bedrock_policy?: string | null;
 };
 
 export type AwsSetupRequest = {
@@ -1316,6 +1323,8 @@ export type AwsSetupRequest = {
   integration?: string;
   parent?: string;
   account_id?: string;
+  /** Ask for the Bedrock permissions block too (kobo#390). */
+  bedrock?: boolean;
 };
 
 export async function fetchAdminAwsSetup(input: AwsSetupRequest): Promise<AdminAwsSetup> {
@@ -1323,6 +1332,7 @@ export async function fetchAdminAwsSetup(input: AwsSetupRequest): Promise<AdminA
   if (input.integration) q.set("integration", input.integration);
   if (input.parent) q.set("parent", input.parent);
   if (input.account_id) q.set("account_id", input.account_id);
+  if (input.bedrock) q.set("bedrock", "1");
   const res = await fetch(`/api/admin/integrations/aws/setup?${q.toString()}`);
   return parse<AdminAwsSetup>(res);
 }

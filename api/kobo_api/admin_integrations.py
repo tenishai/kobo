@@ -74,6 +74,16 @@ as long as one model answers, marking the ones that did not on the row;
 the key, when there is one, goes into the room's own Secret so the gateway
 filler can read it back. Nothing reaches the permission service or the
 tool gateway: nothing is leased. Check models runs the probe again.
+
+Bedrock (kobo#390) rides an AWS account row: a direct role (`aws_role`) or a
+member account's spoke (`aws_spoke`) connected with the Bedrock box ticked
+carries `models = {provider: "bedrock", region, role_arn}`, and the model
+gateway, running as the room's identity, assumes that role itself for every
+call. The connect probe is the one the role already gets (the permission
+service assumes it once); the permission service has no Bedrock read yet,
+so the models are registered on the gateway and the first call an agent
+makes is the check with AWS. An organization's hub row never carries it:
+Bedrock is per account.
 """
 
 from __future__ import annotations
@@ -229,6 +239,12 @@ MODELS_PROVIDER_VERTEX = "vertex_ai"
 VERTEX_DEFAULT_LOCATION = "us-east5"
 VERTEX_GLOBAL = "global"
 SELF_HOSTED_AUTH = self_hosted.AUTH
+# Bedrock through an AWS account (kobo#390): the kinds that may carry it (per
+# account, never the organization's hub) and what a region looks like.
+MODELS_PROVIDER_BEDROCK = model_providers.PROVIDER_BEDROCK
+BEDROCK_DEFAULT_REGION = cloud_access.BEDROCK_DEFAULT_REGION
+BEDROCK_AUTHS = frozenset({"aws_role", "aws_spoke"})
+_AWS_REGION = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-\d$")
 
 
 def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> None:
@@ -250,6 +266,15 @@ def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> 
             raise ConnectRefused("an AWS account needs the ARN of the role its organization's hub assumes")
         if not _AWS_ACCOUNT_ID.match(identity.get("account_id", "").strip()):
             raise ConnectRefused("an AWS account needs its 12-digit account id")
+    if auth.startswith("aws_"):
+        provider = identity.get("models_provider", "").strip()
+        if provider and provider != MODELS_PROVIDER_BEDROCK:
+            raise ConnectRefused(f"an AWS account serves models through Bedrock; {provider!r} is not a provider here")
+        if provider and auth not in BEDROCK_AUTHS:
+            raise ConnectRefused("Bedrock is per account: tick it on an account's role, not on the organization")
+        region = identity.get("models_region", "").strip()
+        if provider and region and not _AWS_REGION.match(region):
+            raise ConnectRefused(f"{region!r} is not an AWS region; one such as {BEDROCK_DEFAULT_REGION}")
     if auth == GCP_AUTH:
         if not _GCP_PROJECT.match(identity.get("project", "").strip()):
             raise ConnectRefused("Google Cloud needs the project's id: 6 to 30 lowercase letters, digits and hyphens, "
@@ -1086,7 +1111,8 @@ def _org_hub(bab, parent: str, actor: str) -> str:
 
 
 def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] | None, actor: str = "operator@room",
-              mode: str = "role", parent: str | None = None, account_id: str | None = None) -> dict[str, Any]:
+              mode: str = "role", parent: str | None = None, account_id: str | None = None,
+              bedrock: bool = False) -> dict[str, Any]:
     """Everything the Connect AWS page shows: who the role must trust, which
     packs exist, and the three ways to create the role, each pre-filled. With
     the permission service on, the principal is bab (it mints the leases); the
@@ -1096,8 +1122,17 @@ def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
     bab without an organization). `org`: the hub role in an organization's
     management account, trusting the room's identity. `account`: a member
     account's spoke role under a connected organization, trusting the hub
-    with this account's external id."""
+    with this account's external id.
+
+    With `bedrock` (kobo#390, `role` and `account` only) the snippets carry the
+    Bedrock permissions block too: appended to the Terraform, and as a policy
+    of its own for CloudFormation and by hand. The trust policy is unchanged."""
     bab = _bab(clients)
+    bedrock_block = {
+        "bedrock_default_region": BEDROCK_DEFAULT_REGION,
+        "bedrock_policy": cloud_access.bedrock_permissions_policy() if bedrock and mode != "org" else None,
+    }
+    bedrock_tf = "\n" + cloud_access.bedrock_terraform_snippet() if bedrock and mode != "org" else ""
     if mode == "account":
         if bab is None:
             raise ConnectRefused("accounts under an organization need the permission service")
@@ -1112,12 +1147,13 @@ def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
             "parent": parent, "account_id": account_id, "hub_role_arn": hub, "external_id": external_id,
             "identity": None, "identity_note": None,
             "packs": cloud_access.aws_packs(), "chosen": chosen,
-            "terraform": cloud_access.spoke_terraform_snippet(hub, external_id, integration_id, chosen),
+            "terraform": cloud_access.spoke_terraform_snippet(hub, external_id, integration_id, chosen) + bedrock_tf,
             "cloudformation": {"template": cloud_access.cloudformation_template(),
                                "parameters": {**cloud_access.cloudformation_parameters("", integration_id, chosen),
                                               "HubRoleArn": hub, "ExternalId": external_id}},
             "trust_policy": cloud_access.spoke_trust_policy(hub, external_id),
             "checked": True,
+            **bedrock_block,
         }
     admin = getattr(clients, "liminal_admin", None) if clients is not None else None
     identity: dict[str, str] | None = None
@@ -1168,6 +1204,7 @@ def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
             "spoke_trust_policy": cloud_access.spoke_trust_policy(hub_shown, external_id),
             "stackset": cloud_access.stackset_snippet(hub_shown, external_id, integration_id, chosen),
             "checked": True,
+            **bedrock_block,
         }
     return {
         "version": cloud_access.version(),
@@ -1179,13 +1216,14 @@ def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
         "identity_note": identity_note,
         "packs": cloud_access.aws_packs(),
         "chosen": chosen,
-        "terraform": cloud_access.terraform_snippet(subject, integration_id, chosen),
+        "terraform": cloud_access.terraform_snippet(subject, integration_id, chosen) + bedrock_tf,
         "cloudformation": {
             "template": cloud_access.cloudformation_template(),
             "parameters": cloud_access.cloudformation_parameters(subject, integration_id, chosen),
         },
         "trust_policy": cloud_access.trust_policy(subject),
         "checked": bab is not None or admin is not None,
+        **bedrock_block,
     }
 
 
@@ -1445,7 +1483,6 @@ def connect(
     """The three steps above. The row is committed by the caller; a
     projection that fails leaves the row `pending` with the failure in
     `state_detail`, never an exception past the audit event."""
-    sero = clients.sero if clients is not None else None
     identity = {k: v.strip() for k, v in (identity or {}).items() if v and v.strip()}
     secrets = {k.upper(): v for k, v in (secrets or {}).items() if v and v.strip()}
     if credential.strip() and SECRET_KEY not in secrets:
@@ -1471,6 +1508,32 @@ def connect(
                                    trust=trust, actor=actor, identity=identity, secrets=secrets)
         _fill_models_gateway(session, clients, config, row)
         return row
+    row = _connect_cloud_or_token(session, clients, config, bab, vendor=vendor, name=name, base_access=base_access,
+                                  address=address, trust=trust, actor=actor, auth=auth, identity=identity, secrets=secrets)
+    if (row.spec or {}).get("models"):
+        # An AWS account with Bedrock ticked (kobo#390): the gateway learns its models now.
+        _fill_models_gateway(session, clients, config, row)
+    return row
+
+
+def bedrock_models_spec(identity: dict[str, str]) -> dict[str, str] | None:
+    """The `models` an AWS account row carries when the Bedrock box is ticked:
+    the provider, the region the gateway calls, and the role it assumes (the
+    row's own). None when the box is not ticked."""
+    if identity.get("models_provider") != MODELS_PROVIDER_BEDROCK:
+        return None
+    return {"provider": MODELS_PROVIDER_BEDROCK, "region": identity.get("models_region") or BEDROCK_DEFAULT_REGION,
+            "role_arn": identity["role_arn"]}
+
+
+def _connect_cloud_or_token(
+    session: Session, clients: Clients | None, config: Config, bab, *, vendor: str, name: str, base_access: str,
+    address: str, trust: str, actor: str, auth: str, identity: dict[str, str], secrets: dict[str, str],
+) -> AdminIntegration:
+    """The AWS kinds and the token kinds: probe, row, credential, then the
+    permission service or the gateway. Split from `connect` so the Bedrock
+    filler runs once over whatever row this leaves."""
+    sero = clients.sero if clients is not None else None
     probe: dict[str, str] | None = None
     hub_role_arn: str | None = None
     if auth in ("aws_hub", "aws_spoke") and bab is None:
@@ -1513,9 +1576,14 @@ def connect(
         spec["kind"] = "org"
     elif auth == "aws_spoke":
         spec["kind"], spec["parent"], spec["account_id"] = "account", identity["parent"], identity["account_id"]
-    # Organizations and their accounts are named by the person (acme-aws, acme-prod), so the
-    # row id is the name, not the vendor: a vendor may hold many of them.
-    wanted_id = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")[:64] if auth in ("aws_hub", "aws_spoke") else None
+    models = bedrock_models_spec(identity) if auth in BEDROCK_AUTHS else None
+    if models:
+        spec["models"] = models
+        spec["identity"] = {k: v for k, v in spec["identity"].items() if k not in ("models_provider", "models_region")}
+    # Organizations, their accounts and directly assumed roles are named by the person
+    # (acme-aws, acme-prod, acme-models), so the row id is the name, not the vendor: a
+    # vendor may hold many of them (kobo#390: one account for Bedrock, another for audit).
+    wanted_id = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")[:64] if auth.startswith("aws_") else None
     row = admin_store.put_integration(
         session, vendor=vendor, name=name, base_access=base_access, spec=spec,
         credential_ref=None, actor=actor, integration_id=wanted_id,
@@ -1538,6 +1606,12 @@ def connect(
         detail = "not checked with AWS: the gateway\'s admin plane is not wired; the role is taken at its word"
     if secrets and not config.gateway_namespace:
         detail += "; no gateway namespace is set, so it is not synced to the gateway yet"
+    if models:
+        # No Bedrock read at connect: the permission service's AWS probe assumes the role
+        # and stops there. The models are registered on the gateway as this role; the
+        # first call an agent makes is the check with AWS.
+        detail += (f"; Bedrock models in {models['region']} serve the room through this role, "
+                   "registered on the model gateway and not yet checked with AWS")
     # The permission service holds the connection: what agents may be granted there (the
     # ceiling is every read permission the catalogue offers for the vendor; the role's or
     # token's own policy is the outer wall) and, for a cloud, what to assume.
