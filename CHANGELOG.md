@@ -22,10 +22,6 @@ All notable changes to kobo are documented here. The format follows
   Azure, Self-hosted). The pickers drop the per-cloud groups: one list, tiers in order within a
   family, the tag as a small grey chip after the name. A self-hosted row connected after the seed
   waits for its tick like a cloud's models. Azure shows as not connected.
-
-## [0.3.40] - 2026-11-01
-
-### Added
 - **Google Cloud connects as an organization, granted once (kobo#405).** The Connect Google
   Cloud sheet opens on **An organization** (`organizations/<number>`; every project the room's
   identity can read connects by itself, as before), with **A project** as the other scope; the
@@ -45,6 +41,9 @@ All notable changes to kobo are documented here. The format follows
   accepts `service_account` for rows that carry it. The default Vertex AI location is `global`
   (was us-east5).
 
+## [0.3.40] - 2026-11-01
+
+### Added
 
 - **Bedrock models through the AWS connection (kobo#390).** The Connect AWS sheet now offers
   **One account** beside **An organization**: a role in one account the room assumes directly,
