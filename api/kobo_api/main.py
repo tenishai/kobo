@@ -4322,7 +4322,7 @@ def create_app(
         try:
             return JSONResponse(admin_integrations_flow.aws_setup(
                 app.state.clients, integration_id=safe_id, packs=wanted, actor=_bab_actor(request),
-                mode=mode if mode in ("role", "org", "account") else "role",
+                mode=mode if mode in ("role", "org", "account", "models") else "role",
                 parent=parent.strip() or None, account_id=account_id.strip() or None,
                 bedrock=bedrock.strip().lower() in ("1", "true", "yes")))
         except admin_integrations_flow.ConnectRefused as exc:

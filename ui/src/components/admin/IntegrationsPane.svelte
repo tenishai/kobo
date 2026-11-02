@@ -96,7 +96,7 @@
   // The AWS sheet's own choices (kobo#390): an organization (its hub role) or one account
   // (a role the room assumes directly), and whether that account's Bedrock models serve
   // the room. Bedrock is per account, so the box is not offered on an organization.
-  let awsMode = $state<"org" | "role" | "account">("org");
+  let awsMode = $state<"org" | "role" | "account" | "models">("org");
   let useBedrock = $state(false);
   const BEDROCK_DEFAULT_REGION = "us-east-1";
 
@@ -210,13 +210,15 @@
     const identity: Record<string, string> = {};
     const secrets: Record<string, string> = {};
     let auth: string = form.entry.auth;
-    if (form.mode === "org" && awsMode === "role") {
+    if (form.mode === "org" && (awsMode === "role" || awsMode === "models")) {
       auth = "aws_role";
       identity.role_arn = (form.values.role_arn ?? "").trim();
-      if (useBedrock) {
+      if (useBedrock || awsMode === "models") {
         identity.models_provider = "bedrock";
         identity.models_region = (form.values.models_region ?? "").trim() || BEDROCK_DEFAULT_REGION;
       }
+      // A models-only role: the room connects it with nothing to grant, so no agent is offered it.
+      if (awsMode === "models") identity.models_only = "1";
     } else if (form.mode === "org") {
       auth = "aws_hub";
       identity.hub_role_arn = (form.values.role_arn ?? "").trim();
@@ -303,7 +305,7 @@
     const m = i.spec.models;
     if (!m || Array.isArray(m)) return null;
     const where = m.provider === "vertex_ai" ? [m.project ?? i.spec.project, m.location] : [m.location ?? m.region];
-    return `Models: ${PROVIDER_NAMES[m.provider] ?? m.provider}, ${where.filter(Boolean).join(", ")}`;
+    return `${i.spec.models_only ? "Models only" : "Models"}: ${PROVIDER_NAMES[m.provider] ?? m.provider}, ${where.filter(Boolean).join(", ")}`;
   };
   // A project connected under an organization that names it as the Vertex AI project
   // says the same line as its parent (kobo#405); the spec stays on the parent alone.
@@ -332,7 +334,7 @@
     return ok === models.length ? `${models.length} ${noun}` : `${ok} of ${models.length} ${noun} answer`;
   }
   const formTitle = $derived(
-    !form ? "" : form.mode === "org" ? (awsMode === "role" ? "Connect an AWS account" : "Connect an AWS organization") : form.mode === "gcp" ? "Connect Google Cloud" : form.mode === "replace" ? `Replace ${form.name}` : form.entry.id === SELF_HOSTED ? "Connect self-hosted models" : `Add ${form.name || "an integration"}`,
+    !form ? "" : form.mode === "org" ? (awsMode === "org" ? "Connect an AWS organization" : "Connect an AWS account") : form.mode === "gcp" ? "Connect Google Cloud" : form.mode === "replace" ? `Replace ${form.name}` : form.entry.id === SELF_HOSTED ? "Connect self-hosted models" : `Add ${form.name || "an integration"}`,
   );
   const fromDeployment = (i: AdminIntegration): boolean => i.spec.source === "deployment";
   const roomOwn = (i: AdminIntegration): boolean => ROOM_VENDORS.has(i.vendor) && i.spec.source !== "access";
@@ -532,8 +534,8 @@
   {#if form && form.mode === "org"}
     <form id="integration-form" class="form" onsubmit={submitConnect}>
       <label class="field">
-        <span>{awsMode === "role" ? "Name for this account" : "Name for this organization"}</span>
-        <input id="integration-name" type="text" bind:value={form.name} placeholder={awsMode === "role" ? "e.g. acme-models" : "e.g. acme-aws"} required autocomplete="off" />
+        <span>{awsMode === "org" ? "Name for this organization" : "Name for this account"}</span>
+        <input id="integration-name" type="text" bind:value={form.name} placeholder={awsMode === "org" ? "e.g. acme-aws" : "e.g. acme-models"} required autocomplete="off" />
       </label>
       <AwsConnect
         bind:roleArn={form.values.role_arn}

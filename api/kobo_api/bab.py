@@ -468,12 +468,15 @@ def picker(bab: BabClient, actor: str, agent: str | None = None) -> list[dict]:
         connected = {i["integration"]: i for i in rows if i.get("kind") != "org"}
         accounts: list[dict] = []
         if meta["kind"] == "cloud":
+            # An account with no ceiling has nothing an agent could be granted (an
+            # AWS account connected for its Bedrock models only): the room lists
+            # it under Integrations, the picker does not offer it.
             for org in orgs:
                 for i in rows:
-                    if i.get("parent") == org["integration"]:
+                    if i.get("parent") == org["integration"] and i.get("ceiling"):
                         _add_account(accounts, i["integration"], i.get("name") or i["integration"], i, org["integration"])
             for iid, row in connected.items():
-                if not row.get("parent"):
+                if not row.get("parent") and row.get("ceiling"):
                     _add_account(accounts, iid, row.get("name") or iid, row, None)
         else:
             for iid, row in connected.items():

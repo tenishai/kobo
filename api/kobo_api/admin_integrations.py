@@ -1137,8 +1137,16 @@ def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
 
     With `bedrock` (kobo#390, `role` and `account` only) the snippets carry the
     Bedrock permissions block too: appended to the Terraform, and as a policy
-    of its own for CloudFormation and by hand. The trust policy is unchanged."""
+    of its own for CloudFormation and by hand. The trust policy is unchanged.
+
+    `models`: a role that serves Bedrock models and nothing else (owner ruling
+    2026-11-02, the account that holds the room's Bedrock role carried the
+    full read ceiling and was offered to agents). Its Terraform is a plain
+    role with the trust policy and the Bedrock permissions, there is no
+    CloudFormation template, and Bedrock is always on."""
     bab = _bab(clients)
+    if mode == "models":
+        bedrock = True
     bedrock_block = {
         "bedrock_default_region": BEDROCK_DEFAULT_REGION,
         "bedrock_policy": cloud_access.bedrock_permissions_policy() if bedrock and mode != "org" else None,
@@ -1215,6 +1223,18 @@ def aws_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
             "spoke_trust_policy": cloud_access.spoke_trust_policy(hub_shown, external_id),
             "stackset": cloud_access.stackset_snippet(hub_shown, external_id, integration_id, chosen),
             "checked": True,
+            **bedrock_block,
+        }
+    if mode == "models":
+        return {
+            "version": cloud_access.version(), "mode": "models", "principal": principal,
+            "role_name": cloud_access.MODELS_ROLE_NAME, "audience": cloud_access.AUDIENCE,
+            "identity": identity, "identity_note": identity_note,
+            "packs": [], "chosen": [],
+            "terraform": cloud_access.models_role_terraform_snippet(subject),
+            "cloudformation": {"template": "", "parameters": {}},
+            "trust_policy": cloud_access.trust_policy(subject),
+            "checked": bab is not None or admin is not None,
             **bedrock_block,
         }
     return {
@@ -1626,10 +1646,19 @@ def _connect_cloud_or_token(
         spec["kind"] = "org"
     elif auth == "aws_spoke":
         spec["kind"], spec["parent"], spec["account_id"] = "account", identity["parent"], identity["account_id"]
+    # Models only (the `models` shape of the AWS sheet): the role holds the Bedrock
+    # permissions and nothing else, so the row gets no ceiling and no agent is offered
+    # the account; the person's tick is implied.
+    models_only = auth == "aws_role" and str(identity.get("models_only", "")).strip().lower() in ("1", "true", "yes")
+    if models_only:
+        identity.setdefault("models_provider", MODELS_PROVIDER_BEDROCK)
     models = bedrock_models_spec(identity) if auth in BEDROCK_AUTHS else None
     if models:
         spec["models"] = models
-        spec["identity"] = {k: v for k, v in spec["identity"].items() if k not in ("models_provider", "models_region")}
+        spec["identity"] = {k: v for k, v in spec["identity"].items()
+                            if k not in ("models_provider", "models_region", "models_only")}
+    if models_only:
+        spec["models_only"] = True
     # Organizations, their accounts and directly assumed roles are named by the person
     # (acme-aws, acme-prod, acme-models), so the row id is the name, not the vendor: a
     # vendor may hold many of them (kobo#390: one account for Bedrock, another for audit).
@@ -1669,7 +1698,7 @@ def _connect_cloud_or_token(
         parent_id: str | None = None
         if auth == "aws_role":
             spec_for_bab: dict[str, Any] = {"role_arn": identity["role_arn"], "audience": identity["audience"], "name": name}
-            ceiling = bab_mod.read_permissions(bab, vendor, actor)
+            ceiling = [] if models_only else bab_mod.read_permissions(bab, vendor, actor)
         elif auth == "aws_hub":
             spec_for_bab = {"hub_role_arn": identity["hub_role_arn"], "audience": identity["audience"], "name": name,
                             "external_id": bab.external_id_for_org(wanted_id or name)}
@@ -1683,8 +1712,12 @@ def _connect_cloud_or_token(
             spec_for_bab, ceiling = {}, bab_mod.read_permissions(bab, vendor, actor)
         try:
             bab.put_integration(row.id, vendor, spec_for_bab, ceiling, actor, parent=parent_id)
-            detail += ("; connected in the permission service as an organization"
-                       if auth == "aws_hub" else "; connected in the permission service, agents may ask for its read permissions")
+            if auth == "aws_hub":
+                detail += "; connected in the permission service as an organization"
+            elif models_only:
+                detail += "; connected in the permission service with nothing to grant: it serves Bedrock models only"
+            else:
+                detail += "; connected in the permission service, agents may ask for its read permissions"
         except ClientError as exc:
             admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"{detail}; the permission service refused: {exc}")
             return row

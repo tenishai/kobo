@@ -389,6 +389,51 @@ describe("AdminPanel", () => {
     expect(setupCalls.some((u) => u.includes("mode=role") && u.includes("bedrock=1"))).toBe(true);
   });
 
+  it("AWS offers a Bedrock models only role: no tick, the region, and models_only reaches the form's identity", async () => {
+    // Owner ruling 2026-11-02: a role that serves models and nothing else connects with
+    // nothing to grant, so no agent is offered the account.
+    const MODELS_SETUP = {
+      ...AWS_SETUP, mode: "models", role_name: "KoboModels-Bedrock", chosen: [], packs: [],
+      terraform: 'resource "aws_iam_role" "kobo_models" {}\nresource "aws_iam_role_policy" "kobo_bedrock" {}',
+      cloudformation: { template: "", parameters: {} },
+      bedrock_default_region: "us-east-1", bedrock_policy: '{"Statement": [{"Sid": "BedrockInvoke"}]}',
+    };
+    stubFetch({
+      "/api/whoami": ADMIN_WHOAMI,
+      "/api/admin/addons": ADDONS,
+      "/api/admin/room": { org_repo: "example/kobo-config", runtime_image: "r@sha256:1", cluster: "agents-dev", delivery_backend: "deployed" },
+      "mode=models": MODELS_SETUP,
+      "/api/admin/integrations/aws/setup": AWS_SETUP,
+      "/api/admin/integrations": { integrations: [] },
+      "/api/admin/roles": ROLES,
+      "/api/admin/connections": CONNECTIONS,
+      "/api/admin/people": PEOPLE,
+      "/api/admin/audit": AUDIT,
+      "/api/group-requests": { requests: REQUESTS },
+    });
+    navigate({ page: "admin", pane: "integrations" });
+    renderWithClient(AdminPanel);
+    await fireEvent.click(await screen.findByRole("button", { name: "Add integration" }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Add AWS" }));
+    await fireEvent.click(screen.getByRole("radio", { name: /Bedrock models only/ }));
+    expect(await screen.findByRole("heading", { name: "Connect an AWS account" })).toBeTruthy();
+    expect(await screen.findByText(/Agents are granted nothing in this account/)).toBeTruthy();
+    expect(screen.queryByLabelText(/Bedrock models in the room/)).toBeNull();
+    expect(((await screen.findByLabelText("Region")) as HTMLInputElement).value).toBe("us-east-1");
+    expect(await screen.findByText(/kobo_models/)).toBeTruthy();
+    await fireEvent.input(screen.getByLabelText("Name for this account"), { target: { value: "acme-models" } });
+    await fireEvent.input(await screen.findByLabelText("Role ARN"), { target: { value: "arn:aws:iam::123456789012:role/KoboModels-Bedrock" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    const post = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url) === "/api/admin/integrations" && init?.method === "POST");
+    const body = JSON.parse(String(post?.[1]?.body));
+    expect(body.auth).toBe("aws_role");
+    expect(body.identity).toEqual({
+      role_arn: "arn:aws:iam::123456789012:role/KoboModels-Bedrock", models_provider: "bedrock", models_region: "us-east-1", models_only: "1",
+    });
+    const setupCalls = vi.mocked(fetch).mock.calls.map(([url]) => String(url)).filter((u) => u.includes("/aws/setup"));
+    expect(setupCalls.some((u) => u.includes("mode=models") && u.includes("bedrock=1"))).toBe(true);
+  });
+
   it("Google Cloud opens on the organization: the identity to grant once, the roles three ways, then the Vertex AI project and tick", async () => {
     // kobo#405. The organization is the first and default scope; the form submits it under
     // `gcp_parent` with the named Vertex AI project, the provider and the location when the

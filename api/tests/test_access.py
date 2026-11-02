@@ -5752,6 +5752,42 @@ def test_with_access_on_an_aws_role_is_probed_by_bab_and_connected_there_not_on_
     assert bab.integrations("x") == []
 
 
+def test_an_aws_account_connected_for_its_bedrock_models_only_has_no_ceiling_and_is_never_offered(tmp_path, fake_storage):
+    """Gate (authorization, owner ruling 2026-11-02): the models-only shape of the AWS sheet
+    is a role with the Bedrock permissions and nothing else. Its setup page is a plain role
+    with the trust policy and the Bedrock policy (no module, no template); connecting it
+    puts the Bedrock models on the row and the row into the permission service with an
+    empty ceiling; and the Access picker leaves it out, because nothing could be granted
+    there, while the row still stands under Integrations."""
+    bab = FakeBab(integrations=[])
+    client, headers = _access_client(tmp_path, fake_storage, bab=bab)
+
+    page = client.get("/api/admin/integrations/aws/setup?mode=models&integration=acme-models", headers=headers).json()
+    assert page["mode"] == "models" and page["role_name"] == "KoboModels-Bedrock" and page["chosen"] == []
+    assert 'resource "aws_iam_role" "kobo_models"' in page["terraform"] and 'resource "aws_iam_role_policy" "kobo_bedrock"' in page["terraform"]
+    assert "module " not in page["terraform"] and 'output "kobo_role_arn"' in page["terraform"]
+    assert page["bedrock_policy"] and page["cloudformation"] == {"template": "", "parameters": {}}
+    role_page = client.get("/api/admin/integrations/aws/setup?mode=role&integration=acme-models", headers=headers).json()
+    assert page["trust_policy"] == role_page["trust_policy"]
+
+    body = {"vendor": "aws", "name": "acme-models", "base_access": "read", "auth": "aws_role",
+            "identity": {"role_arn": AWS_ROLE, "models_only": "1", "models_region": "us-east-1"}}
+    row = client.post("/api/admin/integrations", json=body, headers=headers).json()
+    assert row["state"] == "applied", row
+    assert row["spec"]["models"] == {"provider": "bedrock", "region": "us-east-1", "role_arn": AWS_ROLE}
+    assert row["spec"]["models_only"] is True
+    assert row["spec"]["identity"] == {"role_arn": AWS_ROLE, "audience": "sts.amazonaws.com"}
+    assert "nothing to grant" in row["state_detail"] and "Bedrock models only" in row["state_detail"]
+    (integ,) = bab.integrations("x")
+    assert integ["integration"] == "acme-models" and integ["ceiling"] == []
+
+    # A second account, connected the ordinary way, is offered; the models-only one is not.
+    client.post("/api/admin/integrations", json={**body, "name": "acme-audit", "identity": {"role_arn": AWS_ROLE}}, headers=headers)
+    aws = next(v for v in client.get("/api/access/picker", headers=headers).json()["vendors"] if v["id"] == "aws")
+    assert [a["id"] for a in aws["accounts"]] == ["acme-audit"] and aws["connected"] is True
+    assert sorted(r["id"] for r in client.get("/api/admin/integrations", headers=headers).json()["integrations"]) == ["acme-audit", "acme-models"]
+
+
 def test_connections_the_permission_service_holds_show_in_the_list_and_can_be_removed(tmp_path, fake_storage):
     """Gate (authorization): Connections the permission service holds show in the list and can be removed."""
     bab = FakeBab()  # its default integration, connected straight into bab, never through the panel

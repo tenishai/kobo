@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Bedrock models only**, a third choice on the AWS sheet: a role that holds the Bedrock permissions and nothing else (its own Terraform, trust policy and Bedrock policy; no template). The row reads "Models only: Bedrock, <region>", connects in the permission service with an empty ceiling, and the Access picker leaves out any account with nothing to grant, so no agent is offered an account it could not use.
+
 ### Fixed
 - An agent created with the room's model gateway on no longer carries `VERTEXAI_PROJECT` and `VERTEXAI_LOCATION` (its model access is the gateway key and the model block in its bundle); a reprovision or a model change removes the two from an agent made before the gateway, and the deploy check no longer looks for them on a gateway agent.
 - The Vertex AI default location is `global` in the room's own config too (`vertex_location`, was us-east5), matching the Connect Google Cloud sheet.
