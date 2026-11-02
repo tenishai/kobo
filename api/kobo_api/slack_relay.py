@@ -272,22 +272,48 @@ def _client() -> httpx.Client:
         return _http_client
 
 
+# While an agent restarts, the relay's post lands on no pod at all or on the
+# old one, which has no Slack token yet and answers 404: the Install to Slack
+# flow rebuilds and redeploys the agent (about two minutes, 2026-11-02), and a
+# model change or a Wakes on change rolls it too. Slack sends each event once
+# (it had its 200), so an event that meets a restart is kept and sent again on
+# this schedule, about four minutes in all. A late pod that already took an
+# earlier try drops the duplicate itself (the runtime keeps the last two
+# thousand event ids). Statuses that mean "not here yet", never a refusal:
+# the agent's own 403 on a wrong relay secret, or any other 4xx, ends it.
+RETRY_DELAYS_S: tuple[float, ...] = (5.0, 15.0, 30.0, 60.0, 60.0, 60.0)
+RETRY_STATUSES: frozenset[int] = frozenset({404, 502, 503, 504})
+_sleep = time.sleep  # tests swap it for a recorder
+
+
 def forward_event(url: str, relay_secret: str, body: bytes, *, agent_name: str) -> None:
-    """Hand one envelope to the agent. Outcome is logged by word and status
-    only; the body never reaches a log line. Runs after Slack has its 200."""
-    try:
-        resp = _client().post(
-            url,
-            content=body,
-            headers={RELAY_SECRET_HEADER: relay_secret, "Content-Type": "application/json"},
-        )
-    except httpx.HTTPError as exc:
-        log.warning("slack relay: agent %s unreachable (%s)", agent_name, type(exc).__name__)
-        return
-    if resp.status_code >= 400:
-        log.warning("slack relay: agent %s refused an event (%s)", agent_name, resp.status_code)
-        return
-    log.info("slack relay: forwarded one event to agent %s", agent_name)
+    """Hand one envelope to the agent, trying again through a restart (see
+    `RETRY_DELAYS_S`). Outcome is logged by word and status only; the body
+    never reaches a log line. Runs after Slack has its 200."""
+    delays = (0.0, *RETRY_DELAYS_S)
+    for attempt, delay in enumerate(delays):
+        if delay:
+            _sleep(delay)
+        try:
+            resp = _client().post(
+                url,
+                content=body,
+                headers={RELAY_SECRET_HEADER: relay_secret, "Content-Type": "application/json"},
+            )
+        except httpx.HTTPError as exc:
+            outcome = f"unreachable ({type(exc).__name__})"
+        else:
+            if resp.status_code < 400:
+                log.info("slack relay: forwarded one event to agent %s%s", agent_name,
+                         f" after {attempt} more {'try' if attempt == 1 else 'tries'}" if attempt else "")
+                return
+            if resp.status_code not in RETRY_STATUSES:
+                log.warning("slack relay: agent %s refused an event (%s)", agent_name, resp.status_code)
+                return
+            outcome = f"answered {resp.status_code}"
+        last = attempt == len(delays) - 1
+        log.log(logging.WARNING if last else logging.INFO, "slack relay: agent %s %s; %s", agent_name, outcome,
+                "the event is dropped" if last else "trying again, it may be restarting")
 
 
 # --- session --------------------------------------------------------------------

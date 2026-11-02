@@ -1835,6 +1835,42 @@ def test_relay_refuses_without_detail(tmp_path, relay_forwards, relay_id, header
     assert relay_forwards == []
 
 
+def test_relay_keeps_an_event_through_an_agent_restart_and_drops_it_on_a_refusal(monkeypatch):
+    """Wire shape (relay): an agent mid-restart answers 404 from its old pod or
+    nothing at all; the relay sends the same event again on its schedule and
+    stops at the first success. A refusal (a wrong relay secret, 403) is final,
+    and after the whole schedule the event is dropped with one warning."""
+    from kobo_api import slack_relay
+
+    def room(answers):
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            answer = answers.pop(0)
+            if answer == "down":
+                raise httpx.ConnectError("connection refused")
+            return httpx.Response(answer, json={"accepted": answer == 200})
+
+        naps: list[float] = []
+        monkeypatch.setattr(slack_relay, "_http_client", httpx.Client(transport=httpx.MockTransport(handler)))
+        monkeypatch.setattr(slack_relay, "_sleep", naps.append)
+        return seen, naps
+
+    seen, naps = room(["down", 404, 200])
+    slack_relay.forward_event("http://agent.test/slack/events", "s3cret", b"{}", agent_name="rae")
+    assert len(seen) == 3 and naps == [5.0, 15.0]
+    assert all(r.headers["X-Kobo-Relay-Secret"] == "s3cret" for r in seen)
+
+    seen, naps = room([403])
+    slack_relay.forward_event("http://agent.test/slack/events", "s3cret", b"{}", agent_name="rae")
+    assert len(seen) == 1 and naps == []
+
+    seen, naps = room([404] * (len(slack_relay.RETRY_DELAYS_S) + 1))
+    slack_relay.forward_event("http://agent.test/slack/events", "s3cret", b"{}", agent_name="rae")
+    assert len(seen) == len(slack_relay.RETRY_DELAYS_S) + 1 and naps == list(slack_relay.RETRY_DELAYS_S)
+
+
 def test_relay_answers_the_challenge_for_a_pending_id_then_demands_a_signature(tmp_path, relay_forwards):
     """Authentication (relay): Slack verifies the request URL during create,
     before the signing secret exists, so a pending row answers the challenge;
