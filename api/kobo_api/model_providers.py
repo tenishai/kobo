@@ -244,7 +244,8 @@ def desired_models(entries: list[ModelChoice], providers: list[Provider], keys: 
                 out.append(Desired(
                     gateway_id=f"{provider.row_id}:{name}", model_name=self_hosted.gateway_model_name(provider.row_id, name),
                     litellm_params=self_hosted.litellm_params(
-                        model_name=name, base_url=provider.base_url, api_key=key, options=provider.options),
+                        model_name=name, base_url=provider.base_url, api_key=key,
+                        options={} if model.get("without_options") else provider.options),
                     entry=entry, provider=provider,
                 ))
             continue

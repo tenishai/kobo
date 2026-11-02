@@ -102,6 +102,7 @@ from kobo_api.catalog import RESERVED_NAMES, validate_name
 from kobo_api.clients import (
     CabalError,
     ClientError,
+    HttpxModelsGatewayClient,
     StorageNotFound,
     _build_system_task_envelope,
     _build_task_envelope,
@@ -111,6 +112,7 @@ from kobo_api.clients import (
     cabal_enabled,
     filter_cabal_event_stream,
     gsa_email,
+    models_gateway_master_key_reader,
     probe_slack_token_store,
 )
 from kobo_api.colleague_mode import commit_colleague_mode
@@ -4586,12 +4588,24 @@ def create_app(
         merged, org = load_org_config(local, clients.github)
         app.state.config = merged
         app.state.org = org
+        # The model gateway client is built at boot from the org's URL; a reload that brings
+        # the URL builds it now and fills the gateway, so no restart stands between
+        # "connected" and "models offered" (the first dev connect needed one, 2026-11-02).
+        gateway_note = ""
+        if merged.models_gateway_url and getattr(clients, "models_gateway", None) is None \
+                and getattr(clients, "kubectl", None) is not None:
+            clients.models_gateway = HttpxModelsGatewayClient(
+                merged.models_gateway_url,
+                master_key_provider=models_gateway_master_key_reader(merged, clients.kubectl),
+            )
+            _fill_models_gateway(app.state.session_factory, clients, merged)
+            gateway_note = "; the model gateway is on and filled"
         return JSONResponse(
             {
                 "wired": org.wired,
                 "detail": org.error or "reloaded",
                 "models": [m.id for m in merged.models],
-                "note": "models, groups and people lists are live now; add-on URLs still need a restart",
+                "note": "models, groups and people lists are live now; add-on URLs still need a restart" + gateway_note,
             }
         )
 

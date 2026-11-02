@@ -829,9 +829,12 @@ class SelfHostedServer:
     `alive` and refuses the rest with the server's own sentence. Records
     every request so a test can read the bodies and headers it was sent."""
 
-    def __init__(self, *, alive: set[str], listed: list[str] | None = None):
+    def __init__(self, *, alive: set[str], listed: list[str] | None = None, rejects_options: set[str] | None = None):
         self.alive = set(alive)
         self.listed = listed if listed is not None else sorted(alive)
+        # Models that answer only a plain body: an engine whose tokenizer refuses
+        # `chat_template_kwargs` (Mistral's, live 2026-11-02) says so with a 400.
+        self.rejects_options = set(rejects_options or ())
         self.requests: list[httpx.Request] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -840,6 +843,8 @@ class SelfHostedServer:
             return httpx.Response(200, json={"object": "list", "data": [{"id": m, "object": "model"} for m in self.listed]})
         if request.url.path.endswith("/v1/chat/completions"):
             body = json.loads(request.content)
+            if body["model"] in self.rejects_options and "chat_template_kwargs" in body:
+                return httpx.Response(400, json={"error": {"message": "chat_template is not supported for Mistral tokenizers.", "type": "BadRequestError", "code": 400}})
             if body["model"] in self.alive:
                 return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "hi"}}]})
             return httpx.Response(404, json={"error": {"message": f"model {body['model']!r} does not exist", "type": "NotFoundError"}})
@@ -867,7 +872,8 @@ def test_self_hosted_connect_probes_every_model_and_registers_only_the_answering
     fails is marked on the row with the server's sentence and never reaches
     the gateway, the ones that answer are registered as `openai/<name>` at
     the endpoint's `/v1` with the options as `extra_body`."""
-    server = SelfHostedServer(alive={"qwen3-32b", "llama-3-70b"}, listed=["qwen3-32b", "llama-3-70b", "old-model"])
+    server = SelfHostedServer(alive={"qwen3-32b", "llama-3-70b", "codestral-22b"}, rejects_options={"codestral-22b"},
+                              listed=["qwen3-32b", "llama-3-70b", "old-model", "codestral-22b"])
     monkeypatch.setattr(self_hosted, "http_client", server.client)
     config, clients, gateway, _ = _self_hosted_room(tmp_path)
     session = session_factory()
@@ -875,28 +881,35 @@ def test_self_hosted_connect_probes_every_model_and_registers_only_the_answering
     row = admin_integrations.connect(
         session, clients, config, vendor="self-hosted", name="Lab GPU pool", base_access="read", credential="", address="",
         trust="untrusted", actor="ops@example.com", auth="self_hosted_endpoint",
-        identity={"base_url": "http://10.0.0.5", "models": "qwen3-32b = Qwen3 32B\nllama-3-70b\nold-model",
+        identity={"base_url": "http://10.0.0.5", "models": "qwen3-32b = Qwen3 32B\nllama-3-70b\nold-model\ncodestral-22b",
                   "options": "chat_template_kwargs: {enable_thinking: false}"},
         secrets={},
     )
     session.commit()
 
-    # The probe: the listing, then one completion per model with the options, eight tokens.
+    # The probe: the listing, then one completion per model with the options, eight tokens; the
+    # model that refuses the options is asked once more without them.
     assert [(r.method, r.url.path) for r in server.requests] == [
-        ("GET", "/v1/models"), ("POST", "/v1/chat/completions"), ("POST", "/v1/chat/completions"), ("POST", "/v1/chat/completions")]
-    assert [b["model"] for b in server.chat_bodies()] == ["qwen3-32b", "llama-3-70b", "old-model"]
-    assert all(b["max_tokens"] == 8 and b["chat_template_kwargs"] == {"enable_thinking": False} for b in server.chat_bodies())
+        ("GET", "/v1/models"), ("POST", "/v1/chat/completions"), ("POST", "/v1/chat/completions"), ("POST", "/v1/chat/completions"),
+        ("POST", "/v1/chat/completions"), ("POST", "/v1/chat/completions")]
+    assert [b["model"] for b in server.chat_bodies()] == ["qwen3-32b", "llama-3-70b", "old-model", "codestral-22b", "codestral-22b"]
+    assert all(b["max_tokens"] == 8 for b in server.chat_bodies())
+    assert [b.get("chat_template_kwargs") for b in server.chat_bodies()] == [{"enable_thinking": False}] * 4 + [None]
     assert "authorization" not in server.requests[0].headers
     # The row: connected, with the verdict per model and the stale entry named.
     assert row.state == admin_store.STATE_APPLIED
     assert row.spec["base_url"] == "http://10.0.0.5/v1"
     assert [(m["name"], m["label"], m["ok"]) for m in row.spec["models"]] == [
-        ("qwen3-32b", "Qwen3 32B", True), ("llama-3-70b", "llama-3-70b", True), ("old-model", "old-model", False)]
+        ("qwen3-32b", "Qwen3 32B", True), ("llama-3-70b", "llama-3-70b", True), ("old-model", "old-model", False),
+        ("codestral-22b", "codestral-22b", True)]
     assert row.spec["models"][2]["reason"] == "HTTP 404: model 'old-model' does not exist"
-    assert "2 of 3 models answer; `old-model` failed: HTTP 404: model 'old-model' does not exist" in row.state_detail
+    assert row.spec["models"][3]["without_options"] is True and row.spec["models"][3]["reason"] is None
+    assert "3 of 4 models answer; `old-model` failed: HTTP 404: model 'old-model' does not exist" in row.state_detail
     assert row.credential_ref is None
-    # The gateway: the two answering models only, under the row's name, with the options where LiteLLM takes them.
-    assert set(gateway.models) == {"lab-gpu-pool:qwen3-32b", "lab-gpu-pool:llama-3-70b"}
+    # The gateway: the answering models only, under the row's name, with the options where LiteLLM
+    # takes them, and none for the model that refused them.
+    assert set(gateway.models) == {"lab-gpu-pool:qwen3-32b", "lab-gpu-pool:llama-3-70b", "lab-gpu-pool:codestral-22b"}
+    assert "extra_body" not in gateway.models["lab-gpu-pool:codestral-22b"]["litellm_params"]
     qwen = gateway.models["lab-gpu-pool:qwen3-32b"]
     assert qwen["model_name"] == "lab-gpu-pool-qwen3-32b"
     assert qwen["litellm_params"] == {
