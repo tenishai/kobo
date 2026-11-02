@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- A Google Cloud project connected on its own now shows on the Integrations table (it was written as an account with no parent, and the table listed only parents and their children).
+
 ### Added
 
 - **The Models pane and the tagged picker (kobo#405).** An admin chooses which models New agent

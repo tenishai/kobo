@@ -42,6 +42,9 @@
   // kept so the accounts still waiting for the role show under it.
   const check = createMutation(() => (checkOrgAccountsMutation(queryClient)));
   let checked = $state<Record<string, OrgAccountsCheck>>({});
+  // The accounts an organization has not connected are one line with a count, opened on request:
+  // a large organization would otherwise fill the table with rows nobody can act on here (2026-11-02).
+  let showWaiting = $state<Record<string, boolean>>({});
   let checking = $state<string | null>(null);
   // Check models (kobo#390): a Self-hosted row's connect probe again, one short answer
   // asked of each named model; the row's verdict per model and the gateway follow.
@@ -56,7 +59,9 @@
   const all = $derived(integrations.data ?? []);
   const matches = $derived((i: AdminIntegration) => i.name.toLowerCase().includes(search.trim().toLowerCase()));
   // Top-level rows: organizations, flat roles and service connections. Accounts sit under their organization.
-  const roots = $derived(all.filter((i) => i.spec.kind !== "account" && !i.spec.parent));
+  // A row with no parent is a root, whatever its kind: a Google Cloud project connected on
+  // its own is written as kind "account" with no parent and must show (it did not, 2026-11-02).
+  const roots = $derived(all.filter((i) => !i.spec.parent));
   const childrenOf = $derived((org: AdminIntegration) => all.filter((i) => i.spec.parent === org.id));
   const visibleRoots = $derived(roots.filter((r) => matches(r) || childrenOf(r).some(matches)));
   const connected = $derived(new Set(all.map((i) => i.vendor)));
@@ -455,7 +460,24 @@
                 </td>
               </tr>
             {/each}
-            {#each checked[i.id]?.without_role ?? [] as w (w.id)}
+            {#if (checked[i.id]?.without_role ?? []).length}
+              {@const waiting = checked[i.id]?.without_role ?? []}
+              <tr class="child child--summary">
+                <td colspan="4">
+                  <div class="who">
+                    <span class="child__tick" aria-hidden="true">└</span>
+                    <span class="summary">
+                      {waiting.length} {i.vendor === "gcp" ? (waiting.length === 1 ? "project is" : "projects are") : (waiting.length === 1 ? "account is" : "accounts are")} not connected yet.
+                      {i.vendor === "gcp" ? "Grant the identity the roles on the ones you want, then check again." : "Deploy the template to the ones you want, then check again."}
+                    </span>
+                  </div>
+                </td>
+                <td class="panel__cell--right">
+                  <button type="button" class="btn btn--quiet" aria-expanded={showWaiting[i.id] ? "true" : "false"} onclick={() => (showWaiting[i.id] = !showWaiting[i.id])}>{showWaiting[i.id] ? "Hide" : "Show"}</button>
+                </td>
+              </tr>
+              {#if showWaiting[i.id]}
+              {#each checked[i.id]?.without_role ?? [] as w (w.id)}
               <tr class="child child--waiting">
                 <td>
                   <div class="who">
@@ -476,7 +498,9 @@
                 <td class="quiet"></td>
                 <td class="panel__cell--right quiet">{i.vendor === "gcp" ? "Grant the identity the roles, then check again" : "Deploy the template, then check again"}</td>
               </tr>
-            {/each}
+              {/each}
+              {/if}
+            {/if}
           {:else}
             {#if search.trim()}
               <tr><td colspan="5"><p class="panel__empty">No integration matches that.</p></td></tr>
@@ -662,6 +686,7 @@
   .who { display: flex; align-items: center; gap: var(--space-sm); min-width: 0; }
   .who__text { display: flex; flex-direction: column; min-width: 0; }
   .child--waiting .name { color: var(--muted); font-weight: 500; }
+  .child--summary .summary { color: var(--ink); }
   .child__tick { margin-right: 0.35rem; color: var(--muted); }
   .name { font-weight: 600; }
   .quiet { color: var(--muted); font-size: 0.85rem; }
