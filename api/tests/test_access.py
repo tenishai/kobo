@@ -6227,14 +6227,17 @@ def test_an_email_and_api_token_vendor_is_checked_then_served_as_basic_auth(tmp_
     client.app.state.clients.liminal_admin = admin
     sero = client.app.state.clients.sero
     body = {"vendor": "atlassian", "name": "Atlassian", "base_access": "read", "auth": "basic_token",
-            "identity": {"email": "bot@example.com"}, "secrets": {"TOKEN": "tok-1"}, "address": "https://mcp.atlassian.com/v1/mcp"}
+            "identity": {"email": "bot@example.com"}, "secrets": {"TOKEN": "tok-1"}, "address": "https://mcp.atlassian.com/v2/mcp"}
     row = client.post("/api/admin/integrations", json=body, headers=headers).json()
     assert row["state"] == "applied" and "Atlassian accepted the email and API token" in row["state_detail"], row
-    assert probes == [("Atlassian", "https://mcp.atlassian.com/v1", "bot@example.com", "tok-1")]
+    assert probes == [("Atlassian", "https://mcp.atlassian.com/v2", "bot@example.com", "tok-1")]
     target = admin.targets["atlassian"]
     assert target["auth_method"] == "bearer" and target["auth_scheme"] == "basic"
-    assert target["address"] == "https://mcp.atlassian.com/v1"
+    assert target["address"] == "https://mcp.atlassian.com/v2"
     assert target["session"] == "per-persona" and target["required_scope"] == "atlassian:read"
+    # v2 lists writing tools beside the reads; they want a scope no lane grants.
+    assert target["tool_scopes"]["createJiraIssue"] == "atlassian:write" and target["tool_scopes"]["executeDestructive"] == "atlassian:write"
+    assert "getJiraIssue" not in target["tool_scopes"] and "searchJiraIssuesUsingJql" not in target["tool_scopes"]
     (put,) = [p for p in sero.puts if p[1] == "apps/kobo/integrations/atlassian"]
     assert put[2] == {"TOKEN": "bot@example.com:tok-1"}
     assert row["spec"]["identity"] == {"email": "bot@example.com"} and row["spec"]["secret_keys"] == ["TOKEN"]
@@ -6251,6 +6254,31 @@ def test_an_email_and_api_token_vendor_is_checked_then_served_as_basic_auth(tmp_
     # The token alone is refused before anything is checked.
     r = client.post("/api/admin/integrations", json={**body, "identity": {}}, headers=headers)
     assert r.status_code == 409 and "email and its API token" in r.json()["error"]
+
+
+def test_the_lane_sync_retires_the_token_broker_github_entries_an_old_bundle_still_lists(tmp_path, fake_storage):
+    """Gate (integrity): the room's GitHub token broker is gone (kobo#365); an agent whose bundle still
+    allows its tools by name (github.search_prs, github.open_pr) is offered dead tools that answer
+    HTTP 405. The next lane sync withdraws them with the retired `github.*` pattern, and says so."""
+    import yaml as _yaml
+
+    bab = FakeBab(integrations=[{"integration": "datadog", "vendor": "datadog", "ceiling": ["datadog_monitors_read"],
+                                 "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"}])
+    bare = ("name: ledger\ncard: agent-card.json\npersona: persona.md\n"
+            "transports:\n  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
+            "tools: {provider: colleagues, liminal: {url: http://liminal.test, token_env: CABAL_COLLEAGUE_TOKEN, exchange_url: http://cabal.test}, "
+            "allow: [colleagues.list_colleagues, github.search_prs, github.open_pr, jira.get_issue]}\nmemory: {personal: techne, home: /techne}\n")
+    github = FakeGitHub(existing_repos={"example-org/agent-ledger"}, extra_clone_files={"bundle/agent.yaml": bare}, track_pushed_content=True)
+    c, h = _room(tmp_path, fake_storage, bab=bab, github=github)
+    c.app.state.clients.liminal_admin = FakeLiminalAdmin([GatewayGrant(issuer="cabal-core", persona="ledger", scopes=("x:read",), allowed_handlers=("scratchpad",))])
+    rid = c.post("/api/agents/ledger/access/requests", headers=h,
+                 json={"integration": "datadog", "permissions": ["datadog_monitors_read"], "note": "monitors"}).json()["id"]
+    out = c.post("/api/admin/access/decide", headers=h, json={"ids": [rid], "verdict": "approve"}).json()["results"]
+    assert out[0]["status"] == "approved"
+    pushed = _yaml.safe_load(github.pushed_file("bundle/agent.yaml"))
+    # The broker entries go, the room's own jira lane entry (not a retired prefix) stays.
+    assert pushed["tools"]["allow"] == ["colleagues.list_colleagues", "jira.get_issue", "datadog-mcp.*", "datadog.*"], pushed["tools"]
+    assert github.pushes[-1][1] == "kobo: allow the datadog tools; withdraw the github tools"
 
 
 def test_removing_an_integration_twice_is_not_a_refusal(tmp_path, fake_storage):

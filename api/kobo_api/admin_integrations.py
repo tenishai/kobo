@@ -144,9 +144,21 @@ BASIC_PROBE_TIMEOUT_S = 15.0
 # The gateway's client appends this to a target's address itself; a pasted address that ends in
 # it (Atlassian's docs give https://mcp.atlassian.com/v1/mcp) loses it, or the call would 404.
 MCP_SUFFIX = "/mcp"
-# What a token vendor's target needs beyond the credential, by vendor: Atlassian's server keeps an
-# Mcp-Session-Id per client, so each agent gets its own upstream session over the shared credential.
-TARGET_EXTRAS: dict[str, dict[str, str]] = {"atlassian": {"session": "per-persona"}}
+# What a token vendor's target needs beyond the credential, by vendor. Atlassian's server keeps an
+# Mcp-Session-Id per client, so each agent gets its own upstream session over the shared credential;
+# its v2 endpoint (https://mcp.atlassian.com/v2, the one that serves the Jira and Confluence tools
+# to an API token; v1 serves only the Teamwork Graph four) also lists tools that create, edit,
+# transition and delete, so those want a scope no lane grants: the shared credential may be able to
+# write, the agents never are. The read tools stay under the lane's `required_scope`.
+ATLASSIAN_WRITE_SCOPE = "atlassian:write"
+ATLASSIAN_WRITE_TOOLS: tuple[str, ...] = (
+    "createJiraIssue", "editJiraIssue", "addOrEditJiraIssueComment", "transitionJiraIssue",
+    "createConfluenceContent", "updateConfluenceContent", "executeWrite", "executeDestructive",
+    "addGraphContext", "addTeamworkGraphContext",
+)
+TARGET_EXTRAS: dict[str, dict[str, Any]] = {
+    "atlassian": {"session": "per-persona", "tool_scopes": dict.fromkeys(ATLASSIAN_WRITE_TOOLS, ATLASSIAN_WRITE_SCOPE)},
+}
 
 # How the gateway reaches a vendor (Kyle, 2026-10-25: AWS is a role, not a
 # key; GCP is workload identity or a scoped service account; the API-token
@@ -423,7 +435,7 @@ def target_spec(row: AdminIntegration) -> dict[str, Any]:
     }
     if auth == BASIC_AUTH:
         out["auth_scheme"] = "basic"  # the env holds `email:token`; the gateway encodes it at the wire
-    out.update(TARGET_EXTRAS.get(row.vendor, {}))
+    out.update({k: (dict(v) if isinstance(v, dict) else v) for k, v in TARGET_EXTRAS.get(row.vendor, {}).items()})
     # A vendor with a gateway lane is open only to an agent whose grant carries the lane's scope.
     lane = gateway_lane.GATEWAY_LANES.get(row.vendor)
     if lane is not None:

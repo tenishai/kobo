@@ -80,6 +80,11 @@ PERMISSION_LANES: dict[tuple[str, str], Lane] = {
 # kobo#365). Listed here so `follow` keeps managing them until they are gone.
 RETIRED_HANDLERS: tuple[str, ...] = ("github",)
 RETIRED_ALLOW: dict[str, str] = {"github.*": "github"}
+# Allow entries named one by one that the room's own tools used to need and that nothing serves
+# any more: the token broker's `github.<tool>` entries (github.search_prs, github.open_pr, ...)
+# answer HTTP 405 now that the broker is gone. `sync_allow` withdraws any entry under one of these
+# prefixes that no lane earns, on the next sync. "github-mcp." does not match "github.".
+RETIRED_PREFIXES: tuple[str, ...] = ("github.",)
 
 _ALL_LANES: list[tuple[str, Lane]] = [*GATEWAY_LANES.items(), *((v, lane) for (v, _), lane in PERMISSION_LANES.items())]
 MANAGED_SCOPES: frozenset[str] = frozenset(s for _, lane in _ALL_LANES for s in lane.scopes)
@@ -170,6 +175,7 @@ def sync_allow(session: Session, clients, *, agent_name: str, patterns: set[str]
             workdir = Path(tmp) / "repo"
             github.clone(repo, workdir)
             before = _allow_entries(workdir / "bundle")
+            withdraw = sorted(set(withdraw) | {p for p in before if p.startswith(RETIRED_PREFIXES) and p not in patterns})
             if not update_agent_yaml_allow(workdir / "bundle", entries=wanted, remove=withdraw):
                 return ""
             added = [p for p in wanted if p not in before]
@@ -261,6 +267,6 @@ def tally(sentence: str) -> str:
 
 
 __all__ = [
-    "GATEWAY_LANES", "MANAGED_ALLOW", "MANAGED_HANDLERS", "MANAGED_SCOPES", "PERMISSION_LANES", "RETIRED_HANDLERS",
+    "GATEWAY_LANES", "MANAGED_ALLOW", "MANAGED_HANDLERS", "MANAGED_SCOPES", "PERMISSION_LANES", "RETIRED_HANDLERS", "RETIRED_PREFIXES",
     "Lane", "desired_allow", "desired_lane", "follow", "held_lanes", "held_vendors", "lane_for", "sync_allow", "tally",
 ]
