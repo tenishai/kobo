@@ -104,6 +104,13 @@ def all_entries(session: Session) -> list[ModelChoice]:
     return [as_entry(r) for r in list_rows(session)]
 
 
+def known_entries(session: Session, config: Config) -> list[ModelChoice]:
+    """Every model the room has ever known, enabled or not, for naming: an
+    agent card keeps its model's label after an untick. The org list only
+    when the table is still empty (a room before its first read)."""
+    return all_entries(session) or list(config.models)
+
+
 def enabled_entries(session: Session, config: Config, rows: list[AdminIntegration] | None = None) -> list[ModelChoice]:
     """The offered set, seeded first when the table is empty."""
     seed(session, config, rows)

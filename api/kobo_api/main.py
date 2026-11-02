@@ -1005,20 +1005,22 @@ def _model_family_size(model_id: str) -> tuple[str | None, str | None]:
     return family, size
 
 
-def _model_label(cfg: Config, model_id: str) -> str:
-    """The catalog label for `model_id`. An id that is no longer in
-    `cfg.models` (an agent created under an older catalog) takes the label
-    of the catalog's model of the same family and size: the room names
-    models by price, not by number, and the name outlives the id (five
-    agents on claude-sonnet-4-5 read as raw ids beside one on sonnet-5,
-    2026-10-01). The raw id, which the hover still shows, is the answer
-    only when nothing in the catalog is kin to it."""
-    for model in cfg.models:
+def _model_label(entries: list[ModelChoice], model_id: str) -> str:
+    """The catalog label for `model_id` among `entries`: every model the
+    room knows, enabled or not (`room_models.known_entries`, kobo#405), so
+    a card keeps its label after an admin hides the model. An id in no
+    entry (an agent created under an older catalog) takes the label of the
+    entry of the same family and size: the room names models by price, not
+    by number, and the name outlives the id (five agents on
+    claude-sonnet-4-5 read as raw ids beside one on sonnet-5, 2026-10-01).
+    The raw id, which the hover still shows, is the answer only when
+    nothing in the catalog is kin to it."""
+    for model in entries:
         if model.id == model_id:
             return model.label
     family, size = _model_family_size(model_id)
     if family and size:
-        for model in cfg.models:
+        for model in entries:
             if _model_family_size(model.id) == (family, size):
                 return model.label
     return model_id
@@ -4665,7 +4667,8 @@ def create_app(
         return JSONResponse(
             {
                 "roles": [admin_store.role_dict(r) for r in admin_store.list_roles(session)],
-                "catalogue": admin_roles_catalogue.catalogue(app.state.config, integrations),
+                "catalogue": admin_roles_catalogue.catalogue(
+                    app.state.config, integrations, models=room_models.known_entries(session, app.state.config)),
             }
         )
 
@@ -6566,6 +6569,7 @@ def create_app(
             .all()
         ):
             failing_tasks.setdefault(task_row.agent_name, []).append(task_row.task)
+        model_entries = room_models.known_entries(session, cfg)
         return {
             "agents": [
                 {
@@ -6573,7 +6577,7 @@ def create_app(
                     "status": a.status,
                     "team": a.team,
                     "model": a.model_id,
-                    "model_label": _model_label(cfg, a.model_id),
+                    "model_label": _model_label(model_entries, a.model_id),
                     "created_at": rfc3339(a.created_at),
                     "has_avatar": a.avatar_png is not None,
                     "health": _health_body(a.name),
@@ -6670,7 +6674,7 @@ def create_app(
                 "purpose_tags": decode_tags(agent.purpose_tags),
                 "capability": agent.capability,
                 "model": agent.model_id,
-                "model_label": _model_label(cfg, agent.model_id),
+                "model_label": _model_label(room_models.known_entries(session, cfg), agent.model_id),
                 "skills": agent.skills,
                 "status": agent.status,
                 "repo_full_name": agent.repo_full_name,

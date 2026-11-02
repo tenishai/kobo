@@ -4321,9 +4321,20 @@ def test_admin_models_lists_each_providers_discovered_models_and_a_tick_offers_o
     # The listing is cached: the second read did not ask the service again.
     assert bab.model_calls == [("gcp-example", "us-east5")]
 
+    # An agent on the ticked model: its card names it by the row's label, and the Roles editor lists it.
+    with session_factory() as session:
+        session.add(Agent(name="muse", persona="helpful-generalist", model_id="vertex_ai/claude-sonnet-4-6",
+                          status=AgentStatus.READY, created_by="ops@example.com", repo_full_name="acme/agent-muse"))
+        session.commit()
+    card = next(a for a in client.get("/api/agents", headers=headers).json()["agents"] if a["name"] == "muse")
+    assert card["model_label"] == "Claude Sonnet 4.6"
+    assert {"id": "vertex_ai/claude-sonnet-4-6", "label": "Claude Sonnet 4.6"} in client.get("/api/admin/roles", headers=headers).json()["catalogue"]["models"]
+
     client.put("/api/admin/models", headers=headers, json={"changes": [{"id": "vertex_ai/claude-sonnet-4-6", "enabled": False}]})
 
     assert "gcp-example:vertex_ai/claude-sonnet-4-6" not in gateway.models
+    # Hidden, not forgotten: the card keeps the label.
+    assert client.get("/api/agents/muse", headers=headers).json()["model_label"] == "Claude Sonnet 4.6"
     with session_factory() as session:
         assert session.query(AuditLog).filter(AuditLog.action == "models.withdrawn").count() == 1
     assert client.put("/api/admin/models", headers=headers, json={"changes": [{"id": "nowhere/x", "enabled": True}]}).status_code == 422
