@@ -214,8 +214,11 @@
     if (wakeApplying) return { text: "Applying your change. Give it a minute.", tone: "warn" };
     if (wakeWaitsForRestart) return { text: "Saved. Takes effect when the agent next restarts.", tone: "warn" };
     const detail = agent.data;
-    // Mid-restart by the cluster's own word: a change is going in, not an outage.
-    if (detail?.health?.rolling) return { text: "Applying your change", tone: "warn" };
+    // Mid-restart by the cluster's own word: a change is going in, not an
+    // outage. After Install to Slack this is the agent rebuilding with its
+    // token, about two minutes; the room keeps a mention sent meanwhile and
+    // hands it over once the agent is back.
+    if (detail?.health?.rolling) return { text: "Restarting. A mention sent now is answered once it is back.", tone: "warn" };
     if (detail?.health?.state === "down") return { text: "Down", tone: "fail" };
     if (detail?.status === "ready") return { text: "Live", tone: "ok" };
     return { text: "Not ready yet", tone: "warn" };

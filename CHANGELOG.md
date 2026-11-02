@@ -7,6 +7,7 @@ All notable changes to kobo are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- A Slack event that meets an agent mid-restart (the Install to Slack rebuild, a model or Wakes on change) is kept and sent again for about four minutes instead of being dropped at the first 404 or refused connection; the Slack row reads Restarting and says a mention sent now is answered once the agent is back.
 - An agent created with the room's model gateway on no longer carries `VERTEXAI_PROJECT` and `VERTEXAI_LOCATION` (its model access is the gateway key and the model block in its bundle); a reprovision or a model change removes the two from an agent made before the gateway, and the deploy check no longer looks for them on a gateway agent.
 - The Vertex AI default location is `global` in the room's own config too (`vertex_location`, was us-east5), matching the Connect Google Cloud sheet.
 
