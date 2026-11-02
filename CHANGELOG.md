@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.41] - 2026-11-02
+
 ### Fixed
 - A Google Cloud project connected on its own now shows on the Integrations table (it was written as an account with no parent, and the table listed only parents and their children).
 
