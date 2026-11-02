@@ -954,3 +954,27 @@ def test_check_models_reprobes_and_flips_a_models_state_on_the_row_and_the_gatew
     session.commit()
     assert gone["state"] == "failed" and gateway.models == {}
     session.close()
+
+
+def test_bab_discover_waits_longer_than_an_ordinary_call():
+    """Check accounts probes every account of the organization (two role hops each, eight
+    at a time), which takes longer than the client's fifteen seconds on an organization
+    of twenty accounts; the first Check accounts on dev came back ReadTimeout while the
+    service was still working (2026-11-01). The discover call carries its own timeout."""
+    from kobo_api.bab import DISCOVER_TIMEOUT_S, HttpxBabClient
+
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json={"accounts": []})
+
+    bab = HttpxBabClient("http://bab.local", "tok", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    bab.discover_accounts("aws", "kyle@example.com", role_name="KoboAccess-Role")
+    assert seen["path"] == "/integrations/aws/discover"
+    assert seen["timeout"]["read"] == DISCOVER_TIMEOUT_S
+    assert DISCOVER_TIMEOUT_S >= 60
+
+    bab.org_accounts("aws", "kyle@example.com")
+    assert seen["timeout"]["read"] < DISCOVER_TIMEOUT_S  # the ordinary call keeps the client's own timeout

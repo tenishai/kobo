@@ -88,6 +88,9 @@ class BabClient(Protocol):
     def discover_accounts(self, integration: str, actor: str, role_name: str | None = None) -> dict: ...
 
 
+DISCOVER_TIMEOUT_S = 120.0  # an organization of a few dozen accounts, probed eight at a time
+
+
 class HttpxBabClient:
     def __init__(self, base_url: str, token: str, *, client: httpx.Client | None = None):
         self._base_url = base_url.rstrip("/")
@@ -97,10 +100,12 @@ class HttpxBabClient:
     def _headers(self, actor: str) -> dict[str, str]:
         return {"X-Bab-Console-Token": self._token, "X-Bab-Actor": actor}
 
-    def _call(self, method: str, path: str, actor: str, *, json=None, params=None, what: str) -> dict:
+    def _call(self, method: str, path: str, actor: str, *, json=None, params=None, what: str,
+              timeout: float | None = None) -> dict:
         try:
             resp = self._client.request(method, f"{self._base_url}{path}", headers=self._headers(actor),
-                                        json=json, params=params)
+                                        json=json, params=params,
+                                        timeout=httpx.Timeout(timeout, connect=5.0) if timeout else httpx.USE_CLIENT_DEFAULT)
         except httpx.HTTPError as exc:
             raise ClientError(f"the permission service is unreachable: {exc.__class__.__name__}") from exc
         if resp.status_code >= 400:
@@ -256,8 +261,11 @@ class HttpxBabClient:
         service can reach. AWS names the spoke role to look for; a Google Cloud folder or
         organization (kobo#390) sends an empty body, since its identity is granted directly."""
         body = {"role_name": role_name} if role_name else {}
+        # The service probes every account of the organization (two role hops each, eight at a
+        # time); twenty accounts take longer than the client's fifteen seconds, and the first
+        # Check accounts on dev timed out while the service was still working (2026-11-01).
         return self._call("POST", f"/integrations/{integration}/discover", actor, json=body,
-                          what=f"the accounts of {integration}")
+                          what=f"the accounts of {integration}", timeout=DISCOVER_TIMEOUT_S)
 
     def delete_integration(self, integration: str, actor: str) -> dict:
         return self._call("DELETE", f"/integrations/{integration}", actor, what=f"disconnecting {integration}")
