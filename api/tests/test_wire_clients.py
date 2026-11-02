@@ -18,7 +18,13 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from kobo_api import admin_integrations, admin_store, model_providers, self_hosted
+from kobo_api import (
+    admin_integrations,
+    admin_store,
+    model_providers,
+    room_models,
+    self_hosted,
+)
 from kobo_api.clients import (
     CabalClient,
     ChatMessage,
@@ -898,7 +904,7 @@ def test_self_hosted_connect_probes_every_model_and_registers_only_the_answering
         "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
     assert qwen["model_info"] == {"provider": "self-hosted", "integration": "lab-gpu-pool", "label": "Qwen3 32B", "id": "lab-gpu-pool:qwen3-32b"}
     # An agent's model id names its gateway model by itself.
-    assert model_providers.gateway_model_for(config, "self-hosted/lab-gpu-pool/qwen3-32b") == "lab-gpu-pool-qwen3-32b"
+    assert model_providers.gateway_model_for([], "self-hosted/lab-gpu-pool/qwen3-32b") == "lab-gpu-pool-qwen3-32b"
     session.close()
 
 
@@ -939,6 +945,10 @@ def test_check_models_reprobes_and_flips_a_models_state_on_the_row_and_the_gatew
     )
     session.commit()
     assert set(gateway.models) == {"lab:qwen3-32b"}
+    # An admin offers the second model too (kobo#405); the gateway follows the probe from here.
+    room_models.apply_changes(session, config, clients, [{"id": "self-hosted/lab/old-model", "enabled": True}],
+                              bab=None, actor="ops@example.com")
+    session.commit()
 
     server.alive = {"old-model"}
     out = admin_integrations.check_models(session, clients, config, integration_id="lab", actor="ops@example.com")

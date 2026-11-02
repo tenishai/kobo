@@ -1982,6 +1982,8 @@ ADMIN_ROUTES = [
     ("DELETE", "/api/admin/integrations/datadog", {}),
     ("GET", "/api/admin/integrations/aws/setup", {}),
     ("GET", "/api/admin/integrations/gcp/setup", {}),
+    ("GET", "/api/admin/models", {}),
+    ("PUT", "/api/admin/models", {"json": {"changes": []}}),
     ("GET", "/api/admin/connections", {}),
     ("PUT", "/api/admin/connections/clio/datadog", {"json": {"access": "read"}}),
     ("DELETE", "/api/admin/connections/clio/datadog", {}),

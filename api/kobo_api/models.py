@@ -880,6 +880,33 @@ class AdminIntegration(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class RoomModel(Base):
+    """One model the room knows (kobo#405): discovered from a connected
+    provider or seeded from the org config's `models:` list, and offered in
+    New agent only while `enabled`. `id` is the catalogue id an agent's
+    `model_id` carries (`vertex_ai/<model>`, `bedrock/<id>`,
+    `self-hosted/<row>/<name>`); `provider` is the kind, `source` the
+    integration row it was ticked from (NULL for a seeded cloud entry, which
+    every provider of its kind serves), `model` the provider's own id. The
+    org list's price names and tiers ride along as `label`, `tier` and
+    `family`; `location` is a per-model Vertex override."""
+
+    __tablename__ = "room_models"
+
+    id: Mapped[str] = mapped_column(String(300), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str] = mapped_column(String(200), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    location: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    tier: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    family: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    added_by: Mapped[str] = mapped_column(String(320), nullable=False)
+    added_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class AdminRole(Base):
     """A named set of permissions a group holds. `spec` carries the lists
     (capabilities, admin permissions, per-integration ceilings, models) so a

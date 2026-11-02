@@ -28,6 +28,6 @@ If your group is not listed, choose **My group is not listed**, type its name, a
 
 The model the agent thinks with, named by family and tier: **Best** costs the most and thinks the hardest, **Balanced** is the everyday choice, **Fast** is the cheapest. Pick the tier the work calls for. The exact model behind each tier is the room's choice and shows on the agent's Harness tab.
 
-When the room reaches its models through the model gateway, the list is grouped by the cloud that serves each model. A model in grey cannot be picked yet, and the grey words beside it say why: its cloud is not connected, or the model gateway is not answering. With no model available at all, **Create agent** stays off and one sentence asks for a cloud with models to be connected under Admin, Integrations, first.
+When the room reaches its models through the model gateway, the list is one list across every cloud the room is connected to, and a short tag after each name says where that model comes from: GCP, AWS, Azure or Self-hosted. A room admin chooses which models the list offers, under Admin, Models; a model nobody has chosen is not in it. A model in grey cannot be picked yet, and the grey words beside it say why: its cloud is not connected, or the model gateway is not answering. With no model available at all, **Create agent** stays off and one sentence asks for a cloud with models to be connected under Admin, Integrations, first.
 
 Press **Create agent**. The room takes you to the agent's page, where a checklist shows the build as it happens. Nothing else is asked of you.

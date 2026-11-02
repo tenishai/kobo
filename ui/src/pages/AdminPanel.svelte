@@ -6,6 +6,7 @@
   import AuditPane from "../components/admin/AuditPane.svelte";
   import ConnectionsPane from "../components/admin/ConnectionsPane.svelte";
   import IntegrationsPane from "../components/admin/IntegrationsPane.svelte";
+  import ModelsPane from "../components/admin/ModelsPane.svelte";
   import OverviewPane from "../components/admin/OverviewPane.svelte";
   import PeoplePane from "../components/admin/PeoplePane.svelte";
   import ServicesPane from "../components/admin/ServicesPane.svelte";
@@ -13,6 +14,7 @@
   import ReviewPane from "../components/admin/ReviewPane.svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import {
+    Brain,
     ClockCounterClockwise,
     Graph,
     Plugs,
@@ -27,6 +29,7 @@
     overview: SquaresFour,
     services: Stack,
     integrations: Plugs,
+    models: Brain,
     connections: Graph,
     review: SealCheck,
     roles: UserGear,
@@ -46,6 +49,7 @@
     { id: "overview", label: "Overview" },
     { id: "services", label: "Services" },
     { id: "integrations", label: "Integrations" },
+    { id: "models", label: "Models" },
     { id: "connections", label: "Connections" },
     { id: "review", label: "Review" },
     { id: "roles", label: "Roles" },
@@ -152,6 +156,8 @@
       <ServicesPane />
     {:else if pane === "integrations"}
       <IntegrationsPane {item} {accessOn} />
+    {:else if pane === "models"}
+      <ModelsPane />
     {:else if pane === "connections"}
       {#if accessOn}
         <AgentConnectionsPane {item} />

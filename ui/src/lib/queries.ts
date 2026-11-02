@@ -176,6 +176,9 @@ import {
   fetchAdminGcpSetup,
   fetchAdminConnections,
   fetchAdminIntegrations,
+  fetchAdminModels,
+  putAdminModels,
+  type AdminModelChange,
   fetchAdminPeople,
   fetchAdminRoles,
   fetchAdminRoom,
@@ -597,6 +600,27 @@ export function checkOrgAccountsMutation(queryClient: QueryClient) {
     onSuccess: (_out: OrgAccountsCheck, integrationId: string) => {
       queryClient.invalidateQueries({ queryKey: ["admin", "integrations"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "integrations", integrationId, "accounts"] });
+    },
+  };
+}
+
+export function adminModelsQuery() {
+  return queryOptions({
+    queryKey: ["admin", "models"] as const,
+    queryFn: fetchAdminModels,
+    staleTime: 15_000,
+  });
+}
+
+/** A tick on the Models pane (kobo#405): the pickers and the audit follow. */
+export function putAdminModelsMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: (changes: AdminModelChange[]) => putAdminModels(changes),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "models"] });
+      queryClient.invalidateQueries({ queryKey: ["catalog", "models"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "addons"] });
     },
   };
 }

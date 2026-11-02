@@ -2519,6 +2519,13 @@ class FakeBab:
         # two of the three, unless a test says otherwise.
         self.reachable_projects = {"example-prod-1234", "example-data-5678"}
         self.discoveries: list[tuple[str, str | None]] = []
+        # Model discovery (kobo#405): `models(integration, ...)` answers from
+        # `model_lists` when a test set one for that integration, else the two
+        # Vertex or the two Bedrock models below by the row's vendor; every call
+        # is recorded in `model_calls`, and `models_error` makes it refuse.
+        self.model_lists: dict[str, list[dict]] = {}
+        self.model_calls: list[tuple[str, str | None]] = []
+        self.models_error: str | None = None
         self.healthy = healthy
         self.error = error
         self.topologies: list[tuple[str, list[dict]]] = []
@@ -2815,6 +2822,31 @@ class FakeBab:
             out.append({**a, "role_arn": f"arn:aws:iam::{a['id']}:role/{role_name}", "reachable": ok,
                         "reason": None if ok else f"AWS refused arn:aws:iam::{a['id']}:role/{role_name}: AccessDenied"})
         return {"organization": integration, "external_id": external_id, "role_name": role_name, "accounts": out}
+
+    VERTEX_MODELS = (
+        {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "publisher": "anthropic", "family": "claude", "stage": "GA", "via": None},
+        {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro", "publisher": "google", "family": "gemini", "stage": "GA", "via": None},
+    )
+    BEDROCK_MODELS = (
+        {"id": "anthropic.claude-3-5-haiku-20241022-v1:0", "label": "Claude 3.5 Haiku", "publisher": "anthropic", "family": "claude", "stage": "ACTIVE", "via": "on-demand"},
+        {"id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0", "label": "Claude Sonnet 4.5", "publisher": "anthropic", "family": "claude", "stage": "ACTIVE", "via": "inference-profile"},
+    )
+
+    def models(self, integration, actor, *, location=None, region=None):
+        """`GET /integrations/{id}/models` (kobo#405): the chat models at that
+        integration, Vertex AI at `location` or Bedrock in `region`."""
+        self._guard()
+        self.model_calls.append((integration, location or region))
+        if self.models_error:
+            raise ClientError(f"the permission service refused the models of {integration}: {self.models_error}")
+        if integration in self.model_lists:
+            models = list(self.model_lists[integration])
+        else:
+            row = next((i for i in self._integrations if i["integration"] == integration), None)
+            vendor = (row or {}).get("vendor") or ("aws" if region else "gcp")
+            models = list(self.BEDROCK_MODELS if vendor == "aws" else self.VERTEX_MODELS)
+        provider = "bedrock" if region or any(m.get("via") for m in models) else "vertex_ai"
+        return {"integration": integration, "provider": provider, "models": models, "fetched_at": "2026-11-02T12:00:00Z"}
 
     def delete_integration(self, integration, actor):
         self._guard()

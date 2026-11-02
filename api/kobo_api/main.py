@@ -38,6 +38,7 @@ from kobo_api import (
     github_access,
     model_providers,
     room_credentials,
+    room_models,
     slack_relay,
 )
 from kobo_api.admin_addons import addon_cards
@@ -118,7 +119,7 @@ from kobo_api.composer import (
     COLLEAGUE_MODES,
     effective_colleague_mode,
 )
-from kobo_api.config import SHARED_GROUP, Config, vertex_location_for
+from kobo_api.config import SHARED_GROUP, Config, ModelChoice, vertex_location_for
 from kobo_api.connect_scan import NAME_TAKEN, Finding, ScanReport, scan_repo
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
@@ -733,6 +734,21 @@ class AdminRoleBody(BaseModel):
     admin: list[str] = Field(default_factory=list)
     connectors: list[AdminRoleConnector] = Field(default_factory=list)
     models: list[str] = Field(default_factory=list)
+
+
+class AdminModelChange(BaseModel):
+    """One tick on the Models pane (kobo#405): offer or hide a model, with
+    an optional new label."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=300)
+    enabled: bool
+    label: str | None = Field(default=None, max_length=200)
+
+
+class AdminModelChanges(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    changes: list[AdminModelChange] = Field(default_factory=list, max_length=500)
 
 
 class AdminConnectIntegration(BaseModel):
@@ -3510,10 +3526,14 @@ def create_app(
     def catalog_models(session: Session = Depends(get_session)) -> dict:  # noqa: B008
         cfg: Config = app.state.config
         if model_providers.gateway_on(cfg):
-            # Models come from the connected clouds (kobo#390): each entry
-            # says which cloud serves it and whether it can be picked now.
+            # Models come from the connected clouds (kobo#390), the ones an
+            # admin offers (kobo#405): each entry says which cloud serves it
+            # and whether it can be picked now.
             rows = admin_store.list_integrations(session)
-            return model_providers.catalogue(cfg, rows, getattr(app.state.clients, "models_gateway", None))
+            entries = room_models.enabled_entries(session, cfg, rows)
+            view = model_providers.catalogue(entries, rows, getattr(app.state.clients, "models_gateway", None))
+            session.commit()  # the first read seeds the table
+            return view
         return {
             "models": [
                 {"id": m.id, "label": m.label, "family": m.family, "tier": m.tier}
@@ -4429,6 +4449,40 @@ def create_app(
         rows.extend(room_credentials.deployment_rows({r["id"] for r in rows}, app.state.clients, app.state.config))
         room_credentials.annotate(rows, app.state.clients, app.state.config)
         return JSONResponse({"integrations": rows})
+
+    @app.get("/api/admin/models")
+    def admin_models(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+        """The Models pane (kobo#405): per connected provider, the models the
+        cloud lists merged with which ones the room offers."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        bab = getattr(app.state.clients, "bab", None) if app.state.clients is not None else None
+        rows = admin_store.list_integrations(session)
+        view = room_models.admin_view(session, app.state.config, rows, bab, _bab_actor(request))
+        session.commit()  # the first read seeds the table
+        return JSONResponse(view)
+
+    @app.put("/api/admin/models")
+    def admin_put_models(
+        payload: AdminModelChanges, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Offer or hide models (kobo#405): one audit row per change, then
+        the gateway filler registers exactly the offered set."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        bab = getattr(app.state.clients, "bab", None) if app.state.clients is not None else None
+        try:
+            result = room_models.apply_changes(
+                session, app.state.config, app.state.clients, [c.model_dump() for c in payload.changes],
+                bab=bab, actor=audit.who(request), request=request,
+            )
+        except room_models.UnknownModel as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        session.commit()
+        return JSONResponse(result)
 
     @app.post("/api/admin/integrations", status_code=201)
     def admin_connect_integration(
@@ -5874,23 +5928,26 @@ def create_app(
                 )
             resolved_skills.append((pick, skill_entry))
 
-        model_ids = {m.id for m in cfg.models}
-        if payload.model is not None and payload.model not in model_ids:
+        model_id = payload.model if payload.model is not None else cfg.models[0].id
+        if model_providers.gateway_on(cfg):
+            # The models an admin offers (kobo#405), from the connected clouds
+            # (kobo#390): an id outside them is unknown; with no cloud
+            # connected the room refuses rather than build an agent that
+            # cannot think; the default is the first model that can.
+            rows = admin_store.list_integrations(session)
+            gateway = getattr(app.state.clients, "models_gateway", None)
+            view = model_providers.catalogue(room_models.enabled_entries(session, cfg, rows), rows, gateway)
+            if payload.model is not None and payload.model not in {m["id"] for m in view["models"]}:
+                return JSONResponse({"error": f"unknown model: {payload.model!r}"}, status_code=422)
+            if payload.model is None:
+                model_id = view["default"] or model_id
+            ok, refusal = model_providers.availability_in(view, model_id)
+            if not ok:
+                return JSONResponse({"error": refusal}, status_code=409)
+        elif payload.model is not None and payload.model not in {m.id for m in cfg.models}:
             return JSONResponse(
                 {"error": f"unknown model: {payload.model!r}"}, status_code=422
             )
-        model_id = payload.model if payload.model is not None else cfg.models[0].id
-        if model_providers.gateway_on(cfg):
-            # At least one model before the first agent (kobo#390): with no
-            # cloud connected the room refuses rather than build an agent
-            # that cannot think; the default is the first model that can.
-            rows = admin_store.list_integrations(session)
-            gateway = getattr(app.state.clients, "models_gateway", None)
-            if payload.model is None:
-                model_id = model_providers.catalogue(cfg, rows, gateway)["default"] or model_id
-            ok, refusal = model_providers.availability(cfg, rows, gateway, model_id)
-            if not ok:
-                return JSONResponse({"error": refusal}, status_code=409)
 
         # Checked last (a DB round-trip) rather than first: a malformed request
         # is a 422 regardless of whether the name happens to collide too.
@@ -10314,35 +10371,45 @@ def create_app(
             )
         cfg: Config = app.state.config
         model_id = body.model.strip()
-        choice = next((m for m in cfg.models if m.id == model_id), None)
-        if choice is None:
-            return JSONResponse(
-                {"error": f"there is no model {model_id!r} in the room's list"}, status_code=422
-            )
         clients = app.state.clients
         if model_providers.gateway_on(cfg):
             # Through the room's model gateway (kobo#390): the model block in
             # the agent's bundle is rewritten to the gateway, a key is minted
             # and delivered, and the deploy contract names its Secret. This
-            # is also how an agent born before the gateway moves onto it.
+            # is also how an agent born before the gateway moves onto it. The
+            # list is the models an admin offers (kobo#405).
             rows = admin_store.list_integrations(session)
             gateway = getattr(clients, "models_gateway", None)
-            ok, refusal = model_providers.availability(cfg, rows, gateway, model_id)
+            entries = room_models.enabled_entries(session, cfg, rows)
+            view = model_providers.catalogue(entries, rows, gateway)
+            offered = next((m for m in view["models"] if m["id"] == model_id), None)
+            if offered is None:
+                return JSONResponse(
+                    {"error": f"there is no model {model_id!r} in the room's list"}, status_code=422
+                )
+            choice = ModelChoice(id=model_id, label=offered["label"])
+            ok, refusal = model_providers.availability_in(view, model_id)
             if not ok:
                 return JSONResponse({"error": refusal}, status_code=409)
             try:
                 model_providers.deliver_models_key(
-                    clients, cfg, agent, models=model_providers.available_gateway_models(cfg, rows),
+                    clients, cfg, agent, models=model_providers.available_gateway_models(entries, rows),
                     acting_email=getattr(request.state, "iap_email", None) or agent.created_by,
                 )
                 how = model_providers.commit_gateway_model(
                     clients.github, clients.gojira, repo=agent.repo_full_name, gojira_app_id=agent.gojira_app_id,
-                    agent_name=agent.name, config=cfg, gateway_model=model_providers.gateway_model_for(cfg, model_id),
+                    agent_name=agent.name, config=cfg,
+                    gateway_model=model_providers.gateway_model_for(room_models.all_entries(session), model_id),
                 )
             except ClientError as exc:
                 return _lane_failed("model change", agent, exc, AGENT_FILES_UNREACHABLE)
             result = SimpleNamespace(how=how)
         else:
+            choice = next((m for m in cfg.models if m.id == model_id), None)
+            if choice is None:
+                return JSONResponse(
+                    {"error": f"there is no model {model_id!r} in the room's list"}, status_code=422
+                )
             location = vertex_location_for(cfg, model_id)
 
             def edit(data: dict) -> bool:
@@ -12663,6 +12730,22 @@ def _backfill_audit_landed(session_factory) -> None:
         session.close()
 
 
+def _seed_room_models(session_factory, config: Config) -> None:
+    """The offered models at boot (kobo#405): when the table is empty, the
+    org list and the connected self-hosted rows' answering models start
+    enabled, so the first roll with the table changes nothing in New agent.
+    Never a failed boot; two replicas seeding at once leaves one to win."""
+    session = session_factory()
+    try:
+        room_models.seed(session, config)
+        session.commit()
+    except Exception:
+        session.rollback()
+        log.warning("the room models seed was skipped this boot", exc_info=True)
+    finally:
+        session.close()
+
+
 def _fill_models_gateway(session_factory, clients, config: Config) -> None:
     """The model gateway filler at boot (kobo#390): the gateway holds exactly
     what the connected providers serve, idempotent, one log line, never a
@@ -12769,6 +12852,7 @@ def build_default_app() -> FastAPI:
     # The Slack and GitHub service rows fold into connections (kobo#377): once,
     # idempotent, fail-soft, one log line when something moved.
     _fold_service_rows(session_factory, clients, config)
+    _seed_room_models(session_factory, config)
     _fill_models_gateway(session_factory, clients, config)
     # Boot-time dispatch-pairs resync (final-review fix round, HIGH-2a): a
     # no-op if the switchboard isn't wired, fail-soft otherwise -- see
