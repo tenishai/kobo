@@ -61,8 +61,8 @@ gcp_project: example-project
 # GCP project ID for Vertex AI models
 vertex_project: example-model-project
 
-# Google Cloud region for Vertex AI endpoints
-vertex_location: us-east5
+# Vertex AI location for the models: global (the default), or a region
+vertex_location: global
 
 # A Google Group that confers Vertex model access; each agent's identity is
 # added to it. Leave empty on a project without Workspace groups: the room

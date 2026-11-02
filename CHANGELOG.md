@@ -6,6 +6,10 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- An agent created with the room's model gateway on no longer carries `VERTEXAI_PROJECT` and `VERTEXAI_LOCATION` (its model access is the gateway key and the model block in its bundle); a reprovision or a model change removes the two from an agent made before the gateway, and the deploy check no longer looks for them on a gateway agent.
+- The Vertex AI default location is `global` in the room's own config too (`vertex_location`, was us-east5), matching the Connect Google Cloud sheet.
+
 ## [0.3.42] - 2026-11-02
 
 ### Fixed

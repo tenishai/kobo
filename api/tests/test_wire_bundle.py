@@ -570,6 +570,8 @@ def test_wire_step_delivers_the_gateway_key_and_names_its_secret(session_factory
 
     gojira_yaml = yaml.safe_load((ctx.workdir / "wire" / "gojira.yaml").read_text())
     assert gojira_yaml["secrets_from"] == [f"{AGENT_NAME}-{MODELS_SECRET_PURPOSE}"]
+    # A gateway agent's model access is the key; the two Vertex variables are the direct path's.
+    assert not {"VERTEXAI_PROJECT", "VERTEXAI_LOCATION"} & set(gojira_yaml.get("env") or {})
     [minted] = gateway.keys[f"agent:{AGENT_NAME}"]
     assert minted["models"] == [gateway_model_name(m) for m in cfg.models]
     assert kubectl.secrets[(AGENT_NAME, f"{AGENT_NAME}-models")] == {"MODELS_GATEWAY_KEY": minted["key"]}

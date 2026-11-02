@@ -578,8 +578,9 @@ def commit_gateway_model(
     """Change model with the gateway on, for a composed agent: one commit
     that rewrites `bundle/agent.yaml`'s model stanza to the gateway block,
     wires the `<agent>-models` Secret into gojira.yaml's `secrets_from` and
-    drops an `AGENT_MODEL` left by an earlier Vertex change; then one
-    reprovision so the deploy contract regenerates. Returns how it went:
+    drops an `AGENT_MODEL`, `VERTEXAI_PROJECT` or `VERTEXAI_LOCATION` left by
+    the direct-Vertex path (a gateway agent carries none of the three); then
+    one reprovision so the deploy contract regenerates. Returns how it went:
     `committed` or `unchanged`. Raises `ClientError` on any refusal."""
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
@@ -592,9 +593,11 @@ def commit_gateway_model(
             data = yaml.safe_load(gojira_yaml.read_text()) or {}
             touched = append_secrets_from(data, models_secret_name(agent_name))
             env = data.get("env")
-            if isinstance(env, dict) and "AGENT_MODEL" in env:
-                env.pop("AGENT_MODEL")
-                touched = True
+            if isinstance(env, dict):
+                for key in ("AGENT_MODEL", "VERTEXAI_PROJECT", "VERTEXAI_LOCATION"):
+                    if key in env:
+                        env.pop(key)
+                        touched = True
             if touched:
                 gojira_yaml.write_text(yaml.safe_dump(data, sort_keys=False))
                 changed = True

@@ -4423,7 +4423,7 @@ def test_set_model_through_the_gateway_rewrites_the_model_block_and_delivers_a_k
     assert model == {"id": "openai/gemini-fast-flash", "max_tokens": 8192,
                      "api_base": f"{MODELS_GATEWAY_URL}/v1", "api_key_env": "MODELS_GATEWAY_KEY"}
     assert github.gojira["secrets_from"] == ["clio-models"]
-    assert "AGENT_MODEL" not in github.gojira["env"]
+    assert not {"AGENT_MODEL", "VERTEXAI_PROJECT", "VERTEXAI_LOCATION"} & set(github.gojira["env"])
     assert f"reprovision:{app_id}" in gojira.calls
     [minted] = gateway.keys["agent:clio"]
     assert minted["models"] == ["claude-affordable-sonnet", "gemini-fast-flash"]

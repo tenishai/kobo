@@ -85,11 +85,14 @@ ROOM_SETS_THIS_ONE = "the room sets this one"
 # interpreter or its own binaries.
 CONTAINER_SETS_THIS_ONE = "the container sets this one"
 
-# The two model-access variables `kobo_api.steps._set_service_account_and_
-# model_env` writes into every agent's `gojira.yaml`. Spelled out here
-# rather than imported from that module: this is the list of names an owner
-# may not take, which is a decision about the panel, and importing would
-# put a cycle between this module and the step engine that reaches it.
+# The two direct-Vertex variables `kobo_api.steps._set_service_account_and_
+# model_env` writes into an agent's `gojira.yaml` only when the room has no
+# model gateway (with the gateway on an agent's model access is its
+# `MODELS_GATEWAY_KEY` Secret, and these two are not written; a stale copy
+# is removed on reprovision). Reserved either way: an owner may not take
+# them. Spelled out here rather than imported from that module: this is a
+# decision about the panel, and importing would put a cycle between this
+# module and the step engine that reaches it.
 MODEL_ENV_KEYS = ("VERTEXAI_PROJECT", "VERTEXAI_LOCATION")
 
 # Every key the room fills in on an agent's behalf: the colleague pass
