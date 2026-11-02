@@ -340,6 +340,19 @@ describe("AdminPanel", () => {
     expect(document.querySelector("#integration-form input[type=password]")).toBeNull();
   });
 
+  it("Atlassian asks for the account's email with its API token, the pair its MCP server takes as Basic auth", async () => {
+    navigate({ page: "admin", pane: "integrations" });
+    renderWithClient(AdminPanel);
+    await fireEvent.click(await screen.findByRole("button", { name: "Add integration" }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Add Atlassian" }));
+    expect(await screen.findByLabelText("Email of the account the token belongs to")).toBeTruthy();
+    expect(screen.getByLabelText("API token")).toBeTruthy();
+    expect(document.querySelectorAll("#integration-form input[type=password]").length).toBe(1);
+    // The gateway's client appends /mcp itself, so the usual address is the base above it.
+    expect((screen.getByLabelText(/Vendor's MCP address/) as HTMLInputElement).value).toBe("https://mcp.atlassian.com/v1");
+    expect(screen.getByText(/turn on API token access for the Rovo MCP server/)).toBeTruthy();
+  });
+
   it("AWS offers one account with its Bedrock models: the tick and the region reach the form's identity under aws_role", async () => {
     // kobo#390. Picking One account turns the sheet into a direct role; ticking Bedrock asks
     // the page for the permissions block and submits the provider and region with the ARN.

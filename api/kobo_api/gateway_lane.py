@@ -61,6 +61,10 @@ class Lane(NamedTuple):
 # vendor -> the lane an agent granted ANY permission of that vendor needs.
 GATEWAY_LANES: dict[str, Lane] = {
     "datadog": Lane(scopes=("datadog:read",), handlers=("datadog", "datadog-mcp"), allow=("datadog.*", "datadog-mcp.*")),
+    # Atlassian (2026-11-02): one shared credential on the gateway's `atlassian` target
+    # (`required_scope atlassian:read`, admin_integrations.target_spec); the grant opens the
+    # scope and the handler for the agent, nothing is leased.
+    "atlassian": Lane(scopes=("atlassian:read",), handlers=("atlassian",), allow=("atlassian.*",)),
 }
 # (vendor, permission) -> the lane that one permission needs; wins over the
 # vendor table for its vendor (kobo#365: GitHub's three levels).

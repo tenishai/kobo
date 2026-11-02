@@ -766,7 +766,7 @@ class AdminConnectIntegration(BaseModel):
     # `secrets` (named values stored in the secrets service); see
     # kobo_api.admin_integrations.AUTH_KINDS.
     credential: str = Field(default="", max_length=20000)
-    auth: str = Field(default="token", pattern="^(token|api_keys|aws_role|aws_hub|aws_spoke|gcp_identity|gcp_parent|azure_federated|datadog_service_account|github_app|slack_config_token|self_hosted_endpoint)$")
+    auth: str = Field(default="token", pattern="^(token|basic_token|api_keys|aws_role|aws_hub|aws_spoke|gcp_identity|gcp_parent|azure_federated|datadog_service_account|github_app|slack_config_token|self_hosted_endpoint)$")
     identity: dict[str, str] = Field(default_factory=dict)
     secrets: dict[str, str] = Field(default_factory=dict)
     address: str = Field(default="", max_length=500)

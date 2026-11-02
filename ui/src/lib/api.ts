@@ -1257,7 +1257,7 @@ export type SelfHostedModel = { name: string; label: string; ok: boolean; reason
 export type AdminConnectIntegration = {
   vendor: string;
   name: string;
-  auth?: "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "gcp_parent" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token" | "self_hosted_endpoint";
+  auth?: "token" | "basic_token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "gcp_parent" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token" | "self_hosted_endpoint";
   identity?: Record<string, string>;
   secrets?: Record<string, string>;
   base_access: "read" | "write";
