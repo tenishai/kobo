@@ -24,6 +24,9 @@ All notable changes to kobo are documented here. The format follows
   accounts as providers. The permission service has no Bedrock read yet, so the row says the models
   are registered and not yet checked with AWS; an organization's hub never carries the tick.
 
+### Fixed
+- Check accounts no longer times out on an organization of a few dozen accounts: the room waits up to two minutes for the permission service to probe them (its other calls keep the fifteen-second wait).
+
 ## [0.3.39] - 2026-11-01
 
 ### Added
