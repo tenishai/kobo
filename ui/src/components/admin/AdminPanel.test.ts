@@ -156,6 +156,50 @@ describe("AdminPanel", () => {
     });
   });
 
+  it("shows a project connected on its own, and folds an organization's unconnected accounts into one line", async () => {
+    // A Google Cloud project connected by itself is written as kind "account" with no parent;
+    // it is a root row (it was hidden, 2026-11-02). An organization's accounts without the role
+    // are one counted line with Show, not a row each: a large organization has dozens.
+    const PROJECT = {
+      id: "example-gcp", vendor: "gcp", name: "example-gcp", base_access: "read", state: "applied", state_detail: null, credential_ref: null,
+      spec: { auth: "gcp_identity", kind: "account", project: "my-vertex-project", identity: { project: "my-vertex-project" }, models: { provider: "vertex_ai", project: "my-vertex-project", location: "global" } },
+      created_by: "k", created_at: "2026-11-02T01:00:00", updated_at: "2026-11-02T01:00:00",
+    };
+    const ORG = {
+      id: "example-aws", vendor: "aws", name: "example-aws", base_access: "read", state: "applied", state_detail: null, credential_ref: null,
+      spec: { auth: "aws_hub", kind: "org", identity: {} }, created_by: "k", created_at: "2026-10-29T01:00:00", updated_at: "2026-10-29T01:00:00",
+    };
+    const MEMBER = {
+      id: "example-it", vendor: "aws", name: "example-it", base_access: "read", state: "applied", state_detail: null, credential_ref: null,
+      spec: { auth: "aws_spoke", kind: "account", parent: "example-aws", account_id: "111111111111", identity: {} }, created_by: "k", created_at: "2026-10-29T01:00:00", updated_at: "2026-10-29T01:00:00",
+    };
+    const waiting = Array.from({ length: 3 }, (_, n) => ({ id: `22222222222${n}`, name: `example-${n}`, integration: null, reason: "no role" }));
+    stubFetch({
+      "/api/whoami": ADMIN_WHOAMI,
+      "/api/admin/addons": ADDONS,
+      "/api/admin/room": { org_repo: "example/kobo-config", runtime_image: "r", cluster: "c", delivery_backend: "deployed" },
+      "/api/admin/integrations/example-aws/accounts/check": { organization: "example-aws", connected: [], already: [{ id: "111111111111", name: "example-it", integration: "example-it", reason: null }], without_role: waiting },
+      "/api/admin/integrations/aws/setup": AWS_SETUP,
+      "/api/admin/integrations/gcp/setup": GCP_SETUP,
+      "/api/admin/integrations": { integrations: [ORG, MEMBER, PROJECT] },
+      "/api/admin/roles": ROLES,
+      "/api/admin/connections": CONNECTIONS,
+      "/api/group-requests": { requests: REQUESTS },
+    });
+    navigate({ page: "admin", pane: "integrations" });
+    renderWithClient(AdminPanel);
+    await screen.findByText("example-gcp");
+    expect(screen.getByText("my-vertex-project")).toBeTruthy();
+    expect(screen.getByText("Models: Vertex AI, my-vertex-project, global")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "Check accounts" }));
+    const line = await screen.findByText(/3 accounts are not connected yet/);
+    expect(line.textContent).toContain("Deploy the template to the ones you want, then check again.");
+    expect(screen.queryByText("example-0")).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Show" }));
+    expect(await screen.findByText("example-0")).toBeTruthy();
+    expect(screen.getAllByText("No role yet")).toHaveLength(3);
+  });
+
   it("is admins only, and only while the room has the panel on", async () => {
     vi.unstubAllGlobals();
     stubFetch({ "/api/whoami": { ...ADMIN_WHOAMI, admin_panel: false } });
