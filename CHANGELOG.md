@@ -6,8 +6,6 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.3.39] - 2026-11-01
-
 ### Added
 
 - **Bedrock models through the AWS connection (kobo#390).** The Connect AWS sheet now offers
@@ -25,6 +23,10 @@ All notable changes to kobo are documented here. The format follows
   "Ask a kobo admin to connect AWS with Bedrock" while none does; the Services row counts the
   accounts as providers. The permission service has no Bedrock read yet, so the row says the models
   are registered and not yet checked with AWS; an organization's hub never carries the tick.
+
+## [0.3.39] - 2026-11-01
+
+### Added
 
 - **Self-hosted models (kobo#390).** A fourth kind under Admin, Integrations, and the one that is
   only models: models you run yourself, on your own machines or clusters, at an address you give
