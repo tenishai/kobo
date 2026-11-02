@@ -6987,25 +6987,61 @@ def test_the_filler_adds_and_deletes_exactly_the_diff_and_reruns_as_a_no_op(sess
     _vertex_provider(session, row_id="gcp-a", project="project-a")
     rows = admin_store.list_integrations(session)
 
-    first = model_providers.sync_gateway(gateway, config, rows)
+    first = model_providers.sync_gateway(gateway, config.models, rows)
     assert sorted(first.added) == ["gcp-a:vertex_ai/claude-sonnet-4-5", "gcp-a:vertex_ai/gemini-2.5-flash"]
     assert first.deleted == [] and first.ok
     assert gateway.models["gcp-a:vertex_ai/gemini-2.5-flash"]["litellm_params"] == {
         "model": "vertex_ai/gemini-2.5-flash", "vertex_project": "project-a", "vertex_location": "global"}
     assert gateway.models["gcp-a:vertex_ai/claude-sonnet-4-5"]["model_name"] == "claude-affordable-sonnet"
 
-    again = model_providers.sync_gateway(gateway, config, rows)
+    again = model_providers.sync_gateway(gateway, config.models, rows)
     assert (again.added, again.deleted, again.kept) == ([], [], 2)
 
     _vertex_provider(session, row_id="gcp-b", project="project-b")
-    second = model_providers.sync_gateway(gateway, config, admin_store.list_integrations(session))
+    second = model_providers.sync_gateway(gateway, config.models, admin_store.list_integrations(session))
     assert sorted(second.added) == ["gcp-b:vertex_ai/claude-sonnet-4-5", "gcp-b:vertex_ai/gemini-2.5-flash"]
 
     admin_store.remove_integration(session, "gcp-a", actor="ops@example.com")
     session.commit()
-    removed = model_providers.sync_gateway(gateway, config, admin_store.list_integrations(session))
+    removed = model_providers.sync_gateway(gateway, config.models, admin_store.list_integrations(session))
     assert sorted(removed.deleted) == ["gcp-a:vertex_ai/claude-sonnet-4-5", "gcp-a:vertex_ai/gemini-2.5-flash"]
     assert set(gateway.models) == {"b2b0c1d2e3f4", "gcp-b:vertex_ai/claude-sonnet-4-5", "gcp-b:vertex_ai/gemini-2.5-flash"}
+    session.close()
+
+
+def test_room_models_seed_once_from_the_org_list_and_the_connected_endpoints(session_factory, tmp_path):
+    """Idempotent seed (kobo#405): an empty table takes the org list enabled,
+    with its price names and tiers, and the answering models of a self-hosted
+    row already connected; a second seed adds nothing, and a table an admin
+    has emptied of ticks is not reseeded, so hiding every model holds."""
+    from kobo_api import room_models
+
+    config = _gateway_config(tmp_path)
+    session = session_factory()
+    admin_store.put_integration(
+        session, vendor="self-hosted", name="Lab", base_access="read", integration_id="lab",
+        spec={"auth": "self_hosted_endpoint", "base_url": "http://10.0.0.5/v1", "options": {},
+              "models": [{"name": "qwen3-32b", "label": "Qwen3 32B", "ok": True, "reason": None},
+                         {"name": "old-model", "label": "old-model", "ok": False, "reason": "HTTP 404"}]},
+        credential_ref=None, actor="ops@example.com",
+    )
+    admin_store.set_integration_state(session, "lab", state=admin_store.STATE_APPLIED, detail="connected")
+    session.commit()
+
+    assert room_models.seed(session, config) == 3
+    session.commit()
+    entries = room_models.enabled_entries(session, config)
+    assert [(e.id, e.label, e.location) for e in entries] == [
+        ("vertex_ai/claude-sonnet-4-5", "Claude Affordable Sonnet", None),
+        ("vertex_ai/gemini-2.5-flash", "Gemini Fast Flash", "global"),
+        ("self-hosted/lab/qwen3-32b", "Qwen3 32B", None)]
+    assert room_models.seed(session, config) == 0
+
+    room_models.apply_changes(session, config, None, [{"id": e.id, "enabled": False} for e in entries],
+                              bab=None, actor="ops@example.com")
+    session.commit()
+    assert room_models.enabled_entries(session, config) == []
+    assert room_models.seed(session, config) == 0
     session.close()
 
 

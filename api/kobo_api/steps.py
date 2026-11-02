@@ -950,7 +950,7 @@ class RepoStep:
             # The room's model gateway (kobo#390): on, the model block points
             # at the gateway under the name it serves this entry as.
             models_gateway_url=config.models_gateway_url,
-            gateway_model=gateway_model_for(config, agent.model_id) if gateway_on(config) else None,
+            gateway_model=gateway_model_for(_model_entries(ctx.session), agent.model_id) if gateway_on(config) else None,
         )
 
         compose_dir = ctx.workdir / "repo"
@@ -1050,7 +1050,7 @@ class ComposeDirectoryStep:
             # The room's model gateway (kobo#390): on, the model block points
             # at the gateway under the name it serves this entry as.
             models_gateway_url=config.models_gateway_url,
-            gateway_model=gateway_model_for(config, agent.model_id) if gateway_on(config) else None,
+            gateway_model=gateway_model_for(_model_entries(ctx.session), agent.model_id) if gateway_on(config) else None,
         )
         compose_dir = ctx.workdir / "compose"
         shutil.rmtree(compose_dir, ignore_errors=True)
@@ -1804,6 +1804,22 @@ def _integration_rows(session):
     return list_integrations(session)
 
 
+def _model_entries(session):
+    """Every model the room knows, enabled or not (kobo#405): what names an
+    agent's gateway model, so a model hidden since the agent was made still
+    composes under the name the gateway serves it as."""
+    from kobo_api.room_models import all_entries
+
+    return all_entries(session)
+
+
+def _offered_entries(session, config):
+    """The models an admin offers (kobo#405): what a new agent's key may call."""
+    from kobo_api.room_models import enabled_entries
+
+    return enabled_entries(session, config)
+
+
 class WireStep:
     """Writes the agent's app-authored k8s manifests (KSA + techne PVC),
     registers both in kustomization.yaml, and edits gojira.yaml's contract
@@ -1887,7 +1903,7 @@ class WireStep:
         if gateway_on(config) and ctx.clients.models_gateway is not None:
             deliver_models_key(
                 ctx.clients, config, agent,
-                models=available_gateway_models(config, _integration_rows(ctx.session)),
+                models=available_gateway_models(_offered_entries(ctx.session, config), _integration_rows(ctx.session)),
                 acting_email=agent.created_by,
             )
 

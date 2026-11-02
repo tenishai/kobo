@@ -11,7 +11,7 @@ The room owns the `FROM` line in the agent's Dockerfile. If someone edits it by 
 
 To move an agent onto another model after it is deployed, pick one from the list beside **Model** and press **Change model**. The room writes the choice into the agent's deploy contract and the agent rebuilds and rolls on it. The same change is **set agent model** from your own assistant.
 
-When the room reaches its models through the model gateway, the list is grouped by the cloud that serves each model, and a model in grey cannot be picked: the line under it says whether its cloud is not connected or the model gateway is not answering. Pressing **Change model** then also moves the agent onto the gateway: the room gives the agent its own key and points it at the gateway, so an agent made before the gateway was turned on keeps working as it was until someone presses **Change model**.
+When the room reaches its models through the model gateway, the list is the models a room admin offers, each with a tag saying which cloud it comes from, and a model in grey cannot be picked: the line under it says whether its cloud is not connected or the model gateway is not answering. Pressing **Change model** then also moves the agent onto the gateway: the room gives the agent its own key and points it at the gateway, so an agent made before the gateway was turned on keeps working as it was until someone presses **Change model**.
 
 Below them, **Asks other agents** sets whether the agent may ask its colleagues: yes, when it helps (the default); no, but it knows who they are; or no. Pick one and press **Change**; the agent rebuilds with it. See "Agents talking to agents" for what each mode does.
 

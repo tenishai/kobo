@@ -5,10 +5,14 @@ A provider is part of a cloud connection: a Google Cloud row (an organization
 or a project) whose spec carries `models = {provider: "vertex_ai", project,
 location}` serves Vertex AI from that project (kobo#405; an older project row
 without `project` in `models` serves its own).
-The org config's `models:` list stays the price-named catalogue the room
-offers (labels, families, tiers); each entry whose id starts with a
-provider's prefix (`vertex_ai/...`) is served by every connected provider of
-that kind. On the room's model gateway (a LiteLLM proxy the install deploys,
+What the room offers is the enabled rows of `room_models`
+(`kobo_api.room_models`, kobo#405): an admin ticks them on the Models pane,
+and the org config's `models:` list seeds the first ticks with its price
+names, families and tiers. Every function here that needs the offered set
+takes it as `entries` (a list of `ModelChoice`, the same shape the org list
+has); each entry whose id starts with a provider's prefix (`vertex_ai/...`)
+is served by every connected provider of that kind, and a self-hosted
+entry (`self-hosted/<row>/<name>`) by its own row. On the room's model gateway (a LiteLLM proxy the install deploys,
 `Config.models_gateway_url`) each pair is one deployment: `model_name` is
 the entry's label as a slug (`claude-affordable-sonnet`, what agents ask
 for; two providers serving the same entry share the name, and the gateway
@@ -37,6 +41,9 @@ room's identity and assumes the row's role itself (LiteLLM's
 `aws_role_name` with a web identity token it fetches from the Google
 metadata server on each use, `BEDROCK_TOKEN_REF`), so no credential is
 stored anywhere in the room and nothing runs beside the gateway.
+
+Every model the catalogue serves carries a `provider_tag` (GCP, AWS, Azure,
+Self-hosted), the short word the picker shows after the name (kobo#405).
 
 With the gateway off (`models_gateway_url` empty) nothing in this module is
 reached: the catalogue route answers from `models:` as it always has.
@@ -77,6 +84,10 @@ log = logging.getLogger(__name__)
 # entry's id, and what the picker calls the cloud behind each.
 PROVIDER_LABELS: dict[str, str] = {"vertex_ai": "Google Cloud", "bedrock": "AWS", self_hosted.VENDOR: self_hosted.LABEL}
 PROVIDER_BEDROCK = "bedrock"
+PROVIDER_AZURE = "azure"
+# The short word after a model's name in the pickers (kobo#405): the cloud
+# it comes from. Azure has no discovery yet; the pane shows it as not connected.
+PROVIDER_TAGS: dict[str, str] = {"vertex_ai": "GCP", PROVIDER_BEDROCK: "AWS", PROVIDER_AZURE: "Azure", self_hosted.VENDOR: "Self-hosted"}
 # How the gateway gets the Google identity token it trades for the Bedrock
 # role's session: LiteLLM's `oidc/google/<audience>` reference makes it ask
 # the metadata server itself, as the gateway's own identity, with audience
@@ -188,15 +199,17 @@ def gateway_model_name(entry: ModelChoice) -> str:
     return slug or re.sub(r"[^a-z0-9]+", "-", entry.id.lower()).strip("-")
 
 
-def gateway_model_for(config: Config, model_id: str) -> str:
-    """The gateway name of the catalogue entry `model_id`. A self-hosted id
-    (`self-hosted/<row>/<name>`) names its gateway model by itself. An id no
-    longer in the list (an agent created under an older catalogue) is named
-    from the id itself, so a compose never fails on a stale row."""
+def gateway_model_for(entries: list[ModelChoice], model_id: str) -> str:
+    """The gateway name of the catalogue entry `model_id` among `entries`
+    (every row the room knows, enabled or not: `room_models.all_entries`,
+    so an agent on a model an admin has since hidden keeps its name). A
+    self-hosted id (`self-hosted/<row>/<name>`) names its gateway model by
+    itself. An id in no row (an agent created under an older catalogue) is
+    named from the id itself, so a compose never fails on a stale row."""
     own = self_hosted.split_catalogue_id(model_id)
     if own is not None:
         return self_hosted.gateway_model_name(*own)
-    for entry in config.models:
+    for entry in entries:
         if entry.id == model_id:
             return gateway_model_name(entry)
     return gateway_model_name(ModelChoice(id=model_id, label=model_id.split("/", 1)[-1]))
@@ -213,18 +226,21 @@ class Desired:
     provider: Provider
 
 
-def desired_models(config: Config, providers: list[Provider], keys: dict[str, str | None] | None = None) -> list[Desired]:
+def desired_models(entries: list[ModelChoice], providers: list[Provider], keys: dict[str, str | None] | None = None) -> list[Desired]:
     """One `Desired` per (provider, model). A cloud provider serves the
-    org's entries with its prefix; a self-hosted provider serves the models
-    its probe found answering, with its key from `keys` (by row id; absent
-    means the endpoint takes none)."""
+    enabled entries with its prefix; a self-hosted provider serves the
+    models its probe found answering that are enabled too, with its key
+    from `keys` (by row id; absent means the endpoint takes none)."""
     out: list[Desired] = []
+    by_id = {entry.id: entry for entry in entries}
     for provider in providers:
         if provider.self_hosted:
             key = (keys or {}).get(provider.row_id)
             for model in provider.answering:
                 name = str(model["name"])
-                entry = ModelChoice(id=self_hosted.catalogue_id(provider.row_id, name), label=str(model.get("label") or name))
+                entry = by_id.get(self_hosted.catalogue_id(provider.row_id, name))
+                if entry is None:
+                    continue
                 out.append(Desired(
                     gateway_id=f"{provider.row_id}:{name}", model_name=self_hosted.gateway_model_name(provider.row_id, name),
                     litellm_params=self_hosted.litellm_params(
@@ -232,7 +248,7 @@ def desired_models(config: Config, providers: list[Provider], keys: dict[str, st
                     entry=entry, provider=provider,
                 ))
             continue
-        for entry in config.models:
+        for entry in entries:
             if provider_of(entry.id) != provider.provider:
                 continue
             params: dict[str, Any] = {"model": entry.id}
@@ -292,9 +308,10 @@ class SyncResult:
 KeyReader = Callable[[Provider], str | None]
 
 
-def sync_gateway(gateway: ModelsGatewayClient, config: Config, rows: list[AdminIntegration],
+def sync_gateway(gateway: ModelsGatewayClient, entries: list[ModelChoice], rows: list[AdminIntegration],
                  *, key_reader: KeyReader | None = None) -> SyncResult:
-    """Make the gateway hold exactly the desired set: add what is missing,
+    """Make the gateway hold exactly the desired set (the enabled `entries`
+    every connected provider serves): add what is missing,
     delete what the room wrote and no longer wants, leave the rest. One
     failed call is recorded and the others still run, so a gateway that
     refuses one model does not keep the others off. A self-hosted row's key
@@ -315,7 +332,7 @@ def sync_gateway(gateway: ModelsGatewayClient, config: Config, rows: list[AdminI
         except ClientError as exc:
             skipped.add(provider.row_id)
             result.failure = f"the key for {provider.name} could not be read: {exc}"
-    desired = {d.gateway_id: d for d in desired_models(config, [p for p in providers if p.row_id not in skipped], keys)}
+    desired = {d.gateway_id: d for d in desired_models(entries, [p for p in providers if p.row_id not in skipped], keys)}
     try:
         current = gateway.list_models()
     except ClientError as exc:
@@ -354,15 +371,20 @@ def sync_from_session(session: Session, clients: Clients | None, config: Config)
     gateway = getattr(clients, "models_gateway", None) if clients is not None else None
     if not gateway_on(config) or gateway is None:
         return None
+    # Local import: room_models reads this module's providers; the table is
+    # read here, where the session is.
+    from kobo_api import room_models
+
     session.flush()
     rows = admin_store.list_integrations(session)
+    entries = room_models.enabled_entries(session, config, rows)
     kubectl = getattr(clients, "kubectl", None) if clients is not None else None
 
     def read_key(provider: Provider) -> str | None:
         return self_hosted.read_key(kubectl, provider.credential_ref)
 
     try:
-        result = sync_gateway(gateway, config, rows, key_reader=read_key)
+        result = sync_gateway(gateway, entries, rows, key_reader=read_key)
     except Exception as exc:  # noqa: BLE001 - the filler must never fail a connect or a boot
         log.warning("model gateway: the sync did not run: %s", exc)
         return SyncResult(failure=f"the model gateway sync did not run: {exc}")
@@ -395,45 +417,49 @@ def _provider_label(kind: str, providers: list[Provider]) -> str:
     return label
 
 
-def catalogue(config: Config, rows: list[AdminIntegration], gateway: ModelsGatewayClient | None) -> dict[str, Any]:
-    """`GET /api/catalog/models` with the gateway on: every entry of the
-    org's list, each saying which cloud serves it, what the gateway calls
-    it, and whether it can be picked right now (and why not)."""
+def catalogue(entries: list[ModelChoice], rows: list[AdminIntegration], gateway: ModelsGatewayClient | None) -> dict[str, Any]:
+    """`GET /api/catalog/models` with the gateway on: every enabled entry
+    (`room_models.enabled_entries`), each saying which cloud serves it
+    (`provider_label`, and the short `provider_tag` the picker shows), what
+    the gateway calls it, and whether it can be picked right now (and why
+    not). A self-hosted entry is offered only while its row is connected and
+    its probe found the model answering; a model the probe marked failed
+    stays on the Integrations row."""
     providers = providers_from_rows(rows)
     ready = bool(gateway is not None and gateway.ready())
+    answering: dict[str, Provider] = {}
+    for provider in providers:
+        if provider.self_hosted:
+            for model in provider.answering:
+                answering[self_hosted.catalogue_id(provider.row_id, str(model["name"]))] = provider
     models = []
-    for entry in config.models:
+    for entry in entries:
         kind = provider_of(entry.id)
+        if kind == self_hosted.VENDOR:
+            provider = answering.get(entry.id)
+            if provider is None:
+                continue
+            own = self_hosted.split_catalogue_id(entry.id)
+            models.append({
+                "id": entry.id, "label": entry.label, "family": None, "tier": None,
+                "provider": self_hosted.VENDOR, "provider_label": provider.name, "provider_tag": PROVIDER_TAGS[self_hosted.VENDOR],
+                "gateway_model": self_hosted.gateway_model_name(*own) if own else gateway_model_name(entry),
+                "available": ready, "reason": None if ready else REASON_GATEWAY_DOWN,
+            })
+            continue
         reason = _reason(entry, providers, ready)
         models.append({
             "id": entry.id, "label": entry.label, "family": entry.family, "tier": entry.tier,
-            "provider": kind, "provider_label": _provider_label(kind, providers),
+            "provider": kind, "provider_label": _provider_label(kind, providers), "provider_tag": PROVIDER_TAGS.get(kind, kind),
             "gateway_model": gateway_model_name(entry),
             "available": reason is None, "reason": reason,
         })
-    # A self-hosted row's answering models, under the row's own name. A model
-    # the probe marked failed stays on the Integrations row and is not offered.
-    for provider in providers:
-        if not provider.self_hosted:
-            continue
-        for model in provider.answering:
-            name = str(model["name"])
-            models.append({
-                "id": self_hosted.catalogue_id(provider.row_id, name), "label": str(model.get("label") or name),
-                "family": None, "tier": None,
-                "provider": self_hosted.VENDOR, "provider_label": provider.name,
-                "gateway_model": self_hosted.gateway_model_name(provider.row_id, name),
-                "available": ready, "reason": None if ready else REASON_GATEWAY_DOWN,
-            })
     default = next((m["id"] for m in models if m["available"]), None)
     return {"models": models, "default": default, "gateway": True}
 
 
-def availability(config: Config, rows: list[AdminIntegration], gateway: ModelsGatewayClient | None, model_id: str) -> tuple[bool, str]:
-    """Whether `model_id` may be picked right now, and the sentence for a
-    refusal: the no-model sentence when nothing is available at all, else
-    the model's own reason."""
-    view = catalogue(config, rows, gateway)
+def availability_in(view: dict[str, Any], model_id: str) -> tuple[bool, str]:
+    """`availability` over a catalogue already in hand."""
     entry = next((m for m in view["models"] if m["id"] == model_id), None)
     if entry is None:
         return False, f"there is no model {model_id!r} in the room's list"
@@ -447,13 +473,21 @@ def availability(config: Config, rows: list[AdminIntegration], gateway: ModelsGa
     return False, f"{entry['label']} is not available right now: {entry['reason']}"
 
 
-def available_gateway_models(config: Config, rows: list[AdminIntegration]) -> list[str]:
-    """The gateway names a new key may call: every entry some connected
-    provider serves. The readiness of the gateway is not asked here; a key
-    is minted for what the room offers, not for what answers this second."""
+def availability(entries: list[ModelChoice], rows: list[AdminIntegration], gateway: ModelsGatewayClient | None, model_id: str) -> tuple[bool, str]:
+    """Whether `model_id` may be picked right now, and the sentence for a
+    refusal: the no-model sentence when nothing is available at all, else
+    the model's own reason."""
+    return availability_in(catalogue(entries, rows, gateway), model_id)
+
+
+def available_gateway_models(entries: list[ModelChoice], rows: list[AdminIntegration]) -> list[str]:
+    """The gateway names a new key may call: every enabled entry some
+    connected provider serves. The readiness of the gateway is not asked
+    here; a key is minted for what the room offers, not for what answers
+    this second."""
     providers = providers_from_rows(rows)
     names: list[str] = []
-    for want in desired_models(config, providers):
+    for want in desired_models(entries, providers):
         if want.model_name not in names:
             names.append(want.model_name)
     return names
@@ -471,9 +505,11 @@ class GatewayView:
 
 
 def gateway_view(session: Session, config: Config, clients: Clients | None) -> GatewayView:
+    from kobo_api import room_models
+
     gateway = getattr(clients, "models_gateway", None) if clients is not None else None
     rows = admin_store.list_integrations(session)
-    view = catalogue(config, rows, gateway)
+    view = catalogue(room_models.enabled_entries(session, config, rows), rows, gateway)
     default = next((m for m in view["models"] if m["id"] == view["default"]), None)
     return GatewayView(
         ready=bool(gateway is not None and gateway.ready()),

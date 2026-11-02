@@ -200,6 +200,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         # importing everything it does.
         from kobo_api.main import _decider_or_403, _model_label, _operator_block
         from kobo_api.models import LEARNING_PENDING, AgentLearning
+        from kobo_api.room_models import known_entries
 
         email = get_user_email(ctx)
         cfg = app.state.config
@@ -233,7 +234,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                 "purpose": decode_tags(agent.purpose_tags),
                 "capability": agent.capability,
                 "model": agent.model_id,
-                "model_label": _model_label(cfg, agent.model_id),
+                "model_label": _model_label(known_entries(session, cfg), agent.model_id),
                 "skills": agent.skills,
                 "status": agent.status,
                 "kind": agent.kind,

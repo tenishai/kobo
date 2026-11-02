@@ -707,23 +707,23 @@ describe("CreateModal — models from the connected clouds (kobo#390)", () => {
     models: [
       {
         id: "vertex_ai/claude-sonnet-4-5", label: "Claude Affordable Sonnet", family: "Claude", tier: "balanced",
-        provider: "vertex_ai", provider_label: "Google Cloud", gateway_model: "claude-affordable-sonnet",
+        provider: "vertex_ai", provider_label: "Google Cloud", provider_tag: "GCP", gateway_model: "claude-affordable-sonnet",
         available: true, reason: null,
       },
       {
         id: "bedrock/claude-3-7", label: "Claude Fast Haiku", family: "Claude", tier: "fast",
-        provider: "bedrock", provider_label: "AWS", gateway_model: "claude-fast-haiku",
+        provider: "bedrock", provider_label: "AWS", provider_tag: "AWS", gateway_model: "claude-fast-haiku",
         available: false, reason: "Ask a kobo admin to connect AWS",
       },
     ],
   };
 
-  it("groups the list by cloud and greys a model whose cloud is not connected, with the reason", async () => {
+  it("tags each model with its cloud and greys a model whose cloud is not connected, with the reason", async () => {
     stubCreateModalCatalogs({ "/api/catalog/models": GATEWAY_MODELS });
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
     await findFormReady();
 
-    expect(await screen.findByText("Google Cloud")).not.toBeNull();
+    expect(await screen.findByText("GCP")).not.toBeNull();
     expect(screen.getByText("AWS")).not.toBeNull();
     const greyed = screen.getByRole("radio", { name: /Claude, Fast/ }) as HTMLInputElement;
     expect(greyed.disabled).toBe(true);

@@ -6,9 +6,22 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.3.40] - 2026-11-01
-
 ### Added
+
+- **The Models pane and the tagged picker (kobo#405).** An admin chooses which models New agent
+  offers. The new table `room_models` (migration `a7c9e1f3b5d7`) holds every model the room knows,
+  offered only while `enabled`; at boot, when it is empty, the org's `models:` list seeds it enabled
+  with its price names and tiers, and so do the answering models of any self-hosted row already
+  connected, so nothing disappears on the roll. **Models**, in the admin rail after Integrations
+  (`GET`/`PUT /api/admin/models`), is one section per connected provider with its tag, its name and
+  the chat models the permission service lists for it (`GET /integrations/{id}/models`, Vertex AI
+  and Bedrock, cached ten minutes) or a self-hosted row's answering models, each with a tick; a tick
+  upserts the row, writes one audit row (`models.offered`, `models.withdrawn`) and runs the gateway
+  filler, which registers enabled rows only. The catalogue, the gateway filler, a new agent's key
+  and Change model all read the enabled set, and every model carries `provider_tag` (GCP, AWS,
+  Azure, Self-hosted). The pickers drop the per-cloud groups: one list, tiers in order within a
+  family, the tag as a small grey chip after the name. A self-hosted row connected after the seed
+  waits for its tick like a cloud's models. Azure shows as not connected.
 - **Google Cloud connects as an organization, granted once (kobo#405).** The Connect Google
   Cloud sheet opens on **An organization** (`organizations/<number>`; every project the room's
   identity can read connects by itself, as before), with **A project** as the other scope; the
@@ -28,6 +41,9 @@ All notable changes to kobo are documented here. The format follows
   accepts `service_account` for rows that carry it. The default Vertex AI location is `global`
   (was us-east5).
 
+## [0.3.40] - 2026-11-01
+
+### Added
 
 - **Bedrock models through the AWS connection (kobo#390).** The Connect AWS sheet now offers
   **One account** beside **An organization**: a role in one account the room assumes directly,

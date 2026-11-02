@@ -48,7 +48,7 @@ from kobo_api.model_providers import (
     REASON_GATEWAY_DOWN,
     REASON_NOT_CONNECTED,
 )
-from kobo_api.models import A2AInvite, Agent, AgentLearning, AgentStatus, Base
+from kobo_api.models import A2AInvite, Agent, AgentLearning, AgentStatus, AuditLog, Base
 from kobo_api.org import ORG_KEYS, load_org_config
 from kobo_api.personas import (
     PersonaFields,
@@ -4143,7 +4143,7 @@ def _vertex_provider(session, *, row_id="gcp-example", project="example-model-pr
     session.commit()
 
 
-def _models_room(tmp_path, *, gateway, models_gateway_url=MODELS_GATEWAY_URL, github=None, gojira=None, models=None):
+def _models_room(tmp_path, *, gateway, models_gateway_url=MODELS_GATEWAY_URL, github=None, gojira=None, models=None, bab=None):
     """A room with the model gateway on, an operator signed in through IAP
     and the admin panel open. Returns the client, the operator's headers
     and the session factory, so a test seeds its own provider rows. `models`
@@ -4162,7 +4162,7 @@ def _models_room(tmp_path, *, gateway, models_gateway_url=MODELS_GATEWAY_URL, gi
     )
     private_key, jwk = _generate_jwk()
     clients = Clients(github=github or FakeGitHub(), gojira=gojira or FakeGojira(), cloud=FakeCloud(), agent=FakeAgent(),
-                      kubectl=FakeKubectl(), models_gateway=gateway)
+                      kubectl=FakeKubectl(), models_gateway=gateway, bab=bab)
     app = create_app(session_factory, config=config, clients=clients, iap_jwks_fetcher=_fetcher(jwk))
     return TestClient(app), {ASSERTION_HEADER: _sign_whoami(private_key, email="ops@example.com")}, session_factory
 
@@ -4240,13 +4240,17 @@ def test_catalog_models_lists_bedrock_entries_under_aws_once_an_account_with_bed
 
 
 def test_catalog_models_lists_a_self_hosted_rows_answering_models_under_its_name(tmp_path):
-    """Wire shape (kobo#390): a Self-hosted models row adds its answering
-    models to the catalogue under the row's own name as `provider_label`,
-    provider `self-hosted`, id `self-hosted/<row>/<name>`, available while
-    the gateway answers; a model the probe marked failed is not offered,
-    and the org's own list is untouched."""
+    """Wire shape (kobo#390, kobo#405): a Self-hosted models row's answering
+    models reach the catalogue once an admin ticks them, under the row's own
+    name as `provider_label`, tag Self-hosted, provider `self-hosted`, id
+    `self-hosted/<row>/<name>`, available while the gateway answers; a model
+    the probe marked failed is not offered even when ticked, and the org's
+    own list is untouched."""
     gateway = FakeModelsGateway()
     client, headers, session_factory = _models_room(tmp_path, gateway=gateway)
+    # The table seeds from the org list before the row exists, as a running room's does.
+    assert [m["id"] for m in client.get("/api/catalog/models", headers=headers).json()["models"]] == [
+        "vertex_ai/claude-sonnet-4-5", "vertex_ai/gemini-2.5-flash"]
     with session_factory() as session:
         admin_store.put_integration(
             session, vendor="self-hosted", name="Lab GPU pool", base_access="read", integration_id="lab-gpu-pool",
@@ -4257,6 +4261,12 @@ def test_catalog_models_lists_a_self_hosted_rows_answering_models_under_its_name
         )
         admin_store.set_integration_state(session, "lab-gpu-pool", state=admin_store.STATE_APPLIED, detail="connected")
         session.commit()
+    # Connected is not offered: the models wait for a tick.
+    assert len(client.get("/api/catalog/models", headers=headers).json()["models"]) == 2
+    ticked = client.put("/api/admin/models", headers=headers, json={"changes": [
+        {"id": "self-hosted/lab-gpu-pool/qwen3-32b", "enabled": True},
+        {"id": "self-hosted/lab-gpu-pool/old-model", "enabled": True}]})
+    assert ticked.status_code == 200, ticked.text
 
     body = client.get("/api/catalog/models", headers=headers).json()
 
@@ -4265,11 +4275,71 @@ def test_catalog_models_lists_a_self_hosted_rows_answering_models_under_its_name
     own = body["models"][2]
     assert own == {
         "id": "self-hosted/lab-gpu-pool/qwen3-32b", "label": "Qwen3 32B", "family": None, "tier": None,
-        "provider": "self-hosted", "provider_label": "Lab GPU pool", "gateway_model": "lab-gpu-pool-qwen3-32b",
-        "available": True, "reason": None}
+        "provider": "self-hosted", "provider_label": "Lab GPU pool", "provider_tag": "Self-hosted",
+        "gateway_model": "lab-gpu-pool-qwen3-32b", "available": True, "reason": None}
     assert body["default"] == "self-hosted/lab-gpu-pool/qwen3-32b"
     gateway.up = False
     assert client.get("/api/catalog/models", headers=headers).json()["models"][2]["reason"] == REASON_GATEWAY_DOWN
+
+
+def test_admin_models_lists_each_providers_discovered_models_and_a_tick_offers_one(tmp_path):
+    """Wire shape (kobo#405): `GET /api/admin/models` is one section per
+    connected provider with its tag, the models the permission service
+    lists merged with the table's ticks, and the seeded org entries the
+    cloud does not list now; `PUT` with a tick offers the model (the
+    catalogue carries it with its tag, the gateway registers exactly the
+    offered set, one audit row lands) and an untick takes it back."""
+    gateway = FakeModelsGateway()
+    bab = FakeBab(integrations=[])
+    client, headers, session_factory = _models_room(tmp_path, gateway=gateway, bab=bab)
+    with session_factory() as session:
+        _vertex_provider(session)
+    bab.put_integration("gcp-example", "gcp", {"project": "example-model-project"}, [], "ops@example.com")
+
+    view = client.get("/api/admin/models", headers=headers).json()
+
+    assert view["gateway"] is True and [p["tag"] for p in view["not_connected"]] == ["AWS", "Azure", "Self-hosted"]
+    section = view["providers"][0]
+    assert (section["provider"], section["tag"], section["source"], section["region_or_location"]) == ("vertex_ai", "GCP", "gcp-example", "us-east5")
+    assert [(m["id"], m["enabled"], m["discovered"]) for m in section["discovered"]] == [
+        ("vertex_ai/claude-sonnet-4-6", False, True), ("vertex_ai/gemini-2.5-pro", False, True),
+        ("vertex_ai/claude-sonnet-4-5", True, False), ("vertex_ai/gemini-2.5-flash", True, False)]
+    assert section["discovered"][0]["publisher"] == "anthropic" and section["offered"] == ["vertex_ai/claude-sonnet-4-5", "vertex_ai/gemini-2.5-flash"]
+    assert [m["label"] for m in view["org_list"]] == ["Claude Affordable Sonnet", "Gemini Fast Flash"]
+    # Discovered, not offered: the catalogue does not carry it yet.
+    assert "vertex_ai/claude-sonnet-4-6" not in {m["id"] for m in client.get("/api/catalog/models", headers=headers).json()["models"]}
+
+    put = client.put("/api/admin/models", headers=headers, json={"changes": [{"id": "vertex_ai/claude-sonnet-4-6", "enabled": True}]})
+
+    assert put.status_code == 200, put.text
+    assert put.json()["changed"] == ["vertex_ai/claude-sonnet-4-6"] and put.json()["gateway_result"] == "3 added, 0 removed, 0 kept"
+    assert set(gateway.models) == {"gcp-example:vertex_ai/claude-sonnet-4-5", "gcp-example:vertex_ai/gemini-2.5-flash", "gcp-example:vertex_ai/claude-sonnet-4-6"}
+    offered = next(m for m in client.get("/api/catalog/models", headers=headers).json()["models"] if m["id"] == "vertex_ai/claude-sonnet-4-6")
+    assert (offered["label"], offered["provider_tag"], offered["available"]) == ("Claude Sonnet 4.6", "GCP", True)
+    with session_factory() as session:
+        rows = session.query(AuditLog).filter(AuditLog.action == "models.offered").all()
+        assert [(r.target_id, r.landed, r.summary) for r in rows] == [
+            ("vertex_ai/claude-sonnet-4-6", "applied", "ops offered Claude Sonnet 4.6 (GCP) in New agent")]
+    # The listing is cached: the second read did not ask the service again.
+    assert bab.model_calls == [("gcp-example", "us-east5")]
+
+    # An agent on the ticked model: its card names it by the row's label, and the Roles editor lists it.
+    with session_factory() as session:
+        session.add(Agent(name="muse", persona="helpful-generalist", model_id="vertex_ai/claude-sonnet-4-6",
+                          status=AgentStatus.READY, created_by="ops@example.com", repo_full_name="acme/agent-muse"))
+        session.commit()
+    card = next(a for a in client.get("/api/agents", headers=headers).json()["agents"] if a["name"] == "muse")
+    assert card["model_label"] == "Claude Sonnet 4.6"
+    assert {"id": "vertex_ai/claude-sonnet-4-6", "label": "Claude Sonnet 4.6"} in client.get("/api/admin/roles", headers=headers).json()["catalogue"]["models"]
+
+    client.put("/api/admin/models", headers=headers, json={"changes": [{"id": "vertex_ai/claude-sonnet-4-6", "enabled": False}]})
+
+    assert "gcp-example:vertex_ai/claude-sonnet-4-6" not in gateway.models
+    # Hidden, not forgotten: the card keeps the label.
+    assert client.get("/api/agents/muse", headers=headers).json()["model_label"] == "Claude Sonnet 4.6"
+    with session_factory() as session:
+        assert session.query(AuditLog).filter(AuditLog.action == "models.withdrawn").count() == 1
+    assert client.put("/api/admin/models", headers=headers, json={"changes": [{"id": "nowhere/x", "enabled": True}]}).status_code == 422
 
 
 def test_catalog_models_is_unchanged_with_the_gateway_off(tmp_path):

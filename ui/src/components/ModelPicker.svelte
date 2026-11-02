@@ -1,11 +1,13 @@
 <script lang="ts">
   // The model list, shared by New agent and the Harness's Change model.
-  // Grouped by the cloud that serves each model when the room's model
-  // gateway is on (`provider_label`), by family when it is not; a model
-  // whose cloud is not connected, or that the gateway cannot reach, stays
-  // in the list but cannot be picked: its name in ink, the reason in grey.
-  // A list of radios rather than a select, because a select cannot say why
-  // a row is off.
+  // One list across the clouds (kobo#405): each row names the model and
+  // carries a small grey tag saying where it comes from (`provider_tag`:
+  // GCP, AWS, Azure, Self-hosted) when the room's model gateway is on.
+  // Tiered models sort by family, then tier, so a family's tiers sit
+  // together; a model whose cloud is not connected, or that the gateway
+  // cannot reach, stays in the list but cannot be picked: its name in ink,
+  // the reason in grey. A list of radios rather than a select, because a
+  // select cannot say why a row is off.
   import type { CatalogModel } from "../lib/api";
 
   let {
@@ -35,78 +37,62 @@
     return tier ? (TIER_LABELS[tier] ?? tier) : "";
   }
 
-  const byProvider = $derived(models.some((m) => m.provider_label));
+  const tagged = $derived(models.some((m) => m.provider_tag));
   // Tiers (2026-09-29): when the room gives any model a tier, only tiered
-  // models are offered, in tier order within each group. A self-hosted
-  // model (kobo#390) has no tier, since nobody priced it; it is offered
-  // under its row's name whatever the room's own list does.
-  const SELF_HOSTED = "self-hosted";
+  // models are offered, a family's tiers together and in order. A model an
+  // admin ticked from a cloud's own list, or a self-hosted one (kobo#390),
+  // has no tier, since nobody priced it; with the gateway on it is offered
+  // too, by its own name, after the tiered ones.
   const tiered = $derived(models.some((m) => m.family && m.tier));
-  const offered = $derived(tiered ? models.filter((m) => (m.family && m.tier) || m.provider === SELF_HOSTED) : models);
-
-  type Group = { name: string; models: CatalogModel[] };
-  const groups = $derived.by((): Group[] => {
-    const out: Group[] = [];
-    for (const model of offered) {
-      const key = byProvider ? (model.provider_label ?? "Other") : tiered ? (model.family as string) : "";
-      let group = out.find((g) => g.name === key);
-      if (!group) {
-        group = { name: key, models: [] };
-        out.push(group);
-      }
-      group.models.push(model);
-    }
-    if (tiered) {
-      for (const group of out) {
-        group.models.sort(
-          (a, b) =>
-            (a.family ?? "").localeCompare(b.family ?? "") ||
-            TIER_ORDER.indexOf(a.tier as string) - TIER_ORDER.indexOf(b.tier as string),
-        );
-      }
-    }
-    return out;
+  const offered = $derived.by((): CatalogModel[] => {
+    const rows = tiered ? models.filter((m) => (m.family && m.tier) || tagged) : models.slice();
+    if (!tiered) return rows;
+    const rank = (m: CatalogModel): number => (m.family && m.tier ? 0 : 1);
+    return rows.sort(
+      (a, b) =>
+        rank(a) - rank(b) ||
+        (a.family ?? "").localeCompare(b.family ?? "") ||
+        TIER_ORDER.indexOf(a.tier as string) - TIER_ORDER.indexOf(b.tier as string),
+    );
   });
 
   function rowLabel(model: CatalogModel): string {
-    if (!tiered || !model.tier) {
+    if (!tiered || !model.tier || !model.family) {
       return model.label;
     }
-    return byProvider ? `${model.family}, ${tierLabel(model.tier)}` : tierLabel(model.tier);
+    return `${model.family}, ${tierLabel(model.tier)}`;
   }
 </script>
 
 <div class="models" role="radiogroup" aria-label={label}>
-  {#each groups as group (group.name)}
-    {#if group.name}
-      <p class="models__group">{group.name}</p>
-    {/if}
-    {#each group.models as model (model.id)}
-      {@const off = model.available === false}
-      <label class="model-row" class:model-row--off={off} aria-disabled={off || undefined}>
-        <input
-          type="radio"
-          {name}
-          value={model.id}
-          checked={value === model.id}
-          disabled={disabled || off}
-          onchange={() => onchange(model.id)}
-        />
-        <span class="model-row__text">
-          <span class="model-row__name">{rowLabel(model)}</span>
-          {#if off && model.reason}
-            <span class="model-row__reason">{model.reason}</span>
-          {/if}
-        </span>
-      </label>
-    {/each}
+  {#each offered as model (model.id)}
+    {@const off = model.available === false}
+    <label class="model-row" class:model-row--off={off} aria-disabled={off || undefined}>
+      <input
+        type="radio"
+        {name}
+        value={model.id}
+        checked={value === model.id}
+        disabled={disabled || off}
+        onchange={() => onchange(model.id)}
+      />
+      <span class="model-row__text">
+        <span class="model-row__name">{rowLabel(model)}</span>
+        {#if model.provider_tag}
+          <span class="model-row__tag">{model.provider_tag}</span>
+        {/if}
+        {#if off && model.reason}
+          <span class="model-row__reason">{model.reason}</span>
+        {/if}
+      </span>
+    </label>
   {/each}
 </div>
 
 <style>
-  /* Drawn like the persona list beside it: hairline-divided rows, a group
-     label in small caps grey over each run, the name in ink and the reason
-     a row is off in grey on the same line. */
+  /* Drawn like the persona list beside it: hairline-divided rows, the name
+     in ink, the cloud's tag as a small grey chip after it (the room's
+     metadata style) and the reason a row is off in grey on the same line. */
   .models {
     display: flex;
     flex-direction: column;
@@ -116,16 +102,6 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--panel);
-  }
-  .models__group {
-    margin: 0;
-    padding: var(--space-xs) var(--space-sm) var(--space-2xs);
-    border-bottom: 1px solid var(--border);
-    color: var(--muted);
-    font-size: 0.72rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
   }
   .model-row {
     display: flex;
@@ -166,6 +142,17 @@
   }
   .model-row__name {
     color: var(--ink);
+  }
+  .model-row__tag {
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    color: var(--muted);
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    line-height: 1.5;
+    text-transform: uppercase;
   }
   .model-row__reason {
     color: var(--muted);

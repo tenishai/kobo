@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from . import admin_store
-from .config import Config
+from .config import Config, ModelChoice
 from .models import AdminIntegration
 
 CAPABILITIES: list[dict[str, str]] = [
@@ -40,14 +40,15 @@ ADMIN_PERMISSIONS: list[dict[str, str]] = [
 BUILTIN_IDS = ("admin", "operator", "member", "reader")
 
 
-def catalogue(config: Config, integrations: list[AdminIntegration]) -> dict[str, Any]:
+def catalogue(config: Config, integrations: list[AdminIntegration], models: list[ModelChoice] | None = None) -> dict[str, Any]:
     """Everything the role editor offers: the two permission lists, the
-    room's models, its groups, and the connected integrations a ceiling can
-    name."""
+    room's models (`models`: every model the room knows, from
+    `room_models.known_entries`, kobo#405; the org list when not given),
+    its groups, and the connected integrations a ceiling can name."""
     return {
         "capabilities": CAPABILITIES,
         "admin": ADMIN_PERMISSIONS,
-        "models": [{"id": m.id, "label": m.label} for m in config.models],
+        "models": [{"id": m.id, "label": m.label} for m in (models if models is not None else config.models)],
         "groups": sorted({g.name for g in config.groups} | set(config.admin_groups) | set(config.reader_groups)),
         "connectors": [{"id": i.id, "name": i.name, "base_access": i.base_access} for i in integrations],
     }
@@ -57,10 +58,13 @@ def seed_builtin_roles(session: Session, config: Config, *, actor: str = "room")
     """Create the four built-ins that do not exist yet, from the org keys
     that already name who runs the room. Idempotent; returns how many were
     made. Never touches a role that exists, so an admin's edits stand."""
+    # Local import: room_models imports this package's admin_store too.
+    from kobo_api.room_models import known_entries
+
     existing = {r.id for r in admin_store.list_roles(session)}
     all_caps = [c["id"] for c in CAPABILITIES]
     all_admin = [p["id"] for p in ADMIN_PERMISSIONS]
-    all_models = [m.id for m in config.models]
+    all_models = [m.id for m in known_entries(session, config)]
     seeds = {
         "admin": ("Admin", "Runs the room: every capability and every admin permission.", list(config.admin_groups),
                   {"capabilities": all_caps, "admin": all_admin, "models": all_models, "connectors": []}),

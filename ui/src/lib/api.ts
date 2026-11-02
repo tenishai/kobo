@@ -782,6 +782,8 @@ export type CatalogModel = {
   tier?: string | null;
   provider?: string;
   provider_label?: string;
+  /** The short word after the name (kobo#405): where the model comes from (GCP, AWS, Azure, Self-hosted). */
+  provider_tag?: string;
   gateway_model?: string;
   available?: boolean;
   reason?: string | null;
@@ -1261,6 +1263,62 @@ export type AdminConnectIntegration = {
   address: string;
   trust: "trusted" | "untrusted";
 };
+
+/** One model on the Models pane (kobo#405): as the cloud lists it, merged with the room's tick. */
+export type AdminDiscoveredModel = {
+  /** The catalogue id an agent's model field carries. */
+  id: string;
+  /** The provider's own id. */
+  model: string;
+  label: string;
+  publisher: string | null;
+  /** Bedrock: `on-demand` or `inference-profile`; null elsewhere. */
+  via: string | null;
+  stage: string | null;
+  family: string | null;
+  tier: string | null;
+  source: string;
+  /** Ticked: offered in New agent and Change model. */
+  enabled: boolean;
+  /** False for a row the room holds that the cloud does not list right now. */
+  discovered: boolean;
+};
+
+export type AdminModelProvider = {
+  provider: string;
+  tag: string;
+  source: string;
+  name: string;
+  region_or_location: string;
+  discovered: AdminDiscoveredModel[];
+  offered: string[];
+  error: string | null;
+  fetched_at: string | null;
+};
+
+export type AdminModelsView = {
+  gateway: boolean;
+  providers: AdminModelProvider[];
+  not_connected: { provider: string; tag: string }[];
+  org_list: { id: string; label: string; tier: string | null; family: string | null }[];
+  empty_state: string;
+};
+
+export type AdminModelChange = { id: string; enabled: boolean; label?: string };
+
+export async function fetchAdminModels(): Promise<AdminModelsView> {
+  const res = await fetch("/api/admin/models");
+  return parse<AdminModelsView>(res);
+}
+
+export async function putAdminModels(changes: AdminModelChange[]): Promise<AdminModelsView & { changed: string[]; gateway_result: string | null }> {
+  const res = await fetch("/api/admin/models", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ changes }),
+  });
+  return parse<AdminModelsView & { changed: string[]; gateway_result: string | null }>(res);
+}
 
 export async function fetchAdminIntegrations(): Promise<AdminIntegration[]> {
   const res = await fetch("/api/admin/integrations");

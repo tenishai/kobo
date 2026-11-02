@@ -86,6 +86,7 @@ class BabClient(Protocol):
     def external_id_for(self, parent: str, account_id: str) -> str: ...
     def external_id_for_org(self, parent: str) -> str: ...
     def discover_accounts(self, integration: str, actor: str, role_name: str | None = None) -> dict: ...
+    def models(self, integration: str, actor: str, *, location: str | None = None, region: str | None = None) -> dict: ...
 
 
 DISCOVER_TIMEOUT_S = 120.0  # an organization of a few dozen accounts, probed eight at a time
@@ -266,6 +267,17 @@ class HttpxBabClient:
         # Check accounts on dev timed out while the service was still working (2026-11-01).
         return self._call("POST", f"/integrations/{integration}/discover", actor, json=body,
                           what=f"the accounts of {integration}", timeout=DISCOVER_TIMEOUT_S)
+
+    def models(self, integration: str, actor: str, *, location: str | None = None, region: str | None = None) -> dict:
+        """`GET /integrations/{id}/models` (kobo#405): the chat models the service
+        can list at that integration, within reason (generally available, latest
+        versions). Vertex AI takes `location` (default us-east5), Bedrock `region`
+        (default us-east-1); the service answers `{integration, provider, models:
+        [{id, label, publisher, family, stage, via}], fetched_at}` and a vendor
+        refusal as 502 with the vendor's sentence, which `ClientError` carries."""
+        params = {k: v for k, v in (("location", location), ("region", region)) if v}
+        return self._call("GET", f"/integrations/{integration}/models", actor, params=params or None,
+                          what=f"the models of {integration}", timeout=DISCOVER_TIMEOUT_S)
 
     def delete_integration(self, integration: str, actor: str) -> dict:
         return self._call("DELETE", f"/integrations/{integration}", actor, what=f"disconnecting {integration}")
