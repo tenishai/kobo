@@ -6,9 +6,11 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.3.44] - 2026-11-02
+### Changed
+- The Atlassian sheet's usual address is Atlassian's v2 MCP endpoint, the one that serves the Jira and Confluence tools to an API token (v1 serves only the four Teamwork Graph tools). The target keeps v2's creating, editing, transitioning and deleting tools behind a scope no lane grants, so an agent reads with the room's credential and never writes with it.
+- The access sync withdraws the token broker's `github.<tool>` allow entries an older agent still lists (they answered HTTP 405 since the broker went), so the agent is offered the gateway's GitHub tools instead of dead ones.
 
-## [Unreleased]
+## [0.3.44] - 2026-11-02
 
 ### Added
 - Atlassian connects with an account's email and its API token, the pair its MCP server takes as Basic auth (a plain token was sent as a Bearer, which Atlassian refuses for a user's token). The room checks the pair with Atlassian before saving, the gateway target gets its own session per agent and opens only to an agent granted Atlassian on its Access tab, and an address pasted with the trailing `/mcp` from Atlassian's docs is taken as is.

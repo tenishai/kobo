@@ -349,7 +349,7 @@ describe("AdminPanel", () => {
     expect(screen.getByLabelText("API token")).toBeTruthy();
     expect(document.querySelectorAll("#integration-form input[type=password]").length).toBe(1);
     // The gateway's client appends /mcp itself, so the usual address is the base above it.
-    expect((screen.getByLabelText(/Vendor's MCP address/) as HTMLInputElement).value).toBe("https://mcp.atlassian.com/v1");
+    expect((screen.getByLabelText(/Vendor's MCP address/) as HTMLInputElement).value).toBe("https://mcp.atlassian.com/v2");
     expect(screen.getByText(/turn on API token access for the Rovo MCP server/)).toBeTruthy();
   });
 

@@ -55,8 +55,8 @@ export const CATALOG: CatalogEntry[] = [
       { key: "email", label: "Email of the account the token belongs to", secret: false, placeholder: "someone@example.com" },
       { key: "TOKEN", label: "API token", secret: true },
     ],
-    address: "https://mcp.atlassian.com/v1",
-    note: "Atlassian takes a user's API token together with the account's email. Make the token on an account that reads only what agents may, and turn on API token access for the Rovo MCP server under Security in Atlassian administration. The room checks the pair with Atlassian before it saves; agents reach Jira and Confluence through the gateway with it, each in its own session, once granted Atlassian on their Access tab.",
+    address: "https://mcp.atlassian.com/v2",
+    note: "Atlassian takes a user's API token together with the account's email. Make the token on an account that reads only what agents may (agents can never reach the writing tools through the room), and turn on API token access for the Rovo MCP server under Security in Atlassian administration. The room checks the pair with Atlassian before it saves; agents reach Jira and Confluence through the gateway with it, each in its own session, once granted Atlassian on their Access tab.",
   },
   {
     id: "datadog", name: "Datadog", summary: "Monitors, dashboards and logs.", auth: "datadog_service_account",
