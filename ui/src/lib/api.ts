@@ -1229,13 +1229,13 @@ export type AdminIntegration = {
   spec: {
     address?: string; trust?: string; pull_request?: string; ceiling?: string[]; kind?: "org" | "account"; parent?: string; account_id?: string;
     auth?: string; identity?: Record<string, string>;
-    /** Google Cloud (kobo#390): a project row names its project; a folder or organization
-     * row its `parent_resource`; a project that serves the room's models carries `models`. */
+    /** Google Cloud (kobo#390): a project row names its project; an organization (or folder)
+     * row its `parent_resource`; a row that serves the room's models carries `models`. */
     project?: string; project_number?: string; parent_resource?: string;
-    /** A cloud's provider and where (a Google Cloud project's `location`, an AWS account's
-     * `region` and the role the gateway assumes), or a Self-hosted row's models as its probe
-     * left them (kobo#390). */
-    models?: { provider: string; location?: string; region?: string; role_arn?: string } | SelfHostedModel[];
+    /** A cloud's provider and where (Google Cloud: the Vertex AI `project` and `location`,
+     * kobo#405; an AWS account's `region` and the role the gateway assumes), or a Self-hosted
+     * row's models as its probe left them (kobo#390). */
+    models?: { provider: string; project?: string; location?: string; region?: string; role_arn?: string } | SelfHostedModel[];
     /** Self-hosted models (kobo#390): the endpoint's root (with /v1) and the options sent with every request. */
     base_url?: string; options?: Record<string, unknown>;
     /** `access`: held by the permission service, never made here. `deployment`: an older
@@ -1396,11 +1396,11 @@ export async function fetchAdminAwsSetup(input: AwsSetupRequest): Promise<AdminA
 }
 
 /** The Connect Google Cloud page (kobo#390): the identity to grant (the permission
- * service's service account), the packs, and the roles bound three ways. */
+ * service's own account, as it reports it), the packs, and the roles bound three ways. */
 export type AdminGcpSetup = {
   version: string;
-  /** `project`: one project (the common case); `parent`: a folder or organization whose
-   * readable projects connect under it. */
+  /** `parent`: an organization (or folder) whose readable projects connect under it, the
+   * default since kobo#405; `project`: one project. */
   mode: "project" | "parent";
   principal: "access";
   identity: { email: string; subject: string } | null;
@@ -1420,12 +1420,12 @@ export type GcpSetupRequest = {
   packs: string[];
   mode?: "project" | "parent";
   integration?: string;
-  /** The project id, or `folders/<number>` / `organizations/<number>`, typed so far. */
+  /** The project id, or `organizations/<number>` / `folders/<number>`, typed so far. */
   target?: string;
 };
 
 export async function fetchAdminGcpSetup(input: GcpSetupRequest): Promise<AdminGcpSetup> {
-  const q = new URLSearchParams({ packs: input.packs.join(","), mode: input.mode ?? "project" });
+  const q = new URLSearchParams({ packs: input.packs.join(","), mode: input.mode ?? "parent" });
   if (input.integration) q.set("integration", input.integration);
   if (input.target) q.set("target", input.target);
   const res = await fetch(`/api/admin/integrations/gcp/setup?${q.toString()}`);

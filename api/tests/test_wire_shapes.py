@@ -2047,14 +2047,15 @@ def test_the_connect_aws_page_carries_the_bedrock_block_only_when_ticked(tmp_pat
 def test_the_connect_google_cloud_page_renders_the_identity_and_the_pack_three_ways(tmp_path, fake_storage):
     """Wire shape (kobo#390): the page the UI reads carries the permission service's identity
     (email and subject) and the chosen packs' roles bound three ways, gcloud, Terraform and
-    the plain list, from the vendored packs file; the models pack is a project's alone."""
+    the plain list, from the vendored packs file; the models pack rides either scope (kobo#405:
+    the organization is granted once, Vertex AI included)."""
     client, headers = _client__api_admin_integrations(tmp_path, fake_storage, _config(tmp_path, bab_url="http://bab.bab.svc:8080"),
                                                        github=FakeGitHub(), sero=FakeSero())
     client.app.state.clients.bab = FakeBab(integrations=[])
     page = client.get("/api/admin/integrations/gcp/setup?mode=project&target=example-prod-1234&packs=models", headers=headers).json()
     assert page["mode"] == "project" and page["principal"] == "access" and page["checked"] is True
     assert page["identity"] == {"email": "access@example.iam.gserviceaccount.com", "subject": "102000000000000000000"}
-    assert page["chosen"] == ["inventory", "models"] and page["vertex_default_location"] == "us-east5"
+    assert page["chosen"] == ["inventory", "models"] and page["vertex_default_location"] == "global"
     assert [p["id"] for p in page["packs"]] == ["inventory", "models"] and page["packs"][0]["required"] is True
     assert "roles/compute.viewer" in page["roles"] and page["roles"][-1] == "roles/aiplatform.user"
     assert ("gcloud projects add-iam-policy-binding example-prod-1234 \\\n"
@@ -2062,13 +2063,14 @@ def test_the_connect_google_cloud_page_renders_the_identity_and_the_pack_three_w
     assert page["gcloud"].count("add-iam-policy-binding") == len(page["roles"])
     assert 'resource "google_project_iam_member" "kobo_access"' in page["terraform"] and 'project = "example-prod-1234"' in page["terraform"]
     assert all(f'"{r}",' in page["terraform"] for r in page["roles"])
-    # A folder: the folder resource, no models pack whatever was asked.
+    # A folder: the folder resource; the models pack when asked, as on a project.
     folder = client.get("/api/admin/integrations/gcp/setup?mode=parent&target=folders/123&packs=models", headers=headers).json()
-    assert folder["chosen"] == ["inventory"] and "roles/aiplatform.user" not in folder["roles"]
-    assert "gcloud resource-manager folders add-iam-policy-binding 123 " in folder["gcloud"]
+    assert folder["chosen"] == ["inventory", "models"] and folder["roles"][-1] == "roles/aiplatform.user"
+    assert "gcloud resource-manager folders add-iam-policy-binding 123 " in folder["gcloud"] and folder["gcloud"].count("add-iam-policy-binding") == len(folder["roles"])
     assert 'resource "google_folder_iam_member" "kobo_access"' in folder["terraform"] and 'folder  = "folders/123"' in folder["terraform"]
     org = client.get("/api/admin/integrations/gcp/setup?mode=parent&target=organizations/456", headers=headers).json()
     assert "gcloud organizations add-iam-policy-binding 456 " in org["gcloud"] and 'org_id  = "456"' in org["terraform"]
+    assert org["chosen"] == ["inventory"], "the pack is asked for, never assumed"
     # Without the permission service the page says so and cannot check; the roles still render.
     client.app.state.clients.bab = None
     off = client.get("/api/admin/integrations/gcp/setup?mode=project", headers=headers).json()

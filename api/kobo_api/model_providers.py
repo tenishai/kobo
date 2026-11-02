@@ -1,8 +1,10 @@
 """Models come from the clouds the room connects (kobo#390): the providers,
 the gateway filler, the catalogue and the per-agent key.
 
-A provider is part of a cloud connection: a Google Cloud project row whose
-spec carries `models = {provider: "vertex_ai", location}` serves Vertex AI.
+A provider is part of a cloud connection: a Google Cloud row (an organization
+or a project) whose spec carries `models = {provider: "vertex_ai", project,
+location}` serves Vertex AI from that project (kobo#405; an older project row
+without `project` in `models` serves its own).
 What the room offers is the enabled rows of `room_models`
 (`kobo_api.room_models`, kobo#405): an admin ticks them on the Models pane,
 and the org config's `models:` list seeds the first ticks with its price
@@ -154,8 +156,10 @@ class Provider:
 def providers_from_rows(rows: list[AdminIntegration]) -> list[Provider]:
     """The providers among the room's integration rows: a connected
     (`applied`) row whose spec carries `models`, as a cloud's `{provider,
-    location}` or a self-hosted row's list. A failed row serves nothing,
-    which is what its state already says."""
+    project, location}` or a self-hosted row's list. The Vertex AI project
+    is `models.project` first (an organization row names it), then the row's
+    own `project`. A failed row serves nothing, which is what its state
+    already says."""
     out: list[Provider] = []
     for row in rows:
         if row.state != admin_store.STATE_APPLIED:
@@ -176,7 +180,8 @@ def providers_from_rows(rows: list[AdminIntegration]) -> list[Provider]:
             continue
         out.append(Provider(
             row_id=row.id, name=row.name, provider=provider,
-            project=str(spec.get("project") or ""), location=str(models.get("location") or ""),
+            project=str(models.get("project") or spec.get("project") or (spec.get("identity") or {}).get("project") or ""),
+            location=str(models.get("location") or ""),
             region=str(models.get("region") or ""),
             role_arn=str(models.get("role_arn") or (spec.get("identity") or {}).get("role_arn") or ""),
         ))

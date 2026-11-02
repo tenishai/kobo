@@ -23,6 +23,29 @@ All notable changes to kobo are documented here. The format follows
   family, the tag as a small grey chip after the name. A self-hosted row connected after the seed
   waits for its tick like a cloud's models. Azure shows as not connected.
 
+## [0.3.40] - 2026-11-01
+
+### Added
+- **Google Cloud connects as an organization, granted once (kobo#405).** The Connect Google
+  Cloud sheet opens on **An organization** (`organizations/<number>`; every project the room's
+  identity can read connects by itself, as before), with **A project** as the other scope; the
+  grant block reads "On the organization, once". Both scopes carry **Include this project's
+  Vertex AI models in the room** with a **Vertex AI project** field (on a project sheet it is the
+  project itself unless another is named) and a location, `global` unless said otherwise; ticked,
+  the room lists that project's models at the location through the permission service before
+  saving, refuses the connect when it cannot, and the row's spec carries
+  `models = {provider: "vertex_ai", project, location}` (for an organization row the named
+  project, not the row's). The row reads "Models: Vertex AI, <project>, <location>", and the
+  project's own row under the organization says the same. The grant page includes the models pack
+  on the organization when the box is ticked. The identity shown is whatever the permission
+  service reports.
+
+### Changed
+- The Connect Google Cloud sheet no longer offers **Service account to act as**; the API still
+  accepts `service_account` for rows that carry it. The default Vertex AI location is `global`
+  (was us-east5).
+
+
 - **Bedrock models through the AWS connection (kobo#390).** The Connect AWS sheet now offers
   **One account** beside **An organization**: a role in one account the room assumes directly,
   named by the person (a second direct account is a second row). An account's sheet (and a member
