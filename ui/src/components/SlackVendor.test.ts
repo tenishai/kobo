@@ -198,7 +198,7 @@ describe("SlackVendor", () => {
     }
   });
 
-  it("reads Applying your change, not Down, while the cluster says the agent is mid-restart, and opens itself", async () => {
+  it("reads Restarting, not Down, while the cluster says the agent is mid-restart, and opens itself", async () => {
     // A restart from anywhere (a model change in another tab) is the agent on
     // its way back, which the row says in the same words as its own save;
     // something in flight is a reason for the row to open (issue #382).
@@ -207,7 +207,7 @@ describe("SlackVendor", () => {
       { ...AGENT, health: { state: "down", reason: "0 of 1 running", checked_at: "2026-11-01T10:01:00Z", rolling: true } },
       { open: false },
     );
-    await waitFor(() => expect(screen.getByRole("status").textContent?.trim()).toBe("Applying your change"));
+    await waitFor(() => expect(screen.getByRole("status").textContent?.trim()).toBe("Restarting. A mention sent now is answered once it is back."));
     expect(onOpenChange).toHaveBeenCalledWith(true);
   });
 

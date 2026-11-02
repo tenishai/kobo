@@ -45,7 +45,9 @@ from typing import TYPE_CHECKING
 import httpx
 import yaml
 
+from kobo_api import audit, gateway_lane, github_access
 from kobo_api.avatars import avatar_prompt, set_avatar
+from kobo_api.bab import ROOM_ACTOR as BAB_ROOM_ACTOR
 from kobo_api.catalog import _DESCRIPTION_HEADER_RE
 from kobo_api.clients import (
     CabalError,
@@ -67,6 +69,7 @@ from kobo_api.composer import (
     _self_md,
     compose,
     effective_colleague_mode,
+    update_agent_yaml_allow,
     validate_agent_yaml,
 )
 from kobo_api.config import Config, vertex_location_for
@@ -1544,14 +1547,20 @@ class OnboardStep:
         return _wait_active(ctx, app_id)
 
 
+OWN_REPOSITORY_NOTE = "its own repository, granted at create"
+"""The note on the permission request the room files for a new agent's own
+repository (owner ruling 2026-11-02: every agent reads its own repository)."""
+
+
 class AccessStep:
     """Grants the agent's GSA workload identity, model access (group
     membership, or the Vertex role directly when the room has no group),
-    and (resilience arc, Task 14) write access to its own agent-memory
-    replica prefix when the room has one configured."""
+    (resilience arc, Task 14) write access to its own agent-memory replica
+    prefix when the room has one configured, and, with the permission
+    service on and GitHub connected, Read on its own repository (`_own_repository`)."""
 
     name = "access"
-    label = "Model access"
+    label = "Access"
 
     def run(self, ctx: Ctx) -> str:
         agent = ctx.agent
@@ -1593,7 +1602,48 @@ class AccessStep:
             cloud.grant_bucket_prefix_write(
                 email, config.memory_replica_bucket, f"{agent.name}/"
             )
-        return granted
+        return granted + self._own_repository(ctx)
+
+    @staticmethod
+    def _own_repository(ctx: Ctx) -> str:
+        """Every agent reads its own repository on GitHub (owner ruling
+        2026-11-02): with the permission service on and GitHub connected, the
+        room writes the agent's repository set as its one repository and files
+        and approves a Read request on it, the way an owner would from the
+        Access tab. Read is the one level that stands until revoked, so it is
+        the one level that works as a default; the owner adds repositories or
+        raises the level on the Access tab, and a set already picked stands.
+        The gateway grant follows at once; the bundle's allow entry for the
+        lane goes in with the wiring step's commit (`WireStep`). Best effort:
+        a refusal is a clause in the step's sentence, never a failed create.
+        Returns a clause for the sentence, or "" when there is nothing to say."""
+        agent = ctx.agent
+        bab = getattr(ctx.clients, "bab", None)
+        if bab is None or not agent.repo_full_name:
+            return ""
+        try:
+            conn = github_access.connection(bab, BAB_ROOM_ACTOR, ctx.session)
+            if conn is None:
+                return "; GitHub is not connected, so its own repository is not granted"
+            if github_access.child(bab, BAB_ROOM_ACTOR, conn.id, agent.name) is not None:
+                return ""
+            cid, _ = github_access.write_child(bab, BAB_ROOM_ACTOR, conn, agent.name, [agent.repo_full_name])
+            held = github_access.active_grants(bab, BAB_ROOM_ACTOR, agent.name, cid)
+            if not any(g.get("permission") == github_access.REPOS_READ for g in held):
+                asked = bab.request(agent.name, cid, [github_access.REPOS_READ], OWN_REPOSITORY_NOTE, BAB_ROOM_ACTOR)
+                bab.decide([asked["id"]], "approve", None, BAB_ROOM_ACTOR)
+            lane = gateway_lane.follow(ctx.session, ctx.clients, bab, agent_name=agent.name, actor=BAB_ROOM_ACTOR)
+        except ClientError as exc:
+            log.warning("own repository for %s not granted on GitHub: %s", agent.name, exc)
+            return f"; its own repository could not be granted on GitHub: {exc}"
+        audit.record(
+            ctx.session, action="access.default", target_kind="agent", target_id=agent.name, agent_name=agent.name,
+            actor=audit.ROOM_ACTOR, source=audit.SOURCE_ROOM,
+            detail={"integration": cid, "repositories": [agent.repo_full_name], "permission": github_access.REPOS_READ,
+                    "gateway_lane": lane},
+            summary=f"the room granted {agent.name} Read on its own repository {agent.repo_full_name}",
+        )
+        return "; reads its own repository on GitHub"
 
 
 # --- WireStep: app-authored manifests, the P0 kustomization-registration gotcha ----
@@ -1679,6 +1729,25 @@ def _append_secrets_from(data: dict, entry: str) -> None:
     if entry not in secrets_from:
         secrets_from.append(entry)
     data["secrets_from"] = secrets_from
+
+
+def _allow_held_lanes(ctx: Ctx, clone_dir: Path) -> None:
+    """The tools a permission the agent already holds earns (kobo#365 lanes;
+    its own repository since `AccessStep._own_repository`) ride the bundle
+    from birth: their allow entries go into `bundle/agent.yaml` here, in the
+    wiring commit, instead of as a second commit and rebuild once the agent is
+    Ready (`gateway_lane.sync_allow` skips an agent that is not Ready yet). A
+    permission service that cannot be read, or a bundle with no tools section,
+    leaves the file as composed; the lane catches up on the next change."""
+    bab = getattr(ctx.clients, "bab", None)
+    if bab is None:
+        return
+    try:
+        patterns = sorted(gateway_lane.desired_allow(gateway_lane.held_lanes(bab, ctx.agent.name, BAB_ROOM_ACTOR)))
+        if patterns:
+            update_agent_yaml_allow(clone_dir / "bundle", entries=patterns)
+    except ClientError as exc:
+        log.warning("allow list for %s not brought in step at wiring: %s", ctx.agent.name, exc)
 
 
 def _prepare_wire_clone(ctx: Ctx) -> Path:
@@ -1905,6 +1974,7 @@ class WireStep:
         _register_resources(k8s_base / "kustomization.yaml", ["serviceaccount.yaml", "pvc.yaml"])
 
         _update_gojira_yaml(clone_dir / "gojira.yaml", agent, config)
+        _allow_held_lanes(ctx, clone_dir)
 
         # Colleague pass delivery (Task 3/B3): BEFORE the push below, so the
         # Secret `{agent.name}-cabal`'s `secrets_from` entry (just written
