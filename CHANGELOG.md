@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.41] - 2026-11-02
+
 ### Added
 
 - **The Models pane and the tagged picker (kobo#405).** An admin chooses which models New agent
