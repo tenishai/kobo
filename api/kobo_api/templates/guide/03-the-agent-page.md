@@ -12,7 +12,7 @@ While an agent builds, a checklist sits at the top of its page and clears on its
 1. **Repository.** The agent's files are written and pushed to a new repository.
 2. **Paint the portrait.** The agent gets a face. If this fails, the agent still builds.
 3. **Deployment setup.** The repository is connected to the service that deploys it.
-4. **Model access.** The agent's identity is allowed to call the model you chose. When the room reaches its models through the model gateway, nothing is granted to the agent here: the gateway holds the access, and the agent gets its own key to the gateway in the next step.
+4. **Access.** The agent's identity is allowed to call the model you chose. When the room reaches its models through the model gateway, nothing is granted to the agent here: the gateway holds the access, and the agent gets its own key to the gateway in the next step. When the room's permission service is on and GitHub is connected, the agent is also given **Read** on its own repository, so it can see its own files from the start; its owner adds repositories or raises the level on the Access tab.
 5. **Deploy wiring.** The agent's identity, storage and colleague pass are put in place.
 6. **Image build.** The agent's image is built by its repository's own pipeline.
 7. **Deploy.** The agent starts and the room checks it carries what was wired.

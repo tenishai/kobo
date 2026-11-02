@@ -5102,6 +5102,42 @@ def test_access_step_skips_the_vertex_grant_when_the_gateway_is_on(session_facto
     assert detail == "model access through the room's model gateway"
 
 
+def test_access_step_grants_a_new_agent_read_on_its_own_repository(session_factory, config):
+    """Gate (authorization, owner ruling 2026-11-02): with the permission service on and
+    GitHub connected, the Access step writes the agent's repository set as its one
+    repository and approves Read on it, once; a second run adds nothing, a set already
+    picked stands, and a room without GitHub says so in the sentence and grants nothing."""
+    from kobo_api.models import AuditLog
+
+    session, agent = _make_agent(session_factory, name="rae", repo_full_name="example-org/agent-rae")
+    bab = FakeBab(integrations=[dict(GITHUB_CONNECTION)])
+    clients = _clients(cloud=FakeCloud(project=config.gcp_project))
+    clients.bab = bab
+    ctx = _make_ctx(session, agent, config, clients)
+
+    detail = AccessStep().run(ctx)
+
+    assert detail.endswith("; reads its own repository on GitHub")
+    child = next(i for i in bab.integrations("x") if i["integration"] == "github-rae")
+    assert child["parent"] == "github" and child["spec"]["repositories"] == ["example-org/agent-rae"]
+    grants = [g for g in bab.grants("rae", "x") if g["integration"] == "github-rae"]
+    assert [g["permission"] for g in grants] == ["github_repos_read"] and grants[0]["state"] == "active"
+    rows = session.query(AuditLog).filter_by(action="access.default").all()
+    assert len(rows) == 1 and "Read on its own repository example-org/agent-rae" in rows[0].summary
+
+    again = AccessStep().run(ctx)
+    assert "repository" not in again
+    assert len([g for g in bab.grants("rae", "x") if g["integration"] == "github-rae"]) == 1
+    session.commit()
+
+    session2, other = _make_agent(session_factory, name="ivy", repo_full_name="example-org/agent-ivy")
+    clients2 = _clients(cloud=FakeCloud(project=config.gcp_project))
+    clients2.bab = FakeBab(integrations=[])
+    assert AccessStep().run(_make_ctx(session2, other, config, clients2)).endswith(
+        "; GitHub is not connected, so its own repository is not granted")
+    assert clients2.bab.grants("ivy", "x") == []
+
+
 def test_access_step_grants_prefix_scoped_to_this_agents_own_name(session_factory, config):
     """Gate (visibility): Access step grants prefix scoped to this agents own name.
 
