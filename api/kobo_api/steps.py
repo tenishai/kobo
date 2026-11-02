@@ -1711,13 +1711,28 @@ def _write_service_account(k8s_base: Path, agent, config) -> None:
     )
 
 
+# The two direct-Vertex variables. Written only when the room has no model
+# gateway; removed from a gateway agent's file. The same two names
+# `kobo_api.agent_env.MODEL_ENV_KEYS` reserves at the panel.
+VERTEX_ENV_KEYS = ("VERTEXAI_PROJECT", "VERTEXAI_LOCATION")
+
+
 def _set_service_account_and_model_env(data: dict, agent, config) -> None:
     """The half of gojira.yaml both kinds of agent need: which service
-    account the pod runs as, and the two model env vars its client reads.
+    account the pod runs as, and, when the agent reaches Vertex directly,
+    the two model env vars its client reads.
 
     Shared so the two wiring steps cannot drift on the model location in
     particular -- see the note below on why that must resolve through
     `vertex_location_for` rather than reading `config.vertex_location`.
+
+    With the room's model gateway on (kobo#390) the agent's model access is
+    the gateway key (the `<name>-models` Secret, `secrets_from`) and the
+    model block the compose wrote; `VERTEXAI_PROJECT` and `VERTEXAI_LOCATION`
+    belong to the direct path and would read as noise, or as wrong, on the
+    Secrets tab (owner finding 2026-11-02). A gateway agent gets neither,
+    and any copy an older wiring left in the file is removed, so a
+    reprovision of an agent born before the gateway cleans it up.
 
     `env` is MERGED, for both kinds, and that changed with the Secrets and
     environment panel (design 2026-09-22). It used to be assigned outright
@@ -1735,16 +1750,19 @@ def _set_service_account_and_model_env(data: dict, agent, config) -> None:
     file was already broken before the room read it.
     """
     data["service_account"] = f"agent-{agent.name}"
-    model_env = {
-        "VERTEXAI_PROJECT": config.vertex_project,
-        # Model-specific Vertex location (Gemini-3.1-Pro-Preview arc): this
-        # is the env var the deployed pod's own LiteLLM client actually
-        # reads, so it must resolve through the same vertex_location_for
-        # lookup RepoStep's BundleSpec.vertex_location uses at compose time
-        # — never config.vertex_location directly, or a global-only preview
-        # would still 404 against the org's regional default at runtime.
-        "VERTEXAI_LOCATION": vertex_location_for(config, agent.model_id),
-    }
+    through_gateway = gateway_on(config)
+    model_env: dict[str, str] = {}
+    if not through_gateway:
+        model_env = {
+            "VERTEXAI_PROJECT": config.vertex_project,
+            # Model-specific Vertex location (Gemini-3.1-Pro-Preview arc): this
+            # is the env var the deployed pod's own LiteLLM client actually
+            # reads, so it must resolve through the same vertex_location_for
+            # lookup RepoStep's BundleSpec.vertex_location uses at compose time
+            # — never config.vertex_location directly, or a global-only preview
+            # would still 404 against the org's regional default at runtime.
+            "VERTEXAI_LOCATION": vertex_location_for(config, agent.model_id),
+        }
 
     # How Slack wakes the agent (2026-10-06): the row is the source of truth
     # and this key wins on its own name, like the model keys, so a reprovision
@@ -1760,7 +1778,11 @@ def _set_service_account_and_model_env(data: dict, agent, config) -> None:
             "gojira.yaml for %s has a non-mapping env; replacing it", agent.name
         )
         existing = None
-    data["env"] = {**(existing or {}), **model_env}
+    env = {**(existing or {}), **model_env}
+    if through_gateway:
+        for key in VERTEX_ENV_KEYS:
+            env.pop(key, None)
+    data["env"] = env
 
 
 def _update_gojira_yaml(gojira_yaml_path, agent, config) -> None:
@@ -1953,6 +1975,28 @@ CONNECTED_WIRE_BODY = (
     "order in that one file are not preserved.\n"
 )
 
+# The same pull request when the room's model gateway is on: the model
+# access is a Secret the room delivers, not two environment variables.
+CONNECTED_WIRE_BODY_GATEWAY = (
+    "This adds the service account the agent runs as, and names the Secret "
+    "that carries the agent's key for the room's model gateway.\n\n"
+    "Files changed:\n"
+    "- k8s/base/serviceaccount.yaml: added, the agent's Kubernetes service "
+    "account.\n"
+    "- k8s/base/kustomization.yaml: that manifest added to the resources "
+    "list.\n"
+    "- gojira.yaml: service_account, the agent's models Secret under "
+    "secrets_from, and any secret names given when the agent was connected. "
+    "Existing environment variables are kept; VERTEXAI_PROJECT and "
+    "VERTEXAI_LOCATION, if an earlier wiring set them, are removed.\n\n"
+    "gojira.yaml is rewritten from its parsed form, so comments and key "
+    "order in that one file are not preserved.\n"
+)
+
+
+def connected_wire_body(config) -> str:
+    return CONNECTED_WIRE_BODY_GATEWAY if gateway_on(config) else CONNECTED_WIRE_BODY
+
 # What the room says rather than taking over identity wiring a team already
 # set for itself. Named once because two different checks raise it.
 CONNECTED_WIRE_TAKEOVER = (
@@ -2098,7 +2142,7 @@ class ConnectedWireStep:
                     repo=repo,
                     branch=CONNECTED_WIRE_BRANCH,
                     title=CONNECTED_WIRE_TITLE,
-                    body=CONNECTED_WIRE_BODY,
+                    body=connected_wire_body(config),
                 )
 
         with _sanitized("merge_pr", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE):
@@ -2501,17 +2545,22 @@ class DeployStep:
         if not kubectl.rollout_ok(namespace=agent.name, deploy=agent.name):
             raise RuntimeError(f"rollout failed for {agent.name}/{agent.name}")
 
-        env_names = kubectl.deploy_env_names(namespace=agent.name, deploy=agent.name)
-        missing = [
-            var for var in ("VERTEXAI_PROJECT", "VERTEXAI_LOCATION") if var not in env_names
-        ]
-        if missing:
-            raise RuntimeError(
-                f"live spec for {agent.name}/{agent.name} is missing wired model "
-                f"env {missing!r} (live env names: {env_names!r}) — a concurrent "
-                "CI apply may have raced the wire step's own apply and landed an "
-                "older tree; retry after the latest run completes"
-            )
+        # The wired model env is the two Vertex variables, and only when the
+        # agent reaches Vertex directly. Through the room's model gateway the
+        # model access is the `<name>-models` Secret (envFrom, which the env
+        # names do not list) and the model block in the bundle, so there is
+        # no env name to look for; the service account check below is the
+        # live-spec contract a gateway agent carries.
+        if not gateway_on(ctx.config):
+            env_names = kubectl.deploy_env_names(namespace=agent.name, deploy=agent.name)
+            missing = [var for var in VERTEX_ENV_KEYS if var not in env_names]
+            if missing:
+                raise RuntimeError(
+                    f"live spec for {agent.name}/{agent.name} is missing wired model "
+                    f"env {missing!r} (live env names: {env_names!r}) — a concurrent "
+                    "CI apply may have raced the wire step's own apply and landed an "
+                    "older tree; retry after the latest run completes"
+                )
 
         expected_sa = f"agent-{agent.name}"
         actual_sa = kubectl.deploy_service_account(namespace=agent.name, deploy=agent.name)

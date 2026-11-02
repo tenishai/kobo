@@ -271,7 +271,10 @@ class Config(BaseModel):
     gojira_cluster: str = "example-cluster"
     gcp_project: str = "example-project"
     vertex_project: str = "example-model-project"
-    vertex_location: str = "us-east5"
+    # The Vertex AI default location is `global` everywhere in the room
+    # (owner ruling 2026-11-02); a region such as us-east5 is a per-install
+    # or per-model choice, never the default.
+    vertex_location: str = "global"
     # A Google Group that confers model access; every agent's identity joins
     # it. Empty (the default): the Vertex role is granted on vertex_project
     # directly, which works on any project, Workspace or not.

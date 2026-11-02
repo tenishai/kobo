@@ -2503,6 +2503,55 @@ def test_a_rerun_of_the_wiring_keeps_an_owners_own_environment_variables(
     assert written["env"]["VERTEXAI_LOCATION"] == config.vertex_location
 
 
+def test_a_rerun_of_the_wiring_with_the_gateway_on_removes_the_vertex_variables(
+    session_factory, config
+):
+    """Data integrity: A rerun of the wiring with the gateway on removes the Vertex variables.
+
+    An agent born before the room's model gateway carries VERTEXAI_PROJECT
+    and VERTEXAI_LOCATION in its file; through the gateway its model access
+    is the key, and the two read as "Set by the room" noise on the Secrets
+    tab (owner finding 2026-11-02). The reprovision drops them and keeps
+    the owner's own variables."""
+    cfg = config.model_copy(update={"models_gateway_url": "http://models-gateway.models.svc"})
+    repo = _repo_full_name(cfg)
+    session, agent = _make_agent__steps_wire(session_factory, repo_full_name=repo, gojira_app_id=1)
+    github = FakeGitHub(
+        extra_clone_files={
+            "gojira.yaml": (
+                "app: clio\n"
+                "env:\n"
+                "  API_BASE: https://example.test\n"
+                "  VERTEXAI_PROJECT: an-old-project\n"
+                "  VERTEXAI_LOCATION: somewhere-stale\n"
+            )
+        }
+    )
+    gojira = FakeGojira(activate_after=1)
+    gojira.create_app(name=AGENT_NAME, repo_full_name=repo, cluster=cfg.gojira_cluster, namespace=AGENT_NAME)
+    ctx = _make_ctx(session, agent, cfg, _clients__steps_wire(github=github, gojira=gojira))
+
+    WireStep().run(ctx)
+
+    written = yaml.safe_load((ctx.workdir / "wire" / "gojira.yaml").read_text())
+    assert written["env"] == {"API_BASE": "https://example.test"}
+
+
+def test_deploy_does_not_look_for_vertex_env_on_a_gateway_agent(session_factory, config):
+    """Data integrity: Deploy does not look for Vertex env on a gateway agent.
+
+    The live-spec check guards the direct path's two variables; a gateway
+    agent never has them and must not fail deploy for lacking them."""
+    from kobo_api.steps import DeployStep
+
+    cfg = config.model_copy(update={"models_gateway_url": "http://models-gateway.models.svc"})
+    session, agent = _make_agent__steps_wire(session_factory, gojira_app_id=1)
+    kubectl = FakeKubectl(env_names={(AGENT_NAME, AGENT_NAME): []})
+    ctx = _make_ctx(session, agent, cfg, _clients__steps_wire(kubectl=kubectl))
+
+    assert DeployStep().run(ctx).startswith("rollout ok")
+
+
 # --- from test_composer.py ---
 
 

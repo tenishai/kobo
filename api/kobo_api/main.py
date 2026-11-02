@@ -10364,12 +10364,16 @@ def create_app(
     ) -> JSONResponse:
         """Move a deployed agent onto another model from the catalog.
 
-        The composed `agent.yaml` names its model as `${AGENT_MODEL:-<birth
-        model>}`, so the change is two environment variables in the agent's
-        gojira.yaml: `AGENT_MODEL`, and `VERTEXAI_LOCATION` for the model's
-        own region. Same lane as the environment panel (`edit_gojira_yaml`):
-        one commit, the platform regenerates and rolls. The row's `model_id`
-        follows, so every later reprovision agrees.
+        Direct to Vertex, the composed `agent.yaml` names its model as
+        `${AGENT_MODEL:-<birth model>}`, so the change is two environment
+        variables in the agent's gojira.yaml: `AGENT_MODEL`, and
+        `VERTEXAI_LOCATION` for the model's own region. Same lane as the
+        environment panel (`edit_gojira_yaml`): one commit, the platform
+        regenerates and rolls. With the room's model gateway on the change
+        is `commit_gateway_model`: the bundle's model block is rewritten to
+        the gateway and neither Vertex variable is written (a stale one is
+        removed). The row's `model_id` follows either way, so every later
+        reprovision agrees.
 
         Owner or operator, READY only, composed only: a connected agent's
         model is its own repository's to change.
