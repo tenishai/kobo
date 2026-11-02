@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.39] - 2026-11-01
+
 ### Added
 
 - **Bedrock models through the AWS connection (kobo#390).** The Connect AWS sheet now offers
