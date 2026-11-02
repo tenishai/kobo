@@ -271,7 +271,7 @@ class HttpxBabClient:
     def models(self, integration: str, actor: str, *, location: str | None = None, region: str | None = None) -> dict:
         """`GET /integrations/{id}/models` (kobo#405): the chat models the service
         can list at that integration, within reason (generally available, latest
-        versions). Vertex AI takes `location` (default us-east5), Bedrock `region`
+        versions). Vertex AI takes `location` (default global), Bedrock `region`
         (default us-east-1); the service answers `{integration, provider, models:
         [{id, label, publisher, family, stage, via}], fetched_at}` and a vendor
         refusal as 502 with the vendor's sentence, which `ClientError` carries."""
