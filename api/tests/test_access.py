@@ -5873,7 +5873,7 @@ def test_a_google_cloud_project_is_probed_through_the_permission_service_and_hel
     assert row["id"] == "example-prod" and row["state"] == "applied" and row["credential_ref"] is None
     assert "Google Cloud agreed" in row["state_detail"] and "Vertex AI answers at us-east5" in row["state_detail"]
     assert row["spec"]["kind"] == "account" and row["spec"]["project"] == GCP_PROJECT
-    assert row["spec"]["models"] == {"provider": "vertex_ai", "location": "us-east5"}
+    assert row["spec"]["models"] == {"provider": "vertex_ai", "project": GCP_PROJECT, "location": "us-east5"}
     (integ,) = bab.integrations("x")
     assert integ["vendor"] == "gcp" and integ["kind"] == "account" and integ["parent"] is None
     assert integ["spec"] == {"project": GCP_PROJECT, "service_account": None, "name": "Example prod"}
@@ -5947,6 +5947,44 @@ def test_a_google_cloud_folder_then_its_readable_projects_register_themselves(tm
     # An organization is the other parent shape; a badly named one is refused.
     assert client.post("/api/admin/integrations", json={"vendor": "gcp", "name": "x", "base_access": "read", "auth": "gcp_parent",
                                                          "identity": {"parent_resource": "folder-123"}}, headers=headers).status_code == 409
+
+
+def test_an_organization_with_the_vertex_tick_names_the_models_project_and_the_gateway_serves_it(tmp_path, fake_storage):
+    """Wire shape the model gateway reads (kobo#405): an organization row connected with
+    the Vertex AI box ticked carries exactly `models = {provider, project, location}` for
+    the NAMED project, the permission service listed that project's models at the location
+    before anything was written, and `providers_from_rows` serves that project. A Vertex AI
+    project the identity cannot read refuses the whole connect: no row here, none there."""
+    from kobo_api import model_providers
+    from kobo_api.models import AdminIntegration
+
+    bab = _gcp_bab()
+    client, headers = _access_client(tmp_path, fake_storage, bab=bab)
+    body = {"vendor": "gcp", "name": "example-org", "base_access": "read", "auth": "gcp_parent",
+            "identity": {"parent_resource": "organizations/123456789012", "models_provider": "vertex_ai",
+                         "models_project": "my-vertex-project", "models_location": "us-east5"}}
+    refused = client.post("/api/admin/integrations", json={**body, "identity": {**body["identity"], "models_project": "refuse-me-1234"}},
+                          headers=headers)
+    assert refused.status_code == 409 and "lacks access" in refused.json()["error"] and "models pack" in refused.json()["error"]
+    assert client.get("/api/admin/integrations", headers=headers).json()["integrations"] == [] and bab.integrations("x") == []
+    unnamed = client.post("/api/admin/integrations", json={**body, "identity": {**body["identity"], "models_project": ""}}, headers=headers)
+    assert unnamed.status_code == 409 and "Vertex AI project" in unnamed.json()["error"]
+
+    row = client.post("/api/admin/integrations", json=body, headers=headers).json()
+    assert row["state"] == "applied" and row["spec"]["kind"] == "org", row
+    assert row["spec"]["models"] == {"provider": "vertex_ai", "project": "my-vertex-project", "location": "us-east5"}
+    assert bab.gcp_probes[-1] == {
+        "project": "my-vertex-project", "service_account": None, "vertex_location": "us-east5",
+        "vertex_url": "https://us-east5-aiplatform.googleapis.com/v1/projects/my-vertex-project/locations/us-east5/publishers/google/models?pageSize=1",
+    }
+    assert "Vertex AI answers at us-east5 in my-vertex-project" in row["state_detail"]
+    # The organization itself is held with no ceiling, as before; its projects carry theirs.
+    assert {i["integration"]: i["kind"] for i in bab.integrations("x")} == {"example-org": "org", "example-prod": "account", "example-data": "account"}
+    assert bab.integrations("x")[0]["spec"] == {"parent_resource": "organizations/123456789012", "name": "example-org"}
+    rows = [AdminIntegration(id=r["id"], vendor=r["vendor"], name=r["name"], state=r["state"], spec=r["spec"], credential_ref=None)
+            for r in client.get("/api/admin/integrations", headers=headers).json()["integrations"]]
+    (provider,) = model_providers.providers_from_rows(rows)
+    assert (provider.row_id, provider.provider, provider.project, provider.location) == ("example-org", "vertex_ai", "my-vertex-project", "us-east5")
 
 
 def test_a_datadog_probe_the_permission_service_refuses_connects_nothing(tmp_path, fake_storage, monkeypatch):

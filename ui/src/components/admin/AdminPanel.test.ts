@@ -134,7 +134,7 @@ describe("AdminPanel", () => {
     chosen: ["inventory"], roles: ["roles/compute.viewer"], target: "",
     gcloud: "gcloud projects add-iam-policy-binding <project id> --member=serviceAccount:access@example.iam.gserviceaccount.com --role=roles/compute.viewer",
     terraform: 'resource "google_project_iam_member" "kobo_access" {}',
-    vertex_default_location: "us-east5",
+    vertex_default_location: "global",
     checked: true,
   };
 
@@ -345,33 +345,66 @@ describe("AdminPanel", () => {
     expect(setupCalls.some((u) => u.includes("mode=role") && u.includes("bedrock=1"))).toBe(true);
   });
 
-  it("Google Cloud is its own sheet: the identity to grant, the roles three ways, then a project and its Vertex AI models", async () => {
-    // kobo#390. No key anywhere: the form submits the project under `gcp_identity`, with
-    // the models fields when the Vertex AI box is ticked.
+  it("Google Cloud opens on the organization: the identity to grant once, the roles three ways, then the Vertex AI project and tick", async () => {
+    // kobo#405. The organization is the first and default scope; the form submits it under
+    // `gcp_parent` with the named Vertex AI project, the provider and the location when the
+    // box is ticked. No key anywhere, and no service account field.
     navigate({ page: "admin", pane: "integrations" });
     renderWithClient(AdminPanel);
     await fireEvent.click(await screen.findByRole("button", { name: "Add integration" }));
     await fireEvent.click(await screen.findByRole("button", { name: "Add Google Cloud" }));
     expect(await screen.findByRole("heading", { name: "Connect Google Cloud" })).toBeTruthy();
     expect(await screen.findByText("access@example.iam.gserviceaccount.com")).toBeTruthy();
-    expect(screen.getByRole("radio", { name: /A project/ }).getAttribute("aria-checked")).toBe("true");
-    expect(screen.getByRole("radio", { name: /A folder or organization/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /An organization/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: /A project/ }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("heading", { name: "On the organization, once" })).toBeTruthy();
     for (const method of [/gcloud/, /Terraform/, /By hand/]) expect(screen.getByRole("radio", { name: method })).toBeTruthy();
-    expect(screen.getByText(/gcloud projects add-iam-policy-binding/)).toBeTruthy();
     expect(document.querySelector("#integration-form input[type=password]")).toBeNull();
-    await fireEvent.input(screen.getByLabelText("Name for this connection"), { target: { value: "Example prod" } });
-    await fireEvent.input(screen.getByLabelText("Project id"), { target: { value: "example-prod-1234" } });
-    await fireEvent.click(screen.getByLabelText(/Vertex AI models in the room/));
+    expect(screen.queryByLabelText(/Service account/)).toBeNull();
+    await fireEvent.input(screen.getByLabelText("Name for this connection"), { target: { value: "Example org" } });
+    await fireEvent.input(screen.getByLabelText("Organization"), { target: { value: "organizations/123456789012" } });
+    await fireEvent.click(screen.getByLabelText(/Include this project's Vertex AI models in the room/));
+    await fireEvent.input(await screen.findByLabelText("Vertex AI project"), { target: { value: "my-vertex-project" } });
     const location = (await screen.findByLabelText("Location")) as HTMLInputElement;
-    expect(location.value).toBe("us-east5");
+    expect(location.value).toBe("global");
     await fireEvent.click(screen.getByRole("button", { name: "Connect" }));
     const post = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url) === "/api/admin/integrations" && init?.method === "POST");
     expect(post).toBeTruthy();
     const body = JSON.parse(String(post?.[1]?.body));
     expect(body.vendor).toBe("gcp");
-    expect(body.auth).toBe("gcp_identity");
-    expect(body.identity).toEqual({ project: "example-prod-1234", models_provider: "vertex_ai", models_location: "us-east5" });
+    expect(body.auth).toBe("gcp_parent");
+    expect(body.identity).toEqual({
+      parent_resource: "organizations/123456789012", models_provider: "vertex_ai", models_project: "my-vertex-project", models_location: "global",
+    });
     expect(body.secrets).toEqual({});
+    // The tick asks the page for the models pack on the organization too.
+    const setupCalls = vi.mocked(fetch).mock.calls.map(([url]) => String(url)).filter((u) => u.includes("/gcp/setup"));
+    expect(setupCalls.some((u) => u.includes("mode=parent") && u.includes("packs=models"))).toBe(true);
+  });
+
+  it("Google Cloud as one project: the project is its own Vertex AI project unless another is named", async () => {
+    // kobo#390, kobo#405. The project scope submits under `gcp_identity`; the Vertex AI
+    // project field follows the project id, so the models spec names the same project.
+    navigate({ page: "admin", pane: "integrations" });
+    renderWithClient(AdminPanel);
+    await fireEvent.click(await screen.findByRole("button", { name: "Add integration" }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Add Google Cloud" }));
+    expect(await screen.findByRole("heading", { name: "Connect Google Cloud" })).toBeTruthy();
+    await screen.findByText("access@example.iam.gserviceaccount.com");
+    await fireEvent.click(screen.getByRole("radio", { name: /A project/ }));
+    expect(await screen.findByRole("heading", { name: "On the project" })).toBeTruthy();
+    expect(screen.getByText(/gcloud projects add-iam-policy-binding/)).toBeTruthy();
+    await fireEvent.input(screen.getByLabelText("Name for this connection"), { target: { value: "Example prod" } });
+    await fireEvent.input(screen.getByLabelText("Project id"), { target: { value: "example-prod-1234" } });
+    await fireEvent.click(screen.getByLabelText(/Vertex AI models in the room/));
+    const vertex = (await screen.findByLabelText("Vertex AI project")) as HTMLInputElement;
+    expect(vertex.value).toBe("example-prod-1234");
+    await fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    const post = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url) === "/api/admin/integrations" && init?.method === "POST");
+    expect(post).toBeTruthy();
+    const body = JSON.parse(String(post?.[1]?.body));
+    expect(body.auth).toBe("gcp_identity");
+    expect(body.identity).toEqual({ project: "example-prod-1234", models_provider: "vertex_ai", models_project: "example-prod-1234", models_location: "global" });
   });
 
   it("Self-hosted models is a form with the address, an optional key, the models and the options, and a row with its host, count, failures and Check models", async () => {

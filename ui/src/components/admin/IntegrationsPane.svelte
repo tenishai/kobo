@@ -1,8 +1,8 @@
 <script lang="ts">
   // What agents reach out to. With the permission service on, a cloud is an
   // organization row (its hub role) with the accounts connected under it, or a
-  // Google Cloud project, or a folder with its projects under it (kobo#390), and a
-  // service vendor is one connection; agents are granted permissions per account,
+  // Google Cloud organization with its projects under it, or one project (kobo#390,
+  // kobo#405), and a service vendor is one connection; agents are granted permissions per account,
   // project or connection under Permissions. Without it, a row is one credential
   // served through the gateway with a lane per agent under Connections.
   import { untrack } from "svelte";
@@ -83,11 +83,11 @@
   } | null>(null);
   let formError = $state<string | null>(null);
   let removing = $state<AdminIntegration | null>(null);
-  // The Google Cloud sheet's own choices (kobo#390): a project or a folder, and whether
-  // the project's Vertex AI models serve the room.
-  let gcpMode = $state<"project" | "parent">("project");
+  // The Google Cloud sheet's own choices (kobo#390, kobo#405): an organization (the
+  // default) or a project, and whether a Vertex AI project's models serve the room.
+  let gcpMode = $state<"project" | "parent">("parent");
   let useVertex = $state(false);
-  const VERTEX_DEFAULT_LOCATION = "us-east5";
+  const VERTEX_DEFAULT_LOCATION = "global";
   // The AWS sheet's own choices (kobo#390): an organization (its hub role) or one account
   // (a role the room assumes directly), and whether that account's Bedrock models serve
   // the room. Bedrock is per account, so the box is not offered on an organization.
@@ -137,7 +137,7 @@
     catalogOpen = false;
     formError = null;
     const entry = preset ?? OTHER;
-    gcpMode = "project";
+    gcpMode = "parent";
     useVertex = false;
     awsMode = "org";
     useBedrock = false;
@@ -153,7 +153,7 @@
       // The AWS sheet binds the pasted ARN to `role_arn` whatever the catalogue field is called;
       // the Google Cloud sheet owns its fields the same way.
       values: entry.id === "aws" ? { role_arn: "", models_region: BEDROCK_DEFAULT_REGION }
-        : entry.id === "gcp" ? { project: "", service_account: "", parent_resource: "", models_location: VERTEX_DEFAULT_LOCATION }
+        : entry.id === "gcp" ? { project: "", parent_resource: "", models_project: "", models_location: VERTEX_DEFAULT_LOCATION }
         : Object.fromEntries(entry.fields.map((f) => [f.key, ""])),
     };
   }
@@ -215,16 +215,19 @@
     } else if (form.mode === "org") {
       auth = "aws_hub";
       identity.hub_role_arn = (form.values.role_arn ?? "").trim();
-    } else if (form.mode === "gcp" && gcpMode === "parent") {
-      auth = "gcp_parent";
-      identity.parent_resource = (form.values.parent_resource ?? "").trim();
     } else if (form.mode === "gcp") {
-      auth = "gcp_identity";
-      identity.project = (form.values.project ?? "").trim();
-      const sa = (form.values.service_account ?? "").trim();
-      if (sa) identity.service_account = sa;
+      // Either scope may name the Vertex AI project (kobo#405); on a project it is the
+      // project itself unless another was named.
+      if (gcpMode === "parent") {
+        auth = "gcp_parent";
+        identity.parent_resource = (form.values.parent_resource ?? "").trim();
+      } else {
+        auth = "gcp_identity";
+        identity.project = (form.values.project ?? "").trim();
+      }
       if (useVertex) {
         identity.models_provider = "vertex_ai";
+        identity.models_project = (form.values.models_project ?? "").trim() || identity.project || "";
         identity.models_location = (form.values.models_location ?? "").trim() || VERTEX_DEFAULT_LOCATION;
       }
     } else {
@@ -289,10 +292,23 @@
     return i.vendor === "aws" || i.vendor === "gcp" ? childNoun(i) : "connection";
   }
   const PROVIDER_NAMES: Record<string, string> = { vertex_ai: "Vertex AI", bedrock: "Bedrock" };
-  const modelsLabel = (i: AdminIntegration): string | null =>
-    i.spec.models && !Array.isArray(i.spec.models)
-      ? `Models: ${PROVIDER_NAMES[i.spec.models.provider] ?? i.spec.models.provider}, ${i.spec.models.location ?? i.spec.models.region ?? ""}`
-      : null;
+  // "Models: Vertex AI, <project>, <location>" for a Google Cloud row (the Vertex AI project
+  // an organization names, or a project row's own), "Models: Bedrock, <region>" for AWS.
+  const modelsLabel = (i: AdminIntegration): string | null => {
+    const m = i.spec.models;
+    if (!m || Array.isArray(m)) return null;
+    const where = m.provider === "vertex_ai" ? [m.project ?? i.spec.project, m.location] : [m.location ?? m.region];
+    return `Models: ${PROVIDER_NAMES[m.provider] ?? m.provider}, ${where.filter(Boolean).join(", ")}`;
+  };
+  // A project connected under an organization that names it as the Vertex AI project
+  // says the same line as its parent (kobo#405); the spec stays on the parent alone.
+  const servesModelsLine = (i: AdminIntegration): string | null => {
+    const own = modelsLabel(i);
+    if (own) return own;
+    const parent = i.spec.parent ? all.find((p) => p.id === i.spec.parent) : undefined;
+    const pm = parent?.spec.models;
+    return pm && !Array.isArray(pm) && pm.provider === "vertex_ai" && pm.project && pm.project === i.spec.project ? modelsLabel(parent!) : null;
+  };
   // A Self-hosted row (kobo#390): the host alone (never the key, never the path), how many
   // of its models answer, and the ones that did not, each with the server's sentence.
   const selfHosted = (i: AdminIntegration): boolean => i.spec.auth === SELF_HOSTED_AUTH;
@@ -321,8 +337,8 @@
   <div>
     <h2 id="integrations-heading" class="page__title">Integrations</h2>
     <p class="page__lead">
-      The vendors agents can reach. A cloud is an organization with the accounts connected under it,
-      or a project, or a folder with its projects under it; a service vendor is one connection. Slack
+      The vendors agents can reach. A cloud is an organization with the accounts or projects connected
+      under it, or one project; a service vendor is one connection. Slack
       and GitHub connect the same way, and the room's own needs ride the same credential. What each
       agent may do there is granted under Permissions.
     </p>
@@ -357,7 +373,7 @@
                     {#if i.spec.address}<span class="quiet addr">{i.spec.address}</span>{/if}
                     {#if i.spec.project}<span class="quiet addr">{i.spec.project}</span>{/if}
                     {#if i.spec.parent_resource}<span class="quiet addr">{i.spec.parent_resource}</span>{/if}
-                    {#if modelsLabel(i)}<span class="addr">{modelsLabel(i)}</span>{/if}
+                    {#if servesModelsLine(i)}<span class="addr">{servesModelsLine(i)}</span>{/if}
                     {#if selfHosted(i)}
                       <span class="addr">{SELF_HOSTED_SUMMARY}</span>
                       <span class="quiet addr">{hostOf(i.spec.base_url)}</span>
@@ -509,21 +525,21 @@
     <form id="integration-form" class="form" onsubmit={submitConnect}>
       <label class="field">
         <span>Name for this connection</span>
-        <input id="integration-name" type="text" bind:value={form.name} placeholder={gcpMode === "parent" ? "e.g. example-platform" : "e.g. example-prod"} required autocomplete="off" />
+        <input id="integration-name" type="text" bind:value={form.name} placeholder={gcpMode === "parent" ? "e.g. example-org" : "e.g. example-prod"} required autocomplete="off" />
       </label>
       <ConnectGoogleCloudSheet
         bind:mode={gcpMode}
         bind:project={form.values.project}
-        bind:serviceAccount={form.values.service_account}
         bind:parentResource={form.values.parent_resource}
         bind:useVertex
+        bind:vertexProject={form.values.models_project}
         bind:location={form.values.models_location}
         integration={slug(form.name) || "gcp"}
       />
       {#if formError}<p class="page__foot fail">{formError}</p>{/if}
       {#if connect.isPending}
         <p class="page__foot busy" role="status"><span class="spin" aria-hidden="true"></span>
-          {gcpMode === "parent" ? "Saving the folder, then checking its projects." : "Checking the project with Google Cloud."}
+          {gcpMode === "parent" ? (useVertex ? "Checking the Vertex AI project, saving the organization, then checking its projects." : "Saving the organization, then checking its projects.") : "Checking the project with Google Cloud."}
         </p>
       {/if}
     </form>
@@ -614,7 +630,7 @@
 <Modal open={removing !== null} title={removing ? `Remove ${removing.name}?` : ""} size="narrow" onclose={() => (removing = null)}>
   <p class="page__lead">
     {#if removing?.spec.kind === "org" && removing.vendor === "gcp"}
-      The folder or organization is removed from the permission service. Its projects must be removed first.
+      The organization is removed from the permission service. Its projects must be removed first.{#if modelsLabel(removing)} Its Vertex AI models come off the New agent and Change model lists and off the model gateway; agents already on one of them keep their setting until their model is changed.{/if}
     {:else if removing?.spec.kind === "org"}
       The organization is removed from the permission service. Its accounts must be removed first.
     {:else if removing && selfHosted(removing)}

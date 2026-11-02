@@ -54,17 +54,21 @@ MCP targets as before (`spec.room_only` marks a row made without it).
 Neither has a "service" row any more; both are added, replaced and removed
 like every other connection.
 
-Google Cloud (kobo#390) is the second cloud through the permission service and
-the simplest: no role to create, no trust to federate. The service's own
-service account is granted the role pack directly on a project (the common
-case, `gcp_identity`) or on a folder or organization (`gcp_parent`, the AWS
-hub's shape: the projects under it the identity can read connect under it,
-`register_accounts`). The service probes the project before anything is
-written (`POST /probe/gcp`); the row is held there with the read ceiling, and
-nothing goes to the gateway. A project may also serve the room's models: with
-the Vertex AI box ticked the row's spec carries `models = {provider:
-"vertex_ai", location}` and the probe checks the identity reaches Vertex AI
-there; the room's model gateway (the next lane) reads that spec.
+Google Cloud (kobo#390, organization first since kobo#405) is the second
+cloud through the permission service and the simplest: no role to create, no
+trust to federate. The service's one identity (`GET /identity/gcp`, whatever
+account the service reports) is granted the role packs once, on the
+organization (`gcp_parent`, the AWS hub's shape: the projects under it the
+identity can read connect under it, `register_accounts`), or on one project
+(`gcp_identity`). The service probes before anything is written (`POST
+/probe/gcp`); the row is held there with the read ceiling, and nothing goes
+to the gateway. Either scope may also name the room's Vertex AI project: with
+the box ticked the row's spec carries `models = {provider: "vertex_ai",
+project, location}` (for an organization row the named project, not the
+row's), and the probe lists models in that project at the location, refusing
+the connect when it cannot; the room's model gateway reads that spec.
+`service_account` (act as a narrower account) is no longer on the sheet but
+is still accepted for rows that carry it.
 
 Self-hosted models (kobo#390, `kobo_api.self_hosted`) is the provider that is
 only models: an OpenAI-compatible endpoint the person runs, named by them,
@@ -144,8 +148,8 @@ AUTH_KINDS = {
     # Google Cloud (kobo#390): the permission service's own identity, granted the role pack
     # directly on a project (optionally acting as a narrower service account there), or on
     # a folder or organization whose readable projects then connect under it.
-    "gcp_identity": "a Google Cloud project the permission service's identity is granted on, optionally acting as a service account",
-    "gcp_parent": "a Google Cloud folder or organization: the projects under it the identity can read connect under it",
+    "gcp_identity": "a Google Cloud project the permission service's identity is granted on",
+    "gcp_parent": "a Google Cloud organization (or folder): the projects under it the identity can read connect under it, and it may name the Vertex AI project",
     "azure_federated": "an app registration federated to the gateway's identity",
     # Datadog through the permission service (kobo#322): the room holds the service
     # account's API key and a management application key (scoped to
@@ -231,13 +235,13 @@ GCP_AUTHS = frozenset({GCP_AUTH, GCP_PARENT_AUTH})
 # digits and hyphens, no trailing hyphen. A parent is `folders/<number>` or `organizations/<number>`.
 _GCP_PROJECT = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 _GCP_PARENT = re.compile(r"^(folders|organizations)/\d+$")
-# A Vertex AI location: a region (`us-east5`, `europe-west4`) or `global`.
+# A Vertex AI location: `global` or a region (`us-east5`, `europe-west4`).
 _GCP_LOCATION = re.compile(r"^(global|[a-z]+-[a-z]+\d+)$")
-# The one model provider a Google Cloud project offers the room (kobo#390), and where its
-# models are served from unless the person says otherwise.
+# The one model provider a Google Cloud row offers the room (kobo#390), and where its
+# models are served from unless the person says otherwise: `global` (owner ruling, kobo#405).
 MODELS_PROVIDER_VERTEX = "vertex_ai"
-VERTEX_DEFAULT_LOCATION = "us-east5"
 VERTEX_GLOBAL = "global"
+VERTEX_DEFAULT_LOCATION = VERTEX_GLOBAL
 SELF_HOSTED_AUTH = self_hosted.AUTH
 # Bedrock through an AWS account (kobo#390): the kinds that may carry it (per
 # account, never the organization's hub) and what a region looks like.
@@ -282,14 +286,21 @@ def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> 
         sa = identity.get("service_account", "").strip()
         if sa and not _EMAIL.match(sa):
             raise ConnectRefused("the service account to act as must be its email address")
+    if auth == GCP_PARENT_AUTH and not _GCP_PARENT.match(identity.get("parent_resource", "").strip()):
+        raise ConnectRefused("a Google Cloud organization is named organizations/<number> (a folder, folders/<number>)")
+    if auth in GCP_AUTHS:
         provider = identity.get("models_provider", "").strip()
         if provider and provider != MODELS_PROVIDER_VERTEX:
-            raise ConnectRefused(f"a Google Cloud project serves models through Vertex AI; {provider!r} is not a provider here")
+            raise ConnectRefused(f"Google Cloud serves models through Vertex AI; {provider!r} is not a provider here")
+        models_project = identity.get("models_project", "").strip()
+        if provider and auth == GCP_PARENT_AUTH and not models_project:
+            raise ConnectRefused("name the Vertex AI project whose models the room should offer (my-vertex-project)")
+        if provider and models_project and not _GCP_PROJECT.match(models_project):
+            raise ConnectRefused("the Vertex AI project needs its id: 6 to 30 lowercase letters, digits and hyphens, "
+                                 "starting with a letter (my-vertex-project, not its name or number)")
         location = identity.get("models_location", "").strip()
         if provider and location and not _GCP_LOCATION.match(location):
-            raise ConnectRefused(f"{location!r} is not a Vertex AI location; a region such as {VERTEX_DEFAULT_LOCATION}, or global")
-    if auth == GCP_PARENT_AUTH and not _GCP_PARENT.match(identity.get("parent_resource", "").strip()):
-        raise ConnectRefused("a Google Cloud folder or organization is named folders/<number> or organizations/<number>")
+            raise ConnectRefused(f"{location!r} is not a Vertex AI location; global, or a region such as us-east5")
     if auth == "azure_federated" and not (
         _GUID.match(identity.get("client_id", "").strip()) and _GUID.match(identity.get("tenant_id", "").strip())
     ):
@@ -1237,11 +1248,12 @@ def vertex_models_url(project: str, location: str) -> str:
 def gcp_setup(clients: Clients | None, *, integration_id: str, packs: list[str] | None, actor: str = "operator@room",
               mode: str = cloud_access.GCP_PROJECT_MODE, target: str = "") -> dict[str, Any]:
     """Everything the Connect Google Cloud page shows (kobo#390): the identity to grant
-    (the permission service's service account), the packs, and the roles bound three
-    ways: `gcloud` commands, Terraform, and the plain list. `mode` is `project` (the
-    common case) or `parent` (a folder or organization, whose readable projects connect
-    under it); `target` is the id typed so far, so the snippets read whole. The models
-    pack is a project's alone: a folder cannot serve Vertex AI."""
+    (the permission service's service account, as it reports itself), the packs, and
+    the roles bound three ways: `gcloud` commands, Terraform, and the plain list. `mode`
+    is `parent` (an organization, or a folder, whose readable projects connect under it;
+    the default scope since kobo#405) or `project` (one project); `target` is the id
+    typed so far, so the snippets read whole. The models pack rides either scope: on an
+    organization the one grant covers the Vertex AI project too."""
     bab = _bab(clients)
     mode = cloud_access.GCP_PARENT_MODE if mode == cloud_access.GCP_PARENT_MODE else cloud_access.GCP_PROJECT_MODE
     identity: dict[str, str] | None = None
@@ -1255,8 +1267,6 @@ def gcp_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
         except ClientError as exc:
             identity_note = str(exc)
     chosen = cloud_access.gcp_chosen_packs(packs)
-    if mode == cloud_access.GCP_PARENT_MODE:
-        chosen = [p for p in chosen if p != cloud_access.GCP_MODELS_PACK]
     roles = cloud_access.gcp_roles(chosen)
     email = (identity or {}).get("email", "")
     return {
@@ -1276,15 +1286,51 @@ def gcp_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
     }
 
 
+def vertex_models_spec(identity: dict[str, str], *, row_project: str | None = None) -> dict[str, str] | None:
+    """The `models` a Google Cloud row carries when the Vertex AI box is ticked
+    (kobo#405): the provider, the Vertex AI project (the one named, else the row's
+    own project) and the location. None when the box is not ticked."""
+    if identity.get("models_provider") != MODELS_PROVIDER_VERTEX:
+        return None
+    project = identity.get("models_project") or row_project or ""
+    return {"provider": MODELS_PROVIDER_VERTEX, "project": project,
+            "location": identity.get("models_location") or VERTEX_DEFAULT_LOCATION}
+
+
+def _vertex_probe_fields(models: dict[str, str]) -> dict[str, str]:
+    """What the probe body carries so the permission service lists models in the
+    Vertex AI project at the location with its own token: the service does the
+    read, since the token is its to mint, never the room's."""
+    return {"vertex_location": models["location"], "vertex_url": vertex_models_url(models["project"], models["location"])}
+
+
+def _probe_vertex_project(bab, actor: str, models: dict[str, str]) -> dict[str, Any]:
+    """Read the Vertex AI project and list its models there, as the same probe a
+    project row makes; a refusal is the connect's refusal."""
+    try:
+        return bab.probe("gcp", actor, what=f"the Vertex AI project {models['project']}",
+                         project=models["project"], service_account=None, **_vertex_probe_fields(models))
+    except ClientError as exc:
+        raise ConnectRefused(f"{exc}; grant the room's identity the roles on this page, including the models pack, "
+                             f"and connect again") from exc
+
+
+def _vertex_detail(models: dict[str, str], probe: dict[str, Any]) -> str:
+    return (f"; Vertex AI answers at {models['location']} in {models['project']}, so its models serve the room" if probe.get("vertex")
+            else f"; Vertex AI at {models['location']} in {models['project']} was not checked by the permission service, "
+                 f"the models are taken at their word")
+
+
 def _connect_gcp(
     session: Session, clients: Clients | None, config: Config, bab, *, vendor: str, name: str, base_access: str,
     trust: str, actor: str, auth: str, identity: dict[str, str],
 ) -> AdminIntegration:
     """Google Cloud through the permission service (kobo#390), the AWS shape without
-    the role: the service's own identity is granted on the project, so the probe is
-    the service reading the project (and, with models ticked, Vertex AI there), and
-    nothing is written until it does. A folder or organization is the hub shape: no
-    ceiling of its own, its readable projects connect under it. Leases come from the
+    the role: the service's own identity is granted on the organization or the project,
+    so the probe is the service reading it (and, with models ticked, listing Vertex AI
+    models in the named project), and nothing is written until it does. An organization
+    (or folder) is the hub shape: no ceiling of its own, its readable projects connect
+    under it, and it may carry the Vertex AI project (kobo#405). Leases come from the
     service; the gateway has nothing to learn."""
     if bab is None:
         raise ConnectRefused("Google Cloud connects through the permission service; turn Access on first")
@@ -1294,12 +1340,18 @@ def _connect_gcp(
     }
     if auth == GCP_PARENT_AUTH:
         parent_resource = identity["parent_resource"]
+        models = vertex_models_spec(identity)
+        detail = f"{parent_resource} is held as a {parent_resource.split('/', 1)[0][:-1]} in the permission service"
+        if models:
+            # The Vertex AI project is listed before anything is written; a refusal saves nothing.
+            detail += _vertex_detail(models, _probe_vertex_project(bab, actor, models))
         spec = {**base_spec, "kind": "org", "parent_resource": parent_resource, "identity": {"parent_resource": parent_resource}}
+        if models:
+            spec["models"] = models
         row = admin_store.put_integration(
             session, vendor=vendor, name=name, base_access=base_access, spec=spec, credential_ref=None, actor=actor,
             integration_id=row_id,
         )
-        detail = f"{parent_resource} is held as a {parent_resource.split('/', 1)[0][:-1]} in the permission service"
         try:
             # Nothing is granted on a folder or organization; its projects carry the ceilings.
             bab.put_integration(row.id, vendor, {"parent_resource": parent_resource, "name": name}, [], actor)
@@ -1321,19 +1373,18 @@ def _connect_gcp(
     parent_id = identity.get("parent") or None
     if parent_id:
         _org_or_refused(bab, parent_id, actor, vendor="gcp")
-    models: dict[str, str] | None = None
-    if identity.get("models_provider") == MODELS_PROVIDER_VERTEX:
-        models = {"provider": MODELS_PROVIDER_VERTEX, "location": identity.get("models_location") or VERTEX_DEFAULT_LOCATION}
+    models = vertex_models_spec(identity, row_project=project)
     body: dict[str, Any] = {"project": project, "service_account": service_account}
-    if models:
-        # The probe reaches Vertex AI at the location too, with the identity's own token;
-        # the service does the read, since the token is its to mint, never the room's.
-        body["vertex_location"] = models["location"]
-        body["vertex_url"] = vertex_models_url(project, models["location"])
+    if models and models["project"] == project:
+        # The probe reaches Vertex AI at the location too, in the same read.
+        body.update(_vertex_probe_fields(models))
     try:
         probe = bab.probe("gcp", actor, what=f"the project {project}", **body)
     except ClientError as exc:
         raise ConnectRefused(f"{exc}; grant the room's identity the roles on this page on the project and connect again") from exc
+    if models and models["project"] != project:
+        # A Vertex AI project other than the row's own is read on its own.
+        probe["vertex"] = _probe_vertex_project(bab, actor, models).get("vertex")
     spec = {
         **base_spec,
         "kind": "account", "project": project,
@@ -1354,8 +1405,7 @@ def _connect_gcp(
         detail += f" (number {probe['project_number']})"
     detail += f" as {probe.get('subject') or 'its identity'}" + (f", acting as {service_account}" if service_account else "")
     if models:
-        detail += (f"; Vertex AI answers at {models['location']}, so its models serve the room" if probe.get("vertex")
-                   else f"; Vertex AI at {models['location']} was not checked by the permission service, the models are taken at their word")
+        detail += _vertex_detail(models, probe)
     try:
         bab.put_integration(row.id, vendor, {"project": project, "service_account": service_account, "name": name},
                             bab_mod.read_permissions(bab, vendor, actor), actor, parent=parent_id)

@@ -1,44 +1,45 @@
 <script lang="ts">
-  // Connect Google Cloud (kobo#390). No key and no role to create: the room's
-  // identity (the permission service's service account) is granted the role
-  // pack directly on a project, the common case, or on a folder or
-  // organization, whose readable projects then connect by themselves. The
-  // sheet shows who to grant, the roles three ways (gcloud, Terraform, by
-  // hand), then the form. A project may also serve the room's models: tick
-  // Vertex AI and the room checks it can list models at the location before
-  // saving. Nothing is saved until Google Cloud agrees.
+  // Connect Google Cloud (kobo#390, organization first since kobo#405). No key
+  // and no role to create: the room's identity (whatever the permission service
+  // reports) is granted the role packs once, on the organization, whose
+  // readable projects then connect by themselves; one project is the other
+  // scope. The sheet shows who to grant, the roles three ways (gcloud,
+  // Terraform, by hand), then the form. Either scope may name the Vertex AI
+  // project whose models the room offers: tick it and the room checks it can
+  // list models there at the location before saving. Nothing is saved until
+  // Google Cloud agrees.
   import { createQuery, keepPreviousData } from "@tanstack/svelte-query";
   import { adminGcpSetupQuery } from "../../lib/queries";
 
   let {
-    mode = $bindable("project"),
+    mode = $bindable("parent"),
     project = $bindable(""),
-    serviceAccount = $bindable(""),
     parentResource = $bindable(""),
     useVertex = $bindable(false),
-    location = $bindable("us-east5"),
+    vertexProject = $bindable(""),
+    location = $bindable("global"),
     integration = "gcp",
   }: {
     mode?: "project" | "parent";
     project?: string;
-    serviceAccount?: string;
     parentResource?: string;
     useVertex?: boolean;
+    vertexProject?: string;
     location?: string;
     integration?: string;
   } = $props();
 
   // The page re-renders with the id once it reads whole, so the snippets name the real
-  // project or folder; a half-typed id keeps the placeholder rather than a fetch per key.
+  // project or organization; a half-typed id keeps the placeholder rather than a fetch per key.
   const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
   const PARENT = /^(folders|organizations)\/\d+$/;
   const typed = $derived(mode === "project" ? project.trim() : parentResource.trim());
   const target = $derived((mode === "project" ? PROJECT_ID : PARENT).test(typed) ? typed : "");
-  // The name, the scope and the id all feed the query; the last page stays on screen
+  // The name, the scope, the id and the tick all feed the query; the last page stays on screen
   // while the next one loads, so the form never blinks away under a typing hand.
   const setup = createQuery(() => ({
     ...adminGcpSetupQuery({
-      packs: mode === "project" && useVertex ? ["models"] : [],
+      packs: useVertex ? ["models"] : [],
       mode,
       integration,
       target: target || undefined,
@@ -46,14 +47,21 @@
     placeholderData: keepPreviousData,
   }));
 
+  // On the project scope the Vertex AI project is the project itself until the person
+  // names another; on the organization scope it is always typed.
+  let vertexTyped = $state(false);
+  $effect(() => {
+    if (mode === "project" && !vertexTyped) vertexProject = project;
+  });
+
   const SCOPES: { id: "project" | "parent"; name: string; what: string }[] = [
-    { id: "project", name: "A project", what: "One project: its resources and, if you tick it, its Vertex AI models." },
-    { id: "parent", name: "A folder or organization", what: "Every project under it the identity can read connects by itself." },
+    { id: "parent", name: "An organization", what: "Granted once. Every project under it the identity can read connects by itself." },
+    { id: "project", name: "A project", what: "One project: its resources, and its Vertex AI models if you tick them." },
   ];
   type Method = "gcloud" | "Terraform" | "By hand";
   const METHODS: { id: Method; what: string }[] = [
     { id: "gcloud", what: "Commands to run as someone who may set IAM there." },
-    { id: "Terraform", what: "Resources for the project's own pipeline." },
+    { id: "Terraform", what: "Resources for the pipeline that owns IAM there." },
     { id: "By hand", what: "The roles to add in the console." },
   ];
   let method = $state<Method>("gcloud");
@@ -94,8 +102,8 @@
   {:else}
     {@const s = setup.data}
     <p class="step__text">
-      {#if s.mode === "parent"}
-        Read-only in every project under the folder or organization: configuration and settings, never the data a service holds.
+      {#if mode === "parent"}
+        Read-only in every project under the organization: configuration and settings, never the data a service holds.
         Projects the identity can read connect by themselves; the rest wait for the grant.
       {:else}
         Read-only across the project: configuration and settings, never the data a service holds.
@@ -121,7 +129,7 @@
     </div>
 
     <section class="block">
-      <h3 class="step__title">{s.mode === "parent" ? "On the folder or organization" : "On the project"}</h3>
+      <h3 class="step__title">{mode === "parent" ? "On the organization, once" : "On the project"}</h3>
       {#if method === "gcloud"}
         {@render code("gcloud", s.gcloud, "Copy commands")}
         <p class="hint">One binding per role{#if !s.target}; the id fills in as you type it below{/if}. Run them, then connect.</p>
@@ -141,10 +149,10 @@
       </p>
     </section>
 
-    {#if s.mode === "parent"}
+    {#if mode === "parent"}
       <label class="field">
-        <span>Folder or organization</span>
-        <input id="integration-parent_resource" type="text" bind:value={parentResource} autocomplete="off" spellcheck="false" placeholder="folders/123456789012 or organizations/123456789012" pattern="(folders|organizations)/[0-9]+" required />
+        <span>Organization</span>
+        <input id="integration-parent_resource" type="text" bind:value={parentResource} autocomplete="off" spellcheck="false" placeholder="organizations/123456789012" pattern="(folders|organizations)/[0-9]+" required />
       </label>
       <p class="hint">Connect saves it, then checks every project under it; the ones the identity can read connect by themselves and the rest show as Not granted yet. Check projects runs that check again after you grant more.</p>
     {:else}
@@ -152,29 +160,37 @@
         <span>Project id</span>
         <input id="integration-project" type="text" bind:value={project} autocomplete="off" spellcheck="false" placeholder="my-project-1234" pattern={"[a-z][a-z0-9-]{4,28}[a-z0-9]"} required />
       </label>
-      <label class="field">
-        <span>Service account to act as <span class="quiet">(optional)</span></span>
-        <input id="integration-service_account" type="text" bind:value={serviceAccount} autocomplete="off" spellcheck="false" placeholder="name@{project.trim() || "project"}.iam.gserviceaccount.com" />
+    {/if}
+
+    <label class="check">
+      <input id="integration-models" type="checkbox" bind:checked={useVertex} />
+      <span>Include this project's Vertex AI models in the room</span>
+    </label>
+    {#if useVertex}
+      <label class="field field--inset">
+        <span>Vertex AI project</span>
+        <input id="integration-models_project" type="text" bind:value={vertexProject} oninput={() => (vertexTyped = true)} autocomplete="off" spellcheck="false" placeholder="my-vertex-project" pattern={"[a-z][a-z0-9-]{4,28}[a-z0-9]"} required />
       </label>
-      <label class="check">
-        <input id="integration-models" type="checkbox" bind:checked={useVertex} />
-        <span>Use this project's Vertex AI models in the room</span>
+      <label class="field field--inset">
+        <span>Location</span>
+        <input id="integration-models_location" type="text" bind:value={location} autocomplete="off" spellcheck="false" placeholder={s.vertex_default_location} pattern="global|[a-z]+-[a-z]+[0-9]+" />
       </label>
-      {#if useVertex}
-        <label class="field field--inset">
-          <span>Location</span>
-          <input id="integration-models_location" type="text" bind:value={location} autocomplete="off" spellcheck="false" placeholder={s.vertex_default_location} pattern="global|[a-z]+-[a-z]+[0-9]+" />
-        </label>
-        <p class="hint hint--inset">A region such as {s.vertex_default_location}, or global. The models pack above grants the one role this needs.</p>
-      {/if}
-      <p class="hint">
-        {#if s.checked}
-          Connect asks the permission service to read the project as its own identity{#if useVertex}, and to list Vertex AI models at the location{/if}; nothing is saved until Google Cloud agrees.
-        {:else}
-          Google Cloud connects through the permission service; turn Access on first.
-        {/if}
+      <p class="hint hint--inset">
+        {#if mode === "parent"}The project under the organization whose models the room offers.{:else}The project itself, unless another serves the models.{/if}
+        Location: {s.vertex_default_location} unless you say otherwise, or a region such as us-east5. The models pack above grants the one role this needs.
       </p>
     {/if}
+    <p class="hint">
+      {#if s.checked}
+        {#if mode === "parent"}
+          Connect saves the organization{#if useVertex} after the permission service lists Vertex AI models in the project at the location{/if}; nothing is saved until Google Cloud agrees.
+        {:else}
+          Connect asks the permission service to read the project as its own identity{#if useVertex}, and to list Vertex AI models at the location{/if}; nothing is saved until Google Cloud agrees.
+        {/if}
+      {:else}
+        Google Cloud connects through the permission service; turn Access on first.
+      {/if}
+    </p>
   {/if}
 </div>
 
