@@ -1,8 +1,8 @@
 // The vendors the room knows how to describe when an admin adds an
 // integration, each with the credential shape it really uses (Kyle,
 // 2026-10-25): AWS is a role the gateway assumes, Google Cloud is the room's
-// identity granted on a project or on a folder or organization (kobo#390), with
-// a service account to act as when a narrower one is wanted, Azure is a federated app registration,
+// identity granted once on an organization, or on one project (kobo#390, kobo#405),
+// either naming the Vertex AI project, Azure is a federated app registration,
 // Wiz is a service-account key pair, the rest are API tokens. Datadog, with the
 // permission service on, is a service account the service mints a scoped
 // application key per agent from (kobo#322); with it off, a key pair served
@@ -78,12 +78,11 @@ export const CATALOG: CatalogEntry[] = [
     note: "Both values come from api.slack.com/apps, under Your App Configuration Tokens: generate a token for your workspace and paste the pair. Every Slack app the room creates belongs to the account that generated the token, so use a dedicated kobo account rather than your own: create a Slack user for kobo in your workspace, sign in as it at api.slack.com/apps, generate the token there, and keep its sign-in with the room's operators. The token pair rotates on its own once pasted.",
   },
   {
-    id: "gcp", name: "Google Cloud", summary: "A project, or a folder of projects: resources, settings and Vertex AI models for the room.", auth: "gcp_identity",
+    id: "gcp", name: "Google Cloud", summary: "An organization, granted once, or one project: resources, settings and the Vertex AI models for the room.", auth: "gcp_parent",
     fields: [
-      { key: "project", label: "Project id", secret: false, placeholder: "my-project-1234" },
-      { key: "service_account", label: "Service account to act as", secret: false, optional: true, placeholder: "name@project.iam.gserviceaccount.com" },
+      { key: "parent_resource", label: "Organization", secret: false, placeholder: "organizations/123456789012" },
     ],
-    note: "No key. Grant the room's identity the roles the page shows, on the project or on a folder or organization whose projects then connect by themselves; name a service account only to act as a narrower one. Tick Vertex AI to serve the project's models in the room.",
+    note: "No key. Grant the room's identity the roles the page shows, once on the organization, whose projects then connect by themselves, or on one project. Tick Vertex AI and name the project whose models the room offers.",
   },
   {
     id: "aws", name: "AWS", summary: "An organization: its management account's hub role, then the accounts under it.", auth: "aws_hub",
