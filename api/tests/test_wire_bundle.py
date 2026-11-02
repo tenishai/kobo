@@ -471,6 +471,39 @@ def test_wire_step_registers_both_new_manifests_in_kustomization(session_factory
     assert data["resources"] == [*GENERATED_KUSTOMIZATION_RESOURCES, "serviceaccount.yaml", "pvc.yaml"]
 
 
+def test_wire_step_puts_the_allow_entries_of_held_lanes_into_the_bundle(session_factory, config):
+    """Wire shape (kobo#365 lanes at birth): a permission the agent already holds when it
+    is wired (Read on its own repository, granted by the Access step) reaches the bundle
+    here, in the wiring commit, so the runtime offers the gateway tools without a second
+    commit and rebuild; an agent that holds nothing keeps its allow list as composed."""
+    from tests.fakes import FakeBab
+
+    repo = _repo_full_name(config)
+    agent_yaml = ("name: x\ntransports:\n  - {kind: a2a, host: 0.0.0.0, port: 8080}\n"
+                  "tools: {provider: colleagues, allow: [colleagues.list_colleagues]}\n")
+    connection = {"integration": "github", "vendor": "github", "kind": "connection", "name": "GitHub",
+                  "ceiling": ["github_repos_read"], "spec": {"installation_id": "1"}}
+    child = {"integration": f"github-{AGENT_NAME}", "vendor": "github", "kind": "account", "parent": "github",
+             "ceiling": ["github_repos_read"], "spec": {"repositories": [repo]}}
+    bab = FakeBab(integrations=[connection, child])
+    bab.decide([bab.request(AGENT_NAME, f"github-{AGENT_NAME}", ["github_repos_read"], None, "room")["id"]], "approve", None, "room")
+
+    for holds, name in ((True, AGENT_NAME), (False, "ivy")):
+        own_repo = repo if holds else f"{config.github_org}/agent-ivy"
+        session, agent = _make_agent(session_factory, name=name, repo_full_name=own_repo, gojira_app_id=1)
+        github = FakeGitHub(extra_clone_files={"bundle/agent.yaml": agent_yaml})
+        gojira = FakeGojira(activate_after=1)
+        gojira.create_app(name=name, repo_full_name=own_repo, cluster=config.gojira_cluster, namespace=name)
+        clients = _clients(github=github, gojira=gojira)
+        clients.bab = bab if holds else FakeBab(integrations=[connection])
+        ctx = _make_ctx(session, agent, config, clients)
+
+        WireStep().run(ctx)
+
+        allow = yaml.safe_load((ctx.workdir / "wire" / "bundle" / "agent.yaml").read_text())["tools"]["allow"]
+        assert allow == (["colleagues.list_colleagues", "github-mcp.*"] if holds else ["colleagues.list_colleagues"])
+
+
 def test_wire_step_edits_gojira_yaml_contract_with_exact_fs_group(session_factory, config):
     """Wire shape: Wire step edits gojira yaml contract with exact fs group."""
     repo = _repo_full_name(config)
