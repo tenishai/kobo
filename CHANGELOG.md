@@ -6,6 +6,11 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Added
+- Atlassian connects with an account's email and its API token, the pair its MCP server takes as Basic auth (a plain token was sent as a Bearer, which Atlassian refuses for a user's token). The room checks the pair with Atlassian before saving, the gateway target gets its own session per agent and opens only to an agent granted Atlassian on its Access tab, and an address pasted with the trailing `/mcp` from Atlassian's docs is taken as is.
+
 ## [0.3.43] - 2026-11-02
 
 ### Added

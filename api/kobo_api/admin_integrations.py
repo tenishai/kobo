@@ -92,6 +92,7 @@ Bedrock is per account.
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import tempfile
@@ -99,11 +100,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 from sqlalchemy.orm import Session
 
 from . import (
     admin_store,
     cloud_access,
+    gateway_lane,
     model_providers,
     room_credentials,
     room_services,
@@ -129,6 +132,21 @@ BRANCH_PREFIX = "kobo/integration-"
 # branches; opening one closes the other if it is still open.
 REMOVE_SUFFIX = "-remove"
 SECRET_KEY = "TOKEN"
+# An account's email and API token sent together as Basic auth (kobo, 2026-11-02): Atlassian's
+# MCP server takes a user's API token only this way (a plain Bearer is for its service-account
+# keys). The email is a plain identity field; the stored secret is the joined `email:token`
+# the gateway's basic scheme sends; the room checks the pair with the vendor's server, the way
+# the gateway will, before anything is stored.
+BASIC_AUTH = "basic_token"
+BASIC_USER_KEY = "email"
+TOKEN_AUTHS = ("token", BASIC_AUTH)
+BASIC_PROBE_TIMEOUT_S = 15.0
+# The gateway's client appends this to a target's address itself; a pasted address that ends in
+# it (Atlassian's docs give https://mcp.atlassian.com/v1/mcp) loses it, or the call would 404.
+MCP_SUFFIX = "/mcp"
+# What a token vendor's target needs beyond the credential, by vendor: Atlassian's server keeps an
+# Mcp-Session-Id per client, so each agent gets its own upstream session over the shared credential.
+TARGET_EXTRAS: dict[str, dict[str, str]] = {"atlassian": {"session": "per-persona"}}
 
 # How the gateway reaches a vendor (Kyle, 2026-10-25: AWS is a role, not a
 # key; GCP is workload identity or a scoped service account; the API-token
@@ -138,6 +156,7 @@ SECRET_KEY = "TOKEN"
 # stores nothing: the gateway's own cloud identity does the work.
 AUTH_KINDS = {
     "token": "one bearer token",
+    BASIC_AUTH: "an account's email and API token, sent together as Basic auth",
     "api_keys": "one or more named keys",
     "aws_role": "an IAM role the room assumes directly",
     # Hub and spoke (permission service on): one hub role per AWS organization, in its
@@ -257,6 +276,8 @@ def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> 
         raise ConnectRefused(f"unknown auth kind {auth!r}; one of {', '.join(AUTH_KINDS)}")
     if auth == "token" and not secrets.get(SECRET_KEY, "").strip():
         raise ConnectRefused("an integration needs the vendor's token or key")
+    if auth == BASIC_AUTH and not (identity.get(BASIC_USER_KEY, "").strip() and secrets.get(SECRET_KEY, "").strip()):
+        raise ConnectRefused("this vendor needs the account's email and its API token")
     if auth == "api_keys" and not any(v.strip() for v in secrets.values()):
         raise ConnectRefused("this vendor needs at least one key")
     if auth == "aws_role" and not _AWS_ROLE_ARN.match(identity.get("role_arn", "").strip()):
@@ -390,15 +411,56 @@ def target_spec(row: AdminIntegration) -> dict[str, Any]:
     and stay out of here. Only the `token` kind has a spec the gateway knows
     whole; the other kinds go by pull request (`target_stanza`)."""
     spec = row.spec or {}
-    if spec.get("auth", "token") != "token":
-        raise ValueError(f"no live target spec for the {spec.get('auth')!r} kind")
-    return {
+    auth = spec.get("auth", "token")
+    if auth not in TOKEN_AUTHS:
+        raise ValueError(f"no live target spec for the {auth!r} kind")
+    out: dict[str, Any] = {
         "transport": "http",
         "address": spec.get("address", ""),
         "trust": spec.get("trust", "untrusted"),
         "auth_method": "bearer",
         "bearer_token_env": token_env(row.id),
     }
+    if auth == BASIC_AUTH:
+        out["auth_scheme"] = "basic"  # the env holds `email:token`; the gateway encodes it at the wire
+    out.update(TARGET_EXTRAS.get(row.vendor, {}))
+    # A vendor with a gateway lane is open only to an agent whose grant carries the lane's scope.
+    lane = gateway_lane.GATEWAY_LANES.get(row.vendor)
+    if lane is not None:
+        out["required_scope"] = lane.scopes[0]
+    return out
+
+
+def gateway_address(address: str) -> str:
+    """The MCP base the gateway takes for a token vendor: trimmed, no trailing
+    slash, and without the `/mcp` the gateway's client appends itself."""
+    address = address.strip().rstrip("/")
+    if address.endswith(MCP_SUFFIX):
+        address = address[: -len(MCP_SUFFIX)].rstrip("/")
+    return address
+
+
+def probe_basic_mcp(name: str, address: str, user: str, token: str) -> None:
+    """Ask the vendor's MCP server to initialize with the pair as Basic auth,
+    the way the gateway will. 401 or 403 is a refusal of the pair; any other
+    answer means the server took it (a protocol complaint still passed the
+    door). Raises `ConnectRefused` with the vendor's sentence. The token is
+    never logged."""
+    pair = base64.b64encode(f"{user}:{token}".encode()).decode()
+    body = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "kobo", "version": "0"}}}
+    try:
+        resp = httpx.post(f"{address}{MCP_SUFFIX}", json=body, timeout=BASIC_PROBE_TIMEOUT_S,
+                          headers={"Authorization": f"Basic {pair}", "Accept": "application/json, text/event-stream"})
+    except httpx.HTTPError as exc:
+        raise ConnectRefused(f"{name}'s MCP server at {address} could not be reached from the room "
+                             f"({exc.__class__.__name__}); nothing was connected") from exc
+    if resp.status_code in (401, 403):
+        raise ConnectRefused(f"{name} did not accept the email and API token (HTTP {resp.status_code}); check both, and "
+                             "that API token access to its MCP server is turned on for the organization; nothing was connected")
+
+
+_basic_probe = probe_basic_mcp  # tests swap it for a recorder
 
 
 def datadog_target_spec(row: AdminIntegration) -> dict[str, Any]:
@@ -478,7 +540,7 @@ def live_target_spec(row: AdminIntegration) -> dict[str, Any] | None:
         return datadog_target_spec(row)
     if auth == GITHUB_AUTH:
         return github_target_spec(row)
-    if auth == "token":
+    if auth in TOKEN_AUTHS:
         return target_spec(row)
     return None
 
@@ -510,7 +572,7 @@ def target_stanza(row: AdminIntegration) -> str:
     table."""
     spec = row.spec or {}
     auth = spec.get("auth", "token")
-    if auth == "token":
+    if auth in TOKEN_AUTHS:
         return _render_stanza(row, row.id, target_spec(row))
     lines = [
         _render_stanza(row, row.id, {
@@ -1635,8 +1697,18 @@ def _connect_cloud_or_token(
                                  "fix it and connect again") from exc
     if secrets and (sero is None or not config.sero_url):
         raise ConnectRefused("the Secrets add-on is off, so the room has nowhere to hold the credential; turn it on first")
+    probe_note = ""
+    if auth in TOKEN_AUTHS:
+        address = gateway_address(address)
+    if auth == BASIC_AUTH:
+        # The pair is checked with the vendor's server first, then stored joined as the one value
+        # the gateway's basic scheme sends; the email stays readable on the row.
+        if address:
+            _basic_probe(name, address, identity[BASIC_USER_KEY], secrets[SECRET_KEY])
+            probe_note = f"{name} accepted the email and API token; "
+        secrets = {SECRET_KEY: f"{identity[BASIC_USER_KEY]}:{secrets[SECRET_KEY]}"}
     spec: dict[str, Any] = {
-        "address": address.strip(),
+        "address": address,
         "trust": trust if trust in ("trusted", "untrusted") else "untrusted",
         "auth": auth,
         "identity": {k: v for k, v in identity.items() if k != "external_id"},
@@ -1677,7 +1749,7 @@ def _connect_cloud_or_token(
     except ClientError as exc:
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"the secrets add-on refused: {exc}")
         return row
-    detail = "credential stored" if secrets else "no secret to store; the connection uses the room\'s own identity"
+    detail = f"{probe_note}credential stored" if secrets else "no secret to store; the connection uses the room\'s own identity"
     minter = "the permission service" if bab is not None else "the gateway"
     if probe is not None:
         detail = f"AWS agreed: {minter} assumed the role in account {probe['account']}"

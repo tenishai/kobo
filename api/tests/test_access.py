@@ -6212,6 +6212,47 @@ def test_a_target_the_gateway_already_carries_connects_without_a_pull_request(tm
     assert not github.open_pr_calls and "pull_request" not in out["spec"]
 
 
+def test_an_email_and_api_token_vendor_is_checked_then_served_as_basic_auth(tmp_path, fake_storage, monkeypatch):
+    """Gate (integrity): Atlassian's MCP server takes a user's API token only as Basic auth with the
+    account's email (a Bearer is for its service-account keys). The room checks the pair with the
+    server the way the gateway will, stores them joined as the one value the gateway's basic scheme
+    sends, drops the /mcp the docs put on the address (the gateway's client adds it), and the target
+    carries the per-agent session and the vendor's read scope so only a granted agent reaches it."""
+    from kobo_api import admin_integrations
+    probes: list[tuple] = []
+    monkeypatch.setattr(admin_integrations, "_basic_probe", lambda name, address, user, token: probes.append((name, address, user, token)))
+    bab = FakeBab(integrations=[])
+    client, headers = _access_client(tmp_path, fake_storage, bab=bab)
+    admin = FakeLiminalAdmin()
+    client.app.state.clients.liminal_admin = admin
+    sero = client.app.state.clients.sero
+    body = {"vendor": "atlassian", "name": "Atlassian", "base_access": "read", "auth": "basic_token",
+            "identity": {"email": "bot@example.com"}, "secrets": {"TOKEN": "tok-1"}, "address": "https://mcp.atlassian.com/v1/mcp"}
+    row = client.post("/api/admin/integrations", json=body, headers=headers).json()
+    assert row["state"] == "applied" and "Atlassian accepted the email and API token" in row["state_detail"], row
+    assert probes == [("Atlassian", "https://mcp.atlassian.com/v1", "bot@example.com", "tok-1")]
+    target = admin.targets["atlassian"]
+    assert target["auth_method"] == "bearer" and target["auth_scheme"] == "basic"
+    assert target["address"] == "https://mcp.atlassian.com/v1"
+    assert target["session"] == "per-persona" and target["required_scope"] == "atlassian:read"
+    (put,) = [p for p in sero.puts if p[1] == "apps/kobo/integrations/atlassian"]
+    assert put[2] == {"TOKEN": "bot@example.com:tok-1"}
+    assert row["spec"]["identity"] == {"email": "bot@example.com"} and row["spec"]["secret_keys"] == ["TOKEN"]
+    (integ,) = bab.integrations("x")
+    assert integ["vendor"] == "atlassian"
+
+    # A pair the server refuses is stored nowhere.
+    def refuse(name, address, user, token):
+        raise admin_integrations.ConnectRefused(f"{name} did not accept the email and API token (HTTP 401)")
+    monkeypatch.setattr(admin_integrations, "_basic_probe", refuse)
+    r = client.post("/api/admin/integrations", json={**body, "vendor": "other-atlassian", "name": "Other"}, headers=headers)
+    assert r.status_code == 409 and "did not accept" in r.json()["error"]
+    assert len(sero.puts) == 1 and len(bab.integrations("x")) == 1
+    # The token alone is refused before anything is checked.
+    r = client.post("/api/admin/integrations", json={**body, "identity": {}}, headers=headers)
+    assert r.status_code == 409 and "email and its API token" in r.json()["error"]
+
+
 def test_removing_an_integration_twice_is_not_a_refusal(tmp_path, fake_storage):
     """Gate (integrity): a second Remove while the first is still opening the gateway's pull
     request finds nothing on either side; that is "already removed", not an error."""

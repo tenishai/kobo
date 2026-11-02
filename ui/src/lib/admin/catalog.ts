@@ -16,7 +16,7 @@
 // endpoint the person runs, named by them, one row per endpoint; the room probes it and
 // serves its models through the model gateway. Nothing is leased.
 // A vendor not on this list is still connectable as "Other" with a token.
-export type AuthKind = "token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "gcp_parent" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token" | "self_hosted_endpoint";
+export type AuthKind = "token" | "basic_token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "gcp_parent" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token" | "self_hosted_endpoint";
 
 export type CatalogField = {
   key: string;
@@ -49,7 +49,15 @@ export const SELF_HOSTED_AUTH = "self_hosted_endpoint";
 export const SELF_HOSTED_SUMMARY = "Models you run yourself, on your own machines or clusters, at an address you give the room.";
 
 export const CATALOG: CatalogEntry[] = [
-  { id: "atlassian", name: "Atlassian", summary: "Jira issues and Confluence pages.", auth: "token", fields: TOKEN, address: "https://mcp.atlassian.com/v1/mcp" },
+  {
+    id: "atlassian", name: "Atlassian", summary: "Jira issues and Confluence pages.", auth: "basic_token",
+    fields: [
+      { key: "email", label: "Email of the account the token belongs to", secret: false, placeholder: "someone@example.com" },
+      { key: "TOKEN", label: "API token", secret: true },
+    ],
+    address: "https://mcp.atlassian.com/v1",
+    note: "Atlassian takes a user's API token together with the account's email. Make the token on an account that reads only what agents may, and turn on API token access for the Rovo MCP server under Security in Atlassian administration. The room checks the pair with Atlassian before it saves; agents reach Jira and Confluence through the gateway with it, each in its own session, once granted Atlassian on their Access tab.",
+  },
   {
     id: "datadog", name: "Datadog", summary: "Monitors, dashboards and logs.", auth: "datadog_service_account",
     fields: [
