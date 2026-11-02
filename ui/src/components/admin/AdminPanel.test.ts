@@ -296,6 +296,55 @@ describe("AdminPanel", () => {
     expect(document.querySelector("#integration-form input[type=password]")).toBeNull();
   });
 
+  it("AWS offers one account with its Bedrock models: the tick and the region reach the form's identity under aws_role", async () => {
+    // kobo#390. Picking One account turns the sheet into a direct role; ticking Bedrock asks
+    // the page for the permissions block and submits the provider and region with the ARN.
+    const ROLE_SETUP = {
+      ...AWS_SETUP, mode: "role", role_name: "KoboAccess-Role",
+      terraform: 'module "kobo_access" {}\nresource "aws_iam_role_policy" "kobo_bedrock" {}',
+      bedrock_default_region: "us-east-1", bedrock_policy: '{"Statement": [{"Sid": "BedrockInvoke"}]}',
+    };
+    stubFetch({
+      "/api/whoami": ADMIN_WHOAMI,
+      "/api/admin/addons": ADDONS,
+      "/api/admin/room": { org_repo: "example/kobo-config", runtime_image: "r@sha256:1", cluster: "agents-dev", delivery_backend: "deployed" },
+      "mode=role": ROLE_SETUP,
+      "/api/admin/integrations/aws/setup": AWS_SETUP,
+      "/api/admin/integrations": { integrations: [] },
+      "/api/admin/roles": ROLES,
+      "/api/admin/connections": CONNECTIONS,
+      "/api/admin/people": PEOPLE,
+      "/api/admin/audit": AUDIT,
+      "/api/group-requests": { requests: REQUESTS },
+    });
+    navigate({ page: "admin", pane: "integrations" });
+    renderWithClient(AdminPanel);
+    await fireEvent.click(await screen.findByRole("button", { name: "Add integration" }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Add AWS" }));
+    expect(await screen.findByRole("heading", { name: "Connect an AWS organization" })).toBeTruthy();
+    expect(screen.queryByLabelText(/Bedrock models in the room/)).toBeNull();
+    await fireEvent.click(screen.getByRole("radio", { name: /One account/ }));
+    expect(await screen.findByRole("heading", { name: "Connect an AWS account" })).toBeTruthy();
+    expect(await screen.findByLabelText("Role ARN")).toBeTruthy();
+    await fireEvent.click(await screen.findByLabelText(/Bedrock models in the room/));
+    const region = (await screen.findByLabelText("Region")) as HTMLInputElement;
+    expect(region.value).toBe("us-east-1");
+    expect(await screen.findByText(/kobo_bedrock/)).toBeTruthy();
+    await fireEvent.input(screen.getByLabelText("Name for this account"), { target: { value: "acme-models" } });
+    // The name is part of the page's query, so the sheet reads again before the ARN field is back.
+    await fireEvent.input(await screen.findByLabelText("Role ARN"), { target: { value: "arn:aws:iam::123456789012:role/KoboModels-Bedrock" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    const post = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url) === "/api/admin/integrations" && init?.method === "POST");
+    expect(post).toBeTruthy();
+    const body = JSON.parse(String(post?.[1]?.body));
+    expect(body.vendor).toBe("aws");
+    expect(body.auth).toBe("aws_role");
+    expect(body.identity).toEqual({ role_arn: "arn:aws:iam::123456789012:role/KoboModels-Bedrock", models_provider: "bedrock", models_region: "us-east-1" });
+    expect(body.secrets).toEqual({});
+    const setupCalls = vi.mocked(fetch).mock.calls.map(([url]) => String(url)).filter((u) => u.includes("/aws/setup"));
+    expect(setupCalls.some((u) => u.includes("mode=role") && u.includes("bedrock=1"))).toBe(true);
+  });
+
   it("Google Cloud is its own sheet: the identity to grant, the roles three ways, then a project and its Vertex AI models", async () => {
     // kobo#390. No key anywhere: the form submits the project under `gcp_identity`, with
     // the models fields when the Vertex AI box is ticked.

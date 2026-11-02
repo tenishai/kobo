@@ -28,6 +28,13 @@ slug>-<model slug>`, `model_info.id` `<row id>:<model name>`, LiteLLM's
 room's Secret) and its options as `extra_body`. The catalogue lists them
 under the row's name; the org's `models:` list is untouched.
 
+An AWS account row (kobo#390) serves Bedrock the same way Vertex rides a
+project: its spec carries `models = {provider: "bedrock", region, role_arn}`
+and it serves the org's `bedrock/...` entries. The gateway runs as the
+room's identity and assumes the row's role itself (LiteLLM's
+`aws_role_name` with the web identity token a sidecar refreshes into
+`BEDROCK_TOKEN_PATH`), so no credential is stored anywhere in the room.
+
 With the gateway off (`models_gateway_url` empty) nothing in this module is
 reached: the catalogue route answers from `models:` as it always has.
 """
@@ -65,7 +72,13 @@ log = logging.getLogger(__name__)
 
 # The provider kinds the room knows, keyed by the prefix of a catalogue
 # entry's id, and what the picker calls the cloud behind each.
-PROVIDER_LABELS: dict[str, str] = {"vertex_ai": "Google Cloud", self_hosted.VENDOR: self_hosted.LABEL}
+PROVIDER_LABELS: dict[str, str] = {"vertex_ai": "Google Cloud", "bedrock": "AWS", self_hosted.VENDOR: self_hosted.LABEL}
+PROVIDER_BEDROCK = "bedrock"
+# Where the gateway's sidecar keeps the Google identity token (audience
+# `sts.amazonaws.com`) the gateway trades for the Bedrock role's session,
+# and the session name AWS logs it under. Both are the install's contract.
+BEDROCK_TOKEN_PATH = "/var/run/aws/web-identity-token"
+BEDROCK_SESSION_NAME = "kobo-gateway"
 
 # What the picker says under a model nobody serves, and under every model
 # when the gateway itself does not answer.
@@ -94,8 +107,9 @@ def gateway_on(config: Config) -> bool:
 
 @dataclass(frozen=True)
 class Provider:
-    """One connected provider: the integration row that carries it. A cloud
-    provider has a `project` and `location`; a self-hosted one has the
+    """One connected provider: the integration row that carries it. A Google
+    Cloud provider has a `project` and `location`; an AWS one the `region`
+    and the `role_arn` the gateway assumes; a self-hosted one has the
     endpoint's `base_url`, its `options`, the `models` the probe left on
     the row and, when the endpoint takes a key, the `credential_ref` the
     room reads it back from."""
@@ -105,6 +119,8 @@ class Provider:
     provider: str
     project: str = ""
     location: str = ""
+    region: str = ""
+    role_arn: str = ""
     base_url: str = ""
     options: dict[str, Any] = field(default_factory=dict)
     models: tuple[dict[str, Any], ...] = ()
@@ -147,6 +163,8 @@ def providers_from_rows(rows: list[AdminIntegration]) -> list[Provider]:
         out.append(Provider(
             row_id=row.id, name=row.name, provider=provider,
             project=str(spec.get("project") or ""), location=str(models.get("location") or ""),
+            region=str(models.get("region") or ""),
+            role_arn=str(models.get("role_arn") or (spec.get("identity") or {}).get("role_arn") or ""),
         ))
     return out
 
@@ -216,11 +234,25 @@ def desired_models(config: Config, providers: list[Provider], keys: dict[str, st
                 # wins over the provider's default, as it does for the
                 # per-agent env today (`config.vertex_location_for`).
                 params["vertex_location"] = entry.location or provider.location
+            elif provider.provider == PROVIDER_BEDROCK:
+                params.update(bedrock_params(provider))
             out.append(Desired(
                 gateway_id=f"{provider.row_id}:{entry.id}", model_name=gateway_model_name(entry),
                 litellm_params=params, entry=entry, provider=provider,
             ))
     return out
+
+
+def bedrock_params(provider: Provider) -> dict[str, Any]:
+    """How the gateway reaches an AWS account's Bedrock: it assumes the row's
+    role with the identity token its sidecar keeps at `BEDROCK_TOKEN_PATH`,
+    in the row's region. No key, nothing stored."""
+    return {
+        "aws_region_name": provider.region,
+        "aws_role_name": provider.role_arn,
+        "aws_web_identity_token": BEDROCK_TOKEN_PATH,
+        "aws_session_name": BEDROCK_SESSION_NAME,
+    }
 
 
 def _ours(model_id: str) -> bool:
@@ -336,10 +368,23 @@ def sync_from_session(session: Session, clients: Clients | None, config: Config)
 def _reason(entry: ModelChoice, providers: list[Provider], ready: bool) -> str | None:
     kind = provider_of(entry.id)
     if not any(p.provider == kind for p in providers):
-        return REASON_NOT_CONNECTED.format(cloud=PROVIDER_LABELS.get(kind, kind or "a cloud"))
+        cloud = PROVIDER_LABELS.get(kind, kind or "a cloud")
+        return REASON_NOT_CONNECTED.format(cloud=f"{cloud} with Bedrock" if kind == PROVIDER_BEDROCK else cloud)
     if not ready:
         return REASON_GATEWAY_DOWN
     return None
+
+
+def _provider_label(kind: str, providers: list[Provider]) -> str:
+    """What the picker calls the cloud behind an entry. Bedrock is per
+    account: with one AWS account serving it the label is the cloud's, with
+    several it names them, so a person sees which accounts answer."""
+    label = PROVIDER_LABELS.get(kind, kind)
+    if kind == PROVIDER_BEDROCK:
+        names = [p.name for p in providers if p.provider == kind]
+        if len(names) > 1:
+            return f"{label} ({', '.join(names)})"
+    return label
 
 
 def catalogue(config: Config, rows: list[AdminIntegration], gateway: ModelsGatewayClient | None) -> dict[str, Any]:
@@ -354,7 +399,7 @@ def catalogue(config: Config, rows: list[AdminIntegration], gateway: ModelsGatew
         reason = _reason(entry, providers, ready)
         models.append({
             "id": entry.id, "label": entry.label, "family": entry.family, "tier": entry.tier,
-            "provider": kind, "provider_label": PROVIDER_LABELS.get(kind, kind),
+            "provider": kind, "provider_label": _provider_label(kind, providers),
             "gateway_model": gateway_model_name(entry),
             "available": reason is None, "reason": reason,
         })

@@ -4286,9 +4286,10 @@ def create_app(
 
     @app.get("/api/admin/integrations/aws/setup")
     def admin_aws_setup(request: Request, packs: str = "", integration: str = "aws", mode: str = "role",
-                        parent: str = "", account_id: str = "") -> JSONResponse:
+                        parent: str = "", account_id: str = "", bedrock: str = "") -> JSONResponse:
         """The Connect AWS page: the gateway\'s identity, the packs, and the
-        role rendered three ways from the vendored cloud-access release."""
+        role rendered three ways from the vendored cloud-access release; with
+        `bedrock=1` (kobo#390) the Bedrock permissions block rides along."""
         blocked = _admin_panel_gate(request)
         if blocked is not None:
             return blocked
@@ -4298,7 +4299,8 @@ def create_app(
             return JSONResponse(admin_integrations_flow.aws_setup(
                 app.state.clients, integration_id=safe_id, packs=wanted, actor=_bab_actor(request),
                 mode=mode if mode in ("role", "org", "account") else "role",
-                parent=parent.strip() or None, account_id=account_id.strip() or None))
+                parent=parent.strip() or None, account_id=account_id.strip() or None,
+                bedrock=bedrock.strip().lower() in ("1", "true", "yes")))
         except admin_integrations_flow.ConnectRefused as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
 

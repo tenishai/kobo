@@ -32,7 +32,7 @@ from kobo_api.clients import (
     _build_teach_envelope,
     _post_task,
 )
-from kobo_api.config import Config
+from kobo_api.config import Config, ModelChoice
 from kobo_api.github_app import InstallationTokenProvider
 from kobo_api.liminal_admin import (
     HttpxLiminalAdminClient,
@@ -41,7 +41,7 @@ from kobo_api.liminal_admin import (
 )
 from kobo_api.sero import HttpxSeroClient
 from kobo_api.slack_setup import render_manifest
-from tests.fakes import FakeKubectl, FakeModelsGateway
+from tests.fakes import FakeBab, FakeKubectl, FakeModelsGateway
 
 # --- from test_clients.py ---
 
@@ -954,3 +954,83 @@ def test_check_models_reprobes_and_flips_a_models_state_on_the_row_and_the_gatew
     session.commit()
     assert gone["state"] == "failed" and gateway.models == {}
     session.close()
+
+
+# --- Bedrock through an AWS account (kobo#390) --------------------------------
+
+BEDROCK_ROLE = "arn:aws:iam::123456789012:role/KoboModels-Bedrock"
+BEDROCK_HAIKU = "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0"
+
+
+def _bedrock_room(tmp_path):
+    config = Config(
+        workdir=tmp_path / "work", models_gateway_url="http://models-gateway.models.svc", room_namespace="kobo",
+        models=[
+            ModelChoice(id=BEDROCK_HAIKU, label="Claude Cheap on AWS (Haiku)", family="Claude", tier="fast"),
+            ModelChoice(id="bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0", label="Claude Balanced on AWS (Sonnet)", family="Claude", tier="balanced"),
+            ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Affordable Sonnet", family="Claude", tier="balanced"),
+        ],
+    )
+    gateway, bab = FakeModelsGateway(), FakeBab(integrations=[])
+    clients = Clients(github=None, gojira=None, cloud=None, agent=None, kubectl=FakeKubectl(), bab=bab, models_gateway=gateway)
+    return config, clients, gateway, bab
+
+
+def _connect_aws(session, clients, config, *, name, auth, identity):
+    return admin_integrations.connect(
+        session, clients, config, vendor="aws", name=name, base_access="read", credential="", address="",
+        trust="untrusted", actor="ops@example.com", auth=auth, identity=identity, secrets={},
+    )
+
+
+def test_an_aws_account_with_bedrock_ticked_registers_the_orgs_bedrock_entries_on_the_gateway_as_its_role(session_factory, tmp_path):
+    """Wire shape the model gateway reads (kobo#390): an `aws_role` row connected
+    with the Bedrock box ticked carries `models = {provider, region, role_arn}`
+    and registers every `bedrock/` entry of the org's list on the gateway as a
+    deployment the gateway serves by assuming that role with its own identity
+    token (region, role, token path, session name; no key anywhere). Entries of
+    another provider are not touched, and an organization's hub row never
+    carries the tick."""
+    config, clients, gateway, bab = _bedrock_room(tmp_path)
+    session = session_factory()
+
+    row = _connect_aws(session, clients, config, name="acme-models", auth="aws_role",
+                       identity={"role_arn": BEDROCK_ROLE, "models_provider": "bedrock", "models_region": "us-west-2"})
+    session.commit()
+
+    assert row.state == admin_store.STATE_APPLIED, row.state_detail
+    assert row.spec["models"] == {"provider": "bedrock", "region": "us-west-2", "role_arn": BEDROCK_ROLE}
+    assert row.spec["identity"] == {"role_arn": BEDROCK_ROLE, "audience": "sts.amazonaws.com"}, "the tick lives in models, not identity"
+    assert "Bedrock models in us-west-2" in row.state_detail and "not yet checked with AWS" in row.state_detail
+    # The permission service still holds the role as before: the tick changes nothing there.
+    assert bab.probes == [(BEDROCK_ROLE, "sts.amazonaws.com")]
+    (integ,) = bab.integrations("x")
+    assert integ["spec"] == {"role_arn": BEDROCK_ROLE, "audience": "sts.amazonaws.com", "name": "acme-models"}
+    # The gateway: one deployment per bedrock entry, as the role; the Vertex entry has no provider.
+    assert sorted(gateway.models) == sorted([
+        f"{row.id}:bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0", f"{row.id}:{BEDROCK_HAIKU}"])
+    haiku = gateway.models[f"{row.id}:{BEDROCK_HAIKU}"]
+    assert haiku["model_name"] == "claude-cheap-on-aws-haiku"
+    assert haiku["litellm_params"] == {
+        "model": BEDROCK_HAIKU, "aws_region_name": "us-west-2", "aws_role_name": BEDROCK_ROLE,
+        "aws_web_identity_token": "/var/run/aws/web-identity-token", "aws_session_name": "kobo-gateway",
+    }
+    assert haiku["model_info"]["provider"] == "bedrock" and haiku["model_info"]["integration"] == row.id
+
+    # An organization's hub may not carry it, and an account without the tick serves nothing.
+    with pytest.raises(admin_integrations.ConnectRefused, match="per account"):
+        _connect_aws(session, clients, config, name="acme-org", auth="aws_hub",
+                     identity={"hub_role_arn": "arn:aws:iam::999999999999:role/KoboAccess-Hub", "models_provider": "bedrock"})
+    with pytest.raises(admin_integrations.ConnectRefused, match="not an AWS region"):
+        _connect_aws(session, clients, config, name="acme-bad", auth="aws_role",
+                     identity={"role_arn": BEDROCK_ROLE, "models_provider": "bedrock", "models_region": "US East"})
+    plain = _connect_aws(session, clients, config, name="acme-audit", auth="aws_role",
+                         identity={"role_arn": "arn:aws:iam::123456789012:role/KoboAccess-Role"})
+    session.commit()
+    assert "models" not in plain.spec and len(gateway.models) == 2
+
+    # Disconnect takes exactly its models off the gateway.
+    admin_integrations.disconnect(session, clients, config, integration_id=row.id, actor="ops@example.com")
+    session.commit()
+    assert gateway.models == {}
+

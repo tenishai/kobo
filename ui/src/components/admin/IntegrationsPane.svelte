@@ -88,6 +88,12 @@
   let gcpMode = $state<"project" | "parent">("project");
   let useVertex = $state(false);
   const VERTEX_DEFAULT_LOCATION = "us-east5";
+  // The AWS sheet's own choices (kobo#390): an organization (its hub role) or one account
+  // (a role the room assumes directly), and whether that account's Bedrock models serve
+  // the room. Bedrock is per account, so the box is not offered on an organization.
+  let awsMode = $state<"org" | "role" | "account">("org");
+  let useBedrock = $state(false);
+  const BEDROCK_DEFAULT_REGION = "us-east-1";
 
   // Datadog through the permission service (kobo#327): the gateway gets Datadog's
   // hosted MCP server as a target, so the address field stays and follows the Site
@@ -133,6 +139,8 @@
     const entry = preset ?? OTHER;
     gcpMode = "project";
     useVertex = false;
+    awsMode = "org";
+    useBedrock = false;
     form = {
       entry,
       mode: replacing ? "replace" : entry.id === "aws" ? "org" : entry.id === "gcp" ? "gcp" : "other",
@@ -144,7 +152,7 @@
       trust: "untrusted",
       // The AWS sheet binds the pasted ARN to `role_arn` whatever the catalogue field is called;
       // the Google Cloud sheet owns its fields the same way.
-      values: entry.id === "aws" ? { role_arn: "" }
+      values: entry.id === "aws" ? { role_arn: "", models_region: BEDROCK_DEFAULT_REGION }
         : entry.id === "gcp" ? { project: "", service_account: "", parent_resource: "", models_location: VERTEX_DEFAULT_LOCATION }
         : Object.fromEntries(entry.fields.map((f) => [f.key, ""])),
     };
@@ -197,7 +205,14 @@
     const identity: Record<string, string> = {};
     const secrets: Record<string, string> = {};
     let auth: string = form.entry.auth;
-    if (form.mode === "org") {
+    if (form.mode === "org" && awsMode === "role") {
+      auth = "aws_role";
+      identity.role_arn = (form.values.role_arn ?? "").trim();
+      if (useBedrock) {
+        identity.models_provider = "bedrock";
+        identity.models_region = (form.values.models_region ?? "").trim() || BEDROCK_DEFAULT_REGION;
+      }
+    } else if (form.mode === "org") {
       auth = "aws_hub";
       identity.hub_role_arn = (form.values.role_arn ?? "").trim();
     } else if (form.mode === "gcp" && gcpMode === "parent") {
@@ -273,9 +288,10 @@
     if (i.vendor === SELF_HOSTED) return "models";
     return i.vendor === "aws" || i.vendor === "gcp" ? childNoun(i) : "connection";
   }
+  const PROVIDER_NAMES: Record<string, string> = { vertex_ai: "Vertex AI", bedrock: "Bedrock" };
   const modelsLabel = (i: AdminIntegration): string | null =>
     i.spec.models && !Array.isArray(i.spec.models)
-      ? `Models: ${i.spec.models.provider === "vertex_ai" ? "Vertex AI" : i.spec.models.provider}, ${i.spec.models.location}`
+      ? `Models: ${PROVIDER_NAMES[i.spec.models.provider] ?? i.spec.models.provider}, ${i.spec.models.location ?? i.spec.models.region ?? ""}`
       : null;
   // A Self-hosted row (kobo#390): the host alone (never the key, never the path), how many
   // of its models answer, and the ones that did not, each with the server's sentence.
@@ -295,7 +311,7 @@
     return ok === models.length ? `${models.length} ${noun}` : `${ok} of ${models.length} ${noun} answer`;
   }
   const formTitle = $derived(
-    !form ? "" : form.mode === "org" ? "Connect an AWS organization" : form.mode === "gcp" ? "Connect Google Cloud" : form.mode === "replace" ? `Replace ${form.name}` : form.entry.id === SELF_HOSTED ? "Connect self-hosted models" : `Add ${form.name || "an integration"}`,
+    !form ? "" : form.mode === "org" ? (awsMode === "role" ? "Connect an AWS account" : "Connect an AWS organization") : form.mode === "gcp" ? "Connect Google Cloud" : form.mode === "replace" ? `Replace ${form.name}` : form.entry.id === SELF_HOSTED ? "Connect self-hosted models" : `Add ${form.name || "an integration"}`,
   );
   const fromDeployment = (i: AdminIntegration): boolean => i.spec.source === "deployment";
   const roomOwn = (i: AdminIntegration): boolean => ROOM_VENDORS.has(i.vendor) && i.spec.source !== "access";
@@ -476,10 +492,17 @@
   {#if form && form.mode === "org"}
     <form id="integration-form" class="form" onsubmit={submitConnect}>
       <label class="field">
-        <span>Name for this organization</span>
-        <input id="integration-name" type="text" bind:value={form.name} placeholder="e.g. acme-aws" required autocomplete="off" />
+        <span>{awsMode === "role" ? "Name for this account" : "Name for this organization"}</span>
+        <input id="integration-name" type="text" bind:value={form.name} placeholder={awsMode === "role" ? "e.g. acme-models" : "e.g. acme-aws"} required autocomplete="off" />
       </label>
-      <AwsConnect bind:roleArn={form.values.role_arn} mode="org" integration={slug(form.name) || "aws"} />
+      <AwsConnect
+        bind:roleArn={form.values.role_arn}
+        bind:mode={awsMode}
+        bind:useBedrock
+        bind:bedrockRegion={form.values.models_region}
+        pickShape
+        integration={slug(form.name) || "aws"}
+      />
       {#if formError}<p class="page__foot fail">{formError}</p>{/if}
     </form>
   {:else if form && form.mode === "gcp"}
@@ -596,6 +619,8 @@
       The organization is removed from the permission service. Its accounts must be removed first.
     {:else if removing && selfHosted(removing)}
       Its models come off the New agent and Change model lists and off the model gateway; agents already on one of them keep their setting until their model is changed. The key, if there was one, is forgotten.
+    {:else if removing && modelsLabel(removing)}
+      The connection is removed from the permission service and every grant on it is revoked. Its models come off the New agent and Change model lists and off the model gateway; agents already on one of them keep their setting until their model is changed.
     {:else if removing?.vendor === "slack"}
       The room forgets its Slack config tokens. Agents keep the Slack apps they already have, but no new app can be connected until Slack is added again, or the deployment config carries a pair; every agent's Slack row greys out until then.
     {:else if removing?.vendor === "github" && removing.spec.source !== "access"}

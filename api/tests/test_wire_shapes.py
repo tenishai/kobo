@@ -28,7 +28,7 @@ from mcp.shared.context import RequestContext
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from kobo_api import admin_store, bootstrap
+from kobo_api import admin_store, bootstrap, model_providers
 from kobo_api import audit as room_audit
 from kobo_api.bootstrap import render_org_yaml
 from kobo_api.bundle_publish import bundle_reference
@@ -2020,6 +2020,28 @@ def test_an_aws_role_is_checked_with_aws_then_written_into_the_trust_registry(tm
     assert '[tool_extras."aws.roles".aws]' in registry and f'role_arn = "{AWS_ROLE}"' in registry
     assert registry.startswith('service_audience = "liminal"') and '"gateway.clusters"' in registry, "the rest of the registry is kept"
     assert github.pushed_file("targets.toml") is None or 'name = "aws"' not in (github.pushed_file("targets.toml") or "")
+
+
+def test_the_connect_aws_page_carries_the_bedrock_block_only_when_ticked(tmp_path, fake_storage):
+    """Wire shape (kobo#390): with `bedrock=1` the role's Terraform gains the
+    inline Bedrock policy and `bedrock_policy` carries the same permissions
+    for CloudFormation and by hand; without it neither appears; the trust
+    policy is the same either way; an organization's hub never gets it."""
+    client, headers = _client__api_admin_integrations(tmp_path, fake_storage, _config(tmp_path, bab_url="http://bab.bab.svc:8080"),
+                                                       github=FakeGitHub(), sero=FakeSero())
+    client.app.state.clients.bab = FakeBab(integrations=[])
+    plain = client.get("/api/admin/integrations/aws/setup?mode=role", headers=headers).json()
+    ticked = client.get("/api/admin/integrations/aws/setup?mode=role&bedrock=1", headers=headers).json()
+    assert plain["bedrock_policy"] is None and "bedrock" not in plain["terraform"]
+    assert ticked["bedrock_default_region"] == "us-east-1"
+    assert ticked["terraform"].startswith(plain["terraform"]) and 'resource "aws_iam_role_policy" "kobo_bedrock"' in ticked["terraform"]
+    policy = json.loads(ticked["bedrock_policy"])
+    assert [s["Sid"] for s in policy["Statement"]] == ["BedrockCatalogue", "BedrockInvoke"]
+    assert "bedrock:InvokeModelWithResponseStream" in policy["Statement"][1]["Action"] and "bedrock:ListInferenceProfiles" in policy["Statement"][0]["Action"]
+    assert all(line in ticked["terraform"] for line in ("bedrock:Converse", "arn:aws:bedrock:*:*:inference-profile/*"))
+    assert ticked["trust_policy"] == plain["trust_policy"]
+    org = client.get("/api/admin/integrations/aws/setup?mode=org&bedrock=1", headers=headers).json()
+    assert org["bedrock_policy"] is None and "kobo_bedrock" not in org["terraform"]
 
 
 def test_the_connect_google_cloud_page_renders_the_identity_and_the_pack_three_ways(tmp_path, fake_storage):
@@ -4119,10 +4141,11 @@ def _vertex_provider(session, *, row_id="gcp-example", project="example-model-pr
     session.commit()
 
 
-def _models_room(tmp_path, *, gateway, models_gateway_url=MODELS_GATEWAY_URL, github=None, gojira=None):
+def _models_room(tmp_path, *, gateway, models_gateway_url=MODELS_GATEWAY_URL, github=None, gojira=None, models=None):
     """A room with the model gateway on, an operator signed in through IAP
     and the admin panel open. Returns the client, the operator's headers
-    and the session factory, so a test seeds its own provider rows."""
+    and the session factory, so a test seeds its own provider rows. `models`
+    replaces the two Vertex entries of the org's list."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     engine = create_engine(f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
@@ -4130,7 +4153,7 @@ def _models_room(tmp_path, *, gateway, models_gateway_url=MODELS_GATEWAY_URL, gi
     config = Config(
         workdir=tmp_path / "work", iap_audience=WHOAMI_AUDIENCE, operators=["ops@example.com"], admin_panel=True,
         models_gateway_url=models_gateway_url,
-        models=[
+        models=models or [
             ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Affordable Sonnet", family="Claude", tier="balanced"),
             ModelChoice(id="vertex_ai/gemini-2.5-flash", label="Gemini Fast Flash", family="Gemini", tier="fast", location="global"),
         ],
@@ -4169,6 +4192,49 @@ def test_catalog_models_answers_from_the_providers_with_available_and_reason(tmp
     down = client.get("/api/catalog/models", headers=headers).json()
     assert down["default"] is None
     assert {m["reason"] for m in down["models"]} == {REASON_GATEWAY_DOWN}
+
+
+def _bedrock_provider(session, *, row_id, name, region="us-east-1"):
+    """An AWS account row that serves the room's Bedrock models (kobo#390)."""
+    role = f"arn:aws:iam::123456789012:role/KoboModels-{row_id}"
+    admin_store.put_integration(
+        session, vendor="aws", name=name, base_access="read", integration_id=row_id,
+        spec={"auth": "aws_role", "identity": {"role_arn": role, "audience": "sts.amazonaws.com"},
+              "models": {"provider": "bedrock", "region": region, "role_arn": role}},
+        credential_ref=None, actor="ops@example.com",
+    )
+    admin_store.set_integration_state(session, row_id, state=admin_store.STATE_APPLIED, detail="connected")
+    session.commit()
+
+
+def test_catalog_models_lists_bedrock_entries_under_aws_once_an_account_with_bedrock_is_connected(tmp_path):
+    """Wire shape (kobo#390): a `bedrock/` entry of the org's list reads as
+    AWS's; with no account ticked it is unavailable with the sentence naming
+    AWS with Bedrock, with one it is available under "AWS", and with several
+    accounts the label names them so a person sees which answer."""
+    gateway = FakeModelsGateway()
+    client, headers, session_factory = _models_room(tmp_path, gateway=gateway, models=[
+        ModelChoice(id="bedrock/anthropic.claude-3-5-haiku-20241022-v1:0", label="Claude Cheap on AWS (Haiku)", family="Claude", tier="fast"),
+        ModelChoice(id="vertex_ai/claude-sonnet-4-5", label="Claude Affordable Sonnet", family="Claude", tier="balanced"),
+    ])
+
+    before = client.get("/api/catalog/models", headers=headers).json()
+    haiku = before["models"][0]
+    assert haiku["provider"] == "bedrock" and haiku["provider_label"] == "AWS" and haiku["gateway_model"] == "claude-cheap-on-aws-haiku"
+    assert haiku["available"] is False and haiku["reason"] == "Ask a kobo admin to connect AWS with Bedrock"
+
+    with session_factory() as session:
+        _bedrock_provider(session, row_id="acme-models", name="acme-models")
+    one = client.get("/api/catalog/models", headers=headers).json()
+    assert one["default"] == "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0"
+    assert [(m["available"], m["provider_label"]) for m in one["models"]] == [(True, "AWS"), (False, "Google Cloud")]
+
+    with session_factory() as session:
+        _bedrock_provider(session, row_id="acme-lab", name="acme-lab", region="us-west-2")
+    two = client.get("/api/catalog/models", headers=headers).json()
+    assert two["models"][0]["provider_label"] in ("AWS (acme-models, acme-lab)", "AWS (acme-lab, acme-models)")
+    # The Services row counts both accounts as providers.
+    assert model_providers.gateway_view(session_factory(), client.app.state.config, client.app.state.clients).providers == 2
 
 
 def test_catalog_models_lists_a_self_hosted_rows_answering_models_under_its_name(tmp_path):
