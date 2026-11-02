@@ -274,6 +274,15 @@ def probe(base_url: str, api_key: str | None, models: list[dict[str, str]], opti
             record = {"name": entry["name"], "label": entry.get("label") or entry["name"], "ok": False, "reason": None}
             try:
                 answer = client.post(f"{base_url}/chat/completions", json=body, headers=headers)
+                # The row's options suit the model they were written for; another engine
+                # behind the same endpoint may refuse them (a Mistral tokenizer refuses
+                # `chat_template_kwargs`, live 2026-11-02). Such a model is asked once more
+                # without them, and served without them: marked `without_options`.
+                if answer.status_code == 400 and options:
+                    bare = {k: v for k, v in body.items() if k not in options}
+                    retry = client.post(f"{base_url}/chat/completions", json=bare, headers=headers)
+                    if retry.status_code < 400:
+                        answer, record["without_options"] = retry, True
             except httpx.HTTPError as exc:
                 record["reason"] = f"no answer: {type(exc).__name__}"
             else:

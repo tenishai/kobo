@@ -6,6 +6,10 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- A self-hosted model that refuses the row's request options (a Mistral tokenizer refuses `chat_template_kwargs`) is asked once more without them and served without them, instead of failing the row's probe.
+- Reload org config builds the model gateway client and fills the gateway when the org config brings the gateway URL, so no restart stands between connecting a cloud and its models being offered.
+
 ## [0.3.41] - 2026-11-02
 
 ### Fixed
