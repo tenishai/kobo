@@ -1013,7 +1013,7 @@ def test_an_aws_account_with_bedrock_ticked_registers_the_orgs_bedrock_entries_o
     assert haiku["model_name"] == "claude-cheap-on-aws-haiku"
     assert haiku["litellm_params"] == {
         "model": BEDROCK_HAIKU, "aws_region_name": "us-west-2", "aws_role_name": BEDROCK_ROLE,
-        "aws_web_identity_token": "/var/run/aws/web-identity-token", "aws_session_name": "kobo-gateway",
+        "aws_web_identity_token": "oidc/google/sts.amazonaws.com", "aws_session_name": "kobo-gateway",
     }
     assert haiku["model_info"]["provider"] == "bedrock" and haiku["model_info"]["integration"] == row.id
 

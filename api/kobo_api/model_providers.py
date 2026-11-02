@@ -32,8 +32,9 @@ An AWS account row (kobo#390) serves Bedrock the same way Vertex rides a
 project: its spec carries `models = {provider: "bedrock", region, role_arn}`
 and it serves the org's `bedrock/...` entries. The gateway runs as the
 room's identity and assumes the row's role itself (LiteLLM's
-`aws_role_name` with the web identity token a sidecar refreshes into
-`BEDROCK_TOKEN_PATH`), so no credential is stored anywhere in the room.
+`aws_role_name` with a web identity token it fetches from the Google
+metadata server on each use, `BEDROCK_TOKEN_REF`), so no credential is
+stored anywhere in the room and nothing runs beside the gateway.
 
 With the gateway off (`models_gateway_url` empty) nothing in this module is
 reached: the catalogue route answers from `models:` as it always has.
@@ -74,10 +75,12 @@ log = logging.getLogger(__name__)
 # entry's id, and what the picker calls the cloud behind each.
 PROVIDER_LABELS: dict[str, str] = {"vertex_ai": "Google Cloud", "bedrock": "AWS", self_hosted.VENDOR: self_hosted.LABEL}
 PROVIDER_BEDROCK = "bedrock"
-# Where the gateway's sidecar keeps the Google identity token (audience
-# `sts.amazonaws.com`) the gateway trades for the Bedrock role's session,
-# and the session name AWS logs it under. Both are the install's contract.
-BEDROCK_TOKEN_PATH = "/var/run/aws/web-identity-token"
+# How the gateway gets the Google identity token it trades for the Bedrock
+# role's session: LiteLLM's `oidc/google/<audience>` reference makes it ask
+# the metadata server itself, as the gateway's own identity, with audience
+# `sts.amazonaws.com` (the `oaud` the role's trust policy pins). No file,
+# no sidecar. The session name is what AWS logs the call under.
+BEDROCK_TOKEN_REF = "oidc/google/sts.amazonaws.com"
 BEDROCK_SESSION_NAME = "kobo-gateway"
 
 # What the picker says under a model nobody serves, and under every model
@@ -245,12 +248,12 @@ def desired_models(config: Config, providers: list[Provider], keys: dict[str, st
 
 def bedrock_params(provider: Provider) -> dict[str, Any]:
     """How the gateway reaches an AWS account's Bedrock: it assumes the row's
-    role with the identity token its sidecar keeps at `BEDROCK_TOKEN_PATH`,
+    role with the identity token the metadata server hands it (`BEDROCK_TOKEN_REF`),
     in the row's region. No key, nothing stored."""
     return {
         "aws_region_name": provider.region,
         "aws_role_name": provider.role_arn,
-        "aws_web_identity_token": BEDROCK_TOKEN_PATH,
+        "aws_web_identity_token": BEDROCK_TOKEN_REF,
         "aws_session_name": BEDROCK_SESSION_NAME,
     }
 
