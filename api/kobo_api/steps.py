@@ -69,8 +69,8 @@ from kobo_api.composer import (
     _self_md,
     compose,
     effective_colleague_mode,
-    validate_agent_yaml,
     update_agent_yaml_allow,
+    validate_agent_yaml,
 )
 from kobo_api.config import Config, vertex_location_for
 from kobo_api.directory import sync_directory, sync_directory_from_path

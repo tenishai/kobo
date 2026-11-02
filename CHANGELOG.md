@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- A new agent reads its own repository on GitHub: with the permission service on and GitHub connected, the Access step (was Model access) writes the agent's repository set as its own repository and approves Read on it, and the wiring step puts the lane's allow entry into the bundle in the same commit; the owner adds repositories or raises the level on the Access tab as before.
+
 ### Fixed
 - An agent created with the room's model gateway on no longer carries `VERTEXAI_PROJECT` and `VERTEXAI_LOCATION` (its model access is the gateway key and the model block in its bundle); a reprovision or a model change removes the two from an agent made before the gateway, and the deploy check no longer looks for them on a gateway agent.
 - The Vertex AI default location is `global` in the room's own config too (`vertex_location`, was us-east5), matching the Connect Google Cloud sheet.
