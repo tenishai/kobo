@@ -333,7 +333,7 @@
         {@render wakeChoice()}
         <div class="row">
           <button type="button" class="btn btn--primary" disabled={frozen || create.isPending} onclick={handleCreate}>
-            {create.isPending ? "Creating…" : "Create Slack app"}
+            {#if create.isPending}<span class="slack-vendor__dot pulse" aria-hidden="true"></span>Creating…{:else}Create Slack app{/if}
           </button>
           {#if createError}
             <span class="copy copy--fail" role="alert">{createError}</span>
@@ -395,6 +395,17 @@
   .help { color: var(--ink); font-size: 0.82rem; line-height: 1.45; }
   .label { margin: 0; padding: 0; color: var(--ink); font-size: 0.85rem; font-weight: 600; }
   .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); }
+  /* The in-progress dot every other panel shows while the room works (chat's thinking,
+     the memory and skills deliveries): the Create button carries it while the app is made. */
+  .slack-vendor__dot {
+    display: inline-block;
+    width: 0.5rem;
+    height: 0.5rem;
+    margin-right: var(--space-2xs);
+    border-radius: 50%;
+    background: var(--pulse);
+    vertical-align: middle;
+  }
   .facts { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2xs) var(--space-md); margin: 0; }
   .facts div { display: contents; }
   .facts dt { color: var(--muted); font-size: 0.82rem; }
