@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-platform-clients
 updated: 2026-11-03
-anchor: api/kobo_api/clients.py sha=313da7e5db79125a114a9896b9c45f08ac449d9b
-anchor: api/tests/fakes.py sha=a1010b4696362712701b5179b743c781aa681a47
+anchor: api/kobo_api/clients.py sha=688f334b811ab814f46f9f97c8ed631be4c6730c
+anchor: api/tests/fakes.py sha=1c5d00693cc9ac79f69a9b885bc7f0eb6b73ed4a
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
@@ -43,4 +43,3 @@ API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provid
 - `Clients.room_services` (object | None, 2026-10-29, issue #284; the store behind the Slack and GitHub connection rows since kobo#377, read only through `kobo_api.room_credentials`): `kobo_api.room_services.RoomServices`, the room's own credentials store (Slack config-token pair, GitHub app for pull requests) as one Secret per vendor in `room_namespace` (or the pod's own); None when the room has neither. Built in `Clients.real` by `build_room_services` from config and the pod's own namespace file ONLY (never kubectl's context, never a kubectl call: a self-hosted CI runner is a pod, and construction must not shell out). Whether the room HOLDS anything is asked at request time. `probe_slack_token_store` also dry-runs the room-held pair's write at boot. The secrets platform (sero) is NOT used for these: it has no read-back lane and the room needs the values back.
 - `KubectlClient.set_env(namespace, deploy, name, value)` (2026-11-01): one environment variable set on the live Deployment (`kubectl set env deployment/<deploy> NAME=value`), which rolls the pods itself; no separate `restart_deploy`. The Slack wake route (`main.set_slack_wake`, `PUT /api/agents/{name}/slack/wake`) calls it right after `agent_env.edit_gojira_yaml` commits the same `SLACK_WAKE_MODE` value, so the running agent restarts with the choice now and the provisioner's later apply changes nothing; a `ClientError` is logged and answered as `applied_now: false` on a 200, never a 5xx, because the commit already landed. The ClusterRole in `k8s/cluster/rbac.yaml` already grants `get, patch` on deployments, which is all `set env` needs. `FakeKubectl(set_env_error=...)` refuses; `FakeKubectl.env_sets` records `(namespace, deploy, name, value)`.
 - `Clients.models_gateway` (kobo#390, 2026-11-02): the room's model gateway. Mint returns the key and the caller delivers it (`model_providers.deliver_models_key`, Secret `<agent>-models`, key `MODELS_GATEWAY_KEY`, through sero when wired else `apply_secret`); revoke is by alias `agent:<name>` so the room never holds a key to take it back. Refusals carry `resp.text[:300]`, which is safe because no request of ours carries a key except the mint's answer, which is never in a raised message.
-- `CloudClient.grant_registry_read(gsa_email, registry)` (tenishai/kobo#434): reader on the Artifact Registry repository `bundle_registry` names, repository-scoped, for an agent to pull its bundle at start; `FakeCloud` records it.

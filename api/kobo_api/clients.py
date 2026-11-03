@@ -1552,12 +1552,6 @@ class CloudClient(Protocol):
         """
         ...
 
-    def grant_registry_read(self, gsa_email: str, registry: str) -> None:
-        """Reader on the Artifact Registry repository `registry` names
-        (`<location>-docker.pkg.dev/<project>/<repository>`), for the agent to
-        pull its own bundle at start (tenishai/kobo#434)."""
-        ...
-
     def grant_bucket_prefix_write(self, gsa_email: str, bucket: str, prefix: str) -> None:
         """Grant `gsa_email` write access to objects under `prefix` in
         `bucket` -- and nothing wider -- for agent memory replication
@@ -1759,24 +1753,6 @@ class GcloudClient:
         # the SAME email `ensure_gsa` would have returned, without creating
         # a GSA, so both sides can never drift apart.
         return gsa_email(name, self._project)
-
-    def grant_registry_read(self, gsa_email: str, registry: str) -> None:
-        # The pod pulls its bundle as its own identity, not the node's image-pull
-        # identity, so it needs reader on the repository itself. Repository-scoped,
-        # never project-wide; add-iam-policy-binding is idempotent.
-        host, _, rest = registry.strip().rstrip("/").partition("/")
-        project, _, repository = rest.partition("/")
-        location = host.removesuffix("-docker.pkg.dev")
-        if not (location and project and repository) or location == host:
-            raise ClientError(f"bundle_registry {registry!r} is not <location>-docker.pkg.dev/<project>/<repository>")
-        self._runner.run(
-            [
-                self._gcloud, "artifacts", "repositories", "add-iam-policy-binding", repository.split("/")[0],
-                "--location", location, "--project", project,
-                "--member", f"serviceAccount:{gsa_email}",
-                "--role", "roles/artifactregistry.reader", "--condition=None",
-            ]
-        )
 
     def grant_bucket_prefix_write(self, gsa_email: str, bucket: str, prefix: str) -> None:
         # A CEL condition on the object name, not a plain (unconditional)

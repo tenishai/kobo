@@ -42,8 +42,10 @@ from kobo_api.clients import ClientError, GitHubClient, KubectlClient
 
 log = logging.getLogger(__name__)
 
+# The gojira.yaml key that mounts the bundle image read-only at /bundle (a Kubernetes image
+# volume the node pulls on every start with its own credentials; gojira `bundle_image`).
+BUNDLE_IMAGE_KEY = "bundle_image"
 # The environment the runtime's entrypoint reads (daedalus docker/entrypoint.sh).
-ARTIFACT_ENV = "BUNDLE_ARTIFACT"
 AGENT_NAME_ENV = "AGENT_NAME"
 REPLICA_BUCKET_ENV = "MEMORY_REPLICA_BUCKET"
 # The marker of the old shape: the bundle baked into the image.
@@ -86,8 +88,10 @@ def optional_secrets(name: str) -> list[str]:
 
 
 def runtime_env(name: str, *, registry: str, replica_bucket: str) -> dict[str, str]:
-    """What the entrypoint reads, for gojira.yaml `env`."""
-    env = {ARTIFACT_ENV: bundle_artifact(registry, name), AGENT_NAME_ENV: name}
+    """What the entrypoint reads, for gojira.yaml `env`: the agent's name (the memory
+    replica's path) and the replica bucket. The bundle itself arrives as a mounted image
+    volume (`BUNDLE_IMAGE_KEY`), never through the environment, so the pod pulls nothing."""
+    env = {AGENT_NAME_ENV: name}
     if replica_bucket:
         env[REPLICA_BUCKET_ENV] = replica_bucket
     return env
@@ -121,7 +125,12 @@ def wire_gojira_yaml(data: dict, name: str, *, registry: str, replica_bucket: st
     """The gojira.yaml half of the new shape: the runtime's env and the optional
     Secret references. Idempotent; returns whether anything changed."""
     changed = False
+    pointer = bundle_artifact(registry, name)
+    if data.get(BUNDLE_IMAGE_KEY) != pointer:
+        data[BUNDLE_IMAGE_KEY] = pointer
+        changed = True
     env = data.get("env") if isinstance(data.get("env"), dict) else {}
+    env.pop("BUNDLE_ARTIFACT", None)  # the earlier shape: the runtime pulled it itself
     for key, value in runtime_env(name, registry=registry, replica_bucket=replica_bucket).items():
         if env.get(key) != value:
             env[key] = value
@@ -152,8 +161,8 @@ def convert_to_runtime_only(workdir: Path, name: str, *, runtime_image: str, reg
         log.info("%s stays on the old shape: its Dockerfile pins %s, not the room's runtime", name, _dockerfile_from(text))
         return False
     dockerfile.write_text(
-        "# Agent image: the shared runtime, nothing else. The bundle travels as a registry\n"
-        "# artifact the runtime pulls at start (BUNDLE_ARTIFACT in gojira.yaml).\n"
+        "# Agent image: the shared runtime, nothing else. The bundle is a registry image the\n"
+        "# node mounts at /bundle on every start (bundle_image in gojira.yaml).\n"
         f"FROM {runtime_image}\n"
     )
     for leftover in ("litestream.yml", "entrypoint.sh"):
@@ -229,7 +238,7 @@ def _restart(name: str) -> None:
 
 
 __all__ = [
-    "AGENT_NAME_ENV", "ARTIFACT_ENV", "REPLICA_BUCKET_ENV", "Delivery", "agent_name_of", "bundle_artifact",
+    "AGENT_NAME_ENV", "BUNDLE_IMAGE_KEY", "REPLICA_BUCKET_ENV", "Delivery", "agent_name_of", "bundle_artifact",
     "configure", "configured", "convert_to_runtime_only", "legacy_shape", "optional_secrets", "publish", "push",
     "runtime_env", "wire_gojira_yaml",
 ]

@@ -919,8 +919,8 @@ def _litestream_config(spec: BundleSpec) -> str:
 def _dockerfile(spec: BundleSpec) -> str:
     if spec.bundle_artifact:
         return (
-            "# Agent image: the shared runtime, nothing else. The bundle travels as a registry\n"
-            "# artifact the runtime pulls at start (BUNDLE_ARTIFACT in gojira.yaml).\n"
+            "# Agent image: the shared runtime, nothing else. The bundle is a registry image the\n"
+            "# node mounts at /bundle on every start (bundle_image in gojira.yaml).\n"
             f"FROM {spec.runtime_image}\n"
         )
     if not spec.memory_replica_bucket:

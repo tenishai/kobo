@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- The agent's bundle is mounted, not pulled (tenishai/kobo#434). The room publishes each bundle as a plain OCI image and the pod mounts it read-only at /bundle as a Kubernetes image volume, which the node pulls on every start with its own image-pull credentials, exactly as it pulls the runtime image. The pod holds no registry credential and no agent service account needs a registry role: the access step no longer grants one (the grant 0.3.50 added is withdrawn). Needs the deploy platform's `bundle_image` key (tenishai/gojira#132).
+
 ## [0.3.50] - 2026-11-03
 
 ## [0.3.49] - 2026-11-03
