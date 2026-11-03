@@ -1626,6 +1626,56 @@ def test_rejected_token_is_401(jira_client, monkeypatch):
     assert r.status_code == 401
 
 
+def _tracker(routes):
+    """A fake Jira: `routes` maps a path to (status, json body, headers)."""
+    def handle(request: httpx.Request) -> httpx.Response:
+        status, body, headers = routes.get(request.url.path, (500, {}, {}))
+        return httpx.Response(status, json=body, headers=headers)
+    return httpx.Client(transport=httpx.MockTransport(handle))
+
+
+def test_a_rejected_tracker_credential_is_not_reported_as_a_missing_issue(jira_config):
+    """Gate (integrity): Jira Cloud treats a Basic pair it cannot verify as anonymous,
+    so a wrong token reads every issue as 404 and every search as empty. The lane
+    asks the tracker who the credential is before it calls an issue missing."""
+    from kobo_api import jira_broker
+    from kobo_api.clients import ClientError
+
+    args = dict(domain=jira_config.jira_domain, email=jira_config.jira_email, pat_path=jira_config.jira_pat_path)
+    rejected = {"/rest/api/3/issue/AREQ-275": (404, {"errorMessages": ["Issue does not exist"]}, {}),
+                "/rest/api/3/search/jql": (200, {"issues": []}, {}),
+                "/rest/api/3/myself": (401, {"message": "Client must be authenticated"}, {"X-Seraph-LoginReason": "AUTHENTICATED_FAILED"})}
+    with pytest.raises(ClientError, match="rejected the room's credential"):
+        jira_broker.fetch_issue(**args, key="AREQ-275", http_client=_tracker(rejected))
+    with pytest.raises(ClientError, match="rejected the room's credential"):
+        jira_broker.search_issues(**args, project="AREQ", text="access token", limit=3, http_client=_tracker(rejected))
+
+    # With a credential the tracker knows, a 404 is a missing issue and an empty search is empty.
+    good = dict(rejected); good["/rest/api/3/myself"] = (200, {"emailAddress": "reader@acme.io"}, {})
+    with pytest.raises(ClientError, match="no such issue"):
+        jira_broker.fetch_issue(**args, key="AREQ-275", http_client=_tracker(good))
+    assert jira_broker.search_issues(**args, project="AREQ", text="access token", limit=3, http_client=_tracker(good))["issues"] == []
+
+
+def test_a_rejected_tracker_credential_reaches_the_agent_as_the_operators_problem(jira_client, monkeypatch):
+    """Gate (integrity): the route answers 502 with the credential sentence, never a 404,
+    because the runtime reads every 404 on this lane as "the room has not granted me access"."""
+    from kobo_api.clients import ClientError
+    from kobo_api.jira_broker import CREDENTIAL_REJECTED
+
+    main_mod = _authed(monkeypatch)
+
+    def rejected(**kwargs):
+        raise ClientError(CREDENTIAL_REJECTED)
+
+    monkeypatch.setattr(main_mod, "jira_fetch_issue", rejected)
+    monkeypatch.setattr(main_mod, "jira_search_issues", rejected)
+    r = jira_client.get("/broker/agents/ledger/jira/issues/AREQ-275", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 502 and "rejected the room's credential" in r.json()["error"] and "operator" in r.json()["error"]
+    r = jira_client.get("/broker/agents/ledger/jira/search", params={"text": "access token"}, headers={"Authorization": "Bearer x"})
+    assert r.status_code == 502 and "rejected the room's credential" in r.json()["error"]
+
+
 def test_agent_off_the_allowlist_reads_as_404(jira_client, monkeypatch):
     """Gate (authentication): Agent off the allowlist reads as 404."""
     _authed(monkeypatch)

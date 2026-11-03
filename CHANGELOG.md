@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- The room's Jira lane no longer reports a rejected API token as "no such issue". Jira treats a credential it cannot verify as an anonymous reader, so every issue read came back 404 and every search empty; the lane now asks the tracker who the credential is before it calls an issue missing, and answers "the tracker rejected the room's credential" (a 502 the agent passes on, never a 404 the runtime reads as "not granted").
+
 ## [0.3.45] - 2026-11-02
 
 ### Changed
