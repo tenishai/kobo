@@ -1620,6 +1620,7 @@ def test_get_slack_app_view_carries_the_install_link_while_created_and_not_insta
     assert {k: v for k, v in view.items() if k != "install_url"} == {
         "enabled": True, "available": True, "state": "created", "app_id": "A0FAKE",
         "workspace": None, "app_name": None, "channels": [CHANNEL], "wake": "mention", "legacy": False,
+        "rebuilding": False,
     }
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert (detail["slack"]["relay"], detail["slack"]["legacy"]) == (True, False)

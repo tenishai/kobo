@@ -1475,6 +1475,53 @@ def test_the_agents_face_is_served_to_slack_under_the_relay_prefix_without_a_sig
     assert "max-age" in r.headers.get("cache-control", "")
 
 
+def test_the_slack_row_reads_rebuilding_until_the_deployment_moves_off_the_image_it_ran_at_wiring(
+    session_factory__api_slack, config__api_slack
+):
+    """Integrity: the wiring commit rebuilds the agent, so installed is not answering.
+    The room remembers the image running at wiring; the view says rebuilding while the
+    deployment still runs it (within the window), and stops once the image changes."""
+    from datetime import timedelta
+
+    from kobo_api.health import UP, AgentHealth
+    from kobo_api.models import Agent
+
+    private_key, jwk = _generate_jwk()
+    relay_config = config__api_slack.model_copy(
+        update={"iap_audience": IAP_AUDIENCE, "slack_relay": True, "operators": [OPERATOR_EMAIL]}
+    )
+    gojira, app_id = _onboarded_gojira__api_slack()
+    client = _make_client(
+        session_factory__api_slack, relay_config, github=_CapturingGitHub__api_slack(), kubectl=FakeKubectl(),
+        gojira=gojira, sero=FakeSero(), slack=FakeSlack(app_id="A0MADE"), iap_jwks_fetcher=_fetcher(jwk),
+    )
+    _seed_agent(session_factory__api_slack, relay_config, gojira_app_id=app_id, created_by=OPERATOR_EMAIL)
+    headers = {ASSERTION_HEADER: _sign(private_key, email=OPERATOR_EMAIL)}
+    client.app.state.health[AGENT_NAME] = AgentHealth(UP, None, "2026-11-03T17:00:00Z", image="agent:old")
+    assert client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"}, headers=headers).status_code == 200
+    with session_factory__api_slack() as s:
+        agent = s.query(Agent).filter_by(name=AGENT_NAME).one()
+        assert agent.slack_rebuild_image == "agent:old" and agent.slack_rebuild_at is not None
+    # Not installed yet: the row has its own words for that, so no rebuilding flag.
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack", headers=headers).json()["rebuilding"] is False
+    with session_factory__api_slack() as s:
+        from kobo_api.models import SlackRelayApp
+        row = s.query(SlackRelayApp).filter_by(agent_name=AGENT_NAME).one()
+        row.installed_at = row.wired_at
+        s.commit()
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack", headers=headers).json()["rebuilding"] is True
+    # The deployment moved to a new image: the build landed.
+    client.app.state.health[AGENT_NAME] = AgentHealth(UP, None, "2026-11-03T17:04:00Z", image="agent:new")
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack", headers=headers).json()["rebuilding"] is False
+    # Back on the old image but past the window: the row falls back to the health states.
+    client.app.state.health[AGENT_NAME] = AgentHealth(UP, None, "2026-11-03T17:20:00Z", image="agent:old")
+    with session_factory__api_slack() as s:
+        agent = s.query(Agent).filter_by(name=AGENT_NAME).one()
+        agent.slack_rebuild_at = agent.slack_rebuild_at - timedelta(minutes=16)
+        s.commit()
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack", headers=headers).json()["rebuilding"] is False
+
+
 def test_create_slack_app_writes_the_five_values_through_the_lane_and_returns_the_install_link(
     session_factory__api_slack, config__api_slack
 ):

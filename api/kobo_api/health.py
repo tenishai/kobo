@@ -64,6 +64,10 @@ class AgentHealth:
     # time would need a pod read per agent; this comes free with the
     # deployment and says the same thing for a one-replica agent.
     ready_since: str | None = None
+    # The image the deployment's first container runs right now: what a
+    # build-and-roll changes, so a row can tell "still the old build" from
+    # "back on the new one" (the Slack row's Rebuilding, 2026-11-03).
+    image: str | None = None
 
     def body(self) -> dict:
         return asdict(self)
@@ -159,8 +163,9 @@ def probe_health(kubectl: KubectlClient, name: str, *, now: datetime | None = No
     wanted = spec.get("replicas", 1) or 0
     available = status.get("availableReplicas") or 0
     rolling, ready_since = _rollout(dep)
+    image = _image(dep)
     if wanted == 0 or available >= wanted:
-        return AgentHealth(UP, None, checked_at, rolling, ready_since)
+        return AgentHealth(UP, None, checked_at, rolling, ready_since, image)
 
     reason = f"{available} of {wanted} running"
     try:
@@ -169,7 +174,15 @@ def probe_health(kubectl: KubectlClient, name: str, *, now: datetime | None = No
         trouble = None
     if trouble:
         reason = f"{reason}; {trouble}"
-    return AgentHealth(DOWN, reason, checked_at, rolling, ready_since)
+    return AgentHealth(DOWN, reason, checked_at, rolling, ready_since, image)
+
+
+def _image(dep: dict) -> str | None:
+    """The first container's image in the deployment's pod template, or None."""
+    template = ((dep.get("spec") or {}).get("template") or {}).get("spec") or {}
+    containers = template.get("containers") or []
+    first = containers[0] if containers and isinstance(containers[0], dict) else {}
+    return first.get("image") or None
 
 
 def sweep_health(

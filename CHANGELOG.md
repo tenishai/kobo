@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- The Access tab's Slack row no longer reads Live the moment the app is installed. Wiring the app is a commit that rebuilds the agent, and it answers in Slack only once that build has rolled, about three minutes; the room now remembers the image the agent ran when the app was wired and the row reads Rebuilding while the deployment still runs it, then Restarting, then Live. Migration `d1e3f5a7b9c2` adds two nullable columns.
+
 ## [0.3.47] - 2026-11-03
 
 ### Added

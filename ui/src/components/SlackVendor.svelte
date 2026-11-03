@@ -214,6 +214,11 @@
     if (wakeApplying) return { text: "Applying your change. Give it a minute.", tone: "warn" };
     if (wakeWaitsForRestart) return { text: "Saved. Takes effect when the agent next restarts.", tone: "warn" };
     const detail = agent.data;
+    // The wiring commit started a build that has not rolled: the agent still
+    // runs without its Slack app, about three minutes. The room retries a
+    // mention for about four minutes, so one sent now is usually answered
+    // once the agent is back; later ones are not.
+    if (data.rebuilding) return { text: "Rebuilding with its Slack app, about three minutes. A mention sent now is kept and answered once it is back.", tone: "warn" };
     // Mid-restart by the cluster's own word: a change is going in, not an
     // outage. After Install to Slack this is the agent rebuilding with its
     // token, about two minutes; the room keeps a mention sent meanwhile and
@@ -232,7 +237,7 @@
   // and shuts again once it reads Live. A row the person opened and left
   // alone is theirs to shut.
   const inFlight = $derived(
-    wakeApplying || (installing && view.data?.state === "created") || Boolean(agent.data?.health?.rolling),
+    wakeApplying || (installing && view.data?.state === "created") || Boolean(view.data?.rebuilding) || Boolean(agent.data?.health?.rolling),
   );
   let selfOpened = false;
   $effect(() => {
