@@ -166,6 +166,11 @@ class Agent(Base):
     # for history, no longer written.
     slack_channels: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     slack_wired: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # The Slack app lands by rebuild (2026-11-03): the image the agent ran when
+    # its app was wired, and when. While the deployment still runs that image
+    # the Access tab's Slack row reads Rebuilding, not Live (`_slack_rebuilding`).
+    slack_rebuild_image: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    slack_rebuild_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Slack self-service (2026-08-17): whether this agent's Slack app was
     # born self-service (a user created it directly at Slack's own app
     # site from the rendered manifest, then pasted its id/tokens into

@@ -87,6 +87,13 @@ describe("SlackVendor", () => {
     expect(screen.getByRole("button", { name: "Remove" })).toBeDefined();
   });
 
+  it("reads Rebuilding, not Live, while the build the Slack wiring started has not rolled", async () => {
+    room({ ...INSTALLED, rebuilding: true });
+
+    expect((await screen.findByRole("status")).textContent?.trim()).toMatch(/^Rebuilding with its Slack app/);
+    expect(screen.queryByText("Live")).toBeNull();
+  });
+
   it("shows the workspace, the invite sentence, Wakes on and Remove once installed, reading Live", async () => {
     room(INSTALLED);
 

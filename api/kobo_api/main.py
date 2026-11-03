@@ -11,7 +11,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Annotated, Literal
@@ -324,6 +324,11 @@ from kobo_api.tooling import (
 from kobo_api.tracing import install as install_tracing
 
 log = logging.getLogger(__name__)
+
+# How long after its Slack app is wired an agent may read Rebuilding while it still
+# runs the image it ran then; past this the row falls back to the health states, so a
+# build that never lands does not pin the row forever (2026-11-03).
+SLACK_REBUILD_WINDOW = timedelta(minutes=15)
 
 # Type-only: keeps the real (httpx-backed) `Clients` import out of this
 # module's own import graph, so tests that only need `create_app` (most of
@@ -8906,6 +8911,19 @@ def create_app(
     def _relay_off() -> JSONResponse:
         return JSONResponse({"error": "this room does not make Slack apps yet"}, status_code=404)
 
+    def _slack_rebuilding(agent: Agent) -> bool:
+        """True while the agent still runs the image it ran when its Slack app was
+        wired, within fifteen minutes of that wiring: the build the wiring commit
+        started has not rolled, so a mention cannot reach it yet. Unknown images
+        (no health read yet) read as not rebuilding: the row says Live only on facts
+        it has, and an honest "rebuilding" needs two images to compare."""
+        if not agent.slack_rebuild_at or not agent.slack_rebuild_image:
+            return False
+        if datetime.now(UTC).replace(tzinfo=None) - agent.slack_rebuild_at > SLACK_REBUILD_WINDOW:
+            return False
+        verdict = getattr(app.state, "health", {}).get(agent.name)
+        return getattr(verdict, "image", None) == agent.slack_rebuild_image
+
     def _slack_app_view(request: Request, session: Session, agent: Agent, row: SlackRelayApp | None) -> dict:
         """The Access tab's Slack section, in one read. `install_url` is for
         the people who may install (the agent's owners and operators), and
@@ -8930,6 +8948,8 @@ def create_app(
             "channels": channels,
             "wake": effective_wake(agent),
             "legacy": agent.slack_app_id is not None and row is None,
+            # The build the wiring started has not rolled yet (2026-11-03).
+            "rebuilding": state == "installed" and _slack_rebuilding(agent),
         }
         if state == "created" and row is not None and row.client_id and _owner_or_operator_or_403(agent, request) is None:
             state_token = slack_relay.current_state(row) or slack_relay.mint_state(row)
@@ -9119,6 +9139,12 @@ def create_app(
             return JSONResponse({"error": "couldn't set up Slack. Try again."}, status_code=502)
         row.wired_at = datetime.now(UTC).replace(tzinfo=None)
         agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        # The wiring commit above starts the agent's build; it answers in Slack only
+        # once that build has rolled. Remember what runs now, so the row can say
+        # Rebuilding until the deployment moves off it (`_slack_rebuilding`).
+        verdict = getattr(app.state, "health", {}).get(agent.name)
+        agent.slack_rebuild_image = getattr(verdict, "image", None)
+        agent.slack_rebuild_at = row.wired_at
         state_token = slack_relay.mint_state(row)
         install = slack_relay.install_url(row.client_id or "", state_token, slack_relay.callback_url(base))
         return row, install

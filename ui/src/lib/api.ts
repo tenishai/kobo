@@ -138,6 +138,8 @@ export type SlackAppView = {
   channels: string[];
   wake: SlackWake;
   legacy: boolean;
+  /** The build the Slack wiring started has not rolled yet: a mention cannot reach the agent. */
+  rebuilding?: boolean;
 };
 
 export type AgentDetail = AgentSummary & {
