@@ -175,6 +175,18 @@ def test_an_agent_born_for_artifacts_has_a_one_line_image_and_a_dormant_slack_tr
     assert lines == [f"FROM {RUNTIME}"]
     kinds = [dict(t) for t in _agent_yaml_data(spec)["transports"]]
     assert kinds[-1] == {"kind": "slack", "optional": True}
+    # The seed gojira.yaml the deploy platform reads before its FIRST render, so the first
+    # deployment already mounts the bundle (dev, 2026-11-03: without it the first pod had no /bundle).
+    import tempfile
+
+    from kobo_api.composer import compose
+    d = Path(tempfile.mkdtemp()) / "repo"
+    compose(spec, d)
+    seed = yaml.safe_load((d / "gojira.yaml").read_text())
+    assert seed == {"bundle_image": f"{REGISTRY}/ledger-bundle:current",
+                    "env": {"AGENT_NAME": "ledger", "MEMORY_REPLICA_BUCKET": "mem-bucket"},
+                    "secrets_from_optional": ["ledger-slack", "ledger-env"]}
+    assert not (d / "litestream.yml").exists() and not (d / "entrypoint.sh").exists()
 
 
 def test_the_registry_publisher_pushes_a_plain_oci_image_an_image_volume_can_mount(tmp_path):
