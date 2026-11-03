@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.47] - 2026-11-03
+
 ### Added
 - The agent's face on every Slack message. The room serves each agent's picture at a public address under the Slack relay (`/slack/relay/<relay id>/face.png`), hands it to the runtime as `SLACK_ICON_URL`, and asks for Slack's `chat:write.customize` scope in every app it makes, so the runtime posts each message with that picture as its icon. An owner changes the picture in kobo and Slack follows on the next message; an agent connected before this takes the scope on its next Reconnect.
 
