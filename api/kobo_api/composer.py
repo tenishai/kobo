@@ -234,6 +234,18 @@ def _cabal_jwks_url(cabal_url: str) -> str:
     return cabal_url.rstrip("/") + _CABAL_JWKS_PATH
 
 
+def _seed_gojira_yaml(spec: BundleSpec) -> dict:
+    """What the pod needs from birth to run the mounted bundle: the bundle image, the
+    runtime's env, and the Secrets it reads when they exist. Same shape
+    `kobo_api.delivery.wire_gojira_yaml` keeps up later; spelled here so the composer
+    does not import the delivery module."""
+    data: dict = {"bundle_image": spec.bundle_artifact, "env": {"AGENT_NAME": spec.name}}
+    if spec.memory_replica_bucket:
+        data["env"]["MEMORY_REPLICA_BUCKET"] = spec.memory_replica_bucket
+    data["secrets_from_optional"] = [f"{spec.name}-slack", f"{spec.name}-env"]
+    return data
+
+
 def _dormant_slack_transport() -> _FlowDict:
     """Slack wired at birth and asleep (tenishai/kobo#434): the runtime serves it only
     once a token is in the pod's environment, so adding Slack later is a Secret and a
@@ -1814,6 +1826,14 @@ def compose(spec: BundleSpec, dest: Path) -> None:
     if spec.memory_replica_bucket and not spec.bundle_artifact:
         (dest / "litestream.yml").write_text(_litestream_config(spec))
         (dest / "entrypoint.sh").write_text(_ENTRYPOINT_SH)
+    if spec.bundle_artifact:
+        # A seed gojira.yaml (2026-11-03, seen on dev): the deploy platform reads an existing
+        # gojira.yaml for the app's needs before its first render, so the first deployment
+        # it makes already mounts the bundle. Without this the first setup PR deployed a
+        # runtime with no /bundle, which crashlooped until the wiring commit's second setup
+        # PR landed ten minutes later. app, class and environments are the platform's own;
+        # the wiring step adds the service account, the PVC and the Secrets after.
+        (dest / "gojira.yaml").write_text(yaml.safe_dump(_seed_gojira_yaml(spec), sort_keys=False))
 
 
 def validate_agent_yaml(bundle_dir: Path) -> None:
