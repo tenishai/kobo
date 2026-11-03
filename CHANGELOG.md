@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.46] - 2026-11-03
+
 ### Added
 - The Atlassian sheet takes a service account's API key, the credential that belongs to no person: an admin makes it under Directory, Service accounts with its scopes fixed at creation, and the room checks it with Atlassian's MCP server as the Bearer the gateway sends before it saves. A user's email and API token stays as the second choice on the sheet.
 
