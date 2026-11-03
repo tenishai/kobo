@@ -43,6 +43,13 @@ export type CatalogEntry = {
 
 const TOKEN: CatalogField[] = [{ key: "TOKEN", label: "API token", secret: true }];
 
+/** Atlassian's two credential shapes (kobo, 2026-11-03). `service` is the one that belongs to no person. */
+export const ATLASSIAN_KINDS = [
+  { id: "service", auth: "token" as AuthKind, label: "A service account (recommended)", tokenLabel: "Service account API key" },
+  { id: "user", auth: "basic_token" as AuthKind, label: "A user account", tokenLabel: "API token" },
+] as const;
+export type AtlassianKind = (typeof ATLASSIAN_KINDS)[number]["id"];
+
 /** The one kind that is only models (kobo#390); a room may hold many rows of it. */
 export const SELF_HOSTED = "self-hosted";
 export const SELF_HOSTED_AUTH = "self_hosted_endpoint";
@@ -50,13 +57,16 @@ export const SELF_HOSTED_SUMMARY = "Models you run yourself, on your own machine
 
 export const CATALOG: CatalogEntry[] = [
   {
-    id: "atlassian", name: "Atlassian", summary: "Jira issues and Confluence pages.", auth: "basic_token",
+    // Two credential shapes, picked on the sheet (ATLASSIAN_KINDS): a service account's API key
+    // (auth `token`, the key alone, sent as a Bearer) or a user's email with their API token
+    // (auth `basic_token`). The email field is shown only for the second.
+    id: "atlassian", name: "Atlassian", summary: "Jira issues and Confluence pages.", auth: "token",
     fields: [
       { key: "email", label: "Email of the account the token belongs to", secret: false, placeholder: "someone@example.com" },
       { key: "TOKEN", label: "API token", secret: true },
     ],
     address: "https://mcp.atlassian.com/v2",
-    note: "Atlassian takes a user's API token together with the account's email. Make the token with scopes (Jira and Confluence read and search; Jira write too if agents may write), on an account that holds only what agents may do, and turn on API token access for the Rovo MCP server under Security in Atlassian administration. The room checks the pair with Atlassian before it saves; agents reach Jira and Confluence through the gateway with it, each in its own session, once granted Atlassian on their Access tab. With read and write, an agent granted Write issues can create, edit, comment on and move Jira issues; nothing else writes.",
+    note: "An Atlassian admin makes the service account under Directory, Service accounts, gives it Jira and Confluence access like a user, and creates its API key with scopes (Jira and Confluence read and search; Jira write too if agents may write). Scopes are fixed when the key is made, so choose them all then. Turn on API token access for the Rovo MCP server under Rovo in Atlassian administration. The room checks the key with Atlassian before it saves; agents reach Jira and Confluence through the gateway with it, each in its own session, once granted Atlassian on their Access tab. With read and write, an agent granted Write issues can create, edit, comment on and move Jira issues; nothing else writes.",
   },
   {
     id: "datadog", name: "Datadog", summary: "Monitors, dashboards and logs.", auth: "datadog_service_account",

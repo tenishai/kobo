@@ -7,6 +7,9 @@ All notable changes to kobo are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- The Atlassian sheet takes a service account's API key, the credential that belongs to no person: an admin makes it under Directory, Service accounts with its scopes fixed at creation, and the room checks it with Atlassian's MCP server as the Bearer the gateway sends before it saves. A user's email and API token stays as the second choice on the sheet.
+
+### Added
 - Agents can write to Jira. An Atlassian connection added with "Agents may read and write" offers the permission service's new Write issues level (`atlassian_jira_issues_write`, bab's mutate tier); an agent granted it earns the gateway scope that opens the four Jira writing tools (create, edit, comment, transition) and nothing else. Confluence's writing tools and Atlassian's generic executors stay behind scopes no grant opens. A connection added for reading keeps the read tier as its ceiling.
 
 ### Fixed

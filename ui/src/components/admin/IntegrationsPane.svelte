@@ -25,7 +25,7 @@
     connectAdminIntegrationMutation,
     disconnectAdminIntegrationMutation,
   } from "../../lib/queries";
-  import { OTHER, ROOM_VENDORS, SELF_HOSTED, SELF_HOSTED_AUTH, SELF_HOSTED_SUMMARY, catalogFor, type CatalogEntry } from "../../lib/admin/catalog";
+  import { OTHER, ROOM_VENDORS, SELF_HOSTED, SELF_HOSTED_AUTH, SELF_HOSTED_SUMMARY, catalogFor, type CatalogEntry, ATLASSIAN_KINDS, type AtlassianKind, type CatalogField } from "../../lib/admin/catalog";
   import { whenDay } from "../../lib/time";
 
   // `accessOn`: the permission service is on, so Datadog connects as a service account
@@ -91,6 +91,8 @@
   // The Google Cloud sheet's own choices (kobo#390, kobo#405): an organization (the
   // default) or a project, and whether a Vertex AI project's models serve the room.
   let gcpMode = $state<"project" | "parent">("parent");
+  // Atlassian: a service account's key (the default) or a user's email and token.
+  let atlassianKind = $state<AtlassianKind>("service");
   let useVertex = $state(false);
   const VERTEX_DEFAULT_LOCATION = "global";
   // The AWS sheet's own choices (kobo#390): an organization (its hub role) or one account
@@ -144,6 +146,7 @@
     const entry = preset ?? OTHER;
     gcpMode = "parent";
     useVertex = false;
+    atlassianKind = "service";
     awsMode = "org";
     useBedrock = false;
     form = {
@@ -161,6 +164,16 @@
         : entry.id === "gcp" ? { project: "", parent_resource: "", models_project: "", models_location: VERTEX_DEFAULT_LOCATION }
         : Object.fromEntries(entry.fields.map((f) => [f.key, ""])),
     };
+  }
+
+  // Atlassian's service-account shape has no email: the key is the whole credential.
+  function visibleFields(entry: CatalogEntry): CatalogField[] {
+    if (entry.id !== "atlassian" || atlassianKind !== "service") return entry.fields;
+    return entry.fields.filter((f) => f.key !== "email");
+  }
+  function fieldLabel(entry: CatalogEntry, f: CatalogField): string {
+    if (entry.id === "atlassian" && f.key === "TOKEN") return ATLASSIAN_KINDS.find((k) => k.id === atlassianKind)?.tokenLabel ?? f.label;
+    return f.label;
   }
 
   // The noun under a cloud's parent row: AWS accounts, Google Cloud projects.
@@ -238,7 +251,8 @@
         identity.models_location = (form.values.models_location ?? "").trim() || VERTEX_DEFAULT_LOCATION;
       }
     } else {
-      for (const f of form.entry.fields) {
+      if (form.entry.id === "atlassian") auth = ATLASSIAN_KINDS.find((k) => k.id === atlassianKind)?.auth ?? auth;
+      for (const f of visibleFields(form.entry)) {
         const v = (form.values[f.key] ?? "").trim();
         if (!v) continue;
         (f.secret ? secrets : identity)[f.key] = v;
@@ -575,9 +589,17 @@
         <span>{form.entry.id === SELF_HOSTED ? "Name for this endpoint" : "Name"}</span>
         <input id="integration-name" type="text" bind:value={form.name} placeholder={form.entry.id === SELF_HOSTED ? "e.g. lab-gpu-pool" : ""} required autocomplete="off" />
       </label>
-      {#each form.entry.fields as f (f.key)}
+      {#if form.entry.id === "atlassian"}
+        <fieldset class="field">
+          <legend>Credential</legend>
+          {#each ATLASSIAN_KINDS as k (k.id)}
+            <label><input type="radio" name="atlassian_kind" value={k.id} bind:group={atlassianKind} /> {k.label}</label>
+          {/each}
+        </fieldset>
+      {/if}
+      {#each visibleFields(form.entry) as f (f.key)}
         <label class="field">
-          <span>{f.label}{#if f.optional} <span class="quiet">(optional)</span>{/if}</span>
+          <span>{fieldLabel(form.entry, f)}{#if f.optional} <span class="quiet">(optional)</span>{/if}</span>
           {#if f.multiline}
             <textarea id="integration-{f.key}" rows="6" bind:value={form.values[f.key]} placeholder={f.placeholder ?? ""} autocomplete="off" spellcheck="false" required={!f.optional}></textarea>
           {:else}

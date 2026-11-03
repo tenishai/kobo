@@ -460,27 +460,43 @@ def gateway_address(address: str) -> str:
     return address
 
 
-def probe_basic_mcp(name: str, address: str, user: str, token: str) -> None:
-    """Ask the vendor's MCP server to initialize with the pair as Basic auth,
-    the way the gateway will. 401 or 403 is a refusal of the pair; any other
+def _probe_mcp(name: str, address: str, authorization: str, what: str) -> None:
+    """Ask the vendor's MCP server to initialize with the credential as the
+    gateway will send it. 401 or 403 is a refusal of the credential; any other
     answer means the server took it (a protocol complaint still passed the
-    door). Raises `ConnectRefused` with the vendor's sentence. The token is
-    never logged."""
-    pair = base64.b64encode(f"{user}:{token}".encode()).decode()
+    door). Raises `ConnectRefused` with the vendor's sentence. The credential
+    is never logged."""
     body = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "kobo", "version": "0"}}}
     try:
         resp = httpx.post(f"{address}{MCP_SUFFIX}", json=body, timeout=BASIC_PROBE_TIMEOUT_S,
-                          headers={"Authorization": f"Basic {pair}", "Accept": "application/json, text/event-stream"})
+                          headers={"Authorization": authorization, "Accept": "application/json, text/event-stream"})
     except httpx.HTTPError as exc:
         raise ConnectRefused(f"{name}'s MCP server at {address} could not be reached from the room "
                              f"({exc.__class__.__name__}); nothing was connected") from exc
     if resp.status_code in (401, 403):
-        raise ConnectRefused(f"{name} did not accept the email and API token (HTTP {resp.status_code}); check both, and "
+        raise ConnectRefused(f"{name} did not accept {what} (HTTP {resp.status_code}); check it, and "
                              "that API token access to its MCP server is turned on for the organization; nothing was connected")
 
 
-_basic_probe = probe_basic_mcp  # tests swap it for a recorder
+def probe_basic_mcp(name: str, address: str, user: str, token: str) -> None:
+    """A user's API token rides as Basic `email:token` (Atlassian's shape for personal tokens)."""
+    pair = base64.b64encode(f"{user}:{token}".encode()).decode()
+    _probe_mcp(name, address, f"Basic {pair}", "the email and API token")
+
+
+def probe_bearer_mcp(name: str, address: str, token: str) -> None:
+    """A service account's API key rides as a Bearer (Atlassian's shape for service accounts,
+    2026-11-03: a key an admin makes under Directory, Service accounts, with scopes fixed at
+    creation; the one credential shape that belongs to no person)."""
+    _probe_mcp(name, address, f"Bearer {token}", "the service account API key")
+
+
+_basic_probe = probe_basic_mcp  # tests swap these for recorders
+_bearer_probe = probe_bearer_mcp
+# Token vendors whose MCP server is asked before a Bearer key is kept (the others have no
+# server to ask, or their own connect path).
+PROBED_TOKEN_VENDORS: frozenset[str] = frozenset(TARGET_EXTRAS)
 
 
 def datadog_target_spec(row: AdminIntegration) -> dict[str, Any]:
@@ -1727,6 +1743,10 @@ def _connect_cloud_or_token(
             _basic_probe(name, address, identity[BASIC_USER_KEY], secrets[SECRET_KEY])
             probe_note = f"{name} accepted the email and API token; "
         secrets = {SECRET_KEY: f"{identity[BASIC_USER_KEY]}:{secrets[SECRET_KEY]}"}
+    elif auth == "token" and address and vendor in PROBED_TOKEN_VENDORS:
+        # A service account's key is checked the same way, as the Bearer the gateway sends.
+        _bearer_probe(name, address, secrets[SECRET_KEY])
+        probe_note = f"{name} accepted the service account API key; "
     spec: dict[str, Any] = {
         "address": address,
         "trust": trust if trust in ("trusted", "untrusted") else "untrusted",
