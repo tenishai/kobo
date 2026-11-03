@@ -1418,6 +1418,9 @@ class FakeCloud:
         # helper, so the two clients cannot drift apart on this format.
         return gsa_email(name, self._project)
 
+    def grant_registry_read(self, gsa_email: str, registry: str) -> None:
+        self.calls.append(f"grant_registry_read:{gsa_email}:{registry}")
+
     def grant_bucket_prefix_write(self, gsa_email: str, bucket: str, prefix: str) -> None:
         self.calls.append(f"grant_bucket_prefix_write:{gsa_email}:{bucket}:{prefix}")
         # Important 9 fix (paired with Critical 4): the real GcloudClient

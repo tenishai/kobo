@@ -5160,6 +5160,23 @@ def test_access_step_grants_prefix_scoped_to_this_agents_own_name(session_factor
     assert cloud.calls[-1] == f"grant_bucket_list:{expected_email}:kobo-memory-replicas"
 
 
+def test_access_step_grants_reader_on_the_bundle_registry_when_bundles_are_artifacts(session_factory, config):
+    """Gate (integrity): a pod pulls its bundle at start as its own identity (tenishai/kobo#434),
+    so with `bundle_registry` set the access step grants that identity reader on the repository,
+    and without it grants nothing there."""
+    cfg = config.model_copy(update={"bundle_registry": "us-east4-docker.pkg.dev/example-proj/agents"})
+    session, agent = _make_agent(session_factory, name="rae")
+    cloud = FakeCloud(project=cfg.gcp_project)
+    AccessStep().run(_make_ctx(session, agent, cfg, _clients(cloud=cloud)))
+    expected_email = f"agent-rae@{cfg.gcp_project}.iam.gserviceaccount.com"
+    assert f"grant_registry_read:{expected_email}:us-east4-docker.pkg.dev/example-proj/agents" in cloud.calls
+
+    session2, other = _make_agent(session_factory, name="ivy")
+    cloud2 = FakeCloud(project=config.gcp_project)
+    AccessStep().run(_make_ctx(session2, other, config, _clients(cloud=cloud2)))
+    assert not [c for c in cloud2.calls if c.startswith("grant_registry_read")]
+
+
 def test_onboard_step_conflict_for_someone_elses_app_is_still_refused(session_factory, config):
     """Gate (visibility): Onboard step conflict for someone elses app is still refused."""
     repo = _repo_full_name(config)

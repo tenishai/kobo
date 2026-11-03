@@ -1607,6 +1607,10 @@ class AccessStep:
             cloud.grant_bucket_prefix_write(
                 email, config.memory_replica_bucket, f"{agent.name}/"
             )
+        if config.bundle_registry:
+            # The pod pulls its bundle from the registry at start, as this identity
+            # (tenishai/kobo#434); without reader there it cannot start.
+            cloud.grant_registry_read(email, config.bundle_registry)
         return granted + self._own_repository(ctx)
 
     @staticmethod
