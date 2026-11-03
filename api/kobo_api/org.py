@@ -43,6 +43,12 @@ ORG_KEYS = frozenset(
         "personas_bucket",
         "gojira_cluster",
         "runtime_image",
+        # One runtime, bundles as artifacts (tenishai/kobo#434): the registry path the
+        # room publishes each agent's bundle to. Same lesson as memory_replica_bucket
+        # below, learned a second time (2026-11-03): the Config field shipped in 0.3.49
+        # without this entry, and setting it in org.yaml unwired the dev room on the
+        # next boot. An org-settable Config field is not done until it is listed here.
+        "bundle_registry",
         # Agent memory replication target (resilience arc). The lesson that
         # put this comment here: Task 14 added the Config FIELD but not this
         # allowlist entry, and one unrecognized org.yaml key unwires ALL org
@@ -267,6 +273,11 @@ def load_org_config(local: Config, github: GitHubClient) -> tuple[Config, OrgSta
         data = _translate_renamed(data)
         unknown_keys = sorted(set(data) - ORG_KEYS - RETIRED_ORG_KEYS)
         if unknown_keys:
+            # Said in the log too, not only in the health route: an unwired room looks
+            # like "catalogs aren't set up" to everyone, and nothing else names why.
+            log.error("org config: org.yaml in %s has an unrecognized key %r; the room runs unwired "
+                      "(no catalogs, no operators) until it is removed or this kobo learns it",
+                      local.org_repo, unknown_keys[0])
             return local, OrgState(
                 False,
                 local.org_repo,

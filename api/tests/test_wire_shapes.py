@@ -3696,6 +3696,7 @@ def test_render_org_yaml_golden_with_computed_defaults():
         "gojira_cluster": "acme-cluster",
         "runtime_image": "registry.example/agents/daedalus-runtime:v1",
         "memory_replica_bucket": "",
+        "bundle_registry": "",
         "broker_url": "",
         "models_gateway_url": "",
         "liminal_url": "",
