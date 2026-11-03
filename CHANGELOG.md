@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.48] - 2026-11-03
+
 ### Fixed
 - The Atlassian sheet refuses a token its MCP server accepts but cannot use. Atlassian opens a session for any valid API token and only refuses the first tool call when the token lacks the scopes the MCP server reads (a classic token, or one made under the Jira app instead of the Atlassian MCP app); the room's check now makes that call and says where the right token is made, instead of the agent failing later in chat.
 
