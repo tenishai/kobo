@@ -6294,6 +6294,46 @@ def test_an_atlassian_connection_for_read_and_write_offers_write_issues_and_its_
     assert "atlassian:jira-write" in gateway_lane.MANAGED_SCOPES
 
 
+def test_an_atlassian_service_account_key_is_checked_as_a_bearer_then_served_as_one(tmp_path, fake_storage, monkeypatch):
+    """Gate (integrity): a service account's API key is the credential shape that belongs to no
+    person; Atlassian's server takes it only as a Bearer (a user's token only as Basic). The room
+    checks the key that way before it saves, stores the key alone, and the target sends it as the
+    gateway's default bearer scheme, with the same per-agent session and scopes as the user shape."""
+    from kobo_api import admin_integrations
+    probes: list[tuple] = []
+    monkeypatch.setattr(admin_integrations, "_bearer_probe", lambda name, address, token: probes.append((name, address, token)))
+    bab = FakeBab(integrations=[])
+    client, headers = _access_client(tmp_path, fake_storage, bab=bab)
+    admin = FakeLiminalAdmin()
+    client.app.state.clients.liminal_admin = admin
+    sero = client.app.state.clients.sero
+    body = {"vendor": "atlassian", "name": "Atlassian", "base_access": "read", "auth": "token",
+            "identity": {}, "secrets": {"TOKEN": "key-1"}, "address": "https://mcp.atlassian.com/v2/mcp"}
+
+    # A key the server refuses is stored nowhere (the probe is per vendor: only Atlassian's server is asked).
+    def refuse(name, address, token):
+        raise admin_integrations.ConnectRefused(f"{name} did not accept the service account API key (HTTP 401)")
+    monkeypatch.setattr(admin_integrations, "_bearer_probe", refuse)
+    r = client.post("/api/admin/integrations", json=body, headers=headers)
+    assert r.status_code == 409 and "service account API key" in r.json()["error"]
+    assert sero.puts == [] and bab.integrations("x") == []
+
+    monkeypatch.setattr(admin_integrations, "_bearer_probe", lambda name, address, token: probes.append((name, address, token)))
+    row = client.post("/api/admin/integrations", json=body, headers=headers).json()
+    assert row["state"] == "applied" and "accepted the service account API key" in row["state_detail"], row
+    assert probes == [("Atlassian", "https://mcp.atlassian.com/v2", "key-1")]
+    target = admin.targets["atlassian"]
+    assert target["auth_method"] == "bearer" and "auth_scheme" not in target
+    assert target["session"] == "per-persona" and target["required_scope"] == "atlassian:read"
+    assert target["tool_scopes"]["createJiraIssue"] == "atlassian:jira-write"
+    (put,) = [p for p in sero.puts if p[1] == "apps/kobo/integrations/atlassian"]
+    assert put[2] == {"TOKEN": "key-1"}
+    # A token vendor without an MCP server to ask is kept without a probe, as before.
+    r = client.post("/api/admin/integrations", json={"vendor": "fastly", "name": "Fastly", "base_access": "read", "auth": "token",
+                                                      "identity": {}, "secrets": {"TOKEN": "f-1"}, "address": "https://mcp.fastly.example"}, headers=headers)
+    assert r.status_code in (200, 201) and len(probes) == 1
+
+
 def test_the_lane_sync_retires_the_token_broker_github_entries_an_old_bundle_still_lists(tmp_path, fake_storage):
     """Gate (integrity): the room's GitHub token broker is gone (kobo#365); an agent whose bundle still
     allows its tools by name (github.search_prs, github.open_pr) is offered dead tools that answer
