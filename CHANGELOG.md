@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Agents can write to Jira. An Atlassian connection added with "Agents may read and write" offers the permission service's new Write issues level (`atlassian_jira_issues_write`, bab's mutate tier); an agent granted it earns the gateway scope that opens the four Jira writing tools (create, edit, comment, transition) and nothing else. Confluence's writing tools and Atlassian's generic executors stay behind scopes no grant opens. A connection added for reading keeps the read tier as its ceiling.
+
 ### Fixed
 - The room's Jira lane no longer reports a rejected API token as "no such issue". Jira treats a credential it cannot verify as an anonymous reader, so every issue read came back 404 and every search empty; the lane now asks the tracker who the credential is before it calls an issue missing, and answers "the tracker rejected the room's credential" (a 502 the agent passes on, never a 404 the runtime reads as "not granted").
 
