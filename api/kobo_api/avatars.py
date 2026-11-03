@@ -17,6 +17,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from kobo_api import delivery
 from kobo_api.clients import GitHubClient
 
 
@@ -72,5 +73,5 @@ def set_avatar(github: GitHubClient, *, repo: str, png: bytes) -> str:
         bundle_dir = workdir / "bundle"
         bundle_dir.mkdir(parents=True, exist_ok=True)
         (bundle_dir / "avatar.png").write_bytes(png)
-        github.commit_push(workdir, "kobo: set avatar")
+        delivery.push(github, workdir, "kobo: set avatar")
         return github.local_head(workdir)

@@ -35,6 +35,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from kobo_api import delivery
 from kobo_api.clients import GitHubClient, KubectlClient, image_tag
 from kobo_api.composer import repin_commit_note, update_dockerfile_runtime_image
 from kobo_api.repo_lock import repo_write_lock
@@ -162,7 +163,7 @@ def upload_intake_file(
         else:
             message = f"kobo: add intake/{filename}{note}"
 
-        github.commit_push(workdir, message)
+        delivery.push(github, workdir, message, restart=not archive_only or pin_changed)
         head = github.local_head(workdir)
     # The card now names a new runtime (issue #147); the caller re-registers it.
     if pin_changed and on_repin is not None:
@@ -190,7 +191,7 @@ def delete_intake_file(github: GitHubClient, repo: str, filename: str) -> str:
         if not target.is_file():
             raise IntakeError(f"intake file not found: {filename}")
         target.unlink()
-        github.commit_push(workdir, f"kobo: remove intake/{filename}")
+        delivery.push(github, workdir, f"kobo: remove intake/{filename}")
         return github.local_head(workdir)
 
 

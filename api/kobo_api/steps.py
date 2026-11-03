@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING
 import httpx
 import yaml
 
-from kobo_api import audit, gateway_lane, github_access
+from kobo_api import audit, delivery, gateway_lane, github_access
 from kobo_api.avatars import avatar_prompt, set_avatar
 from kobo_api.bab import ROOM_ACTOR as BAB_ROOM_ACTOR
 from kobo_api.catalog import _DESCRIPTION_HEADER_RE
@@ -954,6 +954,7 @@ class RepoStep:
             # at the gateway under the name it serves this entry as.
             models_gateway_url=config.models_gateway_url,
             gateway_model=gateway_model_for(_model_entries(ctx.session), agent.model_id) if gateway_on(config) else None,
+            bundle_artifact=delivery.bundle_artifact(config.bundle_registry, agent.name) if config.bundle_registry else None,
         )
 
         compose_dir = ctx.workdir / "repo"
@@ -992,6 +993,10 @@ class RepoStep:
         agent.built_runtime_image = spec.runtime_image
         ctx.session.commit()
         github.create_repo_from_dir(repo, compose_dir)
+        if spec.bundle_artifact:
+            # The pod pulls its bundle at first start (tenishai/kobo#434): it has to be in the
+            # registry before the deploy platform's first roll, which the next steps start.
+            delivery.publish(compose_dir, agent.name, head_sha=github.local_head(compose_dir) or "")
         return f"created {repo}"
 
 
@@ -1884,6 +1889,12 @@ def _update_gojira_yaml(gojira_yaml_path, agent, config) -> None:
         # The agent's gateway key (kobo#390), delivered by WireStep before
         # the push the same way the colleague pass is.
         _append_secrets_from(data, models_secret_name(agent.name))
+    if config.bundle_registry:
+        # One runtime, bundles as artifacts (tenishai/kobo#434): the env the runtime's
+        # entrypoint reads, and the Secrets the pod reads when they exist (Slack, env).
+        delivery.wire_gojira_yaml(
+            data, agent.name, registry=config.bundle_registry, replica_bucket=config.memory_replica_bucket
+        )
     gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 

@@ -68,6 +68,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from kobo_api import delivery
 from kobo_api.clients import (
     AgentClient,
     ClientError,
@@ -309,7 +310,7 @@ def upload_tooling_file(
         if runtime_image is not None:
             previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
             note = repin_commit_note(repo, previous, runtime_image)
-        github.commit_push(workdir, f"kobo: add tools/{filename}{note}")
+        delivery.push(github, workdir, f"kobo: add tools/{filename}{note}")
         head = github.local_head(workdir)
     # The card now names a new runtime (issue #147); the caller re-registers it.
     if previous is not None and on_repin is not None:
@@ -335,7 +336,7 @@ def delete_tooling_file(github: GitHubClient, repo: str, filename: str) -> str:
         if not target.is_file():
             raise ToolingError(f"tooling file not found: {filename}")
         target.unlink()
-        github.commit_push(workdir, f"kobo: remove tools/{filename}")
+        delivery.push(github, workdir, f"kobo: remove tools/{filename}")
         return github.local_head(workdir)
 
 
@@ -428,8 +429,8 @@ def import_tooling(
         if runtime_image is not None:
             previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
             note = repin_commit_note(repo, previous, runtime_image)
-        github.commit_push(
-            workdir, f"kobo: import tools from {source_repo}/{source_path}{note}"
+        delivery.push(
+            github, workdir, f"kobo: import tools from {source_repo}/{source_path}{note}"
         )
         sha = github.local_head(workdir)
     # The card now names a new runtime (issue #147); the caller re-registers it.

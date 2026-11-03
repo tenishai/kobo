@@ -341,6 +341,14 @@ class Config(BaseModel):
     # and AccessStep grants nothing extra -- a composed bundle is
     # byte-identical to one composed before this feature existed.
     memory_replica_bucket: str = ""
+    # One runtime, bundles as artifacts (tenishai/kobo#434). The registry path the
+    # room publishes each agent's bundle to (`<registry>/<agent>-bundle:current`,
+    # beside the runtime image, e.g. `us-east4-docker.pkg.dev/<project>/<repo>`);
+    # the pod pulls it at start and a change to the bundle is a restart, not a
+    # build. Empty keeps every change a commit the agent's CI builds, as before.
+    # Set it only once `runtime_image` pins a runtime that pulls bundles, and
+    # the room's identity may write to the registry.
+    bundle_registry: str = ""
     # WIF provider + service account identity the org's own skills-publish
     # pipeline (if any) runs as. skills_publish_external True means that
     # pipeline is external to kobo — kobo must never install or modify

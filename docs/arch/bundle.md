@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-bundle
-updated: 2026-11-02
-anchor: api/kobo_api/composer.py sha=58dae145e0f17806784c28bf23f5f5938a08b151
+updated: 2026-11-03
+anchor: api/kobo_api/composer.py sha=3e78f05366bb18da3bc0764ab11f488a3dff1f09
 anchor: api/kobo_api/vendor/bundle.schema.json sha=257c9575d4674177daf32d7bc0ad2b1145709552
 ---
 # bundle — the daedalus agent bundle kobo writes into each agent repo
@@ -31,3 +31,4 @@ CONSUMERS: api/kobo_api/steps.py (RepoStep `compose`/`validate_agent_yaml`, `_se
 GOTCHA: slack_setup.py `_update_agent_yaml_transports` round-trips agent.yaml through `yaml.safe_dump`, which rewrites the whole file in block style. After Slack is wired, the one-line shapes the `update_agent_yaml_*` regex editors need are gone. Those five editors have no production caller today (only tests: test_integrity.py, test_wire_bundle.py), so this is latent: don't reach for them on a Slack-wired agent without checking. `update_agent_yaml_colleague_mode` (the one with a production caller) parses the file and splices the whole tools section, so it handles the block-style file; tested on one.
 
 2026-10-29 (issue #274): colleagues.md no longer tells the agent the live `list_colleagues` read wins. Both variants open with the roster as the list that counts (default: "who you may talk to"; roster-only: "who is in the room with you") and say the live tool may list agents it cannot reach or that no longer exist. The digests in tests/test_wire_bundle.py were retaken for it.
+- One runtime, bundles as artifacts (tenishai/kobo#434): `BundleSpec.bundle_artifact` set (the room has `bundle_registry`) composes the new shape: the Dockerfile is the FROM line alone (litestream and the entrypoint ride the runtime, which reads `MEMORY_REPLICA_BUCKET` from the pod's env), and `transports` carries a dormant `{kind: slack, optional: true}` the runtime serves only with a token. Unset keeps the baked-in shape byte for byte.

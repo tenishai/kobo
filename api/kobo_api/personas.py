@@ -24,6 +24,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
 
+from kobo_api import delivery
 from kobo_api.catalog import _parse_persona_file
 from kobo_api.clients import StorageClient, StorageNotFound
 from kobo_api.purpose_tags import normalize_tags
@@ -212,7 +213,7 @@ def write_persona_file(github, repo: str, body: str, *, persona_id: str) -> str:
         bundle = workdir / "bundle"
         bundle.mkdir(parents=True, exist_ok=True)
         (bundle / "persona.md").write_text(body, encoding="utf-8")
-        github.commit_push(workdir, f"kobo: persona is now {persona_id}")
+        delivery.push(github, workdir, f"kobo: persona is now {persona_id}")
         return github.local_head(workdir)
 
 

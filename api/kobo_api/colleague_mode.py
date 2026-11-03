@@ -18,6 +18,7 @@ import logging
 import tempfile
 from pathlib import Path
 
+from kobo_api import delivery
 from kobo_api.clients import GitHubClient
 from kobo_api.composer import update_agent_yaml_colleague_mode
 
@@ -47,5 +48,5 @@ def commit_colleague_mode(
         else:
             doc.parent.mkdir(parents=True, exist_ok=True)
             doc.write_text(colleagues_md)
-        github.commit_push(workdir, f"kobo: colleague mode is now {mode}")
+        delivery.push(github, workdir, f"kobo: colleague mode is now {mode}")
         return github.local_head(workdir)

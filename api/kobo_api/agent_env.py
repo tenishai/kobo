@@ -427,6 +427,8 @@ def wire_env_secret(data: dict, agent_name: str) -> bool:
     request against somebody's repository.
     """
     entry = env_secret_name(agent_name)
+    if _optional_reference(data, entry):
+        return False  # referenced at birth as optional (tenishai/kobo#434)
     existing = data.get("secrets_from")
     secrets_from = list(existing) if isinstance(existing, list) else []
     if entry in secrets_from:
@@ -448,7 +450,15 @@ def has_env_secret(data: dict, agent_name: str) -> bool:
     """
     existing = data.get("secrets_from")
     entry = env_secret_name(agent_name)
-    return isinstance(existing, list) and entry in existing
+    return (isinstance(existing, list) and entry in existing) or _optional_reference(data, entry)
+
+
+def _optional_reference(data: dict, entry: str) -> bool:
+    """Whether gojira.yaml names `entry` among the Secrets the pod reads when they
+    exist (`secrets_from_optional`, wired at birth since tenishai/kobo#434): such a
+    reference never needs adding or removing, the pod tolerates the Secret missing."""
+    optional = data.get("secrets_from_optional")
+    return isinstance(optional, list) and entry in optional
 
 
 def unwire_env_secret(data: dict, agent_name: str) -> bool:
@@ -465,6 +475,8 @@ def unwire_env_secret(data: dict, agent_name: str) -> bool:
     entries on a connected agent's file are none of this function's
     business.
     """
+    if _optional_reference(data, env_secret_name(agent_name)):
+        return False  # an optional reference stays: the pod boots without the Secret
     existing = data.get("secrets_from")
     if not isinstance(existing, list):
         return False
