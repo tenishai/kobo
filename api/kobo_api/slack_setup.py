@@ -505,8 +505,11 @@ def wire_slack_values(
 
         if by_restart:
             # The Secret is written and the transport is in the bundle (born dormant): a
-            # restart delivers it, about thirty seconds, no build and no reprovision.
-            delivery.push(github, workdir, f"{message}{note}", force_restart=True)
+            # restart delivers it, no build and no reprovision. Through the platform the
+            # values land at its next re-read, so the restart waits for them, off this
+            # request; a direct write is there already and the restart follows at once.
+            delivery.push(github, workdir, f"{message}{note}", restart=False)
+            delivery.restart_once_secret_carries(kubectl, name, f"{name}-slack", list(values))
             changed = False
         else:
             changed = delivery.push(github, workdir, f"{message}{note}")

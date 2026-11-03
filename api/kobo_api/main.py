@@ -9978,11 +9978,11 @@ def create_app(
                 return wiring
         if on_default and delivery.configured() and (payload.set or payload.remove):
             # The reference is already there (born optional, tenishai/kobo#434): the pod reads
-            # the Secret at start, so a restart delivers the new values, no build.
-            try:
-                app.state.clients.kubectl.restart_deploy(agent.name, agent.name)
-            except ClientError as exc:
-                log.warning("restart after a secrets change failed for %s: %s", agent.name, exc)
+            # the Secret at start, so a restart delivers the new values, no build. The values
+            # reach the cluster at the platform's next re-read, so the restart waits for them.
+            delivery.restart_once_secret_carries(
+                app.state.clients.kubectl, agent.name, env_secret_name(agent.name), list(payload.set),
+            )
 
         audit.record(
             session, request=request, action="secrets.set", target_kind="agent", target_id=agent.name,

@@ -25,6 +25,9 @@ behaves exactly as it did.
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -237,8 +240,94 @@ def _restart(name: str) -> None:
         raise ClientError(f"{NOT_DELIVERED}: the restart failed ({exc}); try again") from exc
 
 
+SECRET_WAIT = 150.0
+SECRET_POLL = 5.0
+
+
+def secret_carries(kubectl: KubectlClient, namespace: str, secret: str, keys: Iterable[str]) -> bool:
+    """Whether the cluster Secret holds every key named. Only the names are looked at."""
+    try:
+        present = set(kubectl.secret_literals(namespace, secret))
+    except ClientError:
+        return False
+    return set(keys) <= present
+
+
+def wait_for_secret(
+    kubectl: KubectlClient, namespace: str, secret: str, keys: Iterable[str],
+    *, timeout: float | None = None, interval: float | None = None,
+    sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Wait until the Secret carries `keys`, up to `timeout` seconds. A value delivered
+    through the secrets platform reaches the cluster at its next re-read, a minute or so
+    later; a pod restarted before that starts on the old Secret (scooby-doo, 2026-11-03:
+    the install's restart beat the bot token to the cluster by five seconds and the agent
+    never answered in Slack). Returns whether the keys were seen."""
+    keys = list(keys)
+    timeout = SECRET_WAIT if timeout is None else timeout
+    interval = SECRET_POLL if interval is None else interval
+    deadline = clock() + timeout
+    while True:
+        if secret_carries(kubectl, namespace, secret, keys):
+            return True
+        if clock() >= deadline:
+            return False
+        sleep(interval)
+
+
+def restart_once_secret_carries(
+    kubectl: KubectlClient, name: str, secret: str, keys: Iterable[str], *, background: bool = True,
+) -> threading.Thread | None:
+    """Restart agent `name` once its Secret carries `keys`, restarting anyway when the
+    wait runs out (the next start then still reads whatever has landed). In the
+    background by default, so a request does not hold for the platform's re-read."""
+    keys = list(keys)
+
+    def _run() -> None:
+        if not wait_for_secret(kubectl, name, secret, keys):
+            log.warning("%s: %s did not reach the cluster in time; restarting anyway", name, secret)
+        try:
+            kubectl.restart_deploy(name, name)
+        except ClientError as exc:
+            log.warning("restart of %s after a secret change failed: %s", name, exc)
+
+    if not background:
+        _run()
+        return None
+    thread = threading.Thread(target=_run, name=f"restart-{name}", daemon=True)
+    _restarts[:] = [t for t in _restarts if t.is_alive()]
+    _restarts.append(thread)
+    thread.start()
+    return thread
+
+
+_restarts: list[threading.Thread] = []
+
+
+def join_restarts(timeout: float = 5.0) -> None:
+    """Wait for the background restarts started so far (tests, and a clean shutdown)."""
+    for thread in _restarts:
+        thread.join(timeout)
+
+
 __all__ = [
-    "AGENT_NAME_ENV", "BUNDLE_IMAGE_KEY", "REPLICA_BUCKET_ENV", "Delivery", "agent_name_of", "bundle_artifact",
-    "configure", "configured", "convert_to_runtime_only", "legacy_shape", "optional_secrets", "publish", "push",
-    "runtime_env", "wire_gojira_yaml",
+    "AGENT_NAME_ENV",
+    "BUNDLE_IMAGE_KEY",
+    "REPLICA_BUCKET_ENV",
+    "Delivery",
+    "agent_name_of",
+    "bundle_artifact",
+    "configure",
+    "configured",
+    "convert_to_runtime_only",
+    "join_restarts",
+    "legacy_shape",
+    "optional_secrets",
+    "publish",
+    "push",
+    "restart_once_secret_carries",
+    "runtime_env",
+    "secret_carries",
+    "wait_for_secret",
+    "wire_gojira_yaml",
 ]

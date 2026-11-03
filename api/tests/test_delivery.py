@@ -227,3 +227,36 @@ def test_the_registry_publisher_pushes_a_plain_oci_image_an_image_volume_can_mou
     assert digest.startswith("sha256:")
     assert all(auth == "Bearer tok" for *_, auth in seen)
     assert bundle_tarball(bundle) == bundle_tarball(bundle)  # deterministic: same bundle, same digest
+
+
+class SecretKubectl(Kubectl):
+    """A Secret whose keys appear only after a number of reads, the way a platform-delivered
+    value reaches the cluster at its next re-read."""
+
+    def __init__(self, keys_after: int, keys: tuple[str, ...] = ("SLACK_BOT_TOKEN",)):
+        super().__init__()
+        self.keys_after, self.keys, self.reads = keys_after, keys, 0
+
+    def secret_literals(self, ns, name):
+        self.reads += 1
+        if self.reads <= self.keys_after:
+            return {"SLACK_APP_ID": "A1"}
+        return {"SLACK_APP_ID": "A1", **{k: "x" for k in self.keys}}
+
+
+def test_the_restart_after_a_delivered_secret_waits_for_the_key_to_land():
+    kubectl = SecretKubectl(keys_after=3)
+    slept: list[float] = []
+    assert delivery.wait_for_secret(kubectl, "ledger", "ledger-slack", ["SLACK_BOT_TOKEN"], sleep=slept.append, clock=lambda: 0.0)
+    assert kubectl.reads == 4 and len(slept) == 3
+    delivery.restart_once_secret_carries(kubectl, "ledger", "ledger-slack", ["SLACK_BOT_TOKEN"], background=False)
+    assert kubectl.restarts == [("ledger", "ledger")]
+
+
+def test_a_key_that_never_lands_still_restarts_when_the_wait_runs_out(monkeypatch):
+    kubectl = SecretKubectl(keys_after=10**6)
+    ticks = iter([0.0, 1.0, 200.0, 201.0])
+    monkeypatch.setattr(delivery, "SECRET_WAIT", 150.0)
+    assert not delivery.wait_for_secret(kubectl, "ledger", "ledger-slack", ["SLACK_BOT_TOKEN"], sleep=lambda s: None, clock=lambda: next(ticks))
+    delivery.restart_once_secret_carries(kubectl, "ledger", "ledger-slack", ["SLACK_BOT_TOKEN"], background=False)
+    assert kubectl.restarts == [("ledger", "ledger")]
