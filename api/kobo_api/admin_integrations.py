@@ -93,6 +93,7 @@ Bedrock is per account.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 import tempfile
@@ -477,6 +478,57 @@ def _probe_mcp(name: str, address: str, authorization: str, what: str) -> None:
     if resp.status_code in (401, 403):
         raise ConnectRefused(f"{name} did not accept {what} (HTTP {resp.status_code}); check it, and "
                              "that API token access to its MCP server is turned on for the organization; nothing was connected")
+    if resp.status_code == 200:
+        _probe_scopes(name, address, authorization, what, resp.headers.get("Mcp-Session-Id"))
+
+
+# The one read every Atlassian session can make, and the first thing its server refuses when
+# the token carries none of the scopes the MCP server reads (a classic token, or one made
+# under the Jira app instead of the Atlassian MCP app, 2026-11-03: "Unable to resolve user
+# scopes from the user-context token"). Passing the door is not enough; this asks the room.
+SCOPE_PROBE_TOOL = "getAccessibleAtlassianResources"
+
+
+def _probe_scopes(name: str, address: str, authorization: str, what: str, session_id: str | None) -> None:
+    """One tool call on the session the probe just opened. A result the server
+    marks as an error about scopes refuses the connect with a sentence about
+    where the right token is made; any other answer (data, an unknown tool, a
+    protocol complaint) passes, and a transport failure here never refuses: the
+    door already opened, and "I could not ask" is not a fact about the token."""
+    headers = {"Authorization": authorization, "Accept": "application/json, text/event-stream"}
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+    try:
+        httpx.post(f"{address}{MCP_SUFFIX}", json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                   timeout=BASIC_PROBE_TIMEOUT_S, headers=headers)
+        resp = httpx.post(f"{address}{MCP_SUFFIX}", timeout=BASIC_PROBE_TIMEOUT_S, headers=headers,
+                          json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                "params": {"name": SCOPE_PROBE_TOOL, "arguments": {}}})
+    except httpx.HTTPError:
+        return
+    text = _mcp_result_text(resp.text)
+    if '"error":true' in text.replace(" ", "") and "scope" in text.lower():
+        raise ConnectRefused(f"{name} accepted {what} but it carries none of the scopes its MCP server reads; "
+                             "make the token under the Atlassian MCP app (the agent-interface scopes), not under Jira or "
+                             "Confluence; nothing was connected")
+
+
+def _mcp_result_text(raw: str) -> str:
+    """The text content of a tools/call answer, from a JSON body or the one
+    `data:` line of an event stream; "" when there is none."""
+    body = raw
+    for line in raw.splitlines():
+        if line.startswith("data:"):
+            body = line[5:].strip()
+            break
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return ""
+    content = (parsed.get("result") or {}).get("content") if isinstance(parsed, dict) else None
+    if not isinstance(content, list):
+        return ""
+    return " ".join(c.get("text", "") for c in content if isinstance(c, dict))
 
 
 def probe_basic_mcp(name: str, address: str, user: str, token: str) -> None:

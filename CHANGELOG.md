@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- The Atlassian sheet refuses a token its MCP server accepts but cannot use. Atlassian opens a session for any valid API token and only refuses the first tool call when the token lacks the scopes the MCP server reads (a classic token, or one made under the Jira app instead of the Atlassian MCP app); the room's check now makes that call and says where the right token is made, instead of the agent failing later in chat.
+
 ### Changed
 - The Access tab's Slack row no longer reads Live the moment the app is installed. Wiring the app is a commit that rebuilds the agent, and it answers in Slack only once that build has rolled, about three minutes; the room now remembers the image the agent ran when the app was wired and the row reads Rebuilding while the deployment still runs it, then Restarting, then Live. Migration `d1e3f5a7b9c2` adds two nullable columns.
 

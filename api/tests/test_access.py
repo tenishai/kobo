@@ -6334,6 +6334,61 @@ def test_an_atlassian_service_account_key_is_checked_as_a_bearer_then_served_as_
     assert r.status_code in (200, 201) and len(probes) == 1
 
 
+class _McpServer:
+    """A fake of Atlassian's MCP server behind `httpx.post`: initialize opens a
+    session; the scope probe answers with `tool_text` (a tool result's text)."""
+
+    def __init__(self, tool_text: str | None, *, stream: bool = False):
+        self.tool_text, self.stream, self.calls = tool_text, stream, []
+
+    def __call__(self, url, *, json=None, timeout=None, headers=None):
+        self.calls.append((json or {}).get("method"))
+        import json as _json
+        method = (json or {}).get("method")
+        if method == "initialize":
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {}}, headers={"Mcp-Session-Id": "s-1"})
+        if method == "tools/call":
+            body = {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": self.tool_text}]}}
+            if self.tool_text is None:
+                body = {"jsonrpc": "2.0", "id": 2, "error": {"code": -32602, "message": "unknown tool"}}
+            if self.stream:
+                return httpx.Response(200, text="event: message\ndata: " + _json.dumps(body) + "\n\n",
+                                      headers={"content-type": "text/event-stream"})
+            return httpx.Response(200, json=body)
+        return httpx.Response(202)
+
+
+def test_the_atlassian_probe_refuses_a_token_the_mcp_server_takes_but_cannot_use(monkeypatch):
+    """Gate (integrity): Atlassian's server opens a session for any valid API token and only
+    refuses the first tool call when the token lacks the scopes it reads (a classic token, or
+    one made under the Jira app). The room's probe makes that call, so the sheet refuses with
+    a sentence about where the token is made instead of the agent failing later in chat."""
+    import httpx as _httpx
+
+    from kobo_api import admin_integrations
+
+    refused = _McpServer('{"error":true,"message":"Unable to resolve user scopes from the user-context token for '
+                         '\\"getAccessibleAtlassianResources\\". The session token is missing the scope claim required to authorize this operation.","statusCode":401}')
+    monkeypatch.setattr(admin_integrations.httpx, "post", refused)
+    with pytest.raises(admin_integrations.ConnectRefused, match="none of the scopes its MCP server reads"):
+        admin_integrations.probe_bearer_mcp("Atlassian", "https://mcp.example/v2", "key-1")
+    assert refused.calls == ["initialize", "notifications/initialized", "tools/call"]
+
+    # A token with scopes answers with data (here over an event stream): the probe passes.
+    good = _McpServer('{"data":{"resources":[{"cloudId":"c-1","url":"https://acme.atlassian.net"}]}}', stream=True)
+    monkeypatch.setattr(admin_integrations.httpx, "post", good)
+    admin_integrations.probe_basic_mcp("Atlassian", "https://mcp.example/v2", "bot@example.com", "tok-1")
+    # A server without that tool is not a refusal either.
+    monkeypatch.setattr(admin_integrations.httpx, "post", _McpServer(None))
+    admin_integrations.probe_bearer_mcp("Atlassian", "https://mcp.example/v2", "key-1")
+    # The door itself still refuses first.
+    def shut(url, **kwargs):
+        return _httpx.Response(401, json={"error": "invalid_token"})
+    monkeypatch.setattr(admin_integrations.httpx, "post", shut)
+    with pytest.raises(admin_integrations.ConnectRefused, match="did not accept the service account API key"):
+        admin_integrations.probe_bearer_mcp("Atlassian", "https://mcp.example/v2", "key-1")
+
+
 def test_the_lane_sync_retires_the_token_broker_github_entries_an_old_bundle_still_lists(tmp_path, fake_storage):
     """Gate (integrity): the room's GitHub token broker is gone (kobo#365); an agent whose bundle still
     allows its tools by name (github.search_prs, github.open_pr) is offered dead tools that answer
