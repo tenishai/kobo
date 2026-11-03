@@ -87,6 +87,17 @@ describe("SlackVendor", () => {
     expect(screen.getByRole("button", { name: "Remove" })).toBeDefined();
   });
 
+  it("pulses while the app is being made", async () => {
+    room(NONE);
+    const create = await screen.findByRole("button", { name: "Create Slack app" });
+    // The create call never settles, so the button stays in its in-progress state.
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise(() => {}));
+    await fireEvent.click(create);
+    const button = await screen.findByRole("button", { name: /Creating/ });
+    expect(button.querySelector(".pulse")).not.toBeNull();
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("reads Rebuilding, not Live, while the build the Slack wiring started has not rolled", async () => {
     room({ ...INSTALLED, rebuilding: true });
 

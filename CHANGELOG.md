@@ -9,6 +9,8 @@ All notable changes to kobo are documented here. The format follows
 ### Changed
 - Nothing but the runtime builds (tenishai/kobo#434). With `bundle_registry` set in the org config, a change the room makes to an agent (persona, skills, knowledge, intake, tools, colleague mode, access, model, picture, details, Slack) is a commit for the record, a publish of the agent's bundle to the registry and a restart, about thirty seconds, instead of a three-minute image build. New agents are born that way: a one-line Dockerfile, the runtime's environment and the optional Slack and env Secret references in gojira.yaml, and Slack wired dormant, so Install to Slack is a Secret and a restart. An existing agent converts on its first change once it runs the room's current runtime; that one change still builds. Needs a runtime that pulls bundles (tenishai/daedalus bundle-at-start) and a Gojira that renders optional Secret references and reuses builds (tenishai/gojira no-rebuild-for-settings). Empty `bundle_registry` keeps today's behaviour.
 
+## [0.3.48] - 2026-11-03
+
 ### Fixed
 - The Atlassian sheet refuses a token its MCP server accepts but cannot use. Atlassian opens a session for any valid API token and only refuses the first tool call when the token lacks the scopes the MCP server reads (a classic token, or one made under the Jira app instead of the Atlassian MCP app); the room's check now makes that call and says where the right token is made, instead of the agent failing later in chat.
 
