@@ -34,6 +34,7 @@ import logging
 import tempfile
 from pathlib import Path
 
+from kobo_api import delivery
 from kobo_api.clients import AgentClient, ClientError, GitHubClient, KubectlClient
 from kobo_api.composer import (
     CAPABILITY_MAX_LEN,
@@ -207,5 +208,5 @@ def commit_card_metadata(
         update_agent_card_metadata(
             workdir / "bundle", team=team, purpose_tags=purpose_tags, capability=capability or ""
         )
-        github.commit_push(workdir, "kobo: directory details updated")
+        delivery.push(github, workdir, "kobo: directory details updated")
         return github.local_head(workdir)

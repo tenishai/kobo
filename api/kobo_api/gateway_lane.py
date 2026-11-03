@@ -38,6 +38,7 @@ from typing import NamedTuple
 import yaml
 from sqlalchemy.orm import Session
 
+from . import delivery
 from .clients import ClientError
 from .composer import update_agent_yaml_allow
 from .kinds import KIND_COMPOSED
@@ -186,7 +187,7 @@ def sync_allow(session: Session, clients, *, agent_name: str, patterns: set[str]
                 return ""
             added = [p for p in wanted if p not in before]
             gone = [p for p in withdraw if p in before]
-            github.commit_push(workdir, _commit_message(added, gone))
+            delivery.push(github, workdir, _commit_message(added, gone))
     except (ClientError, OSError) as exc:
         log.warning("allow list for %s could not be updated: %s", agent_name, exc)
         return f"; the agent's allow list could not be updated: {exc}"

@@ -33,6 +33,7 @@ from kobo_api import (
     admin_store,
     audit,
     audit_agents,
+    delivery,
     gateway_lane,
     gateway_prs,
     github_access,
@@ -98,6 +99,7 @@ from kobo_api.bab import last_failures as bab_last_failures
 from kobo_api.bab import picker as bab_picker
 from kobo_api.bab import push_topology as bab_push_topology
 from kobo_api.bab import since_days as bab_since_days
+from kobo_api.bundle_publish import RegistryPublisher
 from kobo_api.catalog import RESERVED_NAMES, validate_name
 from kobo_api.clients import (
     CabalError,
@@ -3337,6 +3339,14 @@ def create_app(
     app.state.config = config
     app.state.local_config = None
     app.state.clients = clients
+    # One runtime, bundles as artifacts (tenishai/kobo#434): with a registry set, every
+    # change to an agent publishes its bundle and restarts it instead of building.
+    delivery.configure(
+        delivery.Delivery(
+            kubectl=clients.kubectl, publisher=RegistryPublisher(), registry=config.bundle_registry,
+            runtime_image=config.runtime_image, replica_bucket=config.memory_replica_bucket,
+        ) if config.bundle_registry else None
+    )
     app.state.session_factory = session_factory
     # Every pipeline thread this process started, inline or from the queue,
     # so `drain_pipelines` waits for all of them at shutdown (issue #202).
@@ -9143,7 +9153,8 @@ def create_app(
         # once that build has rolled. Remember what runs now, so the row can say
         # Rebuilding until the deployment moves off it (`_slack_rebuilding`).
         verdict = getattr(app.state, "health", {}).get(agent.name)
-        agent.slack_rebuild_image = getattr(verdict, "image", None)
+        # With bundles as artifacts the app lands by restart, not by build: no Rebuilding.
+        agent.slack_rebuild_image = None if delivery.configured() else getattr(verdict, "image", None)
         agent.slack_rebuild_at = row.wired_at
         state_token = slack_relay.mint_state(row)
         install = slack_relay.install_url(row.client_id or "", state_token, slack_relay.callback_url(base))
@@ -9965,6 +9976,13 @@ def create_app(
             wiring = _edit_wiring(agent, wire=True)
             if isinstance(wiring, JSONResponse):
                 return wiring
+        if on_default and delivery.configured() and (payload.set or payload.remove):
+            # The reference is already there (born optional, tenishai/kobo#434): the pod reads
+            # the Secret at start, so a restart delivers the new values, no build.
+            try:
+                app.state.clients.kubectl.restart_deploy(agent.name, agent.name)
+            except ClientError as exc:
+                log.warning("restart after a secrets change failed for %s: %s", agent.name, exc)
 
         audit.record(
             session, request=request, action="secrets.set", target_kind="agent", target_id=agent.name,

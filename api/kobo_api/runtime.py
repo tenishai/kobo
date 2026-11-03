@@ -33,6 +33,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from kobo_api import delivery
 from kobo_api.clients import GitHubClient
 from kobo_api.composer import update_dockerfile_runtime_image
 
@@ -97,5 +98,5 @@ def commit_runtime_image(github: GitHubClient, repo: str, runtime_image: str) ->
         workdir = Path(tmp)
         github.clone(repo, workdir)
         update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
-        github.commit_push(workdir, f"kobo: runtime image -> {runtime_image}")
+        delivery.push(github, workdir, f"kobo: runtime image -> {runtime_image}")
         return github.local_head(workdir)

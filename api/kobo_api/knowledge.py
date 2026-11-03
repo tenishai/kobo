@@ -22,6 +22,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from kobo_api import delivery
 from kobo_api.clients import GitHubClient, KubectlClient, image_tag
 
 # 1-40 chars: a lowercase letter, then lowercase/digit/hyphen, ".md" — no path
@@ -125,7 +126,7 @@ def save_knowledge_file(
             message = f"kobo: archive knowledge/{filename} [skip ci]"
         else:
             message = f"kobo: update knowledge/{filename}"
-        github.commit_push(workdir, message)
+        delivery.push(github, workdir, message, restart=not archive_only)
         return github.local_head(workdir)
 
 
@@ -158,7 +159,7 @@ def delete_knowledge_file(
             message = f"kobo: archive knowledge/{filename} [skip ci]"
         else:
             message = f"kobo: remove knowledge/{filename}"
-        github.commit_push(workdir, message)
+        delivery.push(github, workdir, message, restart=not archive_only)
         return github.local_head(workdir)
 
 

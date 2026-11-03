@@ -36,6 +36,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from kobo_api import delivery
 from kobo_api.clients import ClientError, GitHubClient, StorageClient
 from kobo_api.composer import refresh_agent_card, update_agent_yaml_skills_load
 from kobo_api.config import Config
@@ -197,7 +198,7 @@ def add_catalog_skill(
         _admit_skills_load(workdir, repo)
         refresh_agent_card(workdir / "bundle")
         verb = "refresh" if replace else "add"
-        github.commit_push(workdir, f"kobo: {verb} skill {skill_id}")
+        delivery.push(github, workdir, f"kobo: {verb} skill {skill_id}")
         return github.local_head(workdir), source_sha
 
 
@@ -276,7 +277,7 @@ def add_catalog_skills(
             raise SkillsError(refused[0][1])
         _admit_skills_load(workdir, repo)
         refresh_agent_card(workdir / "bundle")
-        github.commit_push(workdir, f"kobo: add skills {', '.join(landed)}")
+        delivery.push(github, workdir, f"kobo: add skills {', '.join(landed)}")
         return github.local_head(workdir), landed, refused
 
 
@@ -297,7 +298,7 @@ def remove_skill(github: GitHubClient, repo: str, skill_id: str) -> str:
             raise SkillsError(f"skill not found: {skill_id}")
         shutil.rmtree(skill_dir)
         refresh_agent_card(workdir / "bundle")
-        github.commit_push(workdir, f"kobo: remove skill {skill_id}")
+        delivery.push(github, workdir, f"kobo: remove skill {skill_id}")
         return github.local_head(workdir)
 
 
@@ -407,5 +408,5 @@ def save_local_skill(github: GitHubClient, repo: str, skill_id: str, content: st
         (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
         _admit_skills_load(workdir, repo)
         refresh_agent_card(workdir / "bundle")
-        github.commit_push(workdir, f"kobo: update skill {skill_id}")
+        delivery.push(github, workdir, f"kobo: update skill {skill_id}")
         return github.local_head(workdir)

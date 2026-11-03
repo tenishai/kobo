@@ -44,6 +44,7 @@ from pathlib import Path
 
 import yaml
 
+from kobo_api import delivery
 from kobo_api.clients import ClientError, GitHubClient, GojiraClient, KubectlClient
 from kobo_api.composer import repin_commit_note, update_dockerfile_runtime_image
 from kobo_api.sero import SeroClient, deliver_secret
@@ -312,10 +313,18 @@ def _update_agent_yaml_transports(agent_yaml_path: Path, channels: list[str], *,
     contract from parsed values, not prose.
     """
     data = yaml.safe_load(agent_yaml_path.read_text()) or {}
+    old_slack = [t for t in data.get("transports", []) if t.get("kind") == "slack"]
+    # A block born dormant (`optional: true`, tenishai/kobo#434) stays dormant in shape:
+    # the runtime serves it only with a token, which is exactly when it is wired.
+    dormant = any(t.get("optional") for t in old_slack)
     transports = [t for t in data.get("transports", []) if t.get("kind") != "slack"]
-    transports.extend({"kind": "slack", "channel": channel} for channel in channels)
+    for channel in channels:
+        entry: dict = {"kind": "slack", "channel": channel}
+        if dormant:
+            entry["optional"] = True
+        transports.append(entry)
     if not channels and every_channel:
-        transports.append({"kind": "slack"})
+        transports.append({"kind": "slack", "optional": True} if dormant else {"kind": "slack"})
     data["transports"] = transports
     agent_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
@@ -329,8 +338,10 @@ def _update_gojira_secrets_from(gojira_yaml_path: Path, name: str) -> None:
     CORRECTION).
     """
     data = yaml.safe_load(gojira_yaml_path.read_text()) or {}
-    secrets_from = data.get("secrets_from", [])
     entry = f"{name}-slack"
+    if entry in (data.get("secrets_from_optional") or []):
+        return  # referenced at birth as optional (tenishai/kobo#434): the pod reads it once it exists
+    secrets_from = data.get("secrets_from", [])
     if entry not in secrets_from:
         secrets_from.append(entry)
     data["secrets_from"] = secrets_from
@@ -477,21 +488,35 @@ def wire_slack_values(
             raise ClientError(f"{repo} has no bundle/agent.yaml to wire Slack into")
         _update_agent_yaml_transports(agent_yaml_path, channels, every_channel=every_channel)
         gojira_yaml_path = workdir / "gojira.yaml"
+        contract_before = gojira_yaml_path.read_text() if gojira_yaml_path.exists() else ""
         _update_gojira_secrets_from(gojira_yaml_path, name)
         if edit_gojira is not None:
             data = yaml.safe_load(gojira_yaml_path.read_text()) or {}
             if edit_gojira(data):
                 gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
-        previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
-        note = repin_commit_note(repo, previous, runtime_image)
+        contract_changed = (gojira_yaml_path.read_text() if gojira_yaml_path.exists() else "") != contract_before
+        previous = None
+        note = ""
+        if not delivery.configured():
+            # With bundles as artifacts the runtime route is the one place a pin moves.
+            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
+            note = repin_commit_note(repo, previous, runtime_image)
+        by_restart = delivery.configured() and not contract_changed
 
-        changed = github.commit_push(workdir, f"{message}{note}")
+        if by_restart:
+            # The Secret is written and the transport is in the bundle (born dormant): a
+            # restart delivers it, about thirty seconds, no build and no reprovision.
+            delivery.push(github, workdir, f"{message}{note}", force_restart=True)
+            changed = False
+        else:
+            changed = delivery.push(github, workdir, f"{message}{note}")
         if changed:
             gojira.reprovision(gojira_app_id)
         # Always confirm active, even on the no-change path — see the
         # docstring above and kobo_api.steps.WireStep's own comment for
         # why this can't be skipped just because nothing was pushed.
-        wait_active(gojira, gojira_app_id)
+        if not by_restart:
+            wait_active(gojira, gojira_app_id)
 
         head = github.local_head(workdir)
     # The card now names a new runtime (issue #147); the caller re-registers it.
@@ -535,6 +560,6 @@ def rewire_slack_channels(
 
         _update_agent_yaml_transports(workdir / "bundle" / "agent.yaml", channels, every_channel=every_channel)
 
-        github.commit_push(workdir, "kobo: slack channels updated")
+        delivery.push(github, workdir, "kobo: slack channels updated")
 
         return github.local_head(workdir)

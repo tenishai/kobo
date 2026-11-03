@@ -128,6 +128,11 @@ class BundleSpec:
     # targets with a token the permission service leases it, narrowed to its
     # own repository set.)
     liminal_url: str = ""
+    # One runtime, bundles as artifacts (tenishai/kobo#434): the pointer the pod pulls at
+    # start. Set, the Dockerfile is the FROM line alone, replication rides the runtime
+    # (`memory_replica_bucket` goes to the pod's env instead of files here), and a dormant
+    # Slack transport is born with the agent. None keeps the baked-in shape.
+    bundle_artifact: str | None = None
     # The create-time archetype this agent was born from (`kobo_api.models.
     # Agent.archetype`, threaded by `kobo_api.steps.RepoStep`), or None for
     # an ordinary agent -- which every pre-existing `BundleSpec(...)`
@@ -227,6 +232,13 @@ def _cabal_jwks_url(cabal_url: str) -> str:
     doubled (or missing) slash.
     """
     return cabal_url.rstrip("/") + _CABAL_JWKS_PATH
+
+
+def _dormant_slack_transport() -> _FlowDict:
+    """Slack wired at birth and asleep (tenishai/kobo#434): the runtime serves it only
+    once a token is in the pod's environment, so adding Slack later is a Secret and a
+    restart, never a rebuild. Flow style, like the a2a entry beside it."""
+    return _FlowDict({"kind": "slack", "optional": True})
 
 
 def _a2a_transport(spec: BundleSpec) -> _FlowDict:
@@ -457,7 +469,7 @@ def _agent_yaml_data(spec: BundleSpec) -> dict:
         "card": "agent-card.json",
         "persona": "persona.md",
         "model": _model_block(spec),
-        "transports": [_a2a_transport(spec)],
+        "transports": [_a2a_transport(spec), *([_dormant_slack_transport()] if spec.bundle_artifact else [])],
         "tools": _tools_block(spec),
         "memory": {"personal": "techne", "home": "/techne", "revision": _ROOM_MEMORY_REVISION},
         "checkpoints": "sqlite",
@@ -905,6 +917,12 @@ def _litestream_config(spec: BundleSpec) -> str:
 
 
 def _dockerfile(spec: BundleSpec) -> str:
+    if spec.bundle_artifact:
+        return (
+            "# Agent image: the shared runtime, nothing else. The bundle travels as a registry\n"
+            "# artifact the runtime pulls at start (BUNDLE_ARTIFACT in gojira.yaml).\n"
+            f"FROM {spec.runtime_image}\n"
+        )
     if not spec.memory_replica_bucket:
         return (
             "# Agent image: the shared runtime plus this agent's bundle.\n"
@@ -1793,7 +1811,7 @@ def compose(spec: BundleSpec, dest: Path) -> None:
 
     (dest / "Dockerfile").write_text(_dockerfile(spec))
 
-    if spec.memory_replica_bucket:
+    if spec.memory_replica_bucket and not spec.bundle_artifact:
         (dest / "litestream.yml").write_text(_litestream_config(spec))
         (dest / "entrypoint.sh").write_text(_ENTRYPOINT_SH)
 
