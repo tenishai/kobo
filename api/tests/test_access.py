@@ -6235,9 +6235,15 @@ def test_an_email_and_api_token_vendor_is_checked_then_served_as_basic_auth(tmp_
     assert target["auth_method"] == "bearer" and target["auth_scheme"] == "basic"
     assert target["address"] == "https://mcp.atlassian.com/v2"
     assert target["session"] == "per-persona" and target["required_scope"] == "atlassian:read"
-    # v2 lists writing tools beside the reads; they want a scope no lane grants.
-    assert target["tool_scopes"]["createJiraIssue"] == "atlassian:write" and target["tool_scopes"]["executeDestructive"] == "atlassian:write"
+    # v2 lists writing tools beside the reads: the Jira four behind the scope the Write issues
+    # permission opens, Confluence's behind one no lane grants yet, the executors behind one no lane ever will.
+    assert target["tool_scopes"]["createJiraIssue"] == "atlassian:jira-write" and target["tool_scopes"]["transitionJiraIssue"] == "atlassian:jira-write"
+    assert target["tool_scopes"]["createConfluenceContent"] == "atlassian:confluence-write"
+    assert target["tool_scopes"]["executeDestructive"] == "atlassian:never" and target["tool_scopes"]["executeWrite"] == "atlassian:never"
     assert "getJiraIssue" not in target["tool_scopes"] and "searchJiraIssuesUsingJql" not in target["tool_scopes"]
+    # Connected for reading, the connection's ceiling is the read tier: no agent is offered Write issues.
+    (integ,) = bab.integrations("x")
+    assert "atlassian_jira_issues_write" not in integ["ceiling"]
     (put,) = [p for p in sero.puts if p[1] == "apps/kobo/integrations/atlassian"]
     assert put[2] == {"TOKEN": "bot@example.com:tok-1"}
     assert row["spec"]["identity"] == {"email": "bot@example.com"} and row["spec"]["secret_keys"] == ["TOKEN"]
@@ -6254,6 +6260,38 @@ def test_an_email_and_api_token_vendor_is_checked_then_served_as_basic_auth(tmp_
     # The token alone is refused before anything is checked.
     r = client.post("/api/admin/integrations", json={**body, "identity": {}}, headers=headers)
     assert r.status_code == 409 and "email and its API token" in r.json()["error"]
+
+
+ATLASSIAN_CATALOGUE = {"atlassian": {"vendor": "atlassian", "groups": [{"name": "Jira", "permissions": [
+    {"name": "atlassian_jira_issues_read", "tier": "read", "description": "Read issues and search with JQL"},
+    {"name": "atlassian_jira_issues_write", "tier": "mutate", "label": "Write issues",
+     "description": "Create and edit issues, add comments and move issues between statuses"}]}],
+    "tiers": [{"name": "read", "lease_seconds": 3600, "validity_days": None}, {"name": "mutate", "lease_seconds": 3600, "validity_days": 30}]}}
+
+
+def test_an_atlassian_connection_for_read_and_write_offers_write_issues_and_its_lane_opens_only_the_jira_writing_tools(tmp_path, fake_storage, monkeypatch):
+    """Gate (integrity): "Agents may read and write" on the Atlassian sheet lifts the connection's
+    ceiling to the catalogue's writing level, so an agent's owner may ask for Write issues; the grant
+    earns the `atlassian:jira-write` scope, which the target puts on the four Jira writing tools and
+    on nothing else (Confluence's writers and the generic executors stay behind scopes no grant opens)."""
+    from kobo_api import admin_integrations, gateway_lane
+    monkeypatch.setattr(admin_integrations, "_basic_probe", lambda *a: None)
+    bab = FakeBab(integrations=[], catalogue=ATLASSIAN_CATALOGUE)
+    client, headers = _access_client(tmp_path, fake_storage, bab=bab)
+    client.app.state.clients.liminal_admin = FakeLiminalAdmin()
+    body = {"vendor": "atlassian", "name": "Atlassian", "base_access": "write", "auth": "basic_token",
+            "identity": {"email": "bot@example.com"}, "secrets": {"TOKEN": "tok-1"}, "address": "https://mcp.atlassian.com/v2"}
+    row = client.post("/api/admin/integrations", json=body, headers=headers).json()
+    assert row["state"] == "applied", row
+    (integ,) = bab.integrations("x")
+    assert integ["ceiling"] == ["atlassian_jira_issues_read", "atlassian_jira_issues_write"]
+    read = gateway_lane.lane_for("atlassian", "atlassian_jira_issues_read")
+    write = gateway_lane.lane_for("atlassian", "atlassian_jira_issues_write")
+    assert read.scopes == ("atlassian:read",) and write.scopes == ("atlassian:read", "atlassian:jira-write")
+    assert read.handlers == write.handlers == ("atlassian",) and write.allow == ("atlassian.*",)
+    scopes = client.app.state.clients.liminal_admin.targets["atlassian"]["tool_scopes"]
+    assert {t for t, s in scopes.items() if s == "atlassian:jira-write"} == {"createJiraIssue", "editJiraIssue", "addOrEditJiraIssueComment", "transitionJiraIssue"}
+    assert "atlassian:jira-write" in gateway_lane.MANAGED_SCOPES
 
 
 def test_the_lane_sync_retires_the_token_broker_github_entries_an_old_bundle_still_lists(tmp_path, fake_storage):

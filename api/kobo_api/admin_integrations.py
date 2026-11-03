@@ -148,16 +148,24 @@ MCP_SUFFIX = "/mcp"
 # Mcp-Session-Id per client, so each agent gets its own upstream session over the shared credential;
 # its v2 endpoint (https://mcp.atlassian.com/v2, the one that serves the Jira and Confluence tools
 # to an API token; v1 serves only the Teamwork Graph four) also lists tools that create, edit,
-# transition and delete, so those want a scope no lane grants: the shared credential may be able to
-# write, the agents never are. The read tools stay under the lane's `required_scope`.
-ATLASSIAN_WRITE_SCOPE = "atlassian:write"
-ATLASSIAN_WRITE_TOOLS: tuple[str, ...] = (
-    "createJiraIssue", "editJiraIssue", "addOrEditJiraIssueComment", "transitionJiraIssue",
-    "createConfluenceContent", "updateConfluenceContent", "executeWrite", "executeDestructive",
-    "addGraphContext", "addTeamworkGraphContext",
-)
+# transition and delete. Those sit behind scopes of their own: the Jira writing four behind the one
+# the `atlassian_jira_issues_write` permission opens (gateway_lane.PERMISSION_LANES, 2026-11-03),
+# the Confluence writing two behind a scope no lane grants yet, and the generic executors and the
+# graph writers behind one no lane will ever grant. The read tools stay under the lane's
+# `required_scope`, and the shared credential is the outer wall for all of them.
+ATLASSIAN_JIRA_WRITE_SCOPE = "atlassian:jira-write"
+ATLASSIAN_CONFLUENCE_WRITE_SCOPE = "atlassian:confluence-write"
+ATLASSIAN_NEVER_SCOPE = "atlassian:never"
+ATLASSIAN_JIRA_WRITE_TOOLS: tuple[str, ...] = ("createJiraIssue", "editJiraIssue", "addOrEditJiraIssueComment", "transitionJiraIssue")
+ATLASSIAN_CONFLUENCE_WRITE_TOOLS: tuple[str, ...] = ("createConfluenceContent", "updateConfluenceContent")
+ATLASSIAN_NEVER_TOOLS: tuple[str, ...] = ("executeWrite", "executeDestructive", "addGraphContext", "addTeamworkGraphContext")
+ATLASSIAN_WRITE_TOOLS: tuple[str, ...] = ATLASSIAN_JIRA_WRITE_TOOLS + ATLASSIAN_CONFLUENCE_WRITE_TOOLS + ATLASSIAN_NEVER_TOOLS
 TARGET_EXTRAS: dict[str, dict[str, Any]] = {
-    "atlassian": {"session": "per-persona", "tool_scopes": dict.fromkeys(ATLASSIAN_WRITE_TOOLS, ATLASSIAN_WRITE_SCOPE)},
+    "atlassian": {"session": "per-persona", "tool_scopes": {
+        **dict.fromkeys(ATLASSIAN_JIRA_WRITE_TOOLS, ATLASSIAN_JIRA_WRITE_SCOPE),
+        **dict.fromkeys(ATLASSIAN_CONFLUENCE_WRITE_TOOLS, ATLASSIAN_CONFLUENCE_WRITE_SCOPE),
+        **dict.fromkeys(ATLASSIAN_NEVER_TOOLS, ATLASSIAN_NEVER_SCOPE),
+    }},
 }
 
 # How the gateway reaches a vendor (Kyle, 2026-10-25: AWS is a role, not a
@@ -1793,7 +1801,12 @@ def _connect_cloud_or_token(
                             "account_id": identity["account_id"], "audience": identity["audience"], "name": name}
             ceiling = bab_mod.read_permissions(bab, vendor, actor)
         else:
-            spec_for_bab, ceiling = {}, bab_mod.read_permissions(bab, vendor, actor)
+            # "Agents may read and write" on the sheet lifts the ceiling to every permission the
+            # catalogue offers (its mutate tier too, with bab's shorter validity); "read" keeps
+            # the read tier. The credential's own rights are the outer wall either way.
+            spec_for_bab = {}
+            ceiling = (bab_mod.all_permissions(bab, vendor, actor) if base_access == "write"
+                       else bab_mod.read_permissions(bab, vendor, actor))
         try:
             bab.put_integration(row.id, vendor, spec_for_bab, ceiling, actor, parent=parent_id)
             if auth == "aws_hub":
