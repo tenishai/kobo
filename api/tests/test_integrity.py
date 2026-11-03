@@ -6412,6 +6412,7 @@ class _Resp:
         self.status_code = status_code
         self._body = body if body is not None else {}
         self.text = text
+        self.headers = {}
 
     def json(self):
         return self._body
@@ -6438,8 +6439,9 @@ def _pat(tmp_path) -> Path:
 
 def test_search_assembles_jql_server_side_from_bounded_inputs(tmp_path):
     """Data integrity: Search assembles jql server side from bounded inputs."""
+    # An empty search makes the lane ask the tracker who the credential is; a known reader keeps it an empty search.
     fake = FakeTracker(
-        [("/search/jql", _Resp(200, {"issues": [], "nextPageToken": "more"}))]
+        [("/search/jql", _Resp(200, {"issues": [], "nextPageToken": "more"})), ("/myself", _Resp(200, {"emailAddress": "reader@acme.io"}))]
     )
     out = search_issues(
         domain="tracker.test",

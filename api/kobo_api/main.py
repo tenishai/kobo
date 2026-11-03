@@ -136,6 +136,7 @@ from kobo_api.intake import (
     list_intake,
     upload_intake_file,
 )
+from kobo_api.jira_broker import CREDENTIAL_REJECTED as JIRA_CREDENTIAL_REJECTED
 from kobo_api.jira_broker import fetch_issue as jira_fetch_issue
 from kobo_api.jira_broker import search_issues as jira_search_issues
 from kobo_api.kinds import (
@@ -7087,6 +7088,14 @@ def create_app(
             return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
         return None
 
+    def _jira_credential_sentence() -> str:
+        # Not a 404: the runtime reads every 404 on this lane as "not granted",
+        # and a wrong credential is the operator's to fix, not the agent's.
+        return (
+            f"{JIRA_CREDENTIAL_REJECTED}; the issue tracker's API token the room "
+            "holds has to be replaced by the room's operator"
+        )
+
     @app.get("/broker/agents/{name}/jira/issues/{key}")
     def read_agent_jira_issue(name: str, key: str, request: Request) -> JSONResponse:
         """One issue with its comment history, for an allowlisted agent.
@@ -7116,6 +7125,8 @@ def create_app(
         except ClientError as exc:
             if str(exc) == "no such issue":
                 return JSONResponse({"error": f"no issue {key!r}"}, status_code=404)
+            if str(exc) == JIRA_CREDENTIAL_REJECTED:
+                return JSONResponse({"error": _jira_credential_sentence()}, status_code=502)
             return JSONResponse(
                 {"error": "the tracker did not answer. Try again shortly."},
                 status_code=502,
@@ -7167,6 +7178,8 @@ def create_app(
             message = str(exc)
             if message == "nothing searchable in the given text" or "bare date" in message:
                 return JSONResponse({"error": message}, status_code=400)
+            if message == JIRA_CREDENTIAL_REJECTED:
+                return JSONResponse({"error": _jira_credential_sentence()}, status_code=502)
             return JSONResponse(
                 {"error": "the tracker did not answer. Try again shortly."},
                 status_code=502,

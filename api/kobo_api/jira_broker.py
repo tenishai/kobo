@@ -91,6 +91,27 @@ def _auth_header(email: str, pat_path: Path) -> dict[str, str]:
     return {"Authorization": f"Basic {token}", "Accept": "application/json"}
 
 
+# The sentence the routes pass on when the credential itself is the problem.
+CREDENTIAL_REJECTED = "the tracker rejected the room's credential"
+
+
+def _credential_rejected(
+    domain: str, email: str, pat_path: Path, http_client: httpx.Client | None = None
+) -> bool:
+    """Jira Cloud treats a Basic pair it cannot verify as ANONYMOUS, not as
+    an error: every issue read is then a 404 and every search comes back
+    empty, which is exactly what a missing issue looks like (2026-11-03: a
+    rotated token read as "no such issue" for two days). `/myself` tells
+    the two apart: a 401, or the X-Seraph-LoginReason header saying
+    AUTHENTICATED_FAILED, means the credential is wrong, not the key."""
+    try:
+        response = _get(domain, email, pat_path, "/rest/api/3/myself", {}, http_client)
+    except ClientError:
+        return False
+    reason = response.headers.get("x-seraph-loginreason") or ""
+    return response.status_code == 401 or "AUTHENTICATED_FAILED" in reason
+
+
 def _person(field) -> str | None:
     if not isinstance(field, dict):
         return None
@@ -144,6 +165,9 @@ def fetch_issue(
         http_client,
     )
     if issue_response.status_code == 404:
+        if _credential_rejected(domain, email, pat_path, http_client):
+            log.warning("jira issue read: the tracker rejected the room's credential")
+            raise ClientError(CREDENTIAL_REJECTED)
         raise ClientError("no such issue")
     if issue_response.status_code != 200:
         log.warning(
@@ -270,6 +294,9 @@ def search_issues(
                 "created_at": fields.get("created"),
             }
         )
+    if not issues and _credential_rejected(domain, email, pat_path, http_client):
+        log.warning("jira search: the tracker rejected the room's credential")
+        raise ClientError(CREDENTIAL_REJECTED)
     return {
         "issues": issues,
         "truncated": bool(body.get("nextPageToken")) or len(issues) >= count,
