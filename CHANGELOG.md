@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.53] - 2026-11-03
+
 ### Fixed
 - A new agent's first deployment mounts its bundle. Compose writes a seed gojira.yaml (`bundle_image`, the runtime's env, the optional Secret references) that the deploy platform reads before its first render; without it the first pod ran a runtime with no /bundle and crashlooped until the wiring commit's second setup PR landed (dev, 2026-11-03).
 
