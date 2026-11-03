@@ -36,7 +36,7 @@ from mcp.shared.context import RequestContext
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from kobo_api import admin_integrations, admin_store, self_hosted
+from kobo_api import admin_integrations, admin_store, delivery, self_hosted
 from kobo_api import audit as room_audit
 from kobo_api.agent_env import (
     CONTAINER_SETS_THIS_ONE,
@@ -1632,7 +1632,7 @@ def test_move_to_the_new_slack_setup_drops_the_old_tokens_as_the_five_values_lan
 
 
 def test_install_callback_stores_the_bot_token_through_the_lane_and_redirects(
-    session_factory__api_slack, config__api_slack
+    session_factory__api_slack, config__api_slack, monkeypatch
 ):
     """Secrets handling: the install callback (issue #371) exchanges the code
     with the stored client pair, stores SLACK_BOT_TOKEN through the agent's
@@ -1643,6 +1643,7 @@ def test_install_callback_stores_the_bot_token_through_the_lane_and_redirects(
 
     relay_config = config__api_slack.model_copy(update={"slack_relay": True})
     sero, kubectl, slack = FakeSero(), FakeKubectl(), FakeSlack()
+    monkeypatch.setattr(delivery, "SECRET_POLL", 0.01)
     client = _make_client(session_factory__api_slack, relay_config, kubectl=kubectl, sero=sero, slack=slack)
     _seed_agent(session_factory__api_slack, relay_config, slack_app_id="A0FAKE", created_by=OPERATOR_EMAIL)
     with session_factory__api_slack() as s:
@@ -1662,6 +1663,12 @@ def test_install_callback_stores_the_bot_token_through_the_lane_and_redirects(
                                   "redirect_uri": "http://testserver/slack/oauth/callback"}]
     assert sero.puts == [(OPERATOR_EMAIL, f"apps/{AGENT_NAME}/slack", {"SLACK_BOT_TOKEN": "xoxb-fake-bot-token"})]
     assert kubectl.secrets_applied == []
+    # The restart follows the token INTO the cluster (the platform delivers at its next
+    # re-read): nothing restarts while the Secret lacks the key, and the restart lands
+    # once the cluster carries it.
+    assert kubectl.restarts == []
+    kubectl.secrets[(AGENT_NAME, f"{AGENT_NAME}-slack")] = {"SLACK_BOT_TOKEN": "xoxb-fake-bot-token"}
+    delivery.join_restarts()
     assert kubectl.restarts == [(AGENT_NAME, AGENT_NAME)]
     with session_factory__api_slack() as s:
         saved = s.query(SlackRelayApp).filter_by(agent_name=AGENT_NAME).one()

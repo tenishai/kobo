@@ -58,7 +58,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session, sessionmaker
 
-from kobo_api import audit
+from kobo_api import audit, delivery
 from kobo_api.clients import ClientError
 from kobo_api.config import Config
 from kobo_api.models import Agent, SlackRelayApp
@@ -518,11 +518,10 @@ def oauth_callback(
     )
     session.commit()
 
-    try:
-        clients.kubectl.restart_deploy(name, name)
-    except ClientError as exc:
-        # The token is stored; the agent picks it up at its next start either way.
-        log.warning("slack install: restart of agent %s failed (%s)", name, type(exc).__name__)
+    # The token is stored; the pod reads it at its next start. Through the secrets
+    # platform that start must come AFTER the cluster has re-read the value, so the
+    # restart waits for the key, off the request (tenishai/kobo#434 follow-up).
+    delivery.restart_once_secret_carries(clients.kubectl, name, f"{name}-slack", ["SLACK_BOT_TOKEN"])
     log.info("slack install: agent %s installed to a workspace", name)
     return RedirectResponse(_agent_page(name, failed=False), status_code=302)
 
