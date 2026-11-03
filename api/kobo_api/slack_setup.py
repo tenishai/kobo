@@ -83,6 +83,12 @@ _BOT_SCOPES = [
     "mpim:history",
     "mpim:read",
     "chat:write",
+    # The agent's face on every message (2026-11-03): the runtime posts with the
+    # room-served picture as the per-message icon (SLACK_ICON_URL), which Slack
+    # allows only under this scope. A SCOPE addition: an existing agent's app
+    # takes it on its next reinstall (Reconnect the Slack app); until then the
+    # runtime's first post with an icon is refused once and it posts plain.
+    "chat:write.customize",
     # Vision (wave 3): downloading a message's image attachments via
     # files.url_private requires this read scope. A SCOPE addition --
     # unlike the tagged-only event change -- requires each existing

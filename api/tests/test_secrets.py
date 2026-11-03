@@ -1438,6 +1438,43 @@ def test_connect_slack_through_the_secrets_platform_records_the_caller(
     assert kubectl.secrets_applied == []
 
 
+def test_the_agents_face_is_served_to_slack_under_the_relay_prefix_without_a_sign_in(
+    session_factory__api_slack, config__api_slack
+):
+    """The runtime posts every Slack message with the room-served picture as its icon
+    (SLACK_ICON_URL); Slack fetches it with no credential, so the route sits under the
+    relay prefix the identity proxy leaves open, keyed by the relay id. A relay id that
+    names no app, or an agent with no picture yet, is a bare 404."""
+    import base64 as _b64
+
+    from kobo_api.models import Agent, SlackRelayApp
+
+    private_key, jwk = _generate_jwk()
+    relay_config = config__api_slack.model_copy(
+        update={"iap_audience": IAP_AUDIENCE, "slack_relay": True, "operators": [OPERATOR_EMAIL]}
+    )
+    gojira, app_id = _onboarded_gojira__api_slack()
+    client = _make_client(
+        session_factory__api_slack, relay_config, github=_CapturingGitHub__api_slack(), kubectl=FakeKubectl(),
+        gojira=gojira, sero=FakeSero(), slack=FakeSlack(app_id="A0MADE"), iap_jwks_fetcher=_fetcher(jwk),
+    )
+    _seed_agent(session_factory__api_slack, relay_config, gojira_app_id=app_id, created_by=OPERATOR_EMAIL)
+    assert client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"},
+                       headers={ASSERTION_HEADER: _sign(private_key, email=OPERATOR_EMAIL)}).status_code == 200
+    with session_factory__api_slack() as s:
+        relay_id = s.query(SlackRelayApp).filter_by(agent_name=AGENT_NAME).one().relay_id
+    # No picture yet: a bare 404, and so is a relay id that names no app.
+    assert client.get(f"/slack/relay/{relay_id}/face.png").status_code == 404
+    assert client.get("/slack/relay/nosuchrelay/face.png").status_code == 404
+    png = b"\x89PNG\r\n\x1a\n" + b"fake"
+    with session_factory__api_slack() as s:
+        s.query(Agent).filter_by(name=AGENT_NAME).one().avatar_png = _b64.b64encode(png).decode()
+        s.commit()
+    r = client.get(f"/slack/relay/{relay_id}/face.png")  # no identity header: Slack has none
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png" and r.content == png
+    assert "max-age" in r.headers.get("cache-control", "")
+
+
 def test_create_slack_app_writes_the_five_values_through_the_lane_and_returns_the_install_link(
     session_factory__api_slack, config__api_slack
 ):
@@ -1475,8 +1512,12 @@ def test_create_slack_app_writes_the_five_values_through_the_lane_and_returns_th
     assert sero.puts == [(
         OPERATOR_EMAIL, f"apps/{AGENT_NAME}/slack",
         {"SLACK_APP_ID": "A0MADE", "SLACK_CLIENT_ID": "fake-client-id", "SLACK_CLIENT_SECRET": "fake-client-secret",
-         "SLACK_SIGNING_SECRET": "fake-signing-secret", "SLACK_RELAY_SECRET": row.relay_secret},
+         "SLACK_SIGNING_SECRET": "fake-signing-secret", "SLACK_RELAY_SECRET": row.relay_secret,
+         "SLACK_ICON_URL": sero.puts[0][2]["SLACK_ICON_URL"]},
     )]
+    # The face rides under the relay prefix the identity proxy leaves open, keyed by the relay id.
+    assert sero.puts[0][2]["SLACK_ICON_URL"].endswith(f"/slack/relay/{row.relay_id}/face.png")
+    assert "chat:write.customize" in slack.manifests[0]["oauth_config"]["scopes"]["bot"]
     assert kubectl.secrets_applied == []
     manifest = slack.manifests[0]
     assert manifest["settings"]["socket_mode_enabled"] is False
@@ -1533,6 +1574,7 @@ def test_move_to_the_new_slack_setup_drops_the_old_tokens_as_the_five_values_lan
     assert sero.stored[f"apps/{AGENT_NAME}/slack"] == {
         "SLACK_APP_ID": "A0MADE", "SLACK_CLIENT_ID": "fake-client-id", "SLACK_CLIENT_SECRET": "fake-client-secret",
         "SLACK_SIGNING_SECRET": "fake-signing-secret", "SLACK_RELAY_SECRET": row.relay_secret,
+        "SLACK_ICON_URL": sero.stored[f"apps/{AGENT_NAME}/slack"]["SLACK_ICON_URL"],
     }
     assert kubectl.secrets_applied == []
     assert agent.slack_app_id == "A0MADE" and not agent.slack_app_self_service and not agent.slack_wired

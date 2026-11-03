@@ -736,6 +736,7 @@ def test_render_manifest_scopes_byte_equal_to_constraint():
         "mpim:history",
         "mpim:read",
         "chat:write",
+        "chat:write.customize",
         "files:read",
         "reactions:read",
         "reactions:write",

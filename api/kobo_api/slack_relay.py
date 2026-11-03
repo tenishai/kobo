@@ -40,6 +40,7 @@ runtime keeps the last two thousand event ids) is the wall that holds.
 
 from __future__ import annotations
 
+import base64
 import collections
 import hashlib
 import hmac
@@ -128,6 +129,14 @@ def relay_url(base: str, relay_id: str) -> str:
 
 def callback_url(base: str) -> str:
     return f"{base}/slack/oauth/callback"
+
+
+def face_url(base: str, relay_id: str) -> str:
+    """Where Slack fetches the agent's picture for every message it posts
+    (the runtime's SLACK_ICON_URL): under the relay prefix, which the identity
+    proxy leaves open, keyed by the relay id rather than the agent's name so
+    the room's agent list is not enumerable from outside."""
+    return f"{base}/slack/relay/{relay_id}/face.png"
 
 
 def agent_events_url(cfg: Config, agent_name: str) -> str | None:
@@ -336,6 +345,26 @@ def _bare(status: int) -> Response:
 
 
 # --- routes ---------------------------------------------------------------------
+
+
+@router.get("/slack/relay/{relay_id}/face.png")
+def face(relay_id: str, request: Request, session: Session = Depends(get_session)) -> Response:  # noqa: B008
+    """The agent's picture, for Slack to show on every message the agent posts
+    (2026-11-03). Public like the relay itself: Slack fetches it with no
+    credential. A picture is not a secret, but the room's agent list is, so a
+    relay id that names no app, or an agent with no picture yet, is a bare 404
+    with the same shape as every other miss on this prefix."""
+    cfg: Config = request.app.state.config
+    if not cfg.slack_relay:
+        return _bare(404)
+    row = session.get(SlackRelayApp, relay_id)
+    if row is None:
+        return _bare(404)
+    agent = session.query(Agent).filter_by(name=row.agent_name).one_or_none()
+    if agent is None or not agent.avatar_png:
+        return _bare(404)
+    return Response(content=base64.b64decode(agent.avatar_png), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=300"})
 
 
 @router.post("/slack/relay/{relay_id}")
