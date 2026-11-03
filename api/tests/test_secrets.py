@@ -3053,6 +3053,16 @@ def test_composite_override_is_disclosed_without_dumping_the_value(caplog):
 # --- from test_config.py ---
 
 
+def test_every_org_settable_delivery_field_is_on_the_org_allowlist():
+    """Gate (integrity): a Config field an org sets in org.yaml must be in ORG_KEYS, or one
+    unrecognized key unwires the whole room on the next boot (catalogs and operators gone).
+    Happened twice: memory_replica_bucket, then bundle_registry (2026-11-03, dev)."""
+    from kobo_api.org import ORG_KEYS
+
+    for key in ("runtime_image", "memory_replica_bucket", "bundle_registry", "skills_bucket", "personas_bucket"):
+        assert key in ORG_KEYS, key
+
+
 def test_slack_tokens_secret_is_not_org_settable():
     # Deployment-local, exactly like slack_tokens_path: it names a Secret in
     # THIS cluster's namespace, not anything the org hands out.

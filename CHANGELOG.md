@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `bundle_registry` may be set in org.yaml. The loader's allowlist did not know the key 0.3.49 added, so an org.yaml naming it was rejected whole and the room came up unwired: no catalogs, no operators (dev, 2026-11-03). The key is on the list, and an unrecognized key is now also an error line in the log, not only a health-route detail.
+
 ## [0.3.51] - 2026-11-03
 
 ### Changed
