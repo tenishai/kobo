@@ -9089,6 +9089,8 @@ def create_app(
             "SLACK_CLIENT_SECRET": row.client_secret or "",
             "SLACK_SIGNING_SECRET": row.signing_secret or "",
             "SLACK_RELAY_SECRET": row.relay_secret,
+            # The agent's face on every message it posts (chat:write.customize).
+            "SLACK_ICON_URL": slack_relay.face_url(base, row.relay_id),
         }
         try:
             wire_slack_values(
