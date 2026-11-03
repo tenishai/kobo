@@ -2,6 +2,7 @@
 an agent publishes its bundle and restarts it, and only a Dockerfile change builds."""
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import subprocess
@@ -140,8 +141,8 @@ def test_an_old_shape_agent_on_the_rooms_runtime_converts_in_the_one_commit_that
     assert "COPY" not in (work / "Dockerfile").read_text() and f"FROM {RUNTIME}" in (work / "Dockerfile").read_text()
     assert not (work / "entrypoint.sh").exists()
     data = yaml.safe_load((work / "gojira.yaml").read_text())
-    assert data["env"] == {"BUNDLE_ARTIFACT": f"{REGISTRY}/ledger-bundle:current", "AGENT_NAME": "ledger",
-                           "MEMORY_REPLICA_BUCKET": "mem-bucket"}
+    assert data["bundle_image"] == f"{REGISTRY}/ledger-bundle:current"
+    assert data["env"] == {"AGENT_NAME": "ledger", "MEMORY_REPLICA_BUCKET": "mem-bucket"}
     assert data["secrets_from"] == ["ledger-cabal"]
     assert data["secrets_from_optional"] == ["ledger-slack", "ledger-env"]
     assert len(pub.pushed) == 1 and kube.restarts == []
@@ -153,7 +154,7 @@ def test_an_old_shape_agent_on_an_older_runtime_is_left_alone(tmp_path, configur
     (work / "bundle" / "persona.md").write_text("two\n")
     delivery.push(GitHub(), work, "kobo: persona")
     assert "COPY bundle/" in (work / "Dockerfile").read_text()
-    assert "env" not in yaml.safe_load((work / "gojira.yaml").read_text())
+    assert "bundle_image" not in yaml.safe_load((work / "gojira.yaml").read_text())
 
 
 def test_a_secret_change_restarts_even_with_nothing_to_commit(tmp_path, configured):
@@ -176,9 +177,10 @@ def test_an_agent_born_for_artifacts_has_a_one_line_image_and_a_dormant_slack_tr
     assert kinds[-1] == {"kind": "slack", "optional": True}
 
 
-def test_the_registry_publisher_pushes_one_tarball_layer_the_runtime_reads(tmp_path):
-    """Wire shape: blobs by digest, a manifest with the bundle layer's media type, and
-    `current` as a second manifest put. Bearer from the pod's identity."""
+def test_the_registry_publisher_pushes_a_plain_oci_image_an_image_volume_can_mount(tmp_path):
+    """Wire shape: a standard tar+gzip layer under an image config whose diff id is the
+    uncompressed tarball's digest (proven on dev: a custom media type mounts empty), the
+    bundle marked by an annotation, and `current` as a second manifest put."""
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     (bundle / "agent.yaml").write_text("name: ledger\n")
@@ -203,8 +205,12 @@ def test_the_registry_publisher_pushes_one_tarball_layer_the_runtime_reads(tmp_p
     pub.tag("reg.example/agents/ledger-bundle:abc123", "current")
     manifest = json.loads(manifests["abc123"])
     (layer,) = manifest["layers"]
-    assert layer["mediaType"] == LAYER_MEDIA_TYPE
+    assert layer["mediaType"] == LAYER_MEDIA_TYPE == "application/vnd.oci.image.layer.v1.tar+gzip"
     assert layer["digest"] == "sha256:" + hashlib.sha256(bundle_tarball(bundle)).hexdigest()
+    assert manifest["config"]["mediaType"] == "application/vnd.oci.image.config.v1+json"
+    config = json.loads(next(c for m, p, c, _ in seen if m == "PUT" and "/uploads/" in p and c.startswith(b"{")))
+    assert config["rootfs"]["diff_ids"] == ["sha256:" + hashlib.sha256(gzip.decompress(bundle_tarball(bundle))).hexdigest()]
+    assert manifest["annotations"]["dev.tenish.kobo.bundle"] == "application/vnd.tenish.agent-bundle.v1"
     assert manifests["current"] == manifests["abc123"]
     assert digest.startswith("sha256:")
     assert all(auth == "Bearer tok" for *_, auth in seen)

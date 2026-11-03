@@ -20,6 +20,7 @@ Nothing here knows about Gojira, the contract or restarts.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
 import json
@@ -127,11 +128,16 @@ class OrasCliPublisher:
         self._run("tag", reference, tag)
 
 
-LAYER_MEDIA_TYPE = "application/vnd.tenish.agent-bundle.tar+gzip"
-ARTIFACT_TYPE = "application/vnd.tenish.agent-bundle.v1"
+# The bundle is published as a plain OCI IMAGE, not a custom artifact: one standard
+# tar+gzip layer under a minimal image config. That is the shape a Kubernetes image
+# volume mounts (proven on the dev cluster 2026-11-03: a custom layer media type pulled
+# fine and mounted EMPTY), so the node pulls the bundle exactly as it pulls the runtime
+# image, with its own credentials, and no agent identity needs a registry role.
+LAYER_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip"
+ARTIFACT_TYPE = "application/vnd.tenish.agent-bundle.v1"  # carried as an annotation
 MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
-EMPTY_CONFIG = b"{}"
-EMPTY_CONFIG_MEDIA_TYPE = "application/vnd.oci.empty.v1+json"
+CONFIG_MEDIA_TYPE = "application/vnd.oci.image.config.v1+json"
+BUNDLE_ANNOTATION = "dev.tenish.kobo.bundle"
 METADATA_TOKEN_URL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
 
 
@@ -236,19 +242,23 @@ class RegistryPublisher:
         host, repo, tag = _split_reference(reference)
         blob = bundle_tarball(directory)
         layer_digest = "sha256:" + hashlib.sha256(blob).hexdigest()
-        config_digest = "sha256:" + hashlib.sha256(EMPTY_CONFIG).hexdigest()
-        self._upload_blob(host, repo, EMPTY_CONFIG, config_digest)
+        diff_id = "sha256:" + hashlib.sha256(gzip.decompress(blob)).hexdigest()
+        config = json.dumps({
+            "architecture": "amd64", "os": "linux", "config": {},
+            "rootfs": {"type": "layers", "diff_ids": [diff_id]},
+        }, separators=(",", ":")).encode()
+        config_digest = "sha256:" + hashlib.sha256(config).hexdigest()
+        self._upload_blob(host, repo, config, config_digest)
         self._upload_blob(host, repo, blob, layer_digest)
         manifest = {
             "schemaVersion": 2,
             "mediaType": MANIFEST_MEDIA_TYPE,
-            "artifactType": ARTIFACT_TYPE,
-            "config": {"mediaType": EMPTY_CONFIG_MEDIA_TYPE, "digest": config_digest, "size": len(EMPTY_CONFIG)},
-            "layers": [{
-                "mediaType": LAYER_MEDIA_TYPE, "digest": layer_digest, "size": len(blob),
-                "annotations": {"org.opencontainers.image.title": "bundle.tar.gz"},
-            }],
-            "annotations": {"org.opencontainers.image.created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+            "config": {"mediaType": CONFIG_MEDIA_TYPE, "digest": config_digest, "size": len(config)},
+            "layers": [{"mediaType": LAYER_MEDIA_TYPE, "digest": layer_digest, "size": len(blob)}],
+            "annotations": {
+                BUNDLE_ANNOTATION: ARTIFACT_TYPE,
+                "org.opencontainers.image.created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
         }
         body = json.dumps(manifest, separators=(",", ":")).encode()
         return self._put_manifest(host, repo, tag, body)
