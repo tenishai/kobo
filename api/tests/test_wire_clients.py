@@ -30,6 +30,7 @@ from kobo_api.clients import (
     ChatMessage,
     ClientError,
     Clients,
+    GcloudClient,
     GhCLI,
     HttpxGojiraClient,
     HttpxSlackClient,
@@ -1081,3 +1082,40 @@ def test_bab_discover_waits_longer_than_an_ordinary_call():
 
     bab.org_accounts("aws", "kyle@example.com")
     assert seen["timeout"]["read"] < DISCOVER_TIMEOUT_S  # the ordinary call keeps the client's own timeout
+
+
+SOFT_DELETED = (
+    "ERROR: (gcloud.iam.service-accounts.describe) PERMISSION_DENIED: Permission "
+    "'iam.serviceAccounts.get' denied on resource (or it may not exist)."
+)
+
+
+def test_ensure_gsa_creates_when_describe_sees_a_soft_deleted_account():
+    """A destroyed agent's identity stays soft-deleted for thirty days and describe answers
+    PERMISSION_DENIED for it, not NOT_FOUND; the recreate must still create."""
+    runner = RecordingRunner([(1, "", SOFT_DELETED), (0, "", "")])
+    email = GcloudClient("proj", runner=runner).ensure_gsa("agent-scooby-doo")
+    assert email == "agent-scooby-doo@proj.iam.gserviceaccount.com"
+    assert [c[1:4] for c in runner.calls] == [
+        ["iam", "service-accounts", "describe"], ["iam", "service-accounts", "create"],
+    ]
+
+
+def test_ensure_gsa_says_what_to_do_when_create_hits_the_deleted_name():
+    runner = RecordingRunner([(1, "", SOFT_DELETED), (1, "", "ERROR: ALREADY_EXISTS: Service account agent-x already exists")])
+    with pytest.raises(ClientError) as info:
+        GcloudClient("proj", runner=runner).ensure_gsa("agent-x")
+    assert "deleted recently" in str(info.value)
+
+
+def test_ensure_gsa_still_raises_on_a_real_describe_failure():
+    runner = RecordingRunner([(1, "", "ERROR: UNAVAILABLE: the service is currently unavailable")])
+    with pytest.raises(ClientError):
+        GcloudClient("proj", runner=runner).ensure_gsa("agent-x")
+    assert len(runner.calls) == 1
+
+
+def test_delete_gsa_treats_a_soft_deleted_account_as_gone():
+    runner = RecordingRunner([(1, "", SOFT_DELETED)])
+    assert GcloudClient("proj", runner=runner).delete_gsa("agent-x@proj.iam.gserviceaccount.com") is False
+    assert len(runner.calls) == 1

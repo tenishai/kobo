@@ -1592,6 +1592,21 @@ def gsa_email(name: str, project: str) -> str:
     return f"{name}@{project}.iam.gserviceaccount.com"
 
 
+def gsa_absent(stderr: str) -> bool:
+    """Whether a failed `gcloud iam service-accounts describe` means the account is not
+    there to use. NOT_FOUND is the plain case. PERMISSION_DENIED "on resource (or it may
+    not exist)" is the other: a deleted account stays soft-deleted for thirty days, and
+    describe answers exactly that for it even to a project owner (seen on the first
+    destroy-and-recreate under one name, 2026-11-03), while a never-existing account
+    answers NOT_FOUND. The room's identity holds serviceAccountAdmin, so a true
+    permission refusal on describe does not happen; treating it as absent lets create
+    run, and Google allows a new account under a deleted one's name (a new identity)."""
+    text = stderr.lower()
+    if "not_found" in text or "does not exist" in text:
+        return True
+    return "permission_denied" in text and "may not exist" in text
+
+
 class GcloudClient:
     """gcloud-backed CloudClient, scoped to one GCP project."""
 
@@ -1615,19 +1630,26 @@ class GcloudClient:
             )
             return email
         except ClientError as exc:
-            # Only a genuine "no such GSA" describe failure falls through to
-            # create — anything else (permission denied, a transient API
-            # error, ...) is a real problem the caller needs to see, not
-            # something a blind create-on-any-failure should paper over.
-            stderr = exc.stderr.lower()
-            if "not_found" not in stderr and "does not exist" not in stderr:
+            # Only a "no such GSA" describe failure falls through to create;
+            # a transient API error is a real problem the caller needs to
+            # see, not something a blind create-on-any-failure papers over.
+            if not gsa_absent(exc.stderr):
                 raise
-        self._runner.run(
-            [
-                self._gcloud, "iam", "service-accounts", "create", name,
-                "--project", self._project, "--display-name", name,
-            ]
-        )
+        try:
+            self._runner.run(
+                [
+                    self._gcloud, "iam", "service-accounts", "create", name,
+                    "--project", self._project, "--display-name", name,
+                ]
+            )
+        except ClientError as exc:
+            if "already exists" in exc.stderr.lower() or "already_exists" in exc.stderr.lower():
+                raise ClientError(
+                    f"the identity {email} exists but cannot be read; it was most likely "
+                    "deleted recently and is still being removed. Retry in a few minutes, "
+                    "or pick a different name"
+                ) from exc
+            raise
         return email
 
     def bind_workload_identity(self, gsa_email: str, namespace: str, ksa: str) -> None:
@@ -1735,8 +1757,7 @@ class GcloudClient:
                 ]
             )
         except ClientError as exc:
-            stderr = exc.stderr.lower()
-            if "not_found" not in stderr and "does not exist" not in stderr:
+            if not gsa_absent(exc.stderr):
                 raise
             return False
         self._runner.run(

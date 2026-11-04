@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-platform-clients
-updated: 2026-11-03
-anchor: api/kobo_api/clients.py sha=688f334b811ab814f46f9f97c8ed631be4c6730c
+updated: 2026-11-04
+anchor: api/kobo_api/clients.py sha=87b81b40eac5b5fbf0c01cca8777016d08c08871
 anchor: api/tests/fakes.py sha=1c5d00693cc9ac79f69a9b885bc7f0eb6b73ed4a
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
@@ -33,6 +33,7 @@ API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provid
 2026-10-12: `GhCLI.repo_exists` reads `gh api repos/{repo}` and compares the `full_name` GitHub answers with; a name GitHub only redirects (a destroyed agent's repo, renamed to `archived-agent-<name>-<id>`) counts as free.
 - `CabalClient.mint_service` (2026-10-24): the generic switchboard mint behind the room's own gateway admin token (`kobo_api.liminal_admin.RoomAdminToken`: sub and persona `kobo-room`, aud `liminal`, `admin:*`). `Clients.liminal_admin` is that admin-plane client, typed loosely to keep `liminal_admin` importing this module and not the reverse.
 - `CabalClient.put_dispatch_pairs` (2026-10-24, issue #194): never sends an empty set; an empty policy goes out as `DENY_ALL_PAIR` (see switchboard).
+- `gsa_absent(stderr)` (2026-11-04): what a failed `service-accounts describe` means. NOT_FOUND is a never-existing account; PERMISSION_DENIED "on resource (or it may not exist)" is a soft-deleted one (thirty days after a destroy, answered that way even to a project owner). `GcloudClient.ensure_gsa` creates on either (Google allows a new account under a deleted one's name: a new identity), and says "deleted recently, retry or pick another name" when create still collides; `delete_gsa` treats a soft-deleted account as already gone. Before this a recreate under a destroyed name failed its Access step.
 - `KubectlClient.namespace_created_at` (2026-10-24, issue #193): a namespace's creation time as naive UTC, None when absent, `ClientError` when the cluster cannot be asked. Create and connect refuse a name whose namespace exists; destroy keeps the namespace, the stored secrets and the `agent-<name>` GSA of an agent whose namespace is older than its row. `FakeKubectl(namespaces={name: created_at}, namespace_error=...)` seeds it.
 
 `FakeCabal.relay` takes per-agent overrides (`relay_results`, `relay_errors`) since 2026-10-28, because a thread turn relays to several agents in one call and the tests need one to fail while another answers.
