@@ -13,6 +13,10 @@ In some rooms Slack is a row on the **Access** tab instead, with the other vendo
 
 Every message the agent posts in Slack carries the picture it has in kobo. Change the picture on the agent's page and Slack shows the new one from the next message on; there is nothing to set in Slack. An agent connected before this needs one **Reconnect the Slack app** so its app may show a picture; until then it posts without one. The small picture Slack shows beside the agent in its member list is Slack's own and stays as it is.
 
+### Who said what
+
+When an agent reads a Slack thread it sees each person by name and email: who wrote each message and who left each reaction. That is how an agent checking an approval can tell whose thumbs-up it was. An agent connected before this sees people only as Slack ids until its app is reconnected once with **Reconnect the Slack app**.
+
 ### Moving an agent made the old way
 
 An agent whose Slack app came from the Slack tab shows **Connected the old way** and its app id on the Slack row of the **Access** tab, with one button, **Move to the new Slack setup**. The room makes a new app and you install it once; the old app is removed. Channels and **Wakes on** carry over. After the move the row reads **App made; install it to finish**: press **Install to Slack** as usual, and the agent answers through the new app once you are back on its page. If the room could not confirm the old app was removed, the row says so; look for it in Slack's app list and remove it there. The Slack tab goes away for that agent once it has moved.

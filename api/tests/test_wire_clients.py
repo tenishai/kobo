@@ -741,6 +741,8 @@ def test_render_manifest_scopes_byte_equal_to_constraint():
         "files:read",
         "reactions:read",
         "reactions:write",
+        "users:read",
+        "users:read.email",
     ]
 
 
