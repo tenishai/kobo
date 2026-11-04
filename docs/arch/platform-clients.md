@@ -6,7 +6,7 @@ anchor: api/tests/fakes.py sha=1c5d00693cc9ac79f69a9b885bc7f0eb6b73ed4a
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
-WHAT / SEAM: api/kobo_api/clients.py. The outside systems in the table below are reached through a `typing.Protocol` (cabal is a concrete class), and code depends on the Protocol, never the backend. Six outside calls do NOT: they use httpx directly, are not in `Clients`, and have no fake in tests/fakes.py: pr_broker.py (GitHub App token mint), jira_broker.py (Jira GET), mcp/oauth_as.py (Google token exchange), iap.py (JWKS fetch), github_app.py (installation token), bootstrap.py (catalog refresh POST). The `Clients` dataclass (l.~4782) is the bag handed to steps and routes (`app.state.clients`, `Ctx.clients`).
+WHAT / SEAM: api/kobo_api/clients.py. The outside systems in the table below are reached through a `typing.Protocol` (cabal is a concrete class), and code depends on the Protocol, never the backend. Four outside calls do NOT: they use httpx directly, are not in `Clients`, and have no fake in tests/fakes.py: mcp/oauth_as.py (Google token exchange), iap.py (JWKS fetch), github_app.py (installation token), bootstrap.py (catalog refresh POST). The `Clients` dataclass (l.~4782) is the bag handed to steps and routes (`app.state.clients`, `Ctx.clients`).
 | field | Protocol | real impl | fake (tests/fakes.py) |
 |---|---|---|---|
 | github | `GitHubClient` | `GhCLI` (shells `gh`/`git`) | `FakeGitHub` |

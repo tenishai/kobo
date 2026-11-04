@@ -45,7 +45,7 @@ IAP_ISSUER = "https://cloud.google.com/iap"
 IAP_JWKS_URL = "https://www.gstatic.com/iap/verify/public_key-jwk"
 ASSERTION_HEADER = "x-goog-iap-jwt-assertion"
 # /metrics: the in-cluster scraper reaches the pod's service directly and
-# carries no IAP assertion, same shape as /broker's callers; the external
+# carries no IAP assertion; the external
 # ingress never routes this root. The exposition is request counts and
 # durations only - no identities, no payloads.
 EXEMPT_PATHS = frozenset({"/api/healthz", "/metrics"})
@@ -60,10 +60,9 @@ EXEMPT_PATHS = frozenset({"/api/healthz", "/metrics"})
 # the app's own middleware would 401 them before routing, defeating the split.
 # Safe when the MCP server is flag-OFF too: those roots then have no routes,
 # so an exempted request simply 404s (leaks nothing) instead of 401ing.
-# /broker (agent PR broker, 2026-08-27 spec) carries its own auth the same
-# way: the route verifies the calling AGENT's cabal-issued JWT itself, and
-# its callers are in-cluster agents reaching the pod's service directly --
-# the external ingress never routes this root at all.
+# /broker used to be exempt too, for the agent-facing PR and Jira brokers.
+# Both retired (kobo#365, 2026-11-04), so the root is no longer exempt: a
+# route added there later goes through the gate like any other.
 # Matched on a segment boundary (exact, or prefix + "/") so "/oauth" never
 # exempts a lookalike like "/oauthx" -- the same boundary discipline the
 # OAuth redirect-URI allowlist uses.
@@ -74,7 +73,7 @@ EXEMPT_PATHS = frozenset({"/api/healthz", "/metrics"})
 # callback trusts only the single-use state the room minted. Both answer
 # 404 while the org's `slack_relay` switch is off, so exempting them in a
 # room that has not turned the flow on exposes nothing.
-EXEMPT_PREFIXES = ("/mcp", "/oauth", "/.well-known", "/broker", "/slack/relay", "/slack/oauth")
+EXEMPT_PREFIXES = ("/mcp", "/oauth", "/.well-known", "/slack/relay", "/slack/oauth")
 
 
 def _normalize(path: str) -> str:
@@ -103,7 +102,7 @@ def _is_exempt(path: str) -> bool:
 
 # The header the Google load balancer always sets, naming the protocol the
 # CLIENT spoke to it. In-cluster callers that reach the pod's Service
-# directly -- the /broker lane agents and the ledger use, kubelet probes,
+# directly -- kubelet probes,
 # the /metrics scraper -- never set it. That asymmetry is the whole
 # discriminator below: absent == internal == untouched.
 FORWARDED_PROTO_HEADER = "x-forwarded-proto"
@@ -111,11 +110,9 @@ FORWARDED_PROTO_HEADER = "x-forwarded-proto"
 # The subset of EXEMPT_PREFIXES that is reachable FROM THE INTERNET (served
 # off the deploy's no-IAP ingress backend): kobo's OAuth 2.1 server, its
 # public discovery documents, and the MCP surface. Spelled out literally
-# rather than derived as `EXEMPT_PREFIXES - {"/broker"}` on purpose: a
-# future IAP exemption for another in-cluster lane must not silently enroll
-# itself into https enforcement and break a plain-http internal caller.
-# /broker is deliberately ABSENT -- agents call http://kobo.kobo.svc/broker/...
-# with no TLS and no X-Forwarded-Proto, and that lane must keep working.
+# rather than derived from EXEMPT_PREFIXES on purpose: a future IAP
+# exemption for an in-cluster lane must not silently enroll itself into
+# https enforcement and break a plain-http internal caller.
 # Matched with the same normalize-then-segment-boundary discipline
 # `_is_exempt` uses, so "/oauthx" is never treated as the OAuth surface.
 HTTPS_ONLY_PREFIXES = ("/mcp", "/oauth", "/.well-known", "/slack/relay", "/slack/oauth")
@@ -176,7 +173,7 @@ class HttpsOnlyMiddleware(BaseHTTPMiddleware):
     * absent, or present with no "http" token anywhere across all its lines
       (i.e. only `https`, which is all the GCLB ever sets besides `http`, or
       a junk value) -> pass through untouched. An in-cluster caller reaching
-      the pod's Service directly; `/broker`, `/metrics` and the kubelet
+      the pod's Service directly; `/metrics` and the kubelet
       probes all live here and legitimately speak http.
     * an "http" token anywhere AND the path is on the external surface ->
       308 for GET/HEAD to the same URL with the scheme swapped (host, path

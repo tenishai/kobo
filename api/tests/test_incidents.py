@@ -1824,55 +1824,6 @@ def test_no_available_pods_is_down_with_the_count_and_the_worst_container():
     assert verdict.reason == "0 of 1 running; restarted 1393 times, CrashLoopBackOff"
 
 
-# --- from test_jira_broker.py ---
-
-
-@pytest.fixture
-def jira_config(tmp_path):
-    pat = tmp_path / "jira-pat"
-    pat.write_text("not-a-real-token\n")
-    return Config(
-        workdir=tmp_path / "work",
-        cabal_url="http://cabal.test",
-        jira_domain="tracker.test",
-        jira_email="reader@acme.io",
-        jira_pat_path=pat,
-        jira_projects=["AREQ"],
-        jira_read_agents=["ledger"],
-    )
-
-
-@pytest.fixture
-def jira_client(session_factory, jira_config):
-    return TestClient(create_app(session_factory, config=jira_config))
-
-
-def test_jira_gate_hands_the_agents_mint_instant_to_the_verifier(jira_client, session_factory, monkeypatch):
-    """Production bug: Jira gate hands the agents mint instant to the verifier.
-
-    Issue #199: the jira lane applies the same not-before cut as the GitHub one."""
-    from datetime import UTC, datetime
-
-    import kobo_api.main as main_mod
-    from kobo_api.models import Agent, AgentStatus
-
-    minted = datetime(2026, 10, 24, 12, 0, tzinfo=UTC).replace(tzinfo=None)
-    session = session_factory()
-    session.add(Agent(name="ledger", persona="p", model_id="m", status=AgentStatus.READY, pass_minted_at=minted))
-    session.commit()
-    session.close()
-    seen = {}
-
-    def record(cabal_url, bearer, agent_name, *, not_before=None):
-        seen["not_before"] = not_before
-        return {}
-
-    monkeypatch.setattr(main_mod, "verify_agent_token", record)
-    monkeypatch.setattr(main_mod, "jira_fetch_issue", lambda *a, **k: {"key": "OPS-1"})
-    jira_client.get("/broker/agents/ledger/jira/issues/OPS-1", headers={"Authorization": "Bearer x"})
-    assert seen["not_before"] == minted
-
-
 # --- from test_marketplace.py ---
 
 

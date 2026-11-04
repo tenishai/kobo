@@ -138,9 +138,6 @@ from kobo_api.intake import (
     list_intake,
     upload_intake_file,
 )
-from kobo_api.jira_broker import CREDENTIAL_REJECTED as JIRA_CREDENTIAL_REJECTED
-from kobo_api.jira_broker import fetch_issue as jira_fetch_issue
-from kobo_api.jira_broker import search_issues as jira_search_issues
 from kobo_api.kinds import (
     KIND_COMPOSED,
     KIND_CONNECTED,
@@ -232,7 +229,6 @@ from kobo_api.personas import (
 from kobo_api.personas import (
     read_index as personas_read_index,
 )
-from kobo_api.pr_broker import BrokerAuthError, verify_agent_token
 from kobo_api.provisioner import (
     STEP_LABELS,
     drain_pipelines,
@@ -3433,7 +3429,7 @@ def create_app(
     # so a room with `iap_audience` unset is precisely the room that needs
     # it. It is a no-op for every caller that does not set
     # X-Forwarded-Proto: http, which is every in-cluster caller (the
-    # /broker lane, the /metrics scraper, kubelet probes). See
+    # /metrics scraper, kubelet probes). See
     # kobo_api.iap.HttpsOnlyMiddleware for the full three-way contract.
     app.add_middleware(HttpsOnlyMiddleware)
 
@@ -7040,14 +7036,7 @@ def create_app(
             lines = [f"... ({len(lines) - _BUILD_LOG_TAIL_LINES} earlier lines trimmed)"] + lines[-_BUILD_LOG_TAIL_LINES:]
         return JSONResponse({"run": run, "log": "\n".join(lines)})
 
-    # --- Agent PR broker (2026-08-27 spec): repo access + scoped tokens ---------
-
-    def _pass_not_before(session: Session, name: str) -> datetime | None:
-        """The instant the room last minted `name`'s colleague pass, or None
-        for an agent wired before the room recorded it (issue #199). A pass
-        issued before this is one a re-wire has replaced."""
-        agent = session.query(Agent).filter(Agent.name == name).one_or_none()
-        return agent.pass_minted_at if agent is not None else None
+    # --- The room's GitHub app ----------------------------------------------------
 
     def _github_app() -> room_credentials.GitHubAppCredentials | None:
         """The room's GitHub app for pull requests (the one `/api/whoami`
@@ -7057,149 +7046,6 @@ def create_app(
         restart. The agent-facing token broker that minted with it retired
         (kobo#365)."""
         return room_credentials.github_app(app.state.clients, app.state.config)
-
-    # --- Agent Jira read broker (2026-09-04, AREQ lane) -------------------------
-
-    def _jira_broker_off(config: Config) -> JSONResponse | None:
-        """None when the jira read broker is configured, the 503 to return
-        otherwise -- the PR broker's absent-equals-off convention."""
-        if (
-            config.jira_domain
-            and config.jira_email
-            and config.jira_pat_path
-            and config.jira_projects
-        ):
-            return None
-        return JSONResponse(
-            {"error": "the jira read broker is not configured on this room"},
-            status_code=503,
-        )
-
-    def _jira_agent_block(config: Config, request: Request, name: str) -> JSONResponse | None:
-        """The jira routes' shared gate: broker configured, switchboard
-        wired, the bearer is cabal's own signature over this agent (the
-        github-token route's exact walls), and the agent is on the lane's
-        allowlist. Off-list reads as 404 -- an agent without the lane must
-        not be distinguishable from one that does not exist."""
-        off = _jira_broker_off(config)
-        if off is not None:
-            return off
-        if not config.cabal_url:
-            return JSONResponse(
-                {"error": "the jira read broker requires the switchboard"},
-                status_code=503,
-            )
-        authorization = request.headers.get("authorization", "")
-        bearer = authorization.removeprefix("Bearer ").strip()
-        if not bearer:
-            return JSONResponse({"error": "agent token required"}, status_code=401)
-        try:
-            with app.state.session_factory() as session:
-                cut = _pass_not_before(session, name)
-            verify_agent_token(config.cabal_url, bearer, name, not_before=cut)
-        except BrokerAuthError:
-            return JSONResponse({"error": "agent token was not accepted"}, status_code=401)
-        if name not in config.jira_read_agents:
-            return JSONResponse({"error": f"no such agent: {name!r}"}, status_code=404)
-        return None
-
-    def _jira_credential_sentence() -> str:
-        # Not a 404: the runtime reads every 404 on this lane as "not granted",
-        # and a wrong credential is the operator's to fix, not the agent's.
-        return (
-            f"{JIRA_CREDENTIAL_REJECTED}; the issue tracker's API token the room "
-            "holds has to be replaced by the room's operator"
-        )
-
-    @app.get("/broker/agents/{name}/jira/issues/{key}")
-    def read_agent_jira_issue(name: str, key: str, request: Request) -> JSONResponse:
-        """One issue with its comment history, for an allowlisted agent.
-        The reachable projects are pinned server-side: a key outside
-        `jira_projects` is refused here, before any tracker call."""
-        config: Config = app.state.config
-        block = _jira_agent_block(config, request, name)
-        if block is not None:
-            return block
-        project = key.split("-", 1)[0].upper()
-        reachable = set(config.jira_projects) | set(config.jira_alias_projects)
-        if "-" not in key or project not in reachable:
-            return JSONResponse(
-                {
-                    "error": "that issue is outside the projects this lane "
-                    f"reaches ({', '.join(config.jira_projects)})"
-                },
-                status_code=403,
-            )
-        try:
-            body = jira_fetch_issue(
-                domain=config.jira_domain,
-                email=config.jira_email,
-                pat_path=config.jira_pat_path,
-                key=key,
-            )
-        except ClientError as exc:
-            if str(exc) == "no such issue":
-                return JSONResponse({"error": f"no issue {key!r}"}, status_code=404)
-            if str(exc) == JIRA_CREDENTIAL_REJECTED:
-                return JSONResponse({"error": _jira_credential_sentence()}, status_code=502)
-            return JSONResponse(
-                {"error": "the tracker did not answer. Try again shortly."},
-                status_code=502,
-            )
-        # The post-fetch wall for alias keys: a migrated key resolves to its
-        # NEW key in the response, and only a resolved key inside the pinned
-        # projects leaves the broker. An alias that resolves anywhere else
-        # is refused as if the pre-check had caught it -- the alias lane
-        # exists for key redirects into the pin, never around it.
-        resolved = (body.get("issue") or {}).get("key") or key
-        if resolved.split("-", 1)[0].upper() not in config.jira_projects:
-            return JSONResponse(
-                {
-                    "error": "that issue is outside the projects this lane "
-                    f"reaches ({', '.join(config.jira_projects)})"
-                },
-                status_code=403,
-            )
-        return JSONResponse(body)
-
-    @app.get("/broker/agents/{name}/jira/search")
-    def search_agent_jira_issues(name: str, request: Request) -> JSONResponse:
-        """Text search pinned to the lane's FIRST configured project (one
-        project is the lane's shape today; a multi-project room grows a
-        project parameter validated against the list, not a JQL knob).
-        The term and limit are bounded inside `jira_broker.search_issues`
-        -- no JQL crosses this boundary."""
-        config: Config = app.state.config
-        block = _jira_agent_block(config, request, name)
-        if block is not None:
-            return block
-        text = request.query_params.get("text", "")
-        try:
-            limit = int(request.query_params.get("limit", "10"))
-        except ValueError:
-            limit = 10
-        try:
-            body = jira_search_issues(
-                domain=config.jira_domain,
-                email=config.jira_email,
-                pat_path=config.jira_pat_path,
-                project=config.jira_projects[0],
-                text=text,
-                limit=limit,
-                created_after=request.query_params.get("created_after", ""),
-                created_before=request.query_params.get("created_before", ""),
-            )
-        except ClientError as exc:
-            message = str(exc)
-            if message == "nothing searchable in the given text" or "bare date" in message:
-                return JSONResponse({"error": message}, status_code=400)
-            if message == JIRA_CREDENTIAL_REJECTED:
-                return JSONResponse({"error": _jira_credential_sentence()}, status_code=502)
-            return JSONResponse(
-                {"error": "the tracker did not answer. Try again shortly."},
-                status_code=502,
-            )
-        return JSONResponse(body)
 
     # --- Destroy (Task 4): the resumable four-step teardown ledger --------------
 

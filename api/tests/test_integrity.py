@@ -80,7 +80,6 @@ from kobo_api.config import SHARED_GROUP, Config, GroupChoice, ModelChoice
 from kobo_api.db import init_db, make_engine
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.intake import IntakeError, upload_intake_file
-from kobo_api.jira_broker import search_issues
 from kobo_api.kinds import KIND_COMPOSED, KIND_CONNECTED, RUN_MODE_HTTP
 from kobo_api.knowledge import KnowledgeError, save_knowledge_file
 from kobo_api.learnings import (
@@ -6402,79 +6401,6 @@ def test_deliver_secret_does_not_sync_a_path_whose_write_failed():
         )
 
     assert sero.syncs == []
-
-
-# --- from test_jira_broker.py ---
-
-
-class _Resp:
-    def __init__(self, status_code, body=None, text=""):
-        self.status_code = status_code
-        self._body = body if body is not None else {}
-        self.text = text
-        self.headers = {}
-
-    def json(self):
-        return self._body
-
-
-class FakeTracker:
-    def __init__(self, routes):
-        self.routes = routes  # list of (path_fragment, response)
-        self.sent = []  # (url, headers, params)
-
-    def get(self, url, headers=None, params=None):
-        self.sent.append((url, dict(headers or {}), dict(params or {})))
-        for fragment, response in self.routes:
-            if fragment in url:
-                return response
-        raise AssertionError(f"unscripted tracker call: {url}")
-
-
-def _pat(tmp_path) -> Path:
-    pat = tmp_path / "pat"
-    pat.write_text("s3cret\n")
-    return pat
-
-
-def test_search_assembles_jql_server_side_from_bounded_inputs(tmp_path):
-    """Data integrity: Search assembles jql server side from bounded inputs."""
-    # An empty search makes the lane ask the tracker who the credential is; a known reader keeps it an empty search.
-    fake = FakeTracker(
-        [("/search/jql", _Resp(200, {"issues": [], "nextPageToken": "more"})), ("/myself", _Resp(200, {"emailAddress": "reader@acme.io"}))]
-    )
-    out = search_issues(
-        domain="tracker.test",
-        email="reader@acme.io",
-        pat_path=_pat(tmp_path),
-        project="AREQ",
-        text='jdoe" OR project = SECRET \\ ',
-        limit=999,
-        http_client=fake,
-    )
-    _, _, params = fake.sent[0]
-    # The quoting-escape characters are stripped; the project pin and the
-    # template come from here, never the caller.
-    assert params["jql"] == (
-        'project = "AREQ" AND text ~ "jdoe  OR project = SECRET" ORDER BY created DESC'
-    )
-    assert params["maxResults"] == 25  # capped
-    assert out["truncated"] is True
-
-
-def test_search_refuses_a_date_that_could_carry_jql(tmp_path):
-    """Data integrity: Search refuses a date that could carry jql."""
-    with pytest.raises(ClientError, match="bare date"):
-        search_issues(
-            domain="t",
-            email="e",
-            pat_path=_pat(tmp_path),
-            project="AREQ",
-            text="jdoe@acme.io",
-            limit=5,
-            created_after='2026-07-03" OR project = "SECRET',
-            http_client=FakeTracker([]),
-        )
 
 
 # --- from test_config.py ---

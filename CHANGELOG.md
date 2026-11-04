@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Removed
+- The room's own Jira read lane for agents (`/broker/agents/{name}/jira/issues/{key}` and `/jira/search`), with the agent-token check only it still used. It signed in with a stored API token Jira had stopped accepting, so an agent's first ticket read failed before it fell back to its Atlassian tools. Agents read Jira through the Atlassian connection. The `jira_*` config keys are now ignored with a warning, and the next access sync withdraws any `jira.*` entry left in an agent's allow list. `/broker` is no longer exempt from the sign-in gate, since nothing is served there.
+
 ## [0.3.53] - 2026-11-03
 
 ### Fixed

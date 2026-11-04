@@ -214,7 +214,12 @@ _log = logging.getLogger(__name__)
 # mean anything. Dropped with a warning rather than refused, so a room is not
 # locked out of booting by a line it was told to leave alone at the time. The
 # org-config side keeps its own list (`kobo_api.org.RETIRED_ORG_KEYS`).
-RETIRED_CONFIG_KEYS = frozenset({"runtimes"})
+# The jira_* keys fed the room's own Jira read lane, retired 2026-11-04:
+# agents read the tracker through the Atlassian connection instead.
+RETIRED_CONFIG_KEYS = frozenset({
+    "runtimes",
+    "jira_domain", "jira_email", "jira_pat_path", "jira_projects", "jira_alias_projects", "jira_read_agents",
+})
 
 
 class CloudAccount(BaseModel):
@@ -547,11 +552,10 @@ class Config(BaseModel):
     pr_app_id: str = ""
     pr_app_installation_id: str = ""
     pr_app_private_key_path: Path | None = None
-    # The room's OWN in-cluster base URL, as deployed AGENTS reach it: the
-    # /broker/agents/{name}/jira/* lane is called at {broker_url}/broker/...
-    # with the agent's colleague JWT. Org-settable (an infra coordinate like
-    # cabal_url). The composer no longer reads it: the github broker sidecar
-    # retired with the pull request broker (kobo#365, 2026-11-01).
+    # The room's OWN in-cluster base URL, as deployed AGENTS reach it.
+    # Org-settable (an infra coordinate like cabal_url). Nothing reads it
+    # any more: the github broker sidecar retired with the pull request
+    # broker (kobo#365, 2026-11-01) and the jira read lane on 2026-11-04.
     broker_url: str = ""
     # The room's model gateway (kobo#390): the in-cluster base URL of the
     # LiteLLM proxy the install deploys, as the room reaches its admin plane
@@ -600,32 +604,6 @@ class Config(BaseModel):
     # as connected; the rest show as not connected yet. Org-settable; later
     # this list is read from the gateway's own roles rather than written here.
     cloud_accounts: list[CloudAccount] = []
-    # The Jira read broker (AREQ lane, 2026-09-04) -- the PR broker's
-    # custody model applied to tracker reads: the room holds ONE read-only
-    # service-account API token (mounted as a file, the PR App key's own
-    # convention) and `kobo_api.jira_broker` pins the reachable projects
-    # server-side. Deployment-config-settable like pr_app_* above, NOT
-    # org.yaml-settable. domain + email + pat_path + at least one project
-    # all set = the /broker/.../jira routes live; anything missing = 503,
-    # the same absent-equals-off convention as the PR broker.
-    jira_domain: str = ""  # e.g. "yourorg.atlassian.net"
-    jira_email: str = ""  # the read-only service account's email
-    jira_pat_path: Path | None = None  # mounted API-token file, never logged
-    jira_projects: list[str] = []  # project keys the broker will read, e.g. ["AREQ"]
-    # Old project keys that MIGRATED into a pinned project (a Jira project
-    # move keeps every old key as an alias that resolves to the new one).
-    # A key with one of these prefixes may be REQUESTED -- historical Slack
-    # threads cite them -- but the broker returns the issue only when the
-    # RESOLVED key lands inside jira_projects; anything else is refused
-    # after the fetch, so the alias lane can never widen the read surface
-    # beyond the pinned projects. e.g. ["IE"] after the IE -> AREQ move.
-    jira_alias_projects: list[str] = []
-    # Agent names allowed to call the jira read routes. There is no
-    # per-agent grant table for this lane yet (the CloudAccess/ServiceAccess
-    # arc is the real fix); an explicit deployment-config allowlist is the
-    # honest interim gate. Absent from this list reads as 404, the
-    # anti-enumeration answer the github-token route already gives.
-    jira_read_agents: list[str] = []
     # Drop a nightly learnings candidate that names nobody (`said_by` empty)
     # instead of queueing it flagged (issue #143). Leave off until every
     # agent runs a daedalus that marks turns from the room's chat as "user"
@@ -700,7 +678,7 @@ class Config(BaseModel):
 
     @field_validator(
         "workdir", "slack_tokens_path", "ui_dist", "github_app_private_key_path",
-        "pr_app_private_key_path", "jira_pat_path",
+        "pr_app_private_key_path",
         mode="before",
     )
     @classmethod
