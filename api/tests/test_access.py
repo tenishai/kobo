@@ -6814,3 +6814,38 @@ def test_the_gateway_lane_follows_each_github_level_and_withdraws_what_is_revoke
     pushed = _yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["tools"]["allow"]
     assert "github-mcp.*" not in pushed and "github-mcp-write.*" in pushed and "github.*" not in pushed
     assert c.post("/api/admin/access/sync", headers=h).json()["gateway_lanes"]["failed"] == 0
+
+
+def test_the_room_sets_back_a_gateway_grant_something_else_rewrote():
+    """Gate (authorization): the gateway's own boot seed re-applied a file stanza over ledger's
+    live grant and took its GitHub lane away for a day (2026-11-04). The heal pass puts back what
+    the agent's permissions owe, keeps what the room never managed, and leaves an agent that
+    holds no permission alone, so a grant that lives only in the gateway's file is not touched."""
+    from kobo_api import gateway_lane
+
+    bab = FakeBab(integrations=[
+        {"integration": "github-ledger", "vendor": "github", "ceiling": ["github_repos_read"],
+         "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"},
+        {"integration": "atlassian", "vendor": "atlassian", "ceiling": ["atlassian_jira_issues_read"],
+         "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"},
+    ])
+    bab._grants[1] = {"id": 1, "agent": "ledger", "integration": "github-ledger", "permission": "github_repos_read",
+                      "state": "active"}
+    bab._grants[2] = {"id": 2, "agent": "ledger", "integration": "atlassian", "permission": "atlassian_jira_issues_read",
+                      "state": "active"}
+    admin = FakeLiminalAdmin([
+        GatewayGrant(issuer="cabal-core", persona="ledger", scopes=("atlassian:read",), allowed_handlers=("atlassian", "scratchpad")),
+        GatewayGrant(issuer="cabal-core", persona="janus", scopes=("github:read",), allowed_handlers=("github", "scratchpad")),
+    ])
+
+    class _Clients:
+        liminal_admin = admin
+
+    healed = gateway_lane.heal(_Clients(), bab, ["ledger", "janus"], "room@kobo")
+
+    assert healed == ["ledger"]
+    ledger = admin.grants[("cabal-core", "ledger")]
+    assert set(ledger.scopes) == {"atlassian:read", "github:read"}
+    assert set(ledger.allowed_handlers) == {"atlassian", "github-mcp", "scratchpad"}
+    assert admin.grants[("cabal-core", "janus")].allowed_handlers == ("github", "scratchpad")
+    assert gateway_lane.heal(_Clients(), bab, ["ledger", "janus"], "room@kobo") == []

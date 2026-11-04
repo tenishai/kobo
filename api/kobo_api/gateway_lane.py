@@ -224,6 +224,24 @@ def _allow_entries(bundle_dir: Path) -> list[str]:
         return []
 
 
+def _owed_grant(existing: GatewayGrant | None, lanes: list[Lane]):
+    """(old scopes, old handlers, new scopes, new handlers) for one agent:
+    the managed part recomputed from its lanes, everything else kept. A
+    grant that allows every handler (None) is never narrowed."""
+    scopes = {s for lane in lanes for s in lane.scopes}
+    handlers = {h for lane in lanes for h in lane.handlers}
+    old_scopes = set(existing.scopes) if existing is not None else set()
+    new_scopes = (old_scopes - MANAGED_SCOPES) | scopes
+    old_handlers: set[str] | None
+    new_handlers: set[str] | None
+    if existing is not None and existing.allowed_handlers is None:
+        old_handlers = new_handlers = None
+    else:
+        old_handlers = set(existing.allowed_handlers) if existing is not None else set()
+        new_handlers = (old_handlers - MANAGED_HANDLERS) | handlers
+    return old_scopes, old_handlers, new_scopes, new_handlers
+
+
 def follow(session: Session, clients, bab, *, agent_name: str, actor: str) -> str:
     """Bring the agent's gateway grant in step with its permissions, and its
     bundle's allow list with the lanes it holds, and say what happened in
@@ -236,18 +254,8 @@ def follow(session: Session, clients, bab, *, agent_name: str, actor: str) -> st
     try:
         lanes = held_lanes(bab, agent_name, actor)
         allowed = sync_allow(session, clients, agent_name=agent_name, patterns=desired_allow(lanes))
-        scopes = {s for lane in lanes for s in lane.scopes}
-        handlers = {h for lane in lanes for h in lane.handlers}
         existing = next((g for g in admin.list_grants() if g.issuer == ISSUER and g.persona == agent_name), None)
-        old_scopes = set(existing.scopes) if existing is not None else set()
-        new_scopes = (old_scopes - MANAGED_SCOPES) | scopes
-        old_handlers: set[str] | None
-        new_handlers: set[str] | None
-        if existing is not None and existing.allowed_handlers is None:
-            old_handlers = new_handlers = None
-        else:
-            old_handlers = set(existing.allowed_handlers) if existing is not None else set()
-            new_handlers = (old_handlers - MANAGED_HANDLERS) | handlers
+        old_scopes, old_handlers, new_scopes, new_handlers = _owed_grant(existing, lanes)
         if new_scopes == old_scopes and new_handlers == old_handlers:
             return UNCHANGED + allowed
         if not new_scopes and new_handlers is not None and not new_handlers:
@@ -264,6 +272,78 @@ def follow(session: Session, clients, bab, *, agent_name: str, actor: str) -> st
         return f"the gateway admin plane refused: {exc}"
 
 
+# How often the room checks the gateway still holds what it granted. Something
+# other than the room can rewrite a grant: the gateway's own boot seed
+# (grants.toml) re-applies a file stanza over the live row on every restart,
+# which took ledger's GitHub lane away for a day (2026-11-04).
+HEAL_INTERVAL_S = 300.0
+
+
+def heal(clients, bab, agent_names: list[str], actor: str) -> list[str]:
+    """Set each agent's gateway grant back to what its permissions owe when
+    something else has changed it, and name the agents it set back. Only the
+    gateway grant: the bundle allow list lives in the agent's repository,
+    which nothing but the room writes. An agent holding no permission is
+    left alone, so an agent whose grant lives only in the gateway's own
+    file keeps it. Best effort: one agent's failure never stops the rest."""
+    admin = getattr(clients, "liminal_admin", None) if clients is not None else None
+    if admin is None or bab is None:
+        return []
+    try:
+        live = {g.persona: g for g in admin.list_grants() if g.issuer == ISSUER}
+    except ClientError as exc:
+        log.warning("gateway grants could not be read for the heal pass: %s", exc)
+        return []
+    healed: list[str] = []
+    for name in agent_names:
+        try:
+            lanes = held_lanes(bab, name, actor)
+            if not lanes:
+                continue
+            existing = live.get(name)
+            old_scopes, old_handlers, new_scopes, new_handlers = _owed_grant(existing, lanes)
+            if new_scopes == old_scopes and new_handlers == old_handlers:
+                continue
+            admin.grant(GatewayGrant(
+                issuer=ISSUER, persona=name, scopes=tuple(sorted(new_scopes)),
+                allowed_handlers=None if new_handlers is None else tuple(sorted(new_handlers)),
+            ))
+        except ClientError as exc:
+            log.warning("gateway grant for %s could not be checked or set back: %s", name, exc)
+            continue
+        log.warning(
+            "gateway grant for %s had drifted from its permissions (scopes %s, handlers %s); set back to scopes %s, handlers %s",
+            name, sorted(old_scopes), "all" if old_handlers is None else sorted(old_handlers),
+            sorted(new_scopes), "all" if new_handlers is None else sorted(new_handlers),
+        )
+        healed.append(name)
+    return healed
+
+
+def _heal_ready_agents(app) -> list[str]:
+    from .bab import ROOM_ACTOR
+
+    with app.state.session_factory() as session:
+        names = [a.name for a in session.query(Agent).filter(Agent.status == AgentStatus.READY).all()]
+    return heal(app.state.clients, getattr(app.state.clients, "bab", None), names, ROOM_ACTOR)
+
+
+async def heal_loop(app, *, interval_s: float = HEAL_INTERVAL_S) -> None:
+    """`heal` over every ready agent, every `interval_s` for the life of the
+    process. Sleeps first: the gateway was in step at boot a minute ago as
+    often as not, and a restart of either side is caught one interval later."""
+    import asyncio
+
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await asyncio.to_thread(_heal_ready_agents, app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("gateway grant heal pass failed")
+
+
 def tally(sentence: str) -> str:
     """Which bucket a `follow` sentence falls in: `set`, `unchanged` or `failed`."""
     if sentence.startswith(("gateway lane set", REMOVED)):
@@ -276,6 +356,7 @@ def tally(sentence: str) -> str:
 
 
 __all__ = [
-    "GATEWAY_LANES", "MANAGED_ALLOW", "MANAGED_HANDLERS", "MANAGED_SCOPES", "PERMISSION_LANES", "RETIRED_HANDLERS", "RETIRED_PREFIXES",
-    "Lane", "desired_allow", "desired_lane", "follow", "held_lanes", "held_vendors", "lane_for", "sync_allow", "tally",
+    "GATEWAY_LANES", "HEAL_INTERVAL_S", "MANAGED_ALLOW", "MANAGED_HANDLERS", "MANAGED_SCOPES", "PERMISSION_LANES", "RETIRED_HANDLERS",
+    "RETIRED_PREFIXES", "Lane", "desired_allow", "desired_lane", "follow", "heal", "heal_loop", "held_lanes", "held_vendors", "lane_for",
+    "sync_allow", "tally",
 ]

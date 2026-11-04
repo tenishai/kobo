@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- The room sets back an agent's gateway grant that something else rewrote. The gateway re-applies its own grants file on every restart, and a stanza there for a room-managed agent silently replaced what the agent's permissions had opened (ledger lost its GitHub tools for a day, 2026-11-04). Every five minutes the worker compares each ready agent's grant with what its permissions owe and writes it back when they differ, logging a warning. An agent that holds no permission in the room is left alone.
+
 ### Removed
 - The room's own Jira read lane for agents (`/broker/agents/{name}/jira/issues/{key}` and `/jira/search`), with the agent-token check only it still used. It signed in with a stored API token Jira had stopped accepting, so an agent's first ticket read failed before it fell back to its Atlassian tools. Agents read Jira through the Atlassian connection. The `jira_*` config keys are now ignored with a warning, and the next access sync withdraws any `jira.*` entry left in an agent's allow list. `/broker` is no longer exempt from the sign-in gate, since nothing is served there.
 
