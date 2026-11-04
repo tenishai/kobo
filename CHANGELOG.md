@@ -6,10 +6,13 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.54] - 2026-11-04
+
 ### Added
 - An agent's Slack app may look people up (`users:read`, `users:read.email`). A thread read names who wrote each message and who reacted instead of a bare Slack id, so an agent checking an approval can say whose thumbs-up it was, and a search can find someone a message names only by id. An existing agent's app takes the scopes on its next **Reconnect the Slack app**.
 
 ### Fixed
+- An agent recreated under the name of one destroyed in the last 30 days gets its cloud identity back. The deleted identity is still being removed and reads as a permission refusal; the room now treats that as absent and creates it, and says what to do when the old name cannot be reused yet (kobo#448).
 - The room sets back an agent's gateway grant that something else rewrote. The gateway re-applies its own grants file on every restart, and a stanza there for a room-managed agent silently replaced what the agent's permissions had opened (ledger lost its GitHub tools for a day, 2026-11-04). Every five minutes the worker compares each ready agent's grant with what its permissions owe and writes it back when they differ, logging a warning. An agent that holds no permission in the room is left alone.
 
 ### Removed
