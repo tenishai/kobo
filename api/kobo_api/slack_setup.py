@@ -98,6 +98,13 @@ _BOT_SCOPES = [
     "files:read",
     "reactions:read",
     "reactions:write",
+    # Who someone is (2026-11-04): a thread read names an author or a
+    # reactor only by Slack id without users:read, so an agent auditing an
+    # approval could not say whose :+1: it was; users:read.email lets a
+    # search find a person by email when the message names them by id. A
+    # SCOPE addition: an existing agent's app takes it on its next reinstall.
+    "users:read",
+    "users:read.email",
 ]
 
 # Tagged-only in channels (2026-08-31 operator ruling, from live use: an

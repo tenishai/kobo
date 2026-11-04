@@ -1504,6 +1504,8 @@ def test_slack_manifest_renders_agent_manifest(session_factory__api_slack, confi
         "files:read",
         "reactions:read",
         "reactions:write",
+        "users:read",
+        "users:read.email",
     ]
 
 
