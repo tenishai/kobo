@@ -6390,9 +6390,10 @@ def test_the_atlassian_probe_refuses_a_token_the_mcp_server_takes_but_cannot_use
 
 
 def test_the_lane_sync_retires_the_token_broker_github_entries_an_old_bundle_still_lists(tmp_path, fake_storage):
-    """Gate (integrity): the room's GitHub token broker is gone (kobo#365); an agent whose bundle still
-    allows its tools by name (github.search_prs, github.open_pr) is offered dead tools that answer
-    HTTP 405. The next lane sync withdraws them with the retired `github.*` pattern, and says so."""
+    """Gate (integrity): the room's GitHub token broker is gone (kobo#365) and its Jira read lane
+    retired (2026-11-04); an agent whose bundle still allows their tools by name (github.search_prs,
+    github.open_pr, jira.get_issue) is offered dead tools. The next lane sync withdraws them under
+    the retired prefixes, and says so."""
     import yaml as _yaml
 
     bab = FakeBab(integrations=[{"integration": "datadog", "vendor": "datadog", "ceiling": ["datadog_monitors_read"],
@@ -6409,9 +6410,9 @@ def test_the_lane_sync_retires_the_token_broker_github_entries_an_old_bundle_sti
     out = c.post("/api/admin/access/decide", headers=h, json={"ids": [rid], "verdict": "approve"}).json()["results"]
     assert out[0]["status"] == "approved"
     pushed = _yaml.safe_load(github.pushed_file("bundle/agent.yaml"))
-    # The broker entries go, the room's own jira lane entry (not a retired prefix) stays.
-    assert pushed["tools"]["allow"] == ["colleagues.list_colleagues", "jira.get_issue", "datadog-mcp.*", "datadog.*"], pushed["tools"]
-    assert github.pushes[-1][1] == "kobo: allow the datadog tools; withdraw the github tools"
+    # The broker entries and the retired jira lane's entry go; the rest stays.
+    assert pushed["tools"]["allow"] == ["colleagues.list_colleagues", "datadog-mcp.*", "datadog.*"], pushed["tools"]
+    assert github.pushes[-1][1] == "kobo: allow the datadog tools; withdraw the github, jira tools"
 
 
 def test_removing_an_integration_twice_is_not_a_refusal(tmp_path, fake_storage):

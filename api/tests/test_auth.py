@@ -3,8 +3,7 @@
 IAP assertion verification and the middleware's coverage (everything but
 the exempt paths), the https-only guard on the OAuth surface, the room's own
 OAuth 2.1 authorization server (PKCE, hosted-domain check, refresh-token
-families and replay), the MCP JWTs, and the two agent-facing brokers' token
-checks. Folded on 2026-10-29 from test_iap.py, test_mcp_oauth.py,
+families and replay) and the MCP JWTs. Folded on 2026-10-29 from test_iap.py, test_mcp_oauth.py,
 test_mcp_jwt.py, test_mcp_refresh_tokens.py, test_mcp_tools_read.py,
 test_pr_broker.py, test_jira_broker.py, test_config.py and
 test_api_admin_mcp.py.
@@ -54,7 +53,6 @@ from kobo_api.mcp.jwt import ACCESS_TTL_S, mint, verify
 from kobo_api.mcp.refresh_tokens import consume, create_family
 from kobo_api.mcp.server import _KoboTokenVerifier
 from kobo_api.models import Base, MCPRefreshToken
-from kobo_api.pr_broker import BrokerAuthError
 from tests.fakes import FakeAgent, FakeCloud, FakeGitHub, FakeGojira, FakeKubectl
 
 # --- from test_iap.py ---
@@ -385,7 +383,7 @@ def test_enabled_ui_dist_paths_require_the_header_too(session_factory, iap_confi
 
 def test_is_exempt_covers_the_mcp_roots_and_healthz_but_not_lookalikes():
     """Gate (authentication): Is exempt covers the mcp roots and healthz but not lookalikes."""
-    assert EXEMPT_PREFIXES == ("/mcp", "/oauth", "/.well-known", "/broker", "/slack/relay", "/slack/oauth")
+    assert EXEMPT_PREFIXES == ("/mcp", "/oauth", "/.well-known", "/slack/relay", "/slack/oauth")
     # exact healthz (unchanged behavior)
     assert _is_exempt("/api/healthz") is True
     # the MCP roots, exact and as prefixes
@@ -509,30 +507,6 @@ def test_duplicate_forwarded_proto_lines_cannot_smuggle_past_an_http_hop(
 
     assert resp.status_code == 308
     assert resp.headers["location"] == "https://testserver/oauth/authorize"
-
-
-def test_broker_lane_is_untouched_by_the_https_guard(session_factory, iap_config):
-    """Gate (authentication): Broker lane is untouched by the https guard.
-
-    (c) The in-cluster /broker lane must keep working over plain http even
-    if some future proxy does set the header on it: never 308'd, never 400'd
-    with the https copy. (These reach their real routes and fail their own
-    agent-JWT check -- the point is WHICH gate answered.)"""
-    _, jwk = _generate_jwk()
-    test_client = _client_with_fetcher(
-        session_factory, iap_config, _counting_fetcher({"keys": [jwk]})
-    )
-
-    for method, path in (
-        ("get", "/broker/agents/wren/jira/search?q=x"),
-        ("get", "/broker/agents/wren/jira/issues/AREQ-1"),
-    ):
-        for headers in ({}, HTTP_PROTO, HTTPS_PROTO):
-            resp = getattr(test_client, method)(
-                path, headers=headers, follow_redirects=False
-            )
-            assert resp.status_code != 308, f"{method} {path} {headers}"
-            assert resp.json() != HTTPS_REQUIRED_BODY, f"{method} {path} {headers}"
 
 
 def test_https_guard_is_installed_outside_the_iap_gate(session_factory, iap_config):
@@ -1539,189 +1513,6 @@ def test_revoke_cuts_the_families_logs_the_action_and_the_verifier_refuses_old_t
     with factory() as session:
         actions = [(e.action, e.target_id) for e in audit_events(session)]
     assert ("mcp.revoke", "gone@example.com") in actions
-
-
-# --- from test_pr_broker.py (the token verification the jira lane kept, kobo#365) ---
-
-
-def test_verify_refuses_a_pass_issued_before_the_last_mint(monkeypatch):
-    """Gate (authentication): Verify refuses a pass issued before the last mint."""
-    from datetime import UTC, datetime
-
-    from kobo_api import pr_broker
-
-    class _Jwks:
-        def get_signing_key_from_jwt(self, bearer):
-            class _K:
-                key = "k"
-
-            return _K()
-
-    monkeypatch.setattr(pr_broker, "_jwks_client", lambda url: _Jwks())
-    monkeypatch.setattr(pr_broker.pyjwt, "decode", lambda *a, **k: {"sub": "agent:ward", "iat": 1_000})
-
-    assert pr_broker.verify_agent_token("http://cabal", "t", "ward")["iat"] == 1_000
-    assert pr_broker.verify_agent_token(
-        "http://cabal", "t", "ward", not_before=datetime.fromtimestamp(900, UTC)
-    )
-    with pytest.raises(pr_broker.BrokerAuthError):
-        pr_broker.verify_agent_token(
-            "http://cabal", "t", "ward", not_before=datetime.fromtimestamp(1_100, UTC)
-        )
-    # Naive timestamps (the DateTime column's shape) are read as UTC.
-    with pytest.raises(pr_broker.BrokerAuthError):
-        pr_broker.verify_agent_token(
-            "http://cabal", "t", "ward", not_before=datetime.fromtimestamp(1_100, UTC).replace(tzinfo=None)
-        )
-
-
-# --- from test_jira_broker.py ---
-
-
-@pytest.fixture
-def jira_config(tmp_path):
-    pat = tmp_path / "jira-pat"
-    pat.write_text("not-a-real-token\n")
-    return Config(
-        workdir=tmp_path / "work",
-        cabal_url="http://cabal.test",
-        jira_domain="tracker.test",
-        jira_email="reader@acme.io",
-        jira_pat_path=pat,
-        jira_projects=["AREQ"],
-        jira_read_agents=["ledger"],
-    )
-
-
-@pytest.fixture
-def jira_client(session_factory, jira_config):
-    return TestClient(create_app(session_factory, config=jira_config))
-
-
-def _authed(monkeypatch):
-    import kobo_api.main as main_mod
-
-    monkeypatch.setattr(main_mod, "verify_agent_token", lambda *a, **k: None)
-    return main_mod
-
-
-@pytest.fixture
-def alias_client(session_factory, jira_config):
-    config = jira_config.model_copy(update={"jira_alias_projects": ["IE"]})
-    return TestClient(create_app(session_factory, config=config))
-
-
-def test_rejected_token_is_401(jira_client, monkeypatch):
-    """Gate (authentication): Rejected token is 401."""
-    import kobo_api.main as main_mod
-
-    def refuse(*a, **k):
-        raise BrokerAuthError("no")
-
-    monkeypatch.setattr(main_mod, "verify_agent_token", refuse)
-    r = jira_client.get(
-        "/broker/agents/ledger/jira/issues/AREQ-1",
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 401
-
-
-def _tracker(routes):
-    """A fake Jira: `routes` maps a path to (status, json body, headers)."""
-    def handle(request: httpx.Request) -> httpx.Response:
-        status, body, headers = routes.get(request.url.path, (500, {}, {}))
-        return httpx.Response(status, json=body, headers=headers)
-    return httpx.Client(transport=httpx.MockTransport(handle))
-
-
-def test_a_rejected_tracker_credential_is_not_reported_as_a_missing_issue(jira_config):
-    """Gate (integrity): Jira Cloud treats a Basic pair it cannot verify as anonymous,
-    so a wrong token reads every issue as 404 and every search as empty. The lane
-    asks the tracker who the credential is before it calls an issue missing."""
-    from kobo_api import jira_broker
-    from kobo_api.clients import ClientError
-
-    args = dict(domain=jira_config.jira_domain, email=jira_config.jira_email, pat_path=jira_config.jira_pat_path)
-    rejected = {"/rest/api/3/issue/AREQ-275": (404, {"errorMessages": ["Issue does not exist"]}, {}),
-                "/rest/api/3/search/jql": (200, {"issues": []}, {}),
-                "/rest/api/3/myself": (401, {"message": "Client must be authenticated"}, {"X-Seraph-LoginReason": "AUTHENTICATED_FAILED"})}
-    with pytest.raises(ClientError, match="rejected the room's credential"):
-        jira_broker.fetch_issue(**args, key="AREQ-275", http_client=_tracker(rejected))
-    with pytest.raises(ClientError, match="rejected the room's credential"):
-        jira_broker.search_issues(**args, project="AREQ", text="access token", limit=3, http_client=_tracker(rejected))
-
-    # With a credential the tracker knows, a 404 is a missing issue and an empty search is empty.
-    good = dict(rejected); good["/rest/api/3/myself"] = (200, {"emailAddress": "reader@acme.io"}, {})
-    with pytest.raises(ClientError, match="no such issue"):
-        jira_broker.fetch_issue(**args, key="AREQ-275", http_client=_tracker(good))
-    assert jira_broker.search_issues(**args, project="AREQ", text="access token", limit=3, http_client=_tracker(good))["issues"] == []
-
-
-def test_a_rejected_tracker_credential_reaches_the_agent_as_the_operators_problem(jira_client, monkeypatch):
-    """Gate (integrity): the route answers 502 with the credential sentence, never a 404,
-    because the runtime reads every 404 on this lane as "the room has not granted me access"."""
-    from kobo_api.clients import ClientError
-    from kobo_api.jira_broker import CREDENTIAL_REJECTED
-
-    main_mod = _authed(monkeypatch)
-
-    def rejected(**kwargs):
-        raise ClientError(CREDENTIAL_REJECTED)
-
-    monkeypatch.setattr(main_mod, "jira_fetch_issue", rejected)
-    monkeypatch.setattr(main_mod, "jira_search_issues", rejected)
-    r = jira_client.get("/broker/agents/ledger/jira/issues/AREQ-275", headers={"Authorization": "Bearer x"})
-    assert r.status_code == 502 and "rejected the room's credential" in r.json()["error"] and "operator" in r.json()["error"]
-    r = jira_client.get("/broker/agents/ledger/jira/search", params={"text": "access token"}, headers={"Authorization": "Bearer x"})
-    assert r.status_code == 502 and "rejected the room's credential" in r.json()["error"]
-
-
-def test_agent_off_the_allowlist_reads_as_404(jira_client, monkeypatch):
-    """Gate (authentication): Agent off the allowlist reads as 404."""
-    _authed(monkeypatch)
-    r = jira_client.get(
-        "/broker/agents/intruder/jira/issues/AREQ-1",
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 404
-    assert "no such agent" in r.json()["error"]
-
-
-def test_key_outside_pinned_projects_is_refused_before_any_call(
-    jira_client, monkeypatch
-):
-    """Gate (authentication): Key outside pinned projects is refused before any call."""
-    main_mod = _authed(monkeypatch)
-
-    def explode(**kwargs):
-        raise AssertionError("the tracker must not be called for an off-lane key")
-
-    monkeypatch.setattr(main_mod, "jira_fetch_issue", explode)
-    for key in ("SECRETPROJ-9", "AREQ"):
-        r = jira_client.get(
-            f"/broker/agents/ledger/jira/issues/{key}",
-            headers={"Authorization": "Bearer x"},
-        )
-        assert r.status_code == 403
-        assert "AREQ" in r.json()["error"]
-
-
-def test_alias_key_resolving_elsewhere_is_refused_after_the_fetch(
-    alias_client, monkeypatch
-):
-    """Gate (authentication): Alias key resolving elsewhere is refused after the fetch."""
-    main_mod = _authed(monkeypatch)
-
-    def fake_fetch(**kwargs):
-        return {"issue": {"key": "SECRETPROJ-9"}, "comments": [], "comments_truncated": False}
-
-    monkeypatch.setattr(main_mod, "jira_fetch_issue", fake_fetch)
-    r = alias_client.get(
-        "/broker/agents/ledger/jira/issues/IE-1",
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 403
-    assert "AREQ" in r.json()["error"]
 
 
 # --- from test_config.py ---

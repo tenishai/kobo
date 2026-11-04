@@ -89,9 +89,11 @@ RETIRED_HANDLERS: tuple[str, ...] = ("github",)
 RETIRED_ALLOW: dict[str, str] = {"github.*": "github"}
 # Allow entries named one by one that the room's own tools used to need and that nothing serves
 # any more: the token broker's `github.<tool>` entries (github.search_prs, github.open_pr, ...)
-# answer HTTP 405 now that the broker is gone. `sync_allow` withdraws any entry under one of these
-# prefixes that no lane earns, on the next sync. "github-mcp." does not match "github.".
-RETIRED_PREFIXES: tuple[str, ...] = ("github.",)
+# answer HTTP 405 now that the broker is gone, and the room's own Jira read lane (jira.get_issue,
+# jira.find_issues) retired on 2026-11-04 for the Atlassian connection. `sync_allow` withdraws any
+# entry under one of these prefixes that no lane earns, on the next sync. "github-mcp." does not
+# match "github.".
+RETIRED_PREFIXES: tuple[str, ...] = ("github.", "jira.")
 
 _ALL_LANES: list[tuple[str, Lane]] = [*GATEWAY_LANES.items(), *((v, lane) for (v, _), lane in PERMISSION_LANES.items())]
 MANAGED_SCOPES: frozenset[str] = frozenset(s for _, lane in _ALL_LANES for s in lane.scopes)

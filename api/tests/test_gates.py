@@ -2021,10 +2021,12 @@ def test_every_admin_route_is_403_for_a_signed_in_non_admin(tmp_path, method, pa
 
 
 
-# --- the pull request broker's lane for agents retired (kobo#365) -----------------
+# --- the agent-facing brokers retired (pull requests kobo#365, Jira 2026-11-04) -------
 
 RETIRED_ROUTES = [
     ("POST", "/broker/agents/wren/github-token"),
+    ("GET", "/broker/agents/wren/jira/issues/AREQ-1"),
+    ("GET", "/broker/agents/wren/jira/search"),
     ("POST", "/api/agents/wren/repo-access"),
     ("GET", "/api/repo-access"),
     ("POST", "/api/repo-access/decide"),
