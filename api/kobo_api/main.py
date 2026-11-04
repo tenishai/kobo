@@ -2876,6 +2876,10 @@ async def _room_lifespan(app: FastAPI):
             tasks.append(asyncio.create_task(interrupted_sweep_loop(app)))
             # The worker's queue: claims what an API replica left PENDING.
             tasks.append(asyncio.create_task(queue_loop(app)))
+            # Every five minutes, sets back any agent's gateway grant that
+            # something other than the room rewrote (a gateway restart
+            # re-applying its grants file, 2026-11-04).
+            tasks.append(asyncio.create_task(gateway_lane.heal_loop(app)))
         # Parked connected agents: asks the platform once a minute whether
         # their setup pull request has been merged, and resumes them.
             tasks.append(asyncio.create_task(waiting_sweep_loop(app)))
