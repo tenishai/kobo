@@ -1528,6 +1528,31 @@ def test_destroy_secrets_never_logs_what_the_lane_said(session_factory, config, 
 # --- _destroy_access without a model group (2026-10-01) -------------------------------
 
 
+def test_destroy_access_takes_back_the_replica_bucket_bindings_before_the_identity_goes(session_factory, config):
+    """Destruction safety (2026-11-06): the replica bucket's two bindings are
+    removed by the identity's email BEFORE the identity is deleted. Deleted
+    first, they linger in the bucket policy as `deleted:...?uid=` members no
+    later call by email can match (two left behind by johnny-bravo's earlier
+    lives). A room with no replica bucket, or a connected agent, asks for
+    nothing."""
+    cfg = config.model_copy(update={"memory_replica_bucket": "kobo-memory-replicas"})
+    session, agent = _make_ctx_agent(session_factory)
+    cloud = FakeCloud()
+    ctx = _ctx(session, agent, cfg, cloud=cloud)
+
+    detail = _destroy_access(ctx)
+
+    email = cloud.gsa_email_for(f"agent-{AGENT_NAME}")
+    revoke = cloud.calls.index(f"revoke_bucket_prefix_write:{email}:kobo-memory-replicas:{AGENT_NAME}/")
+    delete = next(i for i, c in enumerate(cloud.calls) if c.startswith("delete_gsa:"))
+    assert revoke < delete
+    assert "replica bucket bindings removed: True" in detail
+
+    cloud2 = FakeCloud()
+    _destroy_access(_ctx(session, agent, config, cloud=cloud2))
+    assert not any(c.startswith("revoke_bucket_prefix_write") for c in cloud2.calls)
+
+
 def test_destroy_access_revokes_the_agents_gateway_key(session_factory, config):
     """Destruction safety (kobo#390): with the model gateway on, the key the
     room minted for the agent is revoked by its alias, so no destroyed agent

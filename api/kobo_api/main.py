@@ -4322,7 +4322,9 @@ def create_app(
         lanes = {"set": 0, "unchanged": 0, "failed": 0}
         for a in agents:
             lanes[gateway_lane.tally(gateway_lane.follow(session, app.state.clients, bab, agent_name=a.name, actor=actor))] += 1
-        return JSONResponse({**out, "gateway_lanes": lanes})
+        # And every live target an applied connection owes the gateway (2026-11-06).
+        targets = admin_integrations_flow.reconcile_targets(session, app.state.clients)
+        return JSONResponse({**out, "gateway_lanes": lanes, "gateway_targets": targets})
 
     @app.get("/api/admin/integrations/aws/setup")
     def admin_aws_setup(request: Request, packs: str = "", integration: str = "aws", mode: str = "role",

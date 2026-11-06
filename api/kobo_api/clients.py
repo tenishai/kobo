@@ -1573,6 +1573,15 @@ class CloudClient(Protocol):
         """
         ...
 
+    def revoke_bucket_prefix_write(self, gsa_email: str, bucket: str, prefix: str) -> bool:
+        """Take back both bindings `grant_bucket_prefix_write` made for this
+        identity. False when the bucket held neither (an agent born before
+        the replica bucket, or a resume), True when at least one was removed.
+        Called BEFORE the identity is deleted: a deleted account's bindings
+        linger as `deleted:serviceAccount:...?uid=` members no later call by
+        email can match (johnny-bravo's first two, 2026-11-06)."""
+        ...
+
 
 # What a model group confers at a client org through membership; granted directly on
 # the Vertex project when the room runs with no group (2026-10-01).
@@ -1605,6 +1614,28 @@ def gsa_absent(stderr: str) -> bool:
     if "not_found" in text or "does not exist" in text:
         return True
     return "permission_denied" in text and "may not exist" in text
+
+
+# How long a bucket binding waits for a new service account to become visible
+# to Cloud Storage's IAM check: 5+10+15+20+30+30 s, about two minutes in all.
+BUCKET_BINDING_PAUSES_S: tuple[int, ...] = (5, 10, 15, 20, 30, 30)
+_sleep = time.sleep
+
+
+def account_not_yet_visible(stderr: str) -> bool:
+    """Cloud Storage's answer when the member of a binding is a service account IAM
+    has not yet propagated: `HTTPError 400: Service account <email> does not exist.`
+    Nothing else is read as that."""
+    text = stderr.lower()
+    return "service account" in text and "does not exist" in text
+
+
+def bucket_binding_absent(stderr: str) -> bool:
+    """`remove-iam-policy-binding`'s answer when the bucket holds no such binding: the
+    policy is unchanged and gcloud says so (`Policy binding with the specified principal,
+    role, and condition not found!`)."""
+    text = stderr.lower()
+    return "not found" in text and ("binding" in text or "policy" in text)
 
 
 class GcloudClient:
@@ -1788,7 +1819,7 @@ class GcloudClient:
         condition_expression = (
             f'resource.name.startsWith("projects/_/buckets/{bucket}/objects/{prefix}")'
         )
-        self._runner.run(
+        self._bind_bucket_when_the_account_is_visible(
             [
                 self._gcloud, "storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
                 "--member", f"serviceAccount:{gsa_email}",
@@ -1821,7 +1852,7 @@ class GcloudClient:
         # runs non-interactively (subprocess, no TTY), so an unanswered
         # prompt is a hang-turned-ERROR, not a default. `--condition=None`
         # is gcloud's own token for "explicitly no condition".
-        self._runner.run(
+        self._bind_bucket_when_the_account_is_visible(
             [
                 self._gcloud, "storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
                 "--member", f"serviceAccount:{gsa_email}",
@@ -1829,6 +1860,50 @@ class GcloudClient:
                 "--condition", "None",
             ]
         )
+
+    def _bind_bucket_when_the_account_is_visible(self, args: list[str]) -> None:
+        """Run one bucket binding, waiting out IAM propagation. A service
+        account created seconds earlier is not yet visible to Cloud Storage,
+        which validates every member and answers HTTP 400 "Service account
+        ... does not exist"; an account recreated under a name deleted days
+        before is seen later still (johnny-bravo, 2026-11-06: refused 8 s
+        after create, fine on retry). Only that answer is waited out, for
+        about two minutes in all; any other failure raises at once."""
+        for pause in (*BUCKET_BINDING_PAUSES_S, None):
+            try:
+                self._runner.run(args)
+                return
+            except ClientError as exc:
+                if pause is None or not account_not_yet_visible(exc.stderr):
+                    raise
+                log.info("bucket binding waits %ss for the account to become visible to IAM", pause)
+                _sleep(pause)
+
+    def revoke_bucket_prefix_write(self, gsa_email: str, bucket: str, prefix: str) -> bool:
+        condition_title = f"agent-memory-replica-{prefix.rstrip('/')}"
+        condition_expression = (
+            f'resource.name.startsWith("projects/_/buckets/{bucket}/objects/{prefix}")'
+        )
+        removed = False
+        for role, condition in (
+            ("roles/storage.objectAdmin", f"expression={condition_expression},title={condition_title}"),
+            ("roles/storage.legacyBucketReader", "None"),
+        ):
+            try:
+                self._runner.run(
+                    [
+                        self._gcloud, "storage", "buckets", "remove-iam-policy-binding", f"gs://{bucket}",
+                        "--member", f"serviceAccount:{gsa_email}",
+                        "--role", role,
+                        "--condition", condition,
+                    ]
+                )
+            except ClientError as exc:
+                if bucket_binding_absent(exc.stderr):
+                    continue
+                raise
+            removed = True
+        return removed
 
 
 # --- Agent (a2a chat over a kubectl port-forward) -----------------------------

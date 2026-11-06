@@ -490,8 +490,17 @@ def _destroy_access(ctx: DestroyCtx) -> str:
     # does not answer fails the step, which a resume retries, since a key
     # left live is exactly what this step exists to prevent.
     revoked = revoke_models_key(ctx.clients, agent.name) if gateway_on(config) else False
+    # The replica bucket's two bindings, taken back BEFORE the identity goes:
+    # a deleted account's bindings linger in the bucket policy as
+    # `deleted:serviceAccount:...?uid=` members nothing by email can match
+    # later (two left behind by johnny-bravo's first lives, 2026-11-06).
+    bucket = (
+        cloud.revoke_bucket_prefix_write(email, config.memory_replica_bucket, f"{agent.name}/")
+        if config.memory_replica_bucket and not is_connected(agent) else False
+    )
     gone = cloud.delete_gsa(email)
-    return f"{what} removed: {removed}, gateway key revoked: {revoked}, gsa deleted: {gone}"
+    return (f"{what} removed: {removed}, gateway key revoked: {revoked}, "
+            f"replica bucket bindings removed: {bucket}, gsa deleted: {gone}")
 
 
 def _destroy_slack(ctx: DestroyCtx) -> str:

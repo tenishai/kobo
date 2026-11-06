@@ -71,10 +71,15 @@ GATEWAY_LANES: dict[str, Lane] = {
 # vendor table for its vendor (kobo#365: GitHub's three levels).
 PERMISSION_LANES: dict[tuple[str, str], Lane] = {
     ("github", "github_repos_read"): Lane(scopes=("github:read",), handlers=("github-mcp",), allow=("github-mcp.*",)),
-    ("github", "github_pulls_review"): Lane(scopes=("github:review",), handlers=("github-mcp-write",),
-                                            allow=("github-mcp-write.*",)),
-    ("github", "github_pulls_write"): Lane(scopes=("github:review", "github:write"), handlers=("github-mcp-write",),
-                                           allow=("github-mcp-write.*",)),
+    # Review and Open pull requests open two doors: the vendor's own write target
+    # (branches, commits, edits) and the gateway's `github-write` handler, which
+    # makes the comments, reviews and new pull requests and signs each with the
+    # agent's name and portrait (GitHub shows the room's App as the author).
+    ("github", "github_pulls_review"): Lane(scopes=("github:review",), handlers=("github-mcp-write", "github-write"),
+                                            allow=("github-mcp-write.*", "github-write.*")),
+    ("github", "github_pulls_write"): Lane(scopes=("github:review", "github:write"),
+                                           handlers=("github-mcp-write", "github-write"),
+                                           allow=("github-mcp-write.*", "github-write.*")),
     # Atlassian's one writing level (2026-11-03): the target's Jira writing tools sit behind
     # `atlassian:jira-write` (admin_integrations.TARGET_EXTRAS); its read permissions keep the
     # vendor lane above. The shared credential is the outer wall, so a read-only connection
@@ -321,10 +326,16 @@ def heal(clients, bab, agent_names: list[str], actor: str) -> list[str]:
 
 
 def _heal_ready_agents(app) -> list[str]:
+    # The same pass fills in a live target the gateway lacks for an applied
+    # connection (2026-11-06: `github-mcp-write` was never put, since connect
+    # is otherwise the only writer). Imported here, not at module top, to
+    # keep this module import-light.
+    from .admin_integrations import reconcile_targets
     from .bab import ROOM_ACTOR
 
     with app.state.session_factory() as session:
         names = [a.name for a in session.query(Agent).filter(Agent.status == AgentStatus.READY).all()]
+        reconcile_targets(session, app.state.clients)
     return heal(app.state.clients, getattr(app.state.clients, "bab", None), names, ROOM_ACTOR)
 
 

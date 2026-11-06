@@ -6,6 +6,14 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- An agent's GitHub work is signed. GitHub names the room's app as the author of everything an installation token writes, so with several reviewer agents every review read "fubo-kobo". Comments, reviews and pull requests an agent makes now open with its name and its portrait, served from the agent's own repository to anyone who can see it, through the gateway's `github-write` tools; the vendor's own comment, review and pull-request-creating tools are closed to agents, and each agent is told to name the branches it creates after itself. Review pull requests and Open pull requests open the signing tools alongside the vendor's branch and commit tools.
+- The room fills in a gateway target an applied connection owes and the gateway lacks, every five minutes with the grant heal pass and on **Sync** in Admin, Access. Connect was the only writer, so GitHub connected on 2026-10-31 never got the `github-mcp-write` target that arrived the next day, and an agent granted Review pull requests saw only read tools (2026-11-06). Nothing the gateway already serves is overwritten.
+
+### Fixed
+- Access no longer fails when Cloud Storage has not yet seen a brand-new identity. The replica bucket binding ran eight seconds after the service account was created and Google answered "does not exist"; an identity recreated under a name destroyed days earlier is seen later still. The binding now waits that out, about two minutes at most, and only for that answer.
+- Destroy takes back the replica bucket's two bindings before deleting the identity. Deleted first, the bindings lingered in the bucket policy as `deleted:` members nothing could match later (two left behind by one agent's earlier lives, 2026-11-06).
+
 ## [0.3.54] - 2026-11-04
 
 ### Added

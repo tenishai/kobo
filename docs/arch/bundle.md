@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-bundle
-updated: 2026-11-03
-anchor: api/kobo_api/composer.py sha=07ea51f231684928af6789020ce1d558ed7513f0
+updated: 2026-11-06
+anchor: api/kobo_api/composer.py sha=24c9bfb8a79e696e18a5b5738c6b2da4ec67ccd8
 anchor: api/kobo_api/vendor/bundle.schema.json sha=257c9575d4674177daf32d7bc0ad2b1145709552
 ---
 # bundle — the daedalus agent bundle kobo writes into each agent repo
@@ -33,3 +33,4 @@ GOTCHA: slack_setup.py `_update_agent_yaml_transports` round-trips agent.yaml th
 2026-10-29 (issue #274): colleagues.md no longer tells the agent the live `list_colleagues` read wins. Both variants open with the roster as the list that counts (default: "who you may talk to"; roster-only: "who is in the room with you") and say the live tool may list agents it cannot reach or that no longer exist. The digests in tests/test_wire_bundle.py were retaken for it.
 - One runtime, bundles as artifacts (tenishai/kobo#434): `BundleSpec.bundle_artifact` set (the room has `bundle_registry`) composes the new shape: the Dockerfile is the FROM line alone (litestream and the entrypoint ride the runtime, which reads `MEMORY_REPLICA_BUCKET` from the pod's env), and `transports` carries a dormant `{kind: slack, optional: true}` the runtime serves only with a token. Unset keeps the baked-in shape byte for byte.
 - With `bundle_artifact` set, compose also writes a seed `gojira.yaml` (`_seed_gojira_yaml`: `bundle_image`, env `AGENT_NAME`/`MEMORY_REPLICA_BUCKET`, `secrets_from_optional`), because the deploy platform reads an existing gojira.yaml for the app's needs before its first render: the first deployment it makes then already mounts the bundle (dev, 2026-11-03: without it the first pod had no /bundle and crashlooped until the wiring commit's second setup PR).
+- `_self_md` (2026-11-06): a GitHub paragraph. The agent acts through the room's app, so the room signs its comments, reviews and pull requests with its name and portrait via the gateway's `github-write` tools; branches are named `<agent>/<topic>`.

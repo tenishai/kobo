@@ -1117,6 +1117,66 @@ def test_ensure_gsa_still_raises_on_a_real_describe_failure():
     assert len(runner.calls) == 1
 
 
+NOT_YET_VISIBLE = (
+    "ERROR: (gcloud.storage.buckets.add-iam-policy-binding) HTTPError 400: Service account "
+    "agent-johnny-bravo@proj.iam.gserviceaccount.com does not exist."
+)
+
+
+def test_bucket_binding_waits_for_a_new_account_to_become_visible(monkeypatch):
+    """Wire shape (gcloud argv) and a bug that bit dev (2026-11-06, johnny-bravo): Cloud
+    Storage refused the replica bucket binding 8 s after the service account was created,
+    "does not exist", and the Access step failed. Only that answer is waited out; the same
+    argv is retried; the second binding follows once the first lands."""
+    from kobo_api import clients as clients_module
+    pauses: list[int] = []
+    monkeypatch.setattr(clients_module, "_sleep", pauses.append)
+    runner = RecordingRunner([(1, "", NOT_YET_VISIBLE), (1, "", NOT_YET_VISIBLE), (0, "", ""), (0, "", "")])
+    GcloudClient("proj", runner=runner).grant_bucket_prefix_write(
+        "agent-johnny-bravo@proj.iam.gserviceaccount.com", "replicas", "johnny-bravo/")
+    assert pauses == [5, 10]
+    assert len(runner.calls) == 4 and runner.calls[0] == runner.calls[1] == runner.calls[2]
+    assert runner.calls[0][1:5] == ["storage", "buckets", "add-iam-policy-binding", "gs://replicas"]
+    assert runner.calls[3][-4:] == ["--role", "roles/storage.legacyBucketReader", "--condition", "None"]
+
+
+def test_bucket_binding_gives_up_after_the_last_pause_and_raises_anything_else_at_once(monkeypatch):
+    """Wire shape: the wait is bounded (about two minutes), and a refusal that is not
+    propagation raises on the first try."""
+    from kobo_api import clients as clients_module
+    pauses: list[int] = []
+    monkeypatch.setattr(clients_module, "_sleep", pauses.append)
+    n = len(clients_module.BUCKET_BINDING_PAUSES_S)
+    runner = RecordingRunner([(1, "", NOT_YET_VISIBLE)] * (n + 1))
+    with pytest.raises(ClientError):
+        GcloudClient("proj", runner=runner).grant_bucket_prefix_write("a@proj.iam.gserviceaccount.com", "b", "a/")
+    assert len(runner.calls) == n + 1 and pauses == list(clients_module.BUCKET_BINDING_PAUSES_S)
+    runner = RecordingRunner([(1, "", "ERROR: PERMISSION_DENIED: storage.buckets.setIamPolicy")])
+    with pytest.raises(ClientError):
+        GcloudClient("proj", runner=runner).grant_bucket_prefix_write("a@proj.iam.gserviceaccount.com", "b", "a/")
+    assert len(runner.calls) == 1
+
+
+def test_revoke_bucket_prefix_write_removes_both_bindings_and_reads_absent_as_false():
+    """Wire shape (gcloud argv): destroy takes back exactly the two bindings the grant made,
+    by the same member, role and condition; a bucket holding neither answers False, and a
+    real refusal raises."""
+    runner = RecordingRunner([(0, "", ""), (0, "", "")])
+    assert GcloudClient("proj", runner=runner).revoke_bucket_prefix_write(
+        "a@proj.iam.gserviceaccount.com", "replicas", "rae/") is True
+    assert [c[1:5] for c in runner.calls] == [["storage", "buckets", "remove-iam-policy-binding", "gs://replicas"]] * 2
+    assert runner.calls[0][-4:] == [
+        "--role", "roles/storage.objectAdmin", "--condition",
+        'expression=resource.name.startsWith("projects/_/buckets/replicas/objects/rae/"),title=agent-memory-replica-rae']
+    assert runner.calls[1][-4:] == ["--role", "roles/storage.legacyBucketReader", "--condition", "None"]
+    absent = "ERROR: (gcloud.storage.buckets.remove-iam-policy-binding) Policy binding with the specified principal, role, and condition not found!"
+    runner = RecordingRunner([(1, "", absent), (1, "", absent)])
+    assert GcloudClient("proj", runner=runner).revoke_bucket_prefix_write("a@proj.iam.gserviceaccount.com", "replicas", "rae/") is False
+    runner = RecordingRunner([(1, "", "ERROR: PERMISSION_DENIED")])
+    with pytest.raises(ClientError):
+        GcloudClient("proj", runner=runner).revoke_bucket_prefix_write("a@proj.iam.gserviceaccount.com", "replicas", "rae/")
+
+
 def test_delete_gsa_treats_a_soft_deleted_account_as_gone():
     runner = RecordingRunner([(1, "", SOFT_DELETED)])
     assert GcloudClient("proj", runner=runner).delete_gsa("agent-x@proj.iam.gserviceaccount.com") is False
