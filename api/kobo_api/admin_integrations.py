@@ -231,13 +231,24 @@ MCP_WRITE_TARGET_SUFFIX = "-mcp-write"
 GITHUB_MCP_WRITE_SCOPE = "github:review"
 GITHUB_WRITE_SCOPE = "github:write"
 GITHUB_NEVER_SCOPE = "github:never"
+# Tool names as GitHub's hosted server lists them (read live 2026-11-06). The
+# tools that carry prose a person reads (comments, reviews, the body and title
+# of a new pull request) are closed here on purpose: the agent makes those
+# through the gateway's own `github-write` handler, which signs each one with
+# the agent's name and portrait, since GitHub shows the room's App as the
+# author of everything an installation token writes. Repository creation and
+# forking, issue writes and Copilot requests are no level the room grants.
 GITHUB_WRITE_TOOL_SCOPES: dict[str, str] = {
     **dict.fromkeys((
-        "create_branch", "create_or_update_file", "push_files", "create_pull_request", "update_pull_request",
-        "update_pull_request_branch", "create_repository", "fork_repository", "create_issue", "update_issue",
-        "add_issue_comment",
+        "create_branch", "create_or_update_file", "push_files", "update_pull_request",
+        "update_pull_request_branch",
     ), GITHUB_WRITE_SCOPE),
-    **dict.fromkeys(("merge_pull_request", "delete_file"), GITHUB_NEVER_SCOPE),
+    **dict.fromkeys((
+        "merge_pull_request", "delete_file", "create_repository", "fork_repository", "issue_write",
+        "sub_issue_write", "request_copilot_review", "create_pull_request", "add_issue_comment",
+        "add_comment_to_pending_review", "add_reply_to_pull_request_comment", "update_issue_comment",
+        "pull_request_review_write",
+    ), GITHUB_NEVER_SCOPE),
 }
 GITHUB_PRIVATE_KEY_FIELD = "PRIVATE_KEY"
 _DIGITS = re.compile(r"^\d+$")
@@ -762,6 +773,50 @@ def apply_target_live(clients: Clients | None, row: AdminIntegration, *, remove:
         status = str(out.get("status") or "ready")
         states.append(f"the {target} target is ready" if status == "ready" else f"the {target} target is degraded: {status}")
     return "live on the gateway: " + "; ".join(states)
+
+
+def reconcile_targets(session: Session, clients: Clients | None) -> dict[str, int]:
+    """Put on the gateway every live target an applied connection owes and the
+    gateway lacks, and count what was done (`put`, `present`, `failed`).
+
+    Connect is otherwise the only place a target is written, so a connection
+    made before the room learned a target type never got it: GitHub connected
+    on 2026-10-31 had `github-mcp` and no `github-mcp-write` when the write
+    target arrived with kobo#365 the next day, and an agent granted Review
+    pull requests earned a lane to a door that was not there (2026-11-06).
+    Runs with the gateway grant heal pass and from the admin access sync.
+    Never overwrites a target the gateway already serves, whatever its spec:
+    a connect decides specs, this only fills gaps. Best effort: one row's
+    refusal never stops the rest, and no admin plane means nothing to do."""
+    admin = _admin(clients)
+    counts = {"put": 0, "present": 0, "failed": 0}
+    if admin is None:
+        return counts
+    try:
+        live = {str(t.get("name")) for t in admin.list_targets()}
+    except ClientError as exc:
+        log.warning("gateway targets could not be read for the reconcile pass: %s", exc)
+        return counts
+    for row in admin_store.list_integrations(session):
+        if row.state != admin_store.STATE_APPLIED or (row.spec or {}).get("room_only"):
+            continue
+        spec = live_target_spec(row)
+        if spec is None:
+            continue
+        owed = {gateway_target_name(row): spec, **extra_live_targets(row)}
+        for name, target_spec_ in owed.items():
+            if name in live:
+                counts["present"] += 1
+                continue
+            try:
+                admin.put_target(name, target_spec_)
+            except ClientError as exc:
+                counts["failed"] += 1
+                log.warning("the gateway lacked the %s target of connection %s and refused it: %s", name, row.id, exc)
+                continue
+            counts["put"] += 1
+            log.warning("the gateway lacked the %s target of connection %s; put it back", name, row.id)
+    return counts
 
 
 PR_SENTENCE = "; pull request open on the gateway:"

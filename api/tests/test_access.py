@@ -6627,8 +6627,13 @@ def test_a_github_connect_uses_the_rooms_app_writes_the_secret_and_puts_the_gith
     assert write["required_scope"] == "github:review" and "headers" not in write
     assert {k: v for k, v in write.items() if k not in ("required_scope", "tool_scopes")} == \
         {k: v for k, v in target.items() if k not in ("required_scope", "headers")}
-    assert write["tool_scopes"]["create_pull_request"] == "github:write" and write["tool_scopes"]["push_files"] == "github:write"
+    assert write["tool_scopes"]["create_branch"] == "github:write" and write["tool_scopes"]["push_files"] == "github:write"
     assert write["tool_scopes"]["merge_pull_request"] == "github:never" and write["tool_scopes"]["delete_file"] == "github:never"
+    # The prose-carrying tools are closed on the vendor's server: the agent makes comments,
+    # reviews and new pull requests through the gateway's signing `github-write` handler.
+    assert write["tool_scopes"]["create_pull_request"] == "github:never"
+    assert write["tool_scopes"]["add_issue_comment"] == "github:never"
+    assert write["tool_scopes"]["pull_request_review_write"] == "github:never"
     out = client.delete(f"/api/admin/integrations/{row['id']}", headers=headers).json()
     assert out["gateway"] == "removed from the gateway" and admin.targets == {}
     assert out["secret"] == "removed" and ("bab", "bab-github") not in kubectl.secrets
@@ -6675,8 +6680,12 @@ def test_a_github_grant_opens_the_lane_its_level_names():
     assert "github" not in GATEWAY_LANES
     read, review, write = (PERMISSION_LANES[("github", p)] for p in ("github_repos_read", "github_pulls_review", "github_pulls_write"))
     assert (read.scopes, read.handlers, read.allow) == (("github:read",), ("github-mcp",), ("github-mcp.*",))
-    assert (review.scopes, review.handlers, review.allow) == (("github:review",), ("github-mcp-write",), ("github-mcp-write.*",))
-    assert (write.scopes, write.handlers, write.allow) == (("github:review", "github:write"), ("github-mcp-write",), ("github-mcp-write.*",))
+    # Review and Open pull requests open the vendor's write target AND the gateway's signing
+    # `github-write` handler (comments, reviews and new pull requests carry the agent's name).
+    assert (review.scopes, review.handlers, review.allow) == (
+        ("github:review",), ("github-mcp-write", "github-write"), ("github-mcp-write.*", "github-write.*"))
+    assert (write.scopes, write.handlers, write.allow) == (
+        ("github:review", "github:write"), ("github-mcp-write", "github-write"), ("github-mcp-write.*", "github-write.*"))
     assert lane_for("datadog", "datadog_monitors_read") is GATEWAY_LANES["datadog"] and lane_for("github", "unknown") is None
     assert "github" in MANAGED_HANDLERS and not any("github" in lane.handlers for lane in PERMISSION_LANES.values())
 
@@ -6802,18 +6811,60 @@ def test_the_gateway_lane_follows_each_github_level_and_withdraws_what_is_revoke
     c.post("/api/admin/access/decide", headers=h, json={"ids": [rid], "verdict": "approve"})
     lane = admin.grants[("cabal-core", "ledger")]
     assert set(lane.scopes) == {"x:read", "github:read", "github:review", "github:write"}
-    assert set(lane.allowed_handlers) == {"scratchpad", "github-mcp", "github-mcp-write"}
+    assert set(lane.allowed_handlers) == {"scratchpad", "github-mcp", "github-mcp-write", "github-write"}
     assert set(_yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["tools"]["allow"]) == {
-        "colleagues.list_colleagues", "github-mcp.*", "github-mcp-write.*"}
+        "colleagues.list_colleagues", "github-mcp.*", "github-mcp-write.*", "github-write.*"}
 
     read_grant = next(g for g in bab.grants("ledger", "x") if g["permission"] == "github_repos_read")
     assert c.delete(f"/api/agents/ledger/access/grants/{read_grant['id']}", headers=h).status_code == 200
     lane = admin.grants[("cabal-core", "ledger")]
     assert set(lane.scopes) == {"x:read", "github:review", "github:write"}
-    assert set(lane.allowed_handlers) == {"scratchpad", "github-mcp-write"}
+    assert set(lane.allowed_handlers) == {"scratchpad", "github-mcp-write", "github-write"}
     pushed = _yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["tools"]["allow"]
-    assert "github-mcp.*" not in pushed and "github-mcp-write.*" in pushed and "github.*" not in pushed
+    assert "github-mcp.*" not in pushed and "github-mcp-write.*" in pushed and "github-write.*" in pushed
+    assert "github.*" not in pushed
     assert c.post("/api/admin/access/sync", headers=h).json()["gateway_lanes"]["failed"] == 0
+
+
+def test_the_room_puts_a_gateway_target_an_applied_connection_owes_and_the_gateway_lacks(session__admin_store):
+    """Gate (authorization): GitHub connected on 2026-10-31 had `github-mcp` on the gateway and
+    never `github-mcp-write`, which arrived with kobo#365 the next day; connect was the only
+    writer, so an agent granted Review pull requests earned a lane to a door that was not there
+    (2026-11-06). The reconcile pass puts what an applied connection owes and the gateway lacks,
+    leaves what it serves untouched whatever its spec, skips pending and room-only rows, and
+    counts what it did."""
+    from kobo_api import admin_integrations
+    session = session__admin_store
+    row = admin_store.put_integration(
+        session, vendor="github", name="GitHub", base_access="read",
+        spec={"auth": admin_integrations.GITHUB_AUTH, "address": "https://api.githubcopilot.com",
+              "identity": {"app_id": "1", "installation_id": "2", "source": "room"}},
+        credential_ref="apps/kobo/integrations/github", actor="kyle@example.com",
+    )
+    admin_store.set_integration_state(session, row.id, state=admin_store.STATE_APPLIED, detail="live")
+    pending = admin_store.put_integration(
+        session, vendor="Datadog", name="Datadog", base_access="read",
+        spec={"auth": admin_integrations.DATADOG_AUTH, "address": "https://mcp.datadoghq.com"},
+        credential_ref="apps/kobo/integrations/datadog", actor="kyle@example.com",
+    )
+    session.commit()
+    admin = FakeLiminalAdmin()
+    admin.targets["github-mcp"] = {"required_scope": "github:read", "headers": {"X-MCP-Readonly": "true"}, "note": "as connect left it"}
+
+    class _Clients:
+        liminal_admin = admin
+
+    counts = admin_integrations.reconcile_targets(session, _Clients())
+    assert counts == {"put": 1, "present": 1, "failed": 0}
+    assert admin.targets["github-mcp"]["note"] == "as connect left it"
+    write = admin.targets["github-mcp-write"]
+    assert write["required_scope"] == "github:review" and "headers" not in write
+    assert write["tool_scopes"]["create_branch"] == "github:write"
+    assert write["tool_scopes"]["add_issue_comment"] == "github:never"
+    assert write["tool_scopes"]["create_repository"] == "github:never"
+    assert admin_integrations.gateway_target_name(pending) not in admin.targets
+    assert admin_integrations.reconcile_targets(session, _Clients()) == {"put": 0, "present": 2, "failed": 0}
+    assert admin_integrations.reconcile_targets(session, None) == {"put": 0, "present": 0, "failed": 0}
 
 
 def test_the_room_sets_back_a_gateway_grant_something_else_rewrote():

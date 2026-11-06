@@ -1430,6 +1430,10 @@ class FakeCloud:
         # test can pin both bindings from one AccessStep call.
         self.calls.append(f"grant_bucket_list:{gsa_email}:{bucket}")
 
+    def revoke_bucket_prefix_write(self, gsa_email: str, bucket: str, prefix: str) -> bool:
+        self.calls.append(f"revoke_bucket_prefix_write:{gsa_email}:{bucket}:{prefix}")
+        return True
+
 
 class FakeAgent:
     """hello()/converse() return a canned or scripted reply and record every
