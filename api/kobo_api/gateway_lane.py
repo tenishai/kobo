@@ -80,12 +80,15 @@ PERMISSION_LANES: dict[tuple[str, str], Lane] = {
     ("github", "github_pulls_write"): Lane(scopes=("github:review", "github:write"),
                                            handlers=("github-mcp-write", "github-write"),
                                            allow=("github-mcp-write.*", "github-write.*")),
-    # Atlassian's one writing level (2026-11-03): the target's Jira writing tools sit behind
-    # `atlassian:jira-write` (admin_integrations.TARGET_EXTRAS); its read permissions keep the
-    # vendor lane above. The shared credential is the outer wall, so a read-only connection
-    # never offers this permission (its ceiling is the read tier).
+    # Atlassian's one writing level (2026-11-03): the target's Jira field tools (edit, transition)
+    # sit behind `atlassian:jira-write` (admin_integrations.TARGET_EXTRAS); its read permissions
+    # keep the vendor lane above. The shared credential is the outer wall, so a read-only
+    # connection never offers this permission (its ceiling is the read tier). The level also opens
+    # the gateway's `jira-write` handler (2026-11-08), which makes the new issues and comments and
+    # signs each with the agent's name (Jira shows the room's account as the author).
     ("atlassian", "atlassian_jira_issues_write"): Lane(scopes=("atlassian:read", "atlassian:jira-write"),
-                                                       handlers=("atlassian",), allow=("atlassian.*",)),
+                                                       handlers=("atlassian", "jira-write"),
+                                                       allow=("atlassian.*", "jira-write.*")),
 }
 # What the room used to put there and no lane earns any more: withdrawn on the
 # next `follow` (the gateway's `github` handler and the broker sidecar's tools,

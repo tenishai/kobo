@@ -573,7 +573,10 @@ def _self_md(spec: BundleSpec) -> str:
         "github-write tools open with your name and portrait, so use those "
         "tools for anything a person will read. Name every branch you "
         f"create {spec.name}/<topic>, so a list of pull requests tells "
-        "agents apart at a glance.\n"
+        "agents apart at a glance. The same holds in Jira: the room's "
+        "account is the author, and the issues and comments you make "
+        "through your jira-write tools carry your name in the summary and "
+        "open with your signature.\n"
     )
 
 

@@ -6235,9 +6235,11 @@ def test_an_email_and_api_token_vendor_is_checked_then_served_as_basic_auth(tmp_
     assert target["auth_method"] == "bearer" and target["auth_scheme"] == "basic"
     assert target["address"] == "https://mcp.atlassian.com/v2"
     assert target["session"] == "per-persona" and target["required_scope"] == "atlassian:read"
-    # v2 lists writing tools beside the reads: the Jira four behind the scope the Write issues
-    # permission opens, Confluence's behind one no lane grants yet, the executors behind one no lane ever will.
-    assert target["tool_scopes"]["createJiraIssue"] == "atlassian:jira-write" and target["tool_scopes"]["transitionJiraIssue"] == "atlassian:jira-write"
+    # v2 lists writing tools beside the reads: the Jira field tools behind the scope the Write issues
+    # permission opens, the Jira prose tools and the executors behind one no lane ever will (the words
+    # come from the signed jira-write handler), Confluence's behind one no lane grants yet.
+    assert target["tool_scopes"]["editJiraIssue"] == "atlassian:jira-write" and target["tool_scopes"]["transitionJiraIssue"] == "atlassian:jira-write"
+    assert target["tool_scopes"]["createJiraIssue"] == "atlassian:never" and target["tool_scopes"]["addOrEditJiraIssueComment"] == "atlassian:never"
     assert target["tool_scopes"]["createConfluenceContent"] == "atlassian:confluence-write"
     assert target["tool_scopes"]["executeDestructive"] == "atlassian:never" and target["tool_scopes"]["executeWrite"] == "atlassian:never"
     assert "getJiraIssue" not in target["tool_scopes"] and "searchJiraIssuesUsingJql" not in target["tool_scopes"]
@@ -6288,9 +6290,12 @@ def test_an_atlassian_connection_for_read_and_write_offers_write_issues_and_its_
     read = gateway_lane.lane_for("atlassian", "atlassian_jira_issues_read")
     write = gateway_lane.lane_for("atlassian", "atlassian_jira_issues_write")
     assert read.scopes == ("atlassian:read",) and write.scopes == ("atlassian:read", "atlassian:jira-write")
-    assert read.handlers == write.handlers == ("atlassian",) and write.allow == ("atlassian.*",)
+    assert read.handlers == ("atlassian",) and write.handlers == ("atlassian", "jira-write")
+    assert write.allow == ("atlassian.*", "jira-write.*")
     scopes = client.app.state.clients.liminal_admin.targets["atlassian"]["tool_scopes"]
-    assert {t for t, s in scopes.items() if s == "atlassian:jira-write"} == {"createJiraIssue", "editJiraIssue", "addOrEditJiraIssueComment", "transitionJiraIssue"}
+    assert {t for t, s in scopes.items() if s == "atlassian:jira-write"} == {"editJiraIssue", "transitionJiraIssue"}
+    # The words a person reads (a new issue, a comment) only ever come from the signed handler.
+    assert scopes["createJiraIssue"] == scopes["addOrEditJiraIssueComment"] == "atlassian:never"
     assert "atlassian:jira-write" in gateway_lane.MANAGED_SCOPES
 
 
@@ -6325,7 +6330,7 @@ def test_an_atlassian_service_account_key_is_checked_as_a_bearer_then_served_as_
     target = admin.targets["atlassian"]
     assert target["auth_method"] == "bearer" and "auth_scheme" not in target
     assert target["session"] == "per-persona" and target["required_scope"] == "atlassian:read"
-    assert target["tool_scopes"]["createJiraIssue"] == "atlassian:jira-write"
+    assert target["tool_scopes"]["editJiraIssue"] == "atlassian:jira-write" and target["tool_scopes"]["createJiraIssue"] == "atlassian:never"
     (put,) = [p for p in sero.puts if p[1] == "apps/kobo/integrations/atlassian"]
     assert put[2] == {"TOKEN": "key-1"}
     # A token vendor without an MCP server to ask is kept without a probe, as before.

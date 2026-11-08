@@ -157,9 +157,14 @@ MCP_SUFFIX = "/mcp"
 ATLASSIAN_JIRA_WRITE_SCOPE = "atlassian:jira-write"
 ATLASSIAN_CONFLUENCE_WRITE_SCOPE = "atlassian:confluence-write"
 ATLASSIAN_NEVER_SCOPE = "atlassian:never"
-ATLASSIAN_JIRA_WRITE_TOOLS: tuple[str, ...] = ("createJiraIssue", "editJiraIssue", "addOrEditJiraIssueComment", "transitionJiraIssue")
+ATLASSIAN_JIRA_WRITE_TOOLS: tuple[str, ...] = ("editJiraIssue", "transitionJiraIssue")
 ATLASSIAN_CONFLUENCE_WRITE_TOOLS: tuple[str, ...] = ("createConfluenceContent", "updateConfluenceContent")
-ATLASSIAN_NEVER_TOOLS: tuple[str, ...] = ("executeWrite", "executeDestructive", "addGraphContext", "addTeamworkGraphContext")
+# The vendor's tools that write words a person reads in Jira (a new issue, a comment) are closed
+# for good (2026-11-08): those writes go through the gateway's `jira-write` handler, which signs
+# each with the agent's name, so a Jira page tells agents apart. The field tools (edit, transition)
+# stay under the writing scope.
+ATLASSIAN_NEVER_TOOLS: tuple[str, ...] = ("createJiraIssue", "addOrEditJiraIssueComment",
+                                          "executeWrite", "executeDestructive", "addGraphContext", "addTeamworkGraphContext")
 ATLASSIAN_WRITE_TOOLS: tuple[str, ...] = ATLASSIAN_JIRA_WRITE_TOOLS + ATLASSIAN_CONFLUENCE_WRITE_TOOLS + ATLASSIAN_NEVER_TOOLS
 TARGET_EXTRAS: dict[str, dict[str, Any]] = {
     "atlassian": {"session": "per-persona", "tool_scopes": {
