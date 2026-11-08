@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.56] - 2026-11-08
+
 ### Added
 - An agent's Jira work is signed. Jira names the account behind the credential as the author of everything it writes, and the room connects Atlassian with one shared account, so every issue and comment an agent made would read as that account. Issues and comments an agent makes now go through the gateway's `jira-write` tools: the summary carries the agent's name and the body opens with a signature that links to the agent's page in the room. The vendor's own issue-creating and commenting tools are closed to agents; editing fields and transitions stay under Write issues.
 
