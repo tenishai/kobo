@@ -5976,11 +5976,12 @@ def test_a_google_cloud_project_is_probed_through_the_permission_service_and_hel
     assert out["access"].startswith("removed") and len(bab.integrations("x")) == 2
 
 
-def test_a_google_cloud_folder_then_its_readable_projects_register_themselves(tmp_path, fake_storage):
-    """Gate (authorization, kobo#390): a folder or organization is the hub shape: a row with
-    no ceiling, then the permission service lists its projects and the ones its identity can
-    read connect under it with the read ceiling; the rest are reported, not created. Check
-    again later connects what gained the grant and leaves the rest alone."""
+def test_a_google_cloud_folder_lists_its_whole_tree_and_an_admin_picks_the_projects_to_connect(tmp_path, fake_storage):
+    """Gate (authorization, kobo#390, picked since 2026-11-09): a folder or organization is
+    the hub shape: a row with no ceiling and nothing connected under it by itself. Check
+    projects lists the whole tree (where each project sits, whether the identity can read it)
+    and the admin picks; a picked project is read once, then held under ITS OWN id with the
+    read ceiling. Unreadable, unlisted and repeated picks are reported, not written."""
     bab = _gcp_bab()
     client, headers = _access_client(tmp_path, fake_storage, bab=bab)
     row = client.post("/api/admin/integrations", json={"vendor": "gcp", "name": "example-platform", "base_access": "read",
@@ -5988,34 +5989,62 @@ def test_a_google_cloud_folder_then_its_readable_projects_register_themselves(tm
                       headers=headers).json()
     assert row["id"] == "example-platform" and row["state"] == "applied" and row["spec"]["kind"] == "org", row
     assert row["spec"]["parent_resource"] == "folders/123"
-    assert "2 project(s) the identity can read are connected, 1 it cannot read yet" in row["state_detail"]
-    assert bab.gcp_probes == [], "a folder is not probed as a project; its projects are read by discover"
-    assert bab.discoveries == [("example-platform", None)]
+    # Nothing under it connects by itself (2026-11-09): the detail counts the tree and points at the picker.
+    assert "4 project(s) found under it, none connected yet: pick them under Check projects" in row["state_detail"]
+    assert bab.gcp_probes == [] and bab.discoveries == []
     rows = {i["integration"]: i for i in bab.integrations("x")}
     assert rows["example-platform"]["kind"] == "org" and rows["example-platform"]["ceiling"] == []
     assert rows["example-platform"]["spec"] == {"parent_resource": "folders/123", "name": "example-platform"}
-    prod = rows["example-prod"]
+    assert [k for k in rows if k != "example-platform"] == []
+    # Check projects lists the whole tree for picking: where each sits, whether the identity can read it.
+    found = client.post("/api/admin/integrations/example-platform/accounts/check", headers=headers).json()
+    assert found["connected"] == [] and found["already"] == [] and bab.discoveries == [("example-platform", None)]
+    by_id = {a["id"]: a for a in found["accounts"]}
+    assert [a["id"] for a in found["accounts"]] == [GCP_PROJECT, "example-data-5678", "example-lab-9012", "example-nested-3456"]
+    assert by_id[GCP_PROJECT]["reachable"] is True and by_id[GCP_PROJECT]["folder_path"] == [] and by_id[GCP_PROJECT]["project_number"] == "100000000000"
+    assert by_id["example-nested-3456"]["folder_path"] == ["Dev"] and by_id["example-nested-3456"]["reachable"] is False
+    assert [a["id"] for a in found["without_role"]] == ["example-lab-9012", "example-nested-3456"]
+    # The admin picks: a readable project connects under ITS OWN id (the gateway leases by it), one the
+    # identity cannot read is refused with the service's sentence, one not under the parent is refused, and
+    # a repeat leaves the connected one alone.
+    bab.refused_projects.add("example-lab-9012")
+    picked = client.post("/api/admin/integrations/example-platform/accounts/connect",
+                         json={"projects": [GCP_PROJECT, "example-lab-9012", "elsewhere-9999"]}, headers=headers).json()
+    assert [(a["id"], a["integration"]) for a in picked["connected"]] == [(GCP_PROJECT, GCP_PROJECT)]
+    assert [(a["id"], a["reason"].split(":")[0]) for a in picked["refused"]] == [
+        ("example-lab-9012", "the permission service refused the project example-lab-9012"),
+        ("elsewhere-9999", "not under example-platform as the permission service lists it")]
+    assert bab.gcp_probes[-2:] == [{"project": GCP_PROJECT}, {"project": "example-lab-9012"}]
+    rows = {i["integration"]: i for i in bab.integrations("x")}
+    prod = rows[GCP_PROJECT]
     assert prod["parent"] == "example-platform" and prod["kind"] == "account"
     assert prod["spec"] == {"project": GCP_PROJECT, "service_account": None, "name": "Example prod"}
     assert prod["ceiling"] == ["gcp_compute_read", "gcp_logging_read", "gcp_vertex_ai_user"]
-    assert "example-lab" not in rows
+    assert "example-lab-9012" not in rows and "elsewhere-9999" not in rows
     panel = {r["id"]: r for r in client.get("/api/admin/integrations", headers=headers).json()["integrations"]}
-    assert panel["example-prod"]["spec"]["parent"] == "example-platform" and panel["example-prod"]["spec"]["project"] == GCP_PROJECT
-    assert panel["example-prod"]["spec"]["project_number"] == "100000000000" and panel["example-prod"]["state"] == "applied"
-    # The parent's projects, each connected or not.
-    projects = {a["id"]: a for a in client.get("/api/admin/integrations/example-platform/accounts", headers=headers).json()["accounts"]}
-    assert projects[GCP_PROJECT]["connected"] is True and projects["example-lab-9012"]["connected"] is False
-    # Later the third project is granted: Check connects it and leaves the first two alone.
+    assert panel[GCP_PROJECT]["name"] == "Example prod" and panel[GCP_PROJECT]["spec"]["parent"] == "example-platform"
+    assert panel[GCP_PROJECT]["spec"]["project"] == GCP_PROJECT and panel[GCP_PROJECT]["spec"]["project_number"] == "123456789012"
+    assert panel[GCP_PROJECT]["spec"]["folder_path"] == [] and panel[GCP_PROJECT]["state"] == "applied"
+    again = client.post("/api/admin/integrations/example-platform/accounts/connect", json={"projects": [GCP_PROJECT]}, headers=headers).json()
+    assert [a["id"] for a in again["already"]] == [GCP_PROJECT] and again["connected"] == []
+    # Later the lab project is granted: the picker shows it readable and it connects on the next pick.
     bab.reachable_projects.add("example-lab-9012")
-    found = client.post("/api/admin/integrations/example-platform/accounts/check", headers=headers).json()
-    assert sorted(a["id"] for a in found["already"]) == sorted([GCP_PROJECT, "example-data-5678"])
-    assert [(a["id"], a["integration"]) for a in found["connected"]] == [("example-lab-9012", "example-lab")]
-    assert found["without_role"] == []
-    # The picker offers the projects under their parent; the parent itself never.
+    bab.refused_projects.discard("example-lab-9012")
+    assert {a["id"]: a["reachable"] for a in client.post("/api/admin/integrations/example-platform/accounts/check", headers=headers).json()["accounts"]}["example-lab-9012"] is True
+    picked = client.post("/api/admin/integrations/example-platform/accounts/connect", json={"projects": ["example-lab-9012"]}, headers=headers).json()
+    assert [a["integration"] for a in picked["connected"]] == ["example-lab-9012"]
+    # The parent's projects, each connected or not; an empty or oversized pick is refused.
+    projects = {a["id"]: a for a in client.get("/api/admin/integrations/example-platform/accounts", headers=headers).json()["accounts"]}
+    assert projects[GCP_PROJECT]["connected"] is True and projects["example-data-5678"]["connected"] is False
+    assert client.post("/api/admin/integrations/example-platform/accounts/connect", json={"projects": []}, headers=headers).status_code == 422
+    assert client.post("/api/admin/integrations/example-platform/accounts/connect", json={"projects": ["a"] * 51}, headers=headers).status_code == 422
+    assert client.post("/api/admin/integrations/example-prod-1234/accounts/connect", json={"projects": ["x-1234567"]}, headers=headers).status_code == 409
+    # The picker offers the connected projects under their parent; the parent itself never.
     picker = {v["id"]: v for v in client.get("/api/access/picker", headers=headers).json()["vendors"]}["gcp"]
     assert [o["id"] for o in picker["organizations"]] == ["example-platform"]
     by_id = {a["id"]: a for a in picker["accounts"]}
-    assert by_id["example-prod"]["organization"] == "example-platform" and "example-platform" not in by_id
+    assert by_id[GCP_PROJECT]["organization"] == "example-platform" and "example-platform" not in by_id
+    assert "example-data-5678" not in by_id, "an unpicked project is not offered"
     # An organization is the other parent shape; a badly named one is refused.
     assert client.post("/api/admin/integrations", json={"vendor": "gcp", "name": "x", "base_access": "read", "auth": "gcp_parent",
                                                          "identity": {"parent_resource": "folder-123"}}, headers=headers).status_code == 409
@@ -6050,8 +6079,8 @@ def test_an_organization_with_the_vertex_tick_names_the_models_project_and_the_g
         "vertex_url": "https://us-east5-aiplatform.googleapis.com/v1/projects/my-vertex-project/locations/us-east5/publishers/google/models?pageSize=1",
     }
     assert "Vertex AI answers at us-east5 in my-vertex-project" in row["state_detail"]
-    # The organization itself is held with no ceiling, as before; its projects carry theirs.
-    assert {i["integration"]: i["kind"] for i in bab.integrations("x")} == {"example-org": "org", "example-prod": "account", "example-data": "account"}
+    # The organization itself is held with no ceiling, as before; its projects wait for the picker (2026-11-09).
+    assert {i["integration"]: i["kind"] for i in bab.integrations("x")} == {"example-org": "org"}
     assert bab.integrations("x")[0]["spec"] == {"parent_resource": "organizations/123456789012", "name": "example-org"}
     rows = [AdminIntegration(id=r["id"], vendor=r["vendor"], name=r["name"], state=r["state"], spec=r["spec"], credential_ref=None)
             for r in client.get("/api/admin/integrations", headers=headers).json()["integrations"]]
@@ -6905,3 +6934,42 @@ def test_the_room_sets_back_a_gateway_grant_something_else_rewrote():
     assert set(ledger.allowed_handlers) == {"atlassian", "github-mcp", "scratchpad"}
     assert admin.grants[("cabal-core", "janus")].allowed_handlers == ("github", "scratchpad")
     assert gateway_lane.heal(_Clients(), bab, ["ledger", "janus"], "room@kobo") == []
+
+
+def test_a_google_cloud_project_connected_for_its_models_alone_is_held_with_no_ceiling_and_never_offered(tmp_path, fake_storage):
+    """Gate (authorization, 2026-11-09): the `models only` tick on a project (the AWS Bedrock
+    shape, here Vertex AI) connects it with an empty ceiling in the permission service and
+    `models_only` on the room's row, so the Models pane lists it and no agent's Access tab or
+    picker ever offers it. Models only without the Vertex tick is refused: nothing to connect for."""
+    bab = _gcp_bab()
+    client, headers = _access_client(tmp_path, fake_storage, bab=bab)
+    body = {"vendor": "gcp", "name": "Vertex", "base_access": "read", "auth": "gcp_identity",
+            "identity": {"project": "example-vertex-1234", "models_only": "1"}}
+    refused = client.post("/api/admin/integrations", json=body, headers=headers)
+    assert refused.status_code == 409 and "needs its Vertex AI models ticked" in refused.json()["error"]
+    body["identity"].update({"models_provider": "vertex_ai", "models_location": "us-east5"})
+    row = client.post("/api/admin/integrations", json=body, headers=headers).json()
+    assert row["state"] == "applied" and row["spec"]["models_only"] is True and row["spec"]["models"]["project"] == "example-vertex-1234", row
+    assert "for its models alone, no agent is offered it" in row["state_detail"]
+    (held,) = bab.integrations("x")
+    assert held["integration"] == "vertex" and held["ceiling"] == [] and held["kind"] == "account"
+    picker = {v["id"]: v for v in client.get("/api/access/picker", headers=headers).json()["vendors"]}
+    assert "vertex" not in {a["id"] for a in picker.get("gcp", {}).get("accounts", [])}
+    panel = {r["id"]: r for r in client.get("/api/admin/integrations", headers=headers).json()["integrations"]}
+    assert panel["vertex"]["spec"]["models_only"] is True
+
+
+def test_a_google_cloud_read_permission_opens_the_gateways_gcp_handler():
+    """Gate (authorization, 2026-11-09): every `gcp_*_read` permission is one lane, `gcp:read`
+    on the `gcp` handler with `gcp.*` allowed, so a grant on any connected project opens the
+    handler that leases that project's token per call."""
+    from kobo_api.gateway_lane import (
+        GATEWAY_LANES,
+        MANAGED_HANDLERS,
+        MANAGED_SCOPES,
+        lane_for,
+    )
+    lane = lane_for("gcp", "gcp_compute_read")
+    assert lane is GATEWAY_LANES["gcp"] and lane_for("gcp", "gcp_gke_read") is lane
+    assert (lane.scopes, lane.handlers, lane.allow) == (("gcp:read",), ("gcp",), ("gcp.*",))
+    assert "gcp:read" in MANAGED_SCOPES and "gcp" in MANAGED_HANDLERS

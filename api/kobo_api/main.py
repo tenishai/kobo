@@ -713,6 +713,12 @@ def _set_env_key(data: dict, key: str, value: str) -> bool:
 
 
 
+class ConnectProjectsBody(BaseModel):
+    """The projects an admin picked under a Google Cloud folder or organization (2026-11-09)."""
+
+    projects: list[str] = Field(min_length=1, max_length=50)
+
+
 class AdminLaneBody(BaseModel):
     access: str = Field(pattern="^(read|write)$")
 
@@ -4402,6 +4408,30 @@ def create_app(
             return _bab_refused(exc)
         session.commit()
         return JSONResponse(found)
+
+    @app.post("/api/admin/integrations/{integration_id}/accounts/connect")
+    def admin_org_connect_projects(
+        integration_id: str, request: Request, body: ConnectProjectsBody, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Connect the projects an admin picked under a Google Cloud folder or organization
+        (2026-11-09): each is read with the permission service's identity first, then held
+        there and here under the project's own id."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        actor = getattr(request.state, "iap_email", None) or "operator"
+        try:
+            out = admin_integrations_flow.connect_projects(
+                session, app.state.clients, org_id=integration_id, actor=actor, projects=body.projects
+            )
+        except (admin_integrations_flow.ConnectRefused, admin_store.AdminStoreError) as exc:
+            session.rollback()
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except ClientError as exc:
+            session.rollback()
+            return _bab_refused(exc)
+        session.commit()
+        return JSONResponse(out)
 
     @app.post("/api/admin/integrations/{integration_id}/models/check")
     def admin_check_models(

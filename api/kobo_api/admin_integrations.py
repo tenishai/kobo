@@ -1590,11 +1590,12 @@ def _connect_gcp(
                                               detail=f"{detail}; the permission service refused: {exc}")
             return row
         try:
-            found = register_accounts(session, clients, config, org_id=row.id, actor=actor)
-            detail += (f"; {len(found['connected'])} project(s) the identity can read are connected, "
-                       f"{len(found['without_role'])} it cannot read yet")
+            # Nothing under it connects by itself (2026-11-09): an admin picks the projects
+            # under Check projects, from the whole tree the permission service lists.
+            found = bab.org_accounts(row.id, actor)
+            detail += f"; {len(found)} project(s) found under it, none connected yet: pick them under Check projects"
         except ClientError as exc:
-            detail += f"; its projects could not be checked yet: {exc}"
+            detail += f"; its projects could not be listed yet: {exc}"
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_APPLIED, detail=detail)
         return row
 
@@ -1604,6 +1605,12 @@ def _connect_gcp(
     if parent_id:
         _org_or_refused(bab, parent_id, actor, vendor="gcp")
     models = vertex_models_spec(identity, row_project=project)
+    # Models only (the `models` shape of the AWS sheet, here for Vertex AI, 2026-11-09): the
+    # project serves the room's models and nothing else, so it is held with no ceiling and no
+    # agent is ever offered it; the Models pane still lists it.
+    models_only = str(identity.get("models_only", "")).strip().lower() in ("1", "true", "yes")
+    if models_only and not models:
+        raise ConnectRefused("a models-only project needs its Vertex AI models ticked; otherwise connect it for its resources")
     body: dict[str, Any] = {"project": project, "service_account": service_account}
     if models and models["project"] == project:
         # The probe reaches Vertex AI at the location too, in the same read.
@@ -1626,6 +1633,8 @@ def _connect_gcp(
         spec["parent"] = parent_id
     if models:
         spec["models"] = models
+    if models_only:
+        spec["models_only"] = True
     row = admin_store.put_integration(
         session, vendor=vendor, name=name, base_access=base_access, spec=spec, credential_ref=None, actor=actor,
         integration_id=row_id,
@@ -1638,12 +1647,13 @@ def _connect_gcp(
         detail += _vertex_detail(models, probe)
     try:
         bab.put_integration(row.id, vendor, {"project": project, "service_account": service_account, "name": name},
-                            bab_mod.read_permissions(bab, vendor, actor), actor, parent=parent_id)
+                            [] if models_only else bab_mod.read_permissions(bab, vendor, actor), actor, parent=parent_id)
     except ClientError as exc:
         admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED,
                                           detail=f"{detail}; the permission service refused: {exc}")
         return row
-    detail += "; connected in the permission service, agents may ask for its read permissions"
+    detail += ("; connected in the permission service for its models alone, no agent is offered it" if models_only
+               else "; connected in the permission service, agents may ask for its read permissions")
     admin_store.set_integration_state(session, row.id, state=admin_store.STATE_APPLIED, detail=detail)
     return row
 
@@ -2046,42 +2056,91 @@ def register_accounts(session: Session, clients: Clients | None, config: Config,
 
 
 def _register_projects(session: Session, bab, *, org_id: str, actor: str) -> dict[str, Any]:
-    """The Google Cloud half of `register_accounts` (kobo#390): the permission service
-    lists the projects under the folder or organization and says which its identity can
-    read; those connect (a row here, a project under the parent there, the read ceiling),
-    the rest are reported under `without_role` so the page can say which still need the
-    grant. Safe to run again: connected projects are left alone."""
+    """The Google Cloud half of `register_accounts` (kobo#390, picked since 2026-11-09): the
+    permission service lists every project under the folder or organization, the whole tree
+    down, and says which its identity can read. Nothing connects here: the list is what the
+    admin picks from (`connect_projects`), so a folder of a hundred projects does not become a
+    hundred rows. The AWS-shaped keys stay for the pane: `already` holds the connected ones,
+    `without_role` the ones the identity cannot read yet, `connected` is empty."""
     found = bab.discover_accounts(org_id, actor)
-    taken = {r.id for r in admin_store.list_integrations(session)} | {i["integration"] for i in bab.integrations(actor)}
-    ceiling: list[str] | None = None
-    out: dict[str, Any] = {"organization": org_id, "connected": [], "without_role": [], "already": []}
+    out: dict[str, Any] = {"organization": org_id, "parent": found.get("parent") or found.get("parent_resource"),
+                           "connected": [], "already": [], "without_role": [], "accounts": []}
     for a in found.get("accounts", []):
         project = str(a.get("project") or a["id"])
-        entry = {"id": project, "name": a.get("name") or project, "integration": a.get("integration"), "reason": a.get("reason")}
-        if a.get("connected"):
+        entry = {"id": project, "name": a.get("name") or project, "integration": a.get("integration"),
+                 "reason": a.get("reason"), "connected": bool(a.get("connected")), "reachable": a.get("reachable"),
+                 "project_number": str(a.get("project_number") or ""), "folder_path": list(a.get("folder_path") or [])}
+        out["accounts"].append(entry)
+        if entry["connected"]:
+            out["already"].append(entry)
+        elif not entry["reachable"]:
+            out["without_role"].append(entry)
+    return out
+
+
+PROJECTS_PER_CONNECT = 50
+
+
+def connect_projects(session: Session, clients: Clients | None, *, org_id: str, actor: str,
+                     projects: list[str]) -> dict[str, Any]:
+    """Connect the projects an admin picked under a Google Cloud folder or organization
+    (2026-11-09): each must sit under the parent (the permission service's listing says
+    where), is read once with the service's identity before anything is written, and then
+    is held there with the read ceiling and here as a row whose id IS the project id (the
+    gateway's handler leases by that id). A project already connected is left alone; one
+    the identity cannot read, or one not under the parent, is reported, not written."""
+    bab = _bab(clients)
+    if bab is None:
+        raise ConnectRefused("connecting a folder's projects needs the permission service")
+    _org_or_refused(bab, org_id, actor, vendor="gcp")
+    wanted: list[str] = []
+    for raw in projects:
+        pid = str(raw or "").strip()
+        if pid and pid not in wanted:
+            wanted.append(pid)
+    if not wanted:
+        raise ConnectRefused("pick at least one project")
+    if len(wanted) > PROJECTS_PER_CONNECT:
+        raise ConnectRefused(f"pick at most {PROJECTS_PER_CONNECT} projects at a time")
+    under = {str(a.get("project") or a["id"]): a for a in bab.org_accounts(org_id, actor)}
+    out: dict[str, Any] = {"organization": org_id, "connected": [], "already": [], "refused": []}
+    ceiling: list[str] | None = None
+    for pid in wanted:
+        listed = under.get(pid)
+        entry = {"id": pid, "name": (listed or {}).get("name") or pid, "integration": (listed or {}).get("integration"), "reason": None}
+        if not _GCP_PROJECT.match(pid):
+            entry["reason"] = "not a Google Cloud project id"
+            out["refused"].append(entry)
+            continue
+        if listed is None:
+            entry["reason"] = f"not under {org_id} as the permission service lists it"
+            out["refused"].append(entry)
+            continue
+        if listed.get("connected"):
             out["already"].append(entry)
             continue
-        if not a.get("reachable"):
-            out["without_role"].append(entry)
+        try:
+            probe = bab.probe("gcp", actor, what=f"the project {pid}", project=pid)
+        except ClientError as exc:
+            entry["reason"] = str(exc)
+            out["refused"].append(entry)
             continue
-        base = re.sub(r"[^a-z0-9-]", "-", str(entry["name"]).lower()).strip("-")[:60] or project
-        row_id = base if base not in taken else f"{base}-{project[-4:]}"
-        taken.add(row_id)
         if ceiling is None:
             ceiling = bab_mod.read_permissions(bab, "gcp", actor)
-        bab.put_integration(row_id, "gcp", {"project": project, "service_account": None, "name": entry["name"]}, ceiling, actor,
-                            parent=org_id)
+        name = str(entry["name"])
+        bab.put_integration(pid, "gcp", {"project": pid, "service_account": None, "name": name}, ceiling, actor, parent=org_id)
         spec: dict[str, Any] = {"address": "", "trust": "untrusted", "auth": GCP_AUTH, "kind": "account", "parent": org_id,
-                                "project": project, "identity": {"parent": org_id, "project": project}, "secret_keys": []}
-        if a.get("project_number"):
-            spec["project_number"] = str(a["project_number"])
+                                "project": pid, "identity": {"parent": org_id, "project": pid}, "secret_keys": [],
+                                "folder_path": list(listed.get("folder_path") or [])}
+        number = str(probe.get("project_number") or listed.get("project_number") or "")
+        if number:
+            spec["project_number"] = number
         row = admin_store.put_integration(
-            session, vendor="gcp", name=str(entry["name"]), base_access="read", spec=spec,
-            credential_ref=None, actor=actor, integration_id=row_id,
+            session, vendor="gcp", name=name, base_access="read", spec=spec, credential_ref=None, actor=actor, integration_id=pid,
         )
         admin_store.set_integration_state(
             session, row.id, state=admin_store.STATE_APPLIED,
-            detail="found under its folder or organization: the identity can read the project; connected in the "
+            detail="picked under its folder or organization: the identity can read the project; connected in the "
                    "permission service, agents may ask for its read permissions")
         entry["integration"] = row.id
         out["connected"].append(entry)

@@ -11,6 +11,7 @@
   import VendorMark from "../VendorMark.svelte";
   import AwsConnect from "./AwsConnect.svelte";
   import ConnectGoogleCloudSheet from "./ConnectGoogleCloudSheet.svelte";
+  import GcpProjectPicker from "./GcpProjectPicker.svelte";
   import {
     errorMessage,
     type AdminIntegration,
@@ -94,6 +95,11 @@
   // Atlassian: a service account's key (the default) or a user's email and token.
   let atlassianKind = $state<AtlassianKind>("service");
   let useVertex = $state(false);
+  // Models only (2026-11-09): a project that serves the room's Vertex AI models and nothing else.
+  let modelsOnly = $state(false);
+  // The Google Cloud project picker (2026-11-09): opened by Check projects on a folder or
+  // organization row, and right after one connects, since nothing under it connects by itself.
+  let pickerFor = $state<AdminIntegration | null>(null);
   const VERTEX_DEFAULT_LOCATION = "global";
   // The AWS sheet's own choices (kobo#390): an organization (its hub role) or one account
   // (a role the room assumes directly), and whether that account's Bedrock models serve
@@ -146,6 +152,7 @@
     const entry = preset ?? OTHER;
     gcpMode = "parent";
     useVertex = false;
+    modelsOnly = false;
     atlassianKind = "service";
     awsMode = "org";
     useBedrock = false;
@@ -180,6 +187,10 @@
   const childNoun = (i: AdminIntegration): string => (i.vendor === "gcp" ? "project" : "account");
 
   function handleCheck(org: AdminIntegration): void {
+    if (org.vendor === "gcp") {
+      pickerFor = org;
+      return;
+    }
     checking = org.id;
     const noun = childNoun(org);
     check.mutate(org.id, {
@@ -249,6 +260,8 @@
         identity.models_provider = "vertex_ai";
         identity.models_project = (form.values.models_project ?? "").trim() || identity.project || "";
         identity.models_location = (form.values.models_location ?? "").trim() || VERTEX_DEFAULT_LOCATION;
+        // A models-only project: held with nothing to grant, so no agent is offered it.
+        if (gcpMode === "project" && modelsOnly) identity.models_only = "1";
       }
     } else {
       if (form.entry.id === "atlassian") auth = ATLASSIAN_KINDS.find((k) => k.id === atlassianKind)?.auth ?? auth;
@@ -272,7 +285,10 @@
       {
         onSuccess: (row) => {
           toast.success(replacing ? `${row.name} replaced` : `${row.name} connected`, row.state_detail ?? undefined);
+          const openPicker = form?.mode === "gcp" && gcpMode === "parent";
           form = null;
+          // A folder or organization connects nothing by itself: the picker opens on it.
+          if (openPicker) pickerFor = row;
         },
         onError: (err: unknown) => {
           formError = errorMessage(err, "Could not connect. Try again.");
@@ -572,6 +588,7 @@
         bind:project={form.values.project}
         bind:parentResource={form.values.parent_resource}
         bind:useVertex
+        bind:modelsOnly
         bind:vertexProject={form.values.models_project}
         bind:location={form.values.models_location}
         integration={slug(form.name) || "gcp"}
@@ -579,7 +596,7 @@
       {#if formError}<p class="page__foot fail">{formError}</p>{/if}
       {#if connect.isPending}
         <p class="page__foot busy" role="status"><span class="spin" aria-hidden="true"></span>
-          {gcpMode === "parent" ? (useVertex ? "Checking the Vertex AI project, saving the organization, then checking its projects." : "Saving the organization, then checking its projects.") : "Checking the project with Google Cloud."}
+          {gcpMode === "parent" ? (useVertex ? "Checking the Vertex AI project, saving the organization, then listing its projects to pick from." : "Saving the organization, then listing its projects to pick from.") : "Checking the project with Google Cloud."}
         </p>
       {/if}
     </form>
@@ -674,6 +691,10 @@
     </button>
   {/snippet}
 </Modal>
+
+{#if pickerFor}
+  <GcpProjectPicker integrationId={pickerFor.id} name={pickerFor.name} onclose={() => (pickerFor = null)} />
+{/if}
 
 <Modal open={removing !== null} title={removing ? `Remove ${removing.name}?` : ""} size="narrow" onclose={() => (removing = null)}>
   <p class="page__lead">

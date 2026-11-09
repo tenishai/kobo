@@ -1456,6 +1456,40 @@ export type OrgAccountsCheck = {
   without_role: { id: string; name: string; integration: string | null; reason: string | null }[];
 };
 
+/** A project under a Google Cloud folder or organization as the picker lists it (2026-11-09):
+ * where it sits (`folder_path`, the folders between the parent and it), whether the room's
+ * identity can read it, and whether it is connected already. */
+export type GcpProject = {
+  id: string;
+  name: string;
+  integration: string | null;
+  reason: string | null;
+  connected: boolean;
+  reachable: boolean | null;
+  project_number: string;
+  folder_path: string[];
+};
+
+/** Check projects on a Google Cloud parent: the whole tree, nothing connected by it. */
+export type GcpProjectsCheck = OrgAccountsCheck & { parent: string | null; accounts: GcpProject[] };
+
+/** The outcome of connecting picked projects: connected now, already there, refused with a reason. */
+export type GcpProjectsConnect = {
+  organization: string;
+  connected: { id: string; name: string; integration: string | null; reason: string | null }[];
+  already: { id: string; name: string; integration: string | null; reason: string | null }[];
+  refused: { id: string; name: string; integration: string | null; reason: string | null }[];
+};
+
+export async function connectGcpProjects(integrationId: string, projects: string[]): Promise<GcpProjectsConnect> {
+  const res = await fetch(`/api/admin/integrations/${encodeURIComponent(integrationId)}/accounts/connect`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ projects }),
+  });
+  return parse<GcpProjectsConnect>(res);
+}
+
 export async function checkOrgAccounts(integrationId: string): Promise<OrgAccountsCheck> {
   const res = await fetch(`/api/admin/integrations/${encodeURIComponent(integrationId)}/accounts/check`, { method: "POST" });
   return parse<OrgAccountsCheck>(res);

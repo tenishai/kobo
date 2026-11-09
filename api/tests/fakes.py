@@ -2522,6 +2522,8 @@ class FakeBab:
         # Which projects under a Google Cloud folder the identity can read (kobo#390):
         # two of the three, unless a test says otherwise.
         self.reachable_projects = {"example-prod-1234", "example-data-5678"}
+        # Projects the probe refuses outright (2026-11-09), beside any with "refuse" in the id.
+        self.refused_projects: set[str] = set()
         self.discoveries: list[tuple[str, str | None]] = []
         # Model discovery (kobo#405): `models(integration, ...)` answers from
         # `model_lists` when a test set one for that integration, else the two
@@ -2717,7 +2719,9 @@ class FakeBab:
             raise ClientError(f"the permission service refused the {vendor} probe: no minter for {vendor!r}")
         self.gcp_probes.append(dict(body))
         project = str(body.get("project") or "")
-        if "refuse" in project:
+        # One with "refuse" in its id, or one a test put in `refused_projects`, is one the
+        # identity lacks access on (the verdict discover gives a project outside `reachable_projects`).
+        if "refuse" in project or project in self.refused_projects:
             raise ClientError(f"the permission service refused the project {project}: the identity lacks access on {project}")
         out = {"project": project, "project_number": "123456789012", "subject": "102000000000000000000",
                "hops": ["access@example.iam.gserviceaccount.com"] + ([body["service_account"]] if body.get("service_account") else [])}
@@ -2775,8 +2779,10 @@ class FakeBab:
                                    "spec": dict(spec), "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"})
         return {"integration": integration, "vendor": vendor, "ceiling": list(ceiling), "teams": [], "parent": parent, "kind": kind}
 
-    # The projects under any Google Cloud folder or organization the fake holds (kobo#390).
-    PROJECTS = (("example-prod-1234", "Example prod"), ("example-data-5678", "Example data"), ("example-lab-9012", "Example lab"))
+    # The projects under any Google Cloud folder or organization the fake holds (kobo#390),
+    # the whole tree down since bab 0.4.18: the fourth sits in a sub-folder.
+    PROJECTS = (("example-prod-1234", "Example prod", []), ("example-data-5678", "Example data", []),
+                ("example-lab-9012", "Example lab", []), ("example-nested-3456", "Example nested", ["Dev"]))
 
     def org_accounts(self, integration, actor):
         self._guard()
@@ -2787,7 +2793,8 @@ class FakeBab:
             children = {str((i.get("spec") or {}).get("project")): i["integration"]
                         for i in self._integrations if i.get("parent") == integration}
             return [{"id": p, "project": p, "name": n, "project_number": str(100000000000 + k), "status": "ACTIVE",
-                     "integration": children.get(p), "connected": p in children} for k, (p, n) in enumerate(self.PROJECTS)]
+                     "folder": "folders/777" if path else "folders/123", "folder_path": list(path),
+                     "integration": children.get(p), "connected": p in children} for k, (p, n, path) in enumerate(self.PROJECTS)]
         children = {str(i.get("account_id")): i["integration"] for i in self._integrations if i.get("parent") == integration}
         return [{"id": a, "name": n, "email": None, "status": "ACTIVE", "integration": children.get(a), "connected": a in children}
                 for a, n in (("111111111111", "acme-prod"), ("222222222222", "acme-data"))]
