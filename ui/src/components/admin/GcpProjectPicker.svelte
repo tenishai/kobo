@@ -139,6 +139,9 @@
 <style>
   .picker { display: flex; flex-direction: column; gap: var(--space-sm); }
   .picker__head { display: flex; flex-direction: column; gap: var(--space-2xs); }
+  /* `.page__search` sizes itself with a flex-basis meant for a row; in this column it became the
+     box's height (2026-11-09), so here it is one input-high and as wide as the dialog. */
+  .picker__head .page__search { flex: none; width: 100%; min-width: 0; }
   .counts { font-size: 0.85rem; }
   .quiet { color: var(--muted); }
   .fail { color: var(--fail); }
