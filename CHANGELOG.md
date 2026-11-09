@@ -6,6 +6,12 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.58] - 2026-11-09
+
+### Fixed
+- The Google Cloud project picker asks for the list once per parent, and again only on Try again. The effect that started the listing also watched the request's own state, so every change of that request re-ran it: the dialog flashed and the permission service was asked dozens of times a minute (#466).
+- The picker's search box is one input high. Its shared search class carries a flex basis meant for a row; in the picker's column that basis became the box's height (#464).
+
 ## [0.3.57] - 2026-11-09
 
 ### Changed
