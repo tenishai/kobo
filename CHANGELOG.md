@@ -6,6 +6,11 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.58] - 2026-11-09
+
+### Fixed
+- The Google Cloud project picker's search box is one input high. Its shared search class carries a flex basis meant for a row; in the picker's column that basis became the box's height, so the field filled the dialog on first use with a large tree (#464). Pairs with bab 0.4.20, which stops probing each project after the tree search.
+
 ## [0.3.57] - 2026-11-09
 
 ### Changed
