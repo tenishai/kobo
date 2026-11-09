@@ -6,6 +6,7 @@
   // again; one the identity cannot read yet is shown greyed with the reason, so
   // the admin knows where to grant. A hundred projects stay one scrollable list
   // with a search box, never a hundred rows on the Integrations page.
+  import { untrack } from "svelte";
   import { createMutation, useQueryClient } from "@tanstack/svelte-query";
   import Modal from "../Modal.svelte";
   import { errorMessage, type GcpProject, type GcpProjectsCheck } from "../../lib/api";
@@ -43,9 +44,13 @@
       },
     });
   }
+  // List once per parent. `load` reads the mutation's state, and an effect that reads it
+  // would re-run on every state change of the mutation it started (pending, error, ...),
+  // asking the room again and again (2026-11-09: the dialog flashed and the permission
+  // service was asked dozens of times a minute). `untrack` keeps only `integrationId` live.
   $effect(() => {
     void integrationId;
-    load();
+    untrack(load);
   });
 
   const shown = $derived.by(() => {
