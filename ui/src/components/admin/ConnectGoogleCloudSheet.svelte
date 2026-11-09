@@ -1,9 +1,10 @@
 <script lang="ts">
   // Connect Google Cloud (kobo#390, organization first since kobo#405). No key
   // and no role to create: the room's identity (whatever the permission service
-  // reports) is granted the role packs once, on the organization, whose
-  // readable projects then connect by themselves; one project is the other
-  // scope. The sheet shows who to grant, the roles three ways (gcloud,
+  // reports) is granted the role packs once, on the organization; the admin then
+  // picks which of the projects under it to connect (2026-11-09: nothing connects
+  // by itself); one project is the other scope, and a project connected for its
+  // Vertex AI models alone is held with nothing an agent could be granted. The sheet shows who to grant, the roles three ways (gcloud,
   // Terraform, by hand), then the form. Either scope may name the Vertex AI
   // project whose models the room offers: tick it and the room checks it can
   // list models there at the location before saving. Nothing is saved until
@@ -16,6 +17,7 @@
     project = $bindable(""),
     parentResource = $bindable(""),
     useVertex = $bindable(false),
+    modelsOnly = $bindable(false),
     vertexProject = $bindable(""),
     location = $bindable("global"),
     integration = "gcp",
@@ -24,6 +26,7 @@
     project?: string;
     parentResource?: string;
     useVertex?: boolean;
+    modelsOnly?: boolean;
     vertexProject?: string;
     location?: string;
     integration?: string;
@@ -55,7 +58,7 @@
   });
 
   const SCOPES: { id: "project" | "parent"; name: string; what: string }[] = [
-    { id: "parent", name: "An organization", what: "Granted once. Every project under it the identity can read connects by itself." },
+    { id: "parent", name: "An organization or folder", what: "Granted once. You then pick which of the projects under it to connect." },
     { id: "project", name: "A project", what: "One project: its resources, and its Vertex AI models if you tick them." },
   ];
   type Method = "gcloud" | "Terraform" | "By hand";
@@ -103,8 +106,8 @@
     {@const s = setup.data}
     <p class="step__text">
       {#if mode === "parent"}
-        Read-only in every project under the organization: configuration and settings, never the data a service holds.
-        Projects the identity can read connect by themselves; the rest wait for the grant.
+        Read-only in the projects you pick under the organization or folder: configuration and settings, never the data a service holds.
+        Connect lists every project under it, the whole tree down, and you tick the ones agents may be granted.
       {:else}
         Read-only across the project: configuration and settings, never the data a service holds.
         Agents are granted services under Permissions and borrow an hour of access.
@@ -151,10 +154,10 @@
 
     {#if mode === "parent"}
       <label class="field">
-        <span>Organization</span>
-        <input id="integration-parent_resource" type="text" bind:value={parentResource} autocomplete="off" spellcheck="false" placeholder="organizations/123456789012" pattern="(folders|organizations)/[0-9]+" required />
+        <span>Organization or folder</span>
+        <input id="integration-parent_resource" type="text" bind:value={parentResource} autocomplete="off" spellcheck="false" placeholder="organizations/123456789012 or folders/123456789012" pattern="(folders|organizations)/[0-9]+" required />
       </label>
-      <p class="hint">Connect saves it, then checks every project under it; the ones the identity can read connect by themselves and the rest show as Not granted yet. Check projects runs that check again after you grant more.</p>
+      <p class="hint">Connect saves it and opens the list of every project under it, the whole tree down, with the folder each sits in and whether the identity can read it. Tick the ones to connect; nothing connects by itself. Check projects opens the same list again later.</p>
     {:else}
       <label class="field">
         <span>Project id</span>
@@ -166,6 +169,12 @@
       <input id="integration-models" type="checkbox" bind:checked={useVertex} />
       <span>Include this project's Vertex AI models in the room</span>
     </label>
+    {#if useVertex && mode === "project"}
+      <label class="check check--inset">
+        <input id="integration-models_only" type="checkbox" bind:checked={modelsOnly} />
+        <span>Models only: this project serves the room's models and nothing else, so no agent is ever offered it</span>
+      </label>
+    {/if}
     {#if useVertex}
       <label class="field field--inset">
         <span>Vertex AI project</span>
@@ -244,6 +253,7 @@
 
   .check { display: flex; align-items: center; gap: var(--space-sm); color: var(--ink); cursor: pointer; }
   .check input { margin: 0; }
+  .check--inset { padding-left: var(--space-md); font-size: 0.9rem; }
   .field--inset { padding-left: var(--space-md); }
 
   .code { position: relative; }

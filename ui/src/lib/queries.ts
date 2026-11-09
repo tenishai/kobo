@@ -291,6 +291,8 @@ import {
   uploadTooling,
   type Whoami,
   checkOrgAccounts,
+  connectGcpProjects,
+  type GcpProjectsConnect,
   checkSelfHostedModels,
   type OrgAccountsCheck,
 } from "./api";
@@ -592,6 +594,18 @@ export function adminGcpSetupQuery(input: GcpSetupRequest) {
     staleTime: 60_000,
     retry: shouldRetry,
   });
+}
+
+/** Connect the projects picked under a Google Cloud parent (2026-11-09): the rows and the picker follow. */
+export function connectGcpProjectsMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: (input: { integrationId: string; projects: string[] }) => connectGcpProjects(input.integrationId, input.projects),
+    onSuccess: (_out: GcpProjectsConnect, input: { integrationId: string; projects: string[] }) => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "integrations"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "integrations", input.integrationId, "accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["agents"] }); // every agent's Access tab offers the new projects
+    },
+  };
 }
 
 export function checkOrgAccountsMutation(queryClient: QueryClient) {

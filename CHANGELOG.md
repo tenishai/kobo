@@ -6,6 +6,13 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- A Google Cloud folder or organization connects nothing by itself. Connecting one used to register every project under it the identity could read, and only the projects directly under it: six rows out of a hundred-project tree, with no say in which. Connect now saves the parent and opens a picker of every project under it, the whole tree down (the permission service 0.4.18 lists it), with the folder each sits in and whether the identity can read it; the admin searches, ticks, and connects the picked ones. **Check projects** opens the same list later. A picked project is read once with the service's identity and held under its own project id, which is the id the gateway leases by.
+- A Google Cloud project may be connected for its Vertex AI models alone (**Models only** on the project sheet, the AWS Bedrock shape): it is held with nothing an agent could be granted, so no Access tab or picker offers it, while the Models pane still lists it.
+
+### Added
+- The Google Cloud gateway lane: any `gcp_*_read` permission opens the gateway's `gcp` handler and allows its tools, so an agent granted a read permission on a connected project reaches it through the gateway.
+
 ## [0.3.56] - 2026-11-08
 
 ### Added

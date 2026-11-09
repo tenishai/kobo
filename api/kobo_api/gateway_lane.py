@@ -66,6 +66,10 @@ GATEWAY_LANES: dict[str, Lane] = {
     # (`required_scope atlassian:read`, admin_integrations.target_spec); the grant opens the
     # scope and the handler for the agent, nothing is leased.
     "atlassian": Lane(scopes=("atlassian:read",), handlers=("atlassian",), allow=("atlassian.*",)),
+    # Google Cloud (2026-11-09): any `gcp_*_read` permission opens the gateway's `gcp` handler,
+    # which leases the project's access token from the permission service per call (the
+    # integration is the project id, so one handler serves every connected project).
+    "gcp": Lane(scopes=("gcp:read",), handlers=("gcp",), allow=("gcp.*",)),
 }
 # (vendor, permission) -> the lane that one permission needs; wins over the
 # vendor table for its vendor (kobo#365: GitHub's three levels).

@@ -468,7 +468,7 @@ describe("AdminPanel", () => {
     expect(document.querySelector("#integration-form input[type=password]")).toBeNull();
     expect(screen.queryByLabelText(/Service account/)).toBeNull();
     await fireEvent.input(screen.getByLabelText("Name for this connection"), { target: { value: "Example org" } });
-    await fireEvent.input(screen.getByLabelText("Organization"), { target: { value: "organizations/123456789012" } });
+    await fireEvent.input(screen.getByLabelText("Organization or folder"), { target: { value: "organizations/123456789012" } });
     await fireEvent.click(screen.getByLabelText(/Include this project's Vertex AI models in the room/));
     await fireEvent.input(await screen.findByLabelText("Vertex AI project"), { target: { value: "my-vertex-project" } });
     const location = (await screen.findByLabelText("Location")) as HTMLInputElement;
