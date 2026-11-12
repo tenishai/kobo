@@ -42,10 +42,15 @@ MAX_REPOSITORIES = 200
 REPOSITORY_RE = re.compile(r"[\w.-]+/[\w.-]+")
 
 NO_CONNECTION = "no GitHub connection: a room admin adds GitHub under Admin > Integrations first"
-LEASES_NOTE = ("the permission service has no call to end an open lease; "
-               "a token already out keeps the old set until its hour runs out")
-"""bab 0.4.12 exposes POST /leases, POST /leases/for-agent and GET /leases and
-nothing that ends one early (checked 2026-11-01); the audit row says so."""
+LEASES_NOTE = ("the next credential the agent borrows is for the new set "
+               "(a permission service older than 0.4.22 hands out the old one until its hour runs out)")
+"""bab 0.4.22 drops the credential it cached for a set when the set changes
+under grants, so the agent's next call is narrowed to the new one; the audit
+row says so."""
+
+REPOSITORIES_KIND = "repositories"
+"""bab 0.4.22: the kind of a request that would change a repository set
+already carrying grants (`proposal: {added, removed}`), decided in Review."""
 
 MIGRATION_NOTE = "migrated from repository access (the retired pull request broker)"
 
@@ -114,6 +119,37 @@ def strays(repositories: list[str], available: list[InstallationRepo]) -> list[s
     return sorted({r for r in repositories if r not in known})
 
 
+@dataclass(frozen=True)
+class Saved:
+    """What a write of an agent's set came to: the child's id, whether the set
+    in force changed, the set in force, and the pick left waiting for a
+    reviewer (None when the whole pick landed)."""
+
+    integration: str
+    changed: bool
+    repositories: list[str]
+    waiting: dict | None = None
+
+
+def waiting_pick(request: dict | None) -> dict | None:
+    """A request of kind `repositories` as the room shows it: what the owner's
+    pick would add to (and take from) the set once a reviewer allows it."""
+    if not request or request.get("kind") != REPOSITORIES_KIND:
+        return None
+    change = request.get("proposal") or {}
+    return {"id": request.get("id"), "added": sorted(change.get("added") or []),
+            "removed": sorted(change.get("removed") or []), "requested_by": request.get("requested_by"),
+            "created_at": request.get("created_at")}
+
+
+def waiting_on(bab: BabClient, actor: str, agent: str, integration: str) -> dict | None:
+    """The pick waiting on the agent's set, or None."""
+    for row in bab.requests("pending", agent, actor):
+        if row.get("integration") == integration and row.get("kind") == REPOSITORIES_KIND:
+            return waiting_pick(row)
+    return None
+
+
 def child_spec(conn: Connection, agent: str, repositories: list[str]) -> dict:
     """What the child carries in the permission service: the set, a name the
     Review pane shows, and the installation copied from the connection."""
@@ -124,18 +160,26 @@ def child_spec(conn: Connection, agent: str, repositories: list[str]) -> dict:
     return spec
 
 
-def write_child(bab: BabClient, actor: str, conn: Connection, agent: str, repositories: list[str]) -> tuple[str, bool]:
-    """Write or replace the agent's child with `repositories`. Returns the
-    child's id and whether the set changed. The ceiling is every github
-    catalogue permission: the levels are the owner's to ask and Review's to
-    decide, not a wall the room adds."""
+def write_child(bab: BabClient, actor: str, conn: Connection, agent: str, repositories: list[str]) -> Saved:
+    """Write or replace the agent's child with `repositories`. The ceiling is
+    every github catalogue permission: the levels are the owner's to ask and
+    Review's to decide, not a wall the room adds.
+
+    Once the set carries grants, an owner's pick is the permission service's
+    to split (bab 0.4.22): what it removes lands, what it adds waits for a
+    reviewer, and the answer names the set in force and the request under
+    `pending`. A reviewer's own write lands whole."""
     existing = child(bab, actor, conn.id, agent)
-    before = child_repositories(existing)
+    before = sorted(child_repositories(existing))
     spec = child_spec(conn, agent, repositories)
-    changed = existing is None or before != spec["repositories"]
     cid = child_id(conn.id, agent)
-    bab.put_integration(cid, GITHUB_VENDOR, spec, all_permissions(bab, GITHUB_VENDOR, actor), actor, parent=conn.id)
-    return cid, changed
+    answer = bab.put_integration(cid, GITHUB_VENDOR, spec, all_permissions(bab, GITHUB_VENDOR, actor), actor,
+                                 parent=conn.id) or {}
+    waiting = waiting_pick(answer.get("pending"))
+    if waiting is not None:
+        in_force = sorted(answer.get("repositories") or before)
+        return Saved(cid, in_force != before, in_force, waiting)
+    return Saved(cid, existing is None or before != spec["repositories"], spec["repositories"])
 
 
 def active_grants(bab: BabClient, actor: str, agent: str, integration: str) -> list[dict]:
@@ -145,8 +189,8 @@ def active_grants(bab: BabClient, actor: str, agent: str, integration: str) -> l
 
 def end_open_leases(bab: BabClient, actor: str, agent: str, integration: str) -> str:
     """What happened to the leases out on the child after its set changed:
-    nothing can be done from here (see `LEASES_NOTE`), so the sentence says
-    so and the audit row carries it."""
+    the permission service drops the credential it cached (see `LEASES_NOTE`),
+    so the sentence says so and the audit row carries it."""
     return LEASES_NOTE
 
 
@@ -193,7 +237,7 @@ def migrate_repo_access(session: Session, clients, bab: BabClient, *, actor: str
                            f"its {len(repositories)} approved broker row(s)")
                 out["kept"] += 1
             else:
-                cid, _ = write_child(bab, actor, conn, agent_name, repositories)
+                cid = write_child(bab, actor, conn, agent_name, repositories).integration
                 if not any(g.get("permission") == PULLS_WRITE for g in active_grants(bab, actor, agent_name, cid)):
                     asked = bab.request(agent_name, cid, [PULLS_WRITE], MIGRATION_NOTE, actor)
                     bab.decide([asked["id"]], "approve", None, actor)
@@ -220,9 +264,11 @@ __all__ = [
     "NO_CONNECTION",
     "PULLS_REVIEW",
     "PULLS_WRITE",
+    "REPOSITORIES_KIND",
     "REPOSITORY_RE",
     "REPOS_READ",
     "Connection",
+    "Saved",
     "active_grants",
     "child",
     "child_spec",
@@ -231,5 +277,7 @@ __all__ = [
     "installation_repositories",
     "migrate_repo_access",
     "strays",
+    "waiting_on",
+    "waiting_pick",
     "write_child",
 ]

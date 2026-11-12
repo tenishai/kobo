@@ -2513,9 +2513,17 @@ class FakeBab:
     (a folder or organization); `discover_accounts` on it lists `PROJECTS`,
     reachable when in `reachable_projects`. The default catalogue has no `gcp`
     vendor (#301: vendors come from the catalogue alone); a test that connects a
-    project adds `GCP_CATALOGUE` to `_catalogue`."""
+    project adds `GCP_CATALOGUE` to `_catalogue`.
+
+    bab 0.4.22: `reviewers`, when a test sets it, names who is on the admin or
+    security team; anyone else may write only an agent's repository set, and a
+    pick that adds to a set already carrying grants is split as the service
+    splits it: what it removes lands, what it adds waits as a request of kind
+    `repositories` (`proposal`), and the answer carries it under `pending`.
+    Approving one applies it to the set; a whole write withdraws it."""
 
     def __init__(self, *, integrations=None, catalogue=None, healthy=True, error=None):
+        self.reviewers: set[str] | None = None
         # Which accounts carry the spoke role when discover probes them (#275): the first
         # does, the second does not, unless a test says otherwise.
         self.reachable_accounts = {"111111111111"}
@@ -2655,6 +2663,15 @@ class FakeBab:
                 r["status"] = "denied"
                 results.append({"id": rid, "status": "denied", "reason": reason})
                 continue
+            if r["kind"] == "repositories":
+                row = next(i for i in self._integrations if i["integration"] == r["integration"])
+                added, removed = r["proposal"]["added"], r["proposal"]["removed"]
+                before = set(row["spec"].get("repositories") or [])
+                row["spec"] = {**row["spec"], "repositories": sorted((before - set(removed)) | set(added))}
+                r["outcome"] = {**{x: "removed" for x in removed}, **{x: "added" for x in added}}
+                r["status"] = "approved"
+                results.append({"id": rid, "status": "approved", "outcome": dict(r["outcome"]), "leases_ended": 0})
+                continue
             for p in r["permissions"]:
                 gid = len(self._grants) + 1
                 tier = next((x["tier"] for v in self._catalogue.values() for g in v["groups"] for x in g["permissions"]
@@ -2772,6 +2789,34 @@ class FakeBab:
                               f"{vendor} organization or connection")
         kind = "account" if parent else ("org" if spec.get("hub_role_arn") or spec.get("parent_resource")
                                          else ("account" if spec.get("role_arn") or spec.get("project") else "connection"))
+        existing = next((i for i in self._integrations if i["integration"] == integration), None)
+        waits = [r for r in self._requests.values()
+                 if r["integration"] == integration and r["kind"] == "repositories" and r["status"] == "pending"]
+        if self.reviewers is not None and actor not in self.reviewers:
+            repos = list(spec.get("repositories") or [])
+            if not parent or parent_row.get("kind") != "connection" or not repos:
+                raise ClientError(f"the permission service refused connecting {integration}: {actor} is not on the "
+                                  f"admin or security team")
+            before = list(((existing or {}).get("spec") or {}).get("repositories") or [])
+            held = [g for g in self._grants.values() if g["integration"] == integration and g.get("state") == "active"]
+            added = sorted(set(repos) - set(before))
+            if before and added and held:
+                kept = [r for r in before if r in repos]
+                if kept:
+                    existing["spec"] = {**existing["spec"], "repositories": kept}
+                row = waits[0] if waits else {"id": len(self._requests) + 1, "integration": integration, "kind": "repositories",
+                                              "status": "pending", "note": None, "created_at": "2026-10-29T12:00:00",
+                                              "decided_at": None, "decided_by": None, "reason": None, "outcome": {}}
+                row.update(agent=min(g["agent"] for g in held), permissions=sorted({g["permission"] for g in held}),
+                           tiers={"read": len({g["permission"] for g in held})}, requested_by=actor,
+                           proposal={"added": added, "removed": [] if kept else sorted(before)})
+                self._requests[row["id"]] = row
+                return {"integration": integration, "vendor": vendor, "ceiling": list(existing["ceiling"]), "parent": parent,
+                        "kind": kind, "repositories": list(existing["spec"]["repositories"]), "pending": dict(row)}
+        if existing is not None:  # the set stated whole, changed or not
+            for r in waits:
+                r.update(status="withdrawn", decided_at="2026-10-29T12:05:00", decided_by=actor,
+                         reason="the set was saved again before this was decided")
         self._integrations = [i for i in self._integrations if i["integration"] != integration]
         self._integrations.append({"integration": integration, "vendor": vendor, "ceiling": list(ceiling), "kind": kind,
                                    "parent": parent, "name": spec.get("name") or integration, "account_id": spec.get("account_id"),

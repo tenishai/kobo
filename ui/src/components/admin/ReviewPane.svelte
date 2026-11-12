@@ -91,7 +91,7 @@
   <div class="review__head">
     <div class="page__header">
       <h2 id="review-heading" class="page__title">Review</h2>
-      <p class="page__lead">Permissions agents' owners asked for. Approve and the agent may borrow a credential for them; deny with a reason.</p>
+      <p class="page__lead">Permissions and repositories agents' owners asked for. Approve and the agent may borrow a credential for them; deny with a reason.</p>
     </div>
     <!-- A page-level action, so it sits with the title, not with the list. -->
     <button type="button" class="btn review__sync" disabled={sync.isPending} onclick={handleSync} title="Tell the permission service which agents exist now">
@@ -165,19 +165,34 @@
               <td class="quiet">{r.owner ?? r.requested_by}</td>
               <td>{r.integration}</td>
               <td>
-                <details>
-                  <summary>{r.permissions.length} ({tiers(r)})</summary>
-                  <ul class="perms">
-                    {#each r.permissions as p (p)}
-                      <li><span class="perm">{permLabel(p)}</span>{#if r.outcome[p]}<span class="quiet"> · {r.outcome[p]}</span>{/if}</li>
-                    {/each}
-                  </ul>
-                  {#if r.note}<p class="quiet">“{r.note}”</p>{/if}
-                </details>
+                {#if r.kind === "repositories"}
+                  <!-- An owner's pick on a set the agent already holds a level on: what it
+                       would add (and take away), and the levels the new ones would be reached with. -->
+                  {@const adds = r.proposal?.added ?? []}
+                  {@const drops = r.proposal?.removed ?? []}
+                  <details open>
+                    <summary>Add {adds.length} repositor{adds.length === 1 ? "y" : "ies"}{drops.length > 0 ? `, remove ${drops.length}` : ""}</summary>
+                    <ul class="perms">
+                      {#each adds as repo (repo)}<li><code>{repo}</code>{#if r.outcome?.[repo]}<span class="quiet"> · {r.outcome[repo]}</span>{/if}</li>{/each}
+                      {#each drops as repo (repo)}<li><code>{repo}</code><span class="quiet"> · {r.outcome?.[repo] ?? "to remove"}</span></li>{/each}
+                    </ul>
+                    <p class="reach">Reached with {r.permissions.map(permLabel).join(", ")} ({tiers(r)})</p>
+                  </details>
+                {:else}
+                  <details>
+                    <summary>{r.permissions.length} ({tiers(r)})</summary>
+                    <ul class="perms">
+                      {#each r.permissions as p (p)}
+                        <li><span class="perm">{permLabel(p)}</span>{#if r.outcome[p]}<span class="quiet"> · {r.outcome[p]}</span>{/if}</li>
+                      {/each}
+                    </ul>
+                    {#if r.note}<p class="quiet">“{r.note}”</p>{/if}
+                  </details>
+                {/if}
                 {#if r.repositories && r.repositories.length > 0}
                   <!-- A GitHub request (issue #365) is for a repository set: the reviewer sees which. -->
                   <details class="repos">
-                    <summary>{r.repositories.length} repositor{r.repositories.length === 1 ? "y" : "ies"}</summary>
+                    <summary>{r.repositories.length} repositor{r.repositories.length === 1 ? "y" : "ies"}{r.kind === "repositories" ? " now" : ""}</summary>
                     <ul class="perms">
                       {#each r.repositories as repo (repo)}<li><code>{repo}</code></li>{/each}
                     </ul>
@@ -186,7 +201,7 @@
               </td>
               <td class="quiet nowrap">{when(r.created_at)}</td>
               <td>
-                <span class="status status--{r.status === 'pending' ? 'warn' : r.status === 'approved' ? 'on' : 'fail'}"><span class="status__dot" aria-hidden="true"></span>{r.status}</span>
+                <span class="status status--{r.status === 'pending' ? 'warn' : r.status === 'approved' ? 'on' : r.status === 'withdrawn' ? 'off' : 'fail'}"><span class="status__dot" aria-hidden="true"></span>{r.status}</span>
                 {#if r.reason}<span class="quiet detail">{r.reason}</span>{/if}
               </td>
             </tr>
@@ -323,6 +338,7 @@
 
   .perm { font-family: var(--font-mono); font-size: 0.85rem; }
   .perms { margin: var(--space-2xs) 0 0; padding-left: 1rem; }
+  .reach { margin: var(--space-2xs) 0 0; color: var(--ink); font-size: 0.85rem; }
   .quiet { color: var(--muted); font-size: 0.85rem; }
   .nowrap { white-space: nowrap; }
   .detail { display: block; font-size: 0.78rem; }

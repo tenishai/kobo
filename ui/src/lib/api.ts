@@ -1824,8 +1824,11 @@ export type AccessRequest = {
   integration: string;
   permissions: string[];
   tiers: Record<string, number>;
-  kind: "standing" | "lease" | string;
-  status: "pending" | "approved" | "refused" | "denied" | string;
+  /** `repositories` is an owner's pick on a GitHub set the agent already
+   * holds a level on: `proposal` is what it would change, `permissions` the
+   * levels the new repositories would be reached with. */
+  kind: "standing" | "lease" | "repositories" | string;
+  status: "pending" | "approved" | "refused" | "denied" | "withdrawn" | string;
   requested_by: string;
   note: string | null;
   created_at: string;
@@ -1838,6 +1841,7 @@ export type AccessRequest = {
   team?: string | null;
   /** A GitHub request's repository set (issue #365), for the reviewer. */
   repositories?: string[];
+  proposal?: { added: string[]; removed: string[] } | null;
 };
 
 export type AgentAccess = {
@@ -1870,6 +1874,15 @@ export type GithubRepository = {
   default_branch: string | null;
 };
 
+/** What an owner's pick would change on a set that waits for a reviewer. */
+export type RepositoryPick = {
+  id: number;
+  added: string[];
+  removed: string[];
+  requested_by: string | null;
+  created_at: string | null;
+};
+
 /** `GET /api/agents/{name}/github/repositories`: the installation's
  * repositories with the agent's current set marked. `available` false means
  * the room cannot list them (no GitHub connection, or the vendor refused)
@@ -1878,6 +1891,9 @@ export type GithubRepositories = {
   available: boolean;
   repositories: GithubRepository[];
   selected: string[];
+  /** A pick on a set the agent already holds a level on, waiting for a
+   * reviewer; `selected` stays the set in force until it is allowed. */
+  waiting?: RepositoryPick | null;
   note: string | null;
   /** How many repositories the room can see in all (issue #368); the
    * picker's search placeholder says it. Absent on an older server, where
@@ -1892,11 +1908,14 @@ export async function fetchGithubRepositories(name: string): Promise<GithubRepos
 
 /** Writes or replaces the agent's repository set. `integration` is the child
  * the agent's GitHub permission requests then target. 422 with a sentence on
- * an empty set or a repository the installation cannot see. */
+ * an empty set or a repository the installation cannot see. Once the agent
+ * holds a level on the set, what the pick adds waits for a reviewer: the
+ * answer is a 202 whose `repositories` is the set in force and whose
+ * `waiting` is the pick. */
 export async function putGithubRepositories(
   name: string,
   repositories: string[],
-): Promise<{ integration: string; repositories: string[]; changed: boolean }> {
+): Promise<{ integration: string; repositories: string[]; changed: boolean; waiting?: RepositoryPick | null }> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/github/repositories`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },

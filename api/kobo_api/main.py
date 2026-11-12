@@ -4055,7 +4055,9 @@ def create_app(
         """The repositories the agent may be given (the room App installation's,
         read from the room's warm listing, kobo#368) with their count, and the
         set it holds (its child's spec), for the Access tab's GitHub step
-        (kobo#365). Owner, manager or operator."""
+        (kobo#365). `waiting` is a pick on a set that already carries grants,
+        held for a reviewer: what it would add and remove. Owner, manager or
+        operator."""
         bab, blocked = _bab_or_404()
         if blocked is not None:
             return blocked
@@ -4069,12 +4071,13 @@ def create_app(
         try:
             conn = github_access.connection(bab, actor, session)
             child = github_access.child(bab, actor, conn.id, agent.name) if conn is not None else None
+            waiting = github_access.waiting_on(bab, actor, agent.name, child["integration"]) if child is not None else None
         except ClientError as exc:
             return _bab_refused(exc)
         selected = github_access_child_repositories(child)
         if conn is None:
             return JSONResponse({"available": False, "repositories": [], "total": 0, "selected": selected,
-                                 "note": github_access.NO_CONNECTION})
+                                 "waiting": None, "note": github_access.NO_CONNECTION})
         # The warm listing the connect form searches (kobo#368), never a walk
         # of the installation per open; `total` lets the picker say how many
         # the room can see while it shows only the matches for what is typed.
@@ -4082,6 +4085,7 @@ def create_app(
             repos = github_access.installation_repositories(app.state.clients, app.state.repo_index)
         except ClientError as exc:
             return JSONResponse({"available": False, "repositories": [], "total": 0, "selected": selected,
+                                 "waiting": waiting,
                                  "note": f"the room could not list the installation's repositories: {exc}"})
         return JSONResponse({
             "available": True,
@@ -4089,6 +4093,7 @@ def create_app(
                              for r in repos],
             "total": len(repos),
             "selected": selected,
+            "waiting": waiting,
             "note": None,
         })
 
@@ -4099,10 +4104,13 @@ def create_app(
         """Write or replace the agent's repository set: its child integration
         under the room's GitHub connection in the permission service (kobo#365).
         Revokes nothing by itself: the agent's grants stay on the child and the
-        next lease is narrowed to the new set (one already out runs its hour,
-        `github_access.LEASES_NOTE`). Owner or manager, as asking for a
-        permission is; 404 without a GitHub connection; 422 for a repository
-        the installation does not carry."""
+        next lease is narrowed to the new set (`github_access.LEASES_NOTE`).
+        Owner or manager, as asking for a permission is: the owner may pick any
+        repository the installation carries. Once the agent holds a level on
+        its set, what the pick removes lands and what it adds waits for a
+        reviewer (202, `waiting` names it; Admin, Review decides). 404 without
+        a GitHub connection; 422 for a repository the installation does not
+        carry."""
         bab, blocked = _bab_or_404()
         if blocked is not None:
             return blocked
@@ -4129,7 +4137,8 @@ def create_app(
             return JSONResponse({"error": f"not in the GitHub App installation: {', '.join(strays)}", "strays": strays},
                                 status_code=422)
         try:
-            integration, changed = github_access.write_child(bab, actor, conn, agent.name, wanted)
+            saved = github_access.write_child(bab, actor, conn, agent.name, wanted)
+            integration, changed = saved.integration, saved.changed
             held = github_access.active_grants(bab, actor, agent.name, integration) if changed else []
         except ClientError as exc:
             audit.record(
@@ -4139,10 +4148,24 @@ def create_app(
             )
             session.commit()
             return _bab_refused(exc)
-        detail: dict = {"integration": integration, "repositories": wanted, "changed": changed}
+        detail: dict = {"integration": integration, "repositories": saved.repositories, "changed": changed}
         if changed and held:
             detail["leases"] = github_access.end_open_leases(bab, actor, agent.name, integration)
             detail["grants"] = sorted({str(g.get("permission")) for g in held})
+        if saved.waiting is not None:
+            # The set carries grants and the pick adds to it: the addition is a
+            # reviewer's to allow, and the set in force is what the service kept.
+            added, removed = saved.waiting["added"], saved.waiting["removed"]
+            detail["waiting"] = saved.waiting
+            audit.record(
+                session, request=request, action="access.repositories", target_kind="agent", target_id=agent.name,
+                agent_name=agent.name, detail=detail,
+                summary=f"{audit.who(request)} asked to add {', '.join(added)} to {agent.name}'s repositories on {conn.name}"
+                + (f" and remove {', '.join(removed)}" if removed else "") + "; waiting for review",
+            )
+            session.commit()
+            return JSONResponse({"integration": integration, "repositories": saved.repositories, "changed": changed,
+                                 "waiting": saved.waiting}, status_code=202)
         audit.record(
             session, request=request, action="access.repositories", target_kind="agent", target_id=agent.name,
             agent_name=agent.name, detail=detail,
@@ -4229,15 +4252,24 @@ def create_app(
         verb = "Approved" if payload.verdict == "approve" else "Denied"
         # The gateway lane follows the permission (kobo#327): once per agent
         # whose request was approved, its gateway grant is brought in step.
+        # A repository pick (kind `repositories`) changes the set, not what the
+        # agent holds, so no lane follows it.
         lanes: dict[str, str] = {}
         for result in results:
-            agent_name = pending.get(result.get("id"), {}).get("agent")
+            asked = pending.get(result.get("id"), {})
+            agent_name = asked.get("agent")
+            if asked.get("kind") == github_access.REPOSITORIES_KIND:
+                continue
             if result.get("status") == "approved" and agent_name and agent_name not in lanes:
                 lanes[agent_name] = gateway_lane.follow(session, app.state.clients, bab, agent_name=agent_name, actor=_bab_actor(request))
         for result in results:
             asked = pending.get(result.get("id"), {})
             agent_name = asked.get("agent")
             wanted = ", ".join(asked.get("permissions") or []) or f"request {result.get('id')}"
+            pick = github_access.waiting_pick(asked)
+            if pick is not None:
+                wanted = (f"adding {', '.join(pick['added'])}"
+                          + (f" and removing {', '.join(pick['removed'])}" if pick["removed"] else ""))
             where = f" on {asked['integration']}" if asked.get("integration") else ""
             skipped = result.get("status") == "skipped"
             detail = {"result": result, "reason": payload.reason}
@@ -4252,7 +4284,8 @@ def create_app(
                 + (f"; skipped: {result.get('reason')}" if skipped else ""),
             )
         session.commit()
-        if any(r.get("status") == "approved" for r in results):
+        if any(r.get("status") == "approved" and pending.get(r.get("id"), {}).get("kind") != github_access.REPOSITORIES_KIND
+               for r in results):
             _sync_dispatch_pairs(session)
         return JSONResponse({"results": results})
 

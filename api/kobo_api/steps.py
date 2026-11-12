@@ -1632,7 +1632,7 @@ class AccessStep:
                 return "; GitHub is not connected, so its own repository is not granted"
             if github_access.child(bab, BAB_ROOM_ACTOR, conn.id, agent.name) is not None:
                 return ""
-            cid, _ = github_access.write_child(bab, BAB_ROOM_ACTOR, conn, agent.name, [agent.repo_full_name])
+            cid = github_access.write_child(bab, BAB_ROOM_ACTOR, conn, agent.name, [agent.repo_full_name]).integration
             held = github_access.active_grants(bab, BAB_ROOM_ACTOR, agent.name, cid)
             if not any(g.get("permission") == github_access.REPOS_READ for g in held):
                 asked = bab.request(agent.name, cid, [github_access.REPOS_READ], OWN_REPOSITORY_NOTE, BAB_ROOM_ACTOR)
