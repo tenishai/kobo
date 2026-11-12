@@ -600,7 +600,7 @@
                 <p class="vendor__copy">
                   Which repositories this agent may reach. One set per agent; the level you pick next
                   applies to every repository in it. Removing a repository takes effect when you save.
-                  Once the agent holds a level, a repository you add waits for a reviewer.
+                  Once the agent holds a level, or has asked for one, a repository you add waits for a reviewer.
                 </p>
                 {#if repoWaiting}
                   <p class="vendor__copy" role="status">

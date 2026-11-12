@@ -176,7 +176,7 @@
                       {#each adds as repo (repo)}<li><code>{repo}</code>{#if r.outcome?.[repo]}<span class="quiet"> · {r.outcome[repo]}</span>{/if}</li>{/each}
                       {#each drops as repo (repo)}<li><code>{repo}</code><span class="quiet"> · {r.outcome?.[repo] ?? "to remove"}</span></li>{/each}
                     </ul>
-                    <p class="reach">Reached with {r.permissions.map(permLabel).join(", ")} ({tiers(r)})</p>
+                    <p class="reach">Would be reached with {r.permissions.map(permLabel).join(", ")} ({tiers(r)})</p>
                   </details>
                 {:else}
                   <details>

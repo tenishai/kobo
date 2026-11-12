@@ -4107,7 +4107,7 @@ def create_app(
         next lease is narrowed to the new set (`github_access.LEASES_NOTE`).
         Owner or manager, as asking for a permission is: the owner may pick any
         repository the installation carries. Once the agent holds a level on
-        its set, what the pick removes lands and what it adds waits for a
+        its set, or has asked for one, what the pick removes lands and what it adds waits for a
         reviewer (202, `waiting` names it; Admin, Review decides). 404 without
         a GitHub connection; 422 for a repository the installation does not
         carry."""

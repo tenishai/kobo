@@ -2517,8 +2517,8 @@ class FakeBab:
 
     bab 0.4.22: `reviewers`, when a test sets it, names who is on the admin or
     security team; anyone else may write only an agent's repository set, and a
-    pick that adds to a set already carrying grants is split as the service
-    splits it: what it removes lands, what it adds waits as a request of kind
+    pick that adds to a set already carrying grants (or a level request still
+    waiting) is split as the service splits it: what it removes lands, what it adds waits as a request of kind
     `repositories` (`proposal`), and the answer carries it under `pending`.
     Approving one applies it to the set; a whole write withdraws it."""
 
@@ -2799,16 +2799,19 @@ class FakeBab:
                                   f"admin or security team")
             before = list(((existing or {}).get("spec") or {}).get("repositories") or [])
             held = [g for g in self._grants.values() if g["integration"] == integration and g.get("state") == "active"]
+            asked = [r for r in self._requests.values() if r["integration"] == integration
+                     and r["kind"] != "repositories" and r["status"] == "pending"]
+            levels = sorted({g["permission"] for g in held} | {p for r in asked for p in r["permissions"]})
             added = sorted(set(repos) - set(before))
-            if before and added and held:
+            if before and added and (held or asked):
                 kept = [r for r in before if r in repos]
                 if kept:
                     existing["spec"] = {**existing["spec"], "repositories": kept}
                 row = waits[0] if waits else {"id": len(self._requests) + 1, "integration": integration, "kind": "repositories",
                                               "status": "pending", "note": None, "created_at": "2026-10-29T12:00:00",
                                               "decided_at": None, "decided_by": None, "reason": None, "outcome": {}}
-                row.update(agent=min(g["agent"] for g in held), permissions=sorted({g["permission"] for g in held}),
-                           tiers={"read": len({g["permission"] for g in held})}, requested_by=actor,
+                row.update(agent=min([g["agent"] for g in held] + [r["agent"] for r in asked]), permissions=levels,
+                           tiers={"read": len(levels)}, requested_by=actor,
                            proposal={"added": added, "removed": [] if kept else sorted(before)})
                 self._requests[row["id"]] = row
                 return {"integration": integration, "vendor": vendor, "ceiling": list(existing["ceiling"]), "parent": parent,
