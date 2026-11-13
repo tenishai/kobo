@@ -24,6 +24,11 @@ ways: a pattern the agent now earns is added, one it no longer earns is
 withdrawn (one commit, one restart). Best effort: it never raises, it
 answers one sentence for the audit row.
 
+A lane added to these tables in a release reaches the agents that already
+hold its vendor without anyone granting again: the heal pass finds their
+gateway grant short of what the tables now owe, sets it, and brings the
+bundle allow list in step in the same pass (`_heal_ready_agents`).
+
 Import-light on purpose: it takes the clients bag and the permission-service
 client it is handed, and never imports the app.
 """
@@ -70,6 +75,11 @@ GATEWAY_LANES: dict[str, Lane] = {
     # which leases the project's access token from the permission service per call (the
     # integration is the project id, so one handler serves every connected project).
     "gcp": Lane(scopes=("gcp:read",), handlers=("gcp",), allow=("gcp.*",)),
+    # AWS (2026-11-13): any AWS permission opens the gateway's `aws` handler, which leases the
+    # account's session from the permission service per call (the integration is the account).
+    # AWS itself narrows that session to the permissions held, so one handler serves every
+    # permission in the catalogue, the ones that change things included, and every account.
+    "aws": Lane(scopes=("aws:read",), handlers=("aws",), allow=("aws.*",)),
 }
 # (vendor, permission) -> the lane that one permission needs; wins over the
 # vendor table for its vendor (kobo#365: GitHub's three levels).
@@ -117,6 +127,7 @@ ALLOW_COMMIT = "kobo: allow the {vendor} tools"
 WITHDRAW_COMMIT = "kobo: withdraw the {vendor} tools"
 
 NOT_WIRED = "the gateway admin plane is not wired; the lane did not change"
+ALLOW_FAILED = "; the agent's allow list could not be updated"
 UNCHANGED = "gateway lane unchanged"
 REMOVED = "gateway lane removed"
 
@@ -204,7 +215,7 @@ def sync_allow(session: Session, clients, *, agent_name: str, patterns: set[str]
             delivery.push(github, workdir, _commit_message(added, gone))
     except (ClientError, OSError) as exc:
         log.warning("allow list for %s could not be updated: %s", agent_name, exc)
-        return f"; the agent's allow list could not be updated: {exc}"
+        return f"{ALLOW_FAILED}: {exc}"
     said = []
     if added:
         said.append(f"now allows {', '.join(added)}")
@@ -295,7 +306,8 @@ def heal(clients, bab, agent_names: list[str], actor: str) -> list[str]:
     """Set each agent's gateway grant back to what its permissions owe when
     something else has changed it, and name the agents it set back. Only the
     gateway grant: the bundle allow list lives in the agent's repository,
-    which nothing but the room writes. An agent holding no permission is
+    which nothing but the room writes, so the caller brings it in step for
+    the agents named here and no others. An agent holding no permission is
     left alone, so an agent whose grant lives only in the gateway's own
     file keeps it. Best effort: one agent's failure never stops the rest."""
     admin = getattr(clients, "liminal_admin", None) if clients is not None else None
@@ -340,10 +352,34 @@ def _heal_ready_agents(app) -> list[str]:
     from .admin_integrations import reconcile_targets
     from .bab import ROOM_ACTOR
 
+    clients = app.state.clients
+    bab = getattr(clients, "bab", None)
     with app.state.session_factory() as session:
         names = [a.name for a in session.query(Agent).filter(Agent.status == AgentStatus.READY).all()]
-        reconcile_targets(session, app.state.clients)
-    return heal(app.state.clients, getattr(app.state.clients, "bab", None), names, ROOM_ACTOR)
+        reconcile_targets(session, clients)
+    healed = heal(clients, bab, names, ROOM_ACTOR)
+    # A grant that was short is also how a lane new to this release shows up on an agent
+    # that already held its vendor (AWS, 2026-11-13): the bundle has to admit the lane's
+    # tools too, or the agent holds a permission it has no tool for. An agent whose
+    # repository could not be written is kept and tried again on the next pass.
+    owed: set[str] = (getattr(app.state, "allow_owed", None) or set()) & set(names) | set(healed)
+    for name in sorted(owed):
+        try:
+            lanes = held_lanes(bab, name, ROOM_ACTOR)
+            if not lanes:
+                owed.discard(name)  # as `heal`: an agent holding nothing is left alone
+                continue
+            with app.state.session_factory() as session:
+                said = sync_allow(session, clients, agent_name=name, patterns=desired_allow(lanes))
+        except ClientError as exc:
+            log.warning("allow list for %s could not be brought in step: %s", name, exc)
+            continue
+        if not said.startswith(ALLOW_FAILED):
+            owed.discard(name)
+            if said:
+                log.info("allow list for %s brought in step with its permissions%s", name, said)
+    app.state.allow_owed = owed
+    return healed
 
 
 async def heal_loop(app, *, interval_s: float = HEAL_INTERVAL_S) -> None:
