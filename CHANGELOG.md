@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.60] - 2026-11-13
+
 ### Added
 - The AWS gateway lane: any AWS permission opens the gateway's `aws` handler and allows its tools, so an agent granted a permission on a connected account can use it. An AWS permission used to be grantable and approvable with no tool behind it: the agent held CloudTrail read on an account and had nothing to call. The handler (in the gateway's own handler package) leases the account's session for each call, and AWS narrows that session to the permissions held, so one lane serves every AWS permission in the catalogue and every account, including permissions added later. A cloud the Access tab can offer and no lane serves is pinned by a test (Azure today), so the next one cannot arrive granted and without tools unnoticed.
 
