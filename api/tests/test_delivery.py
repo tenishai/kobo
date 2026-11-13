@@ -7,6 +7,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -226,7 +227,9 @@ def test_the_registry_publisher_pushes_a_plain_oci_image_an_image_volume_can_mou
     assert manifests["current"] == manifests["abc123"]
     assert digest.startswith("sha256:")
     assert all(auth == "Bearer tok" for *_, auth in seen)
-    assert bundle_tarball(bundle) == bundle_tarball(bundle)  # deterministic: same bundle, same digest
+    built = bundle_tarball(bundle)
+    with patch("time.time", return_value=1_800_000_000.0):
+        assert bundle_tarball(bundle) == built  # deterministic: same bundle, same digest, whatever second it is
 
 
 class SecretKubectl(Kubectl):

@@ -160,9 +160,12 @@ def metadata_access_token(client: httpx.Client | None = None) -> str:
 
 def bundle_tarball(directory: Path) -> bytes:
     """The bundle directory as one deterministic gzip tarball: entries sorted,
-    times zeroed, so an unchanged bundle has an unchanged digest."""
+    times zeroed, so an unchanged bundle has an unchanged digest. The gzip
+    header's own time is zeroed too: `w:gz` stamps it with the clock, which
+    made the same bundle a different digest every second."""
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=6) as tar:
+    with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=6, mtime=0) as packed, \
+            tarfile.open(fileobj=packed, mode="w") as tar:
         for path in sorted(p for p in directory.rglob("*") if p.is_file()):
             info = tar.gettarinfo(str(path), arcname=path.relative_to(directory).as_posix())
             info.mtime = 0
