@@ -190,6 +190,16 @@ AVATAR_MAX_BYTES = 4 * 1024 * 1024
 # tight. See the call site for the incident this closes.
 ONBOARD_REPROVISION_GRACE_POLLS = 6
 
+# Grace budget for ConnectedWireStep's post-reprovision status read (kobo#475,
+# live 2026-11-13). The platform answers a provision call before its run has
+# marked the app `provisioning`, so the read right after it can still be the
+# `active` the last run left behind. On a connected repository that stale
+# `active` sends the pipeline on to watch a commit whose build cannot pass:
+# the manifests that match the wiring arrive in a setup pull request a person
+# merges. Same shape and same size as the onboarding grace above; when it
+# runs out with the app still `active`, there was nothing to regenerate.
+CONNECTED_REPROVISION_GRACE_POLLS = 6
+
 # After BuildStep fires its one self-heal rerun, gh's API can briefly still
 # echo the PRE-rerun completed/non-success payload (the same read-after-write
 # lag BuildStep already accounts for on `head_sha`) — this many polls of
@@ -1353,6 +1363,19 @@ class AvatarStep:
         return f"generated and saved avatar ({sha})"
 
 
+def _setup_pr_waiting(status_payload: dict) -> StepWaiting:
+    """The sentence a connected agent parks on while the platform's setup
+    pull request waits for a person, its link included when the platform
+    names one. One wording for every step that can find the agent there."""
+    url = status_payload.get("setup_pr_url") or ""
+    where = f": {url}" if url else "."
+    return StepWaiting(
+        "Waiting for someone on your team to review and merge the "
+        f"setup pull request{where} The room resumes on its own once "
+        "it is merged."
+    )
+
+
 def _wait_active(ctx: Ctx, app_id: int) -> str:
     """Poll `ctx.clients.gojira.app_status(app_id)` every `POLL_INTERVAL_S` up
     to `POLL_TIMEOUT_S` until it reports `active`; raise on `failed` (naming
@@ -1380,13 +1403,7 @@ def _wait_active(ctx: Ctx, app_id: int) -> str:
             # should decide. A composed agent never parks here: the room
             # merges its own repositories' setup PR, so `awaiting_pr` is a
             # moment on the way to `active` and the loop keeps polling.
-            url = status_payload.get("setup_pr_url") or ""
-            where = f": {url}" if url else "."
-            raise StepWaiting(
-                "Waiting for someone on your team to review and merge the "
-                f"setup pull request{where} The room resumes on its own once "
-                "it is merged."
-            )
+            raise _setup_pr_waiting(status_payload)
 
         if status == "failed":
             failed_names = [
@@ -2238,13 +2255,23 @@ class ConnectedWireStep:
 
     def _reprovision_and_wait(self, ctx: Ctx) -> str:
         app_id = ctx.agent.gojira_app_id
+        gojira = ctx.clients.gojira
         with _sanitized(
             "reprovision", ctx.agent.name, CONNECTED_WIRE_PLATFORM_UNAVAILABLE
         ):
-            ctx.clients.gojira.reprovision(app_id)
+            gojira.reprovision(app_id)
         with _sanitized(
             "wait_active", ctx.agent.name, CONNECTED_WIRE_PLATFORM_UNAVAILABLE
         ):
+            # The call above was accepted, not yet started: an `active` read
+            # now may be the last run's (CONNECTED_REPROVISION_GRACE_POLLS).
+            # Wait for the row to leave `active` before `_wait_active` is
+            # allowed to believe one.
+            for grace_poll in range(CONNECTED_REPROVISION_GRACE_POLLS):
+                if gojira.app_status(app_id).get("status") != "active":
+                    break
+                if grace_poll < CONNECTED_REPROVISION_GRACE_POLLS - 1:
+                    _sleep(POLL_INTERVAL_S)
             return _wait_active(ctx, app_id)
 
 
@@ -2347,6 +2374,19 @@ class BuildStep:
        of unexpected concurrent pushes beyond the pipeline's pushes-at-most-
        twice invariant). On exceeding the cap, BuildStep raises rather than
        continuing to loop and potentially healing indefinitely.
+
+    5. On a connected repository a failed run is not judged while the
+       platform's setup pull request is open (kobo#475, live 2026-11-13).
+       The room's wiring changes `gojira.yaml`; the manifests that match it
+       arrive in a setup pull request a person on the team merges, and until
+       then the commit under watch fails its own manifest check, rerun or
+       not. Every connect showed a failed build once for it. So before a
+       non-success run is rerun or raised, the step asks the platform where
+       the app stands: `awaiting_pr` parks the agent on that pull request
+       (the waiting sweep resumes it at the merge, and the watch moves to
+       the merge commit), `provisioning` means the pull request is still
+       being written and the run is left alone for now. A platform that
+       cannot be read changes nothing: the run is judged as before.
     """
 
     name = "build"
@@ -2472,7 +2512,20 @@ class BuildStep:
                         return (
                             f"build run {run_id} succeeded for commit {sha}{suffix}"
                         )
-                    if in_stale_grace and run_id == reran_run_id:
+                    standing = _setup_pr_standing(ctx)
+                    if standing is not None and standing.get("status") == "awaiting_pr":
+                        # Point 5: this commit cannot build until a person
+                        # merges the setup pull request. Park on it.
+                        raise _setup_pr_waiting(standing)
+                    if standing is not None and standing.get("status") == "provisioning":
+                        # The platform is still writing that pull request.
+                        # Neither rerun nor judge the run until it says which.
+                        log.info(
+                            "build run %s for commit %s ended %r while the platform "
+                            "is still provisioning; not judging it yet",
+                            run_id, sha, conclusion,
+                        )
+                    elif in_stale_grace and run_id == reran_run_id:
                         # Almost certainly gh's read-after-write lag echoing
                         # the pre-rerun payload back at us, not a genuine
                         # second failure — ignore and keep polling. See
@@ -2519,6 +2572,22 @@ class BuildStep:
             f"timed out waiting for build run to complete after "
             f"{BUILD_POLL_TIMEOUT_S}s for commit {sha}: {standing}"
         )
+
+
+def _setup_pr_standing(ctx: Ctx) -> dict | None:
+    """The platform's status for a connected agent's app, for BuildStep's
+    point 5; None for a composed agent (the room merges its own setup pull
+    request, so there is nobody to wait for), an agent with no app, or a
+    platform that could not be read."""
+    agent = ctx.agent
+    gojira = getattr(ctx.clients, "gojira", None)
+    if not is_connected(agent) or gojira is None or agent.gojira_app_id is None:
+        return None
+    try:
+        return gojira.app_status(agent.gojira_app_id)
+    except ClientError as exc:
+        log.warning("build step: platform status for %s could not be read: %s", agent.name, exc)
+        return None
 
 
 def _where_the_run_stands(github: GitHubClient, repo: str, run: dict) -> str:

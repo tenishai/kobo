@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-provisioning
-updated: 2026-11-12
+updated: 2026-11-13
 anchor: api/kobo_api/provisioner.py sha=b0eb94bf46db454f965d2e9c1299da6008d323cb
-anchor: api/kobo_api/steps.py sha=63fbdc149f8b3dc1cb138705a8fc455632707c61
+anchor: api/kobo_api/steps.py sha=66d468a17e913dd442fe2dca5b45e9781e45a565
 ---
 # provisioning — the Create → running-agent step engine
 
@@ -21,6 +21,7 @@ INVARIANTS:
 - WireStep: writing a manifest and registering it in kustomization.yaml are one act (gojira's generator preserves listed entries, it does not discover files; P0 lost a rollout to this). WireStep never completes without confirming gojira `active`, including the no-change resume path.
 - repo/onboard steps re-check the outside world and refuse to adopt a same-named repo/app the row did not record (steps.py module docstring).
 - BuildStep polls `runs_for_commit(head)` re-resolved each poll (gojira's setup PR auto-merges mid-provision), with one auto-rerun per watched sha for any non-success conclusion.
+- A connected agent's build is not judged while its setup PR is open (kobo#475, 2026-11-13): gojira answers a provision call before its run marks the app `provisioning`, so `ConnectedWireStep` waits up to `CONNECTED_REPROVISION_GRACE_POLLS` reads for the row to leave the stale `active` before trusting it, and `BuildStep`, on a completed non-success run, asks the platform first (`_setup_pr_standing`): `awaiting_pr` raises the same `StepWaiting` as the wire step (`_setup_pr_waiting`, no rerun spent), `provisioning` keeps polling. WHY: the room's wiring commit fails gojira's manifest check until a person merges the setup PR, and every connect showed a failed build once.
 - AvatarStep never fails the pipeline (raises `StepSkipped`).
 - ConnectedWireStep tells "wiring to propose" from "already wired" by the *meaning* of its three files, not their bytes: `_register_resources` and `_update_connected_gojira_yaml` return without writing when the parsed document is unchanged, so a file formatted the generator's way (comments, two-space lists) is not a change. Re-dumping it was the wire loop with gojira's regeneration (#123 item 11, PR #151).
 - Engine-level failures (workdir, commit, missing row) mark the agent FAILED directly; they have no step boundary to resume from.
