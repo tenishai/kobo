@@ -1705,7 +1705,10 @@ def test_connected_wire_step_sees_nothing_to_change_in_the_generators_own_text(
     regenerated against the merge, and the two took turns forever
     (tenishai/kobo#123 item 11, agent-gordon 2026-10-08 and 2026-10-13)."""
     from kobo_api.config import vertex_location_for
-    from kobo_api.steps import SERVICEACCOUNT_YAML_TEMPLATE
+    from kobo_api.steps import (
+        CONNECTED_STORAGE_YAML_TEMPLATE,
+        SERVICEACCOUNT_YAML_TEMPLATE,
+    )
 
     name = AGENT_NAME
     gsa_email = f"agent-{name}@{config.gcp_project}.iam.gserviceaccount.com"
@@ -1722,8 +1725,10 @@ def test_connected_wire_step_sees_nothing_to_change_in_the_generators_own_text(
             f"    namespace: {name}\n"
             f"service_account: agent-{name}\n"
             "env:\n"
+            '  KOBO_DATA_DIR: "/data"\n'
             f'  VERTEXAI_LOCATION: "{vertex_location_for(config, MODEL_ID)}"\n'
             f'  VERTEXAI_PROJECT: "{config.vertex_project}"\n'
+            f"data_mount: {{ pvc: agent-{name}-data, path: /data, fs_group: 10001 }}\n"
             "# overrides:                  # needs a justification — see docs\n"
         ),
         "k8s/base/kustomization.yaml": (
@@ -1737,10 +1742,12 @@ def test_connected_wire_step_sees_nothing_to_change_in_the_generators_own_text(
             "  - service.yaml\n"
             "  # app-authored resources, preserved by Gojira:\n"
             "  - serviceaccount.yaml\n"
+            "  - kobo-storage.yaml\n"
         ),
         "k8s/base/serviceaccount.yaml": SERVICEACCOUNT_YAML_TEMPLATE.format(
             name=name, gsa_email=gsa_email
         ),
+        "k8s/base/kobo-storage.yaml": CONNECTED_STORAGE_YAML_TEMPLATE.format(name=name),
     }
     github = FakeGitHub(pr_url=WIRE_PR_URL, clone_tree=tree)
     wiring = _wire_ctx(session_factory, config, github=github)

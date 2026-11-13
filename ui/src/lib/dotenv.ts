@@ -45,6 +45,10 @@ export const RESERVED_KEYS = [
   "AGENT_MODEL",
   "SLACK_WAKE_MODE",
   "MODELS_GATEWAY_KEY",
+  "KOBO_DATA_DIR",
+  "KOBO_SWITCHBOARD_URL",
+  "KOBO_GATEWAY_URL",
+  "KOBO_MODELS_URL",
 ];
 
 /** Names the runtime owns: how the container finds its binaries, its

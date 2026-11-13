@@ -34,6 +34,7 @@ from kobo_api import (
     admin_store,
     audit,
     audit_agents,
+    connected_wiring,
     delivery,
     gateway_lane,
     gateway_prs,
@@ -3964,12 +3965,22 @@ def create_app(
         failures = bab_last_failures(bab, agent.name, vendors, actor)
         for v in vendors:
             v["last_failure"] = failures.get(v["id"])
+        # An agent that runs its team's own code reaches what it is granted
+        # only once its repository carries the room's wiring; say where
+        # that stands. Never a reason to fail the tab.
+        wiring = None
+        if is_connected(agent):
+            try:
+                wiring = connected_wiring.state(app.state.clients.github, agent, app.state.config)
+            except ClientError as exc:
+                log.warning("wiring state of %s could not be read: %s", agent.name, exc)
         return JSONResponse({
             "agent": agent.name,
             "team": agent.team,
             "grants": grants,
             "pending": pending,
             "vendors": vendors,
+            "wiring": wiring,
             "can_request": _owner_or_operator_or_403(agent, request) is None,
             "can_decide": _is_admin(request),
         })

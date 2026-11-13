@@ -2070,7 +2070,8 @@ CONNECTED_WIRE_BODY = (
     "list.\n"
     "- gojira.yaml: service_account, the two VERTEXAI_ environment "
     "variables, and any secret names given when the agent was connected. "
-    "Existing environment variables are kept.\n\n"
+    "Existing environment variables are kept.\n"
+    + "{room_wiring}"
     "gojira.yaml is rewritten from its parsed form, so comments and key "
     "order in that one file are not preserved.\n"
 )
@@ -2088,14 +2089,45 @@ CONNECTED_WIRE_BODY_GATEWAY = (
     "- gojira.yaml: service_account, the agent's models Secret under "
     "secrets_from, and any secret names given when the agent was connected. "
     "Existing environment variables are kept; VERTEXAI_PROJECT and "
-    "VERTEXAI_LOCATION, if an earlier wiring set them, are removed.\n\n"
+    "VERTEXAI_LOCATION, if an earlier wiring set them, are removed.\n"
+    + "{room_wiring}"
     "gojira.yaml is rewritten from its parsed form, so comments and key "
     "order in that one file are not preserved.\n"
 )
 
+# What the room gives the agent beyond identity and models, said in both
+# bodies and in the request `kobo_api.connected_wiring` opens later for an
+# agent connected before the room gave it.
+CONNECTED_WIRE_STORAGE = (
+    "- k8s/base/kobo-storage.yaml: added, 1Gi of storage that is kept across "
+    "restarts. gojira.yaml mounts it at /data (data_mount) and sets "
+    "KOBO_DATA_DIR to that path. A repository that already declares a "
+    "data_mount keeps its own and gets neither.\n"
+)
+CONNECTED_WIRE_IDENTITY = (
+    "- gojira.yaml: the agent's pass for the room's gateway (the Secret "
+    "<agent>-cabal under secrets_from, read as CABAL_COLLEAGUE_TOKEN), and "
+    "KOBO_SWITCHBOARD_URL and KOBO_GATEWAY_URL. The room's guide says how "
+    "an agent uses them to reach what it has been granted.\n"
+)
+CONNECTED_WIRE_MODELS = (
+    "- gojira.yaml: KOBO_MODELS_URL, the room's model gateway. The key is "
+    "MODELS_GATEWAY_KEY, from the models Secret.\n"
+)
+
+
+def connected_room_wiring_lines(config) -> str:
+    return (
+        CONNECTED_WIRE_STORAGE
+        + (CONNECTED_WIRE_IDENTITY if gateway_identity_on(config) else "")
+        + (CONNECTED_WIRE_MODELS if gateway_on(config) else "")
+        + "\n"
+    )
+
 
 def connected_wire_body(config) -> str:
-    return CONNECTED_WIRE_BODY_GATEWAY if gateway_on(config) else CONNECTED_WIRE_BODY
+    body = CONNECTED_WIRE_BODY_GATEWAY if gateway_on(config) else CONNECTED_WIRE_BODY
+    return body.replace("{room_wiring}", connected_room_wiring_lines(config))
 
 # What the room says rather than taking over identity wiring a team already
 # set for itself. Named once because two different checks raise it.
@@ -2173,10 +2205,12 @@ class ConnectedWireStep:
     instruction. The pipeline already resumes from a failed step, so nobody
     has to hold a thread open waiting for a person.
 
-    Less lands here than in WireStep, and each absence is deliberate: no
-    memory volume (the room does not replicate a team's own storage, so
-    there is no PVC and no `data_mount`), and no colleague pass (a connected
-    agent has no switchboard identity to carry one).
+    The same things land here as in WireStep (2026-11-13; until then a
+    connected agent got an identity and model access and nothing else): a
+    volume that outlives restarts, and, when the room has a gateway, the
+    pass the agent trades for a gateway token. See `add_room_wiring` for
+    what each one is and when it is left out. The one thing a connected
+    agent still does not get is the bundle: its code is its team's.
 
     Idempotent on retry in both of the ways this can be re-entered. If a
     pull request from the branch is already open, it is merged rather than
@@ -2203,6 +2237,7 @@ class ConnectedWireStep:
         gojira_yaml_path = clone_dir / "gojira.yaml"
         wire_paths = [
             k8s_base / "serviceaccount.yaml",
+            k8s_base / CONNECTED_STORAGE_FILE,
             k8s_base / "kustomization.yaml",
             gojira_yaml_path,
         ]
@@ -2213,6 +2248,7 @@ class ConnectedWireStep:
         _write_service_account(k8s_base, agent, config)
         _register_resources(k8s_base / "kustomization.yaml", ["serviceaccount.yaml"])
         _update_connected_gojira_yaml(gojira_yaml_path, agent, config)
+        write_connected_storage(clone_dir, agent)
 
         if _snapshot(wire_paths) == before:
             # Already wired on the default branch. Still reprovision: the
@@ -2235,6 +2271,13 @@ class ConnectedWireStep:
                 leftover = github.branch_exists(repo, CONNECTED_WIRE_BRANCH)
             if leftover:
                 raise RuntimeError(CONNECTED_WIRE_BRANCH_IN_THE_WAY)
+
+            # Before the pull request, for WireStep's reason: the Secrets the
+            # file is about to name exist by the time anything can merge it.
+            # Only when a request is being opened, so a Retry that finds one
+            # open does not take back a pass the first attempt delivered.
+            with _sanitized("deliver", agent.name, CONNECTED_WIRE_PLATFORM_UNAVAILABLE):
+                deliver_connected_identity(ctx.session, ctx.clients, config, agent)
 
             with _sanitized("open_pr", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE):
                 pr_url = github.open_pr(
@@ -2296,16 +2339,17 @@ def _update_connected_gojira_yaml(gojira_yaml_path: Path, agent, config) -> None
     and model env every agent needs, plus whichever Secrets the owner told
     the room their namespace will hold.
 
-    No `data_mount` and no room-minted secret: the room holds none of this
-    agent's secrets, and `secret_names` are names only -- the pod does not
-    start until the owner creates them, which the connect report says
-    plainly.
+    `secret_names` are names only -- the pod does not start until the owner
+    creates them, which the connect report says plainly. What the room
+    itself gives the agent (storage, the gateway pass, the models key) is
+    `add_room_wiring`.
     """
     text = gojira_yaml_path.read_text()
     data = yaml.safe_load(text) or {}
     _set_service_account_and_model_env(data, agent, config)
     for secret_name in agent.secret_names or []:
         _append_secrets_from(data, secret_name)
+    add_room_wiring(data, agent, config)
     if data == (yaml.safe_load(text) or {}):
         # The file already means this. Keep the owner's bytes (comments,
         # key order, indentation): a re-dump is a change ConnectedWireStep
@@ -2313,6 +2357,123 @@ def _update_connected_gojira_yaml(gojira_yaml_path: Path, agent, config) -> None
         # against — the loop of tenishai/kobo#123 item 11.
         return
     gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+
+# --- What the room gives an agent that runs its team's own code -----------------
+#
+# A room-built agent reads all of this out of the bundle the room composed. A
+# connected agent has no bundle, so the same things reach it the only way the
+# room can speak to code it did not write: environment variables and Secrets,
+# named in gojira.yaml. The names are a published contract (the guide's
+# "An agent that runs its team's own code"); changing one breaks every team
+# that read it.
+
+# Where the agent's volume is mounted, and the variable that says so. A team
+# reads the variable rather than the path, so a team that moves the mount in
+# its own gojira.yaml changes one line.
+CONNECTED_DATA_PATH = "/data"
+CONNECTED_DATA_DIR_ENV = "KOBO_DATA_DIR"
+# Where the agent trades its pass for a gateway token, and the gateway itself.
+CONNECTED_SWITCHBOARD_URL_ENV = "KOBO_SWITCHBOARD_URL"
+CONNECTED_GATEWAY_URL_ENV = "KOBO_GATEWAY_URL"
+# The room's model gateway, when it has one (an OpenAI-compatible base URL).
+CONNECTED_MODELS_URL_ENV = "KOBO_MODELS_URL"
+
+# Its own file, not `pvc.yaml`: that name is one a team's repository may
+# already use, and the room does not overwrite a team's file.
+CONNECTED_STORAGE_FILE = "kobo-storage.yaml"
+
+CONNECTED_STORAGE_YAML_TEMPLATE = """\
+# App-authored (preserved by the generator): the agent's storage, kept
+# across restarts and mounted where gojira.yaml's data_mount says.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {{name: agent-{name}-data, namespace: {name}}}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {{requests: {{storage: 1Gi}}}}
+"""
+
+
+def connected_storage_claim(agent_name: str) -> str:
+    return f"agent-{agent_name}-data"
+
+
+def gateway_identity_on(config) -> bool:
+    """Whether a connected agent is given a gateway identity: the room has a
+    gateway AND a switchboard to mint the pass. With no gateway the pass
+    would open nothing, so nothing is wired (the gateway is an add-on)."""
+    return bool(config.liminal_url) and cabal_enabled(config)
+
+
+def add_room_wiring(data: dict, agent, config) -> None:
+    """Add to a connected agent's parsed gojira.yaml what the room gives it,
+    and nothing else: every edit here is an addition, so this is safe to
+    run over a file whose identity and model wiring a team has since
+    changed by hand (`kobo_api.connected_wiring` does, for an agent
+    connected before the room gave any of this).
+
+    Storage: the same volume a room-built agent keeps its memory on, 1Gi,
+    mounted at `CONNECTED_DATA_PATH`. A repository that already declares a
+    `data_mount` keeps its own; the room adds no second one.
+
+    Gateway identity (`gateway_identity_on`): the Secret that carries the
+    agent's pass, and the two URLs its code needs to use it.
+
+    Model gateway: the Secret that carries the agent's key, and the URL.
+    """
+    env = data.get("env")
+    if not isinstance(env, dict):
+        env = {}
+    claim = connected_storage_claim(agent.name)
+    if not data.get("data_mount"):
+        data["data_mount"] = {
+            "pvc": claim,
+            "path": CONNECTED_DATA_PATH,
+            "fs_group": TECHNE_FS_GROUP,
+        }
+    mount = data["data_mount"]
+    if isinstance(mount, dict) and mount.get("pvc") == claim and mount.get("path"):
+        env[CONNECTED_DATA_DIR_ENV] = str(mount["path"])
+    if gateway_identity_on(config):
+        _append_secrets_from(data, f"{agent.name}-cabal")
+        env[CONNECTED_SWITCHBOARD_URL_ENV] = config.cabal_url
+        env[CONNECTED_GATEWAY_URL_ENV] = config.liminal_url
+    if gateway_on(config):
+        _append_secrets_from(data, models_secret_name(agent.name))
+        env[CONNECTED_MODELS_URL_ENV] = f"{config.models_gateway_url.rstrip('/')}/v1"
+    if env:
+        data["env"] = env
+
+
+def write_connected_storage(clone_dir: Path, agent) -> None:
+    """Write and register the claim behind the room's `data_mount`, when the
+    file names the room's claim. A repository on its own volume gets no
+    claim it would never mount."""
+    data = yaml.safe_load((clone_dir / "gojira.yaml").read_text()) or {}
+    mount = data.get("data_mount")
+    if not isinstance(mount, dict) or mount.get("pvc") != connected_storage_claim(agent.name):
+        return
+    k8s_base = clone_dir / "k8s" / "base"
+    (k8s_base / CONNECTED_STORAGE_FILE).write_text(
+        CONNECTED_STORAGE_YAML_TEMPLATE.format(name=agent.name)
+    )
+    _register_resources(k8s_base / "kustomization.yaml", [CONNECTED_STORAGE_FILE])
+
+
+def deliver_connected_identity(session, clients, config, agent) -> None:
+    """Mint and deliver the Secrets `add_room_wiring` names: the gateway
+    pass and the models key, each only when the room has that add-on wired.
+    Each call takes back the one before it, so this runs when a wiring
+    request is opened and never on a pass that merely checks one."""
+    if gateway_identity_on(config) and clients.cabal is not None:
+        deliver_pass(clients.kubectl, clients.cabal, agent, clients.sero)
+    if gateway_on(config) and clients.models_gateway is not None:
+        deliver_models_key(
+            clients, config, agent,
+            models=available_gateway_models(_offered_entries(session, config), _integration_rows(session)),
+            acting_email=agent.created_by,
+        )
 
 
 # --- BuildStep ------------------------------------------------------------------

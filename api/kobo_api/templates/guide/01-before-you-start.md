@@ -23,7 +23,7 @@ You get a page for the agent with a chat, a Slack setup, an Access tab for what 
 ## Two kinds of agent
 
 - **Built by the room.** The usual way in. You choose a persona and the room composes the rest on its one shared runtime. This guide is mostly about these.
-- **Connected.** Your team already has an agent in its own repository. The room deploys and watches it, gives it identity and model access, and never pushes to your branches. Chat, Slack and most of the Harness do not apply, because the code is yours. A connected repository keeps its own name: if it already deploys, the room reads the name from its deployment and uses that, and its setup arrives as a pull request someone on your team merges. The agent's service account follows the same name, `agent-<name>`; if the deployment ran as something else, the scan says so and the setup pull request makes the move.
+- **Connected.** Your team already has an agent in its own repository. The room deploys and watches it, gives it identity, model access, storage and a way to reach what it is granted (see "Running your own code"), and never pushes to your branches. Chat, Slack and most of the Harness do not apply, because the code is yours. A connected repository keeps its own name: if it already deploys, the room reads the name from its deployment and uses that, and its setup arrives as a pull request someone on your team merges. The agent's service account follows the same name, `agent-<name>`; if the deployment ran as something else, the scan says so and the setup pull request makes the move.
 
 ## Who can do what
 
