@@ -7024,3 +7024,55 @@ def test_a_google_cloud_read_permission_opens_the_gateways_gcp_handler():
     assert lane is GATEWAY_LANES["gcp"] and lane_for("gcp", "gcp_gke_read") is lane
     assert (lane.scopes, lane.handlers, lane.allow) == (("gcp:read",), ("gcp",), ("gcp.*",))
     assert "gcp:read" in MANAGED_SCOPES and "gcp" in MANAGED_HANDLERS
+
+def test_an_aws_permission_opens_the_gateways_aws_handler_and_a_cloud_with_no_lane_is_named():
+    """Gate (authorization, 2026-11-13): an agent granted CloudTrail read on an account had no
+    tool to use it with, since AWS had no lane. Every AWS permission, reading or changing, is
+    one lane: `aws:read` on the `aws` handler with `aws.*` allowed (AWS narrows the leased
+    session to what is held). A cloud the Access tab can offer and no lane serves is named
+    here, so the next one cannot arrive granted and toolless without this test saying so."""
+    from kobo_api.bab import CLOUD_LABELS
+    from kobo_api.gateway_lane import (
+        GATEWAY_LANES,
+        MANAGED_ALLOW,
+        MANAGED_HANDLERS,
+        MANAGED_SCOPES,
+        lane_for,
+    )
+    lane = lane_for("aws", "aws_cloudtrail_read")
+    assert lane is GATEWAY_LANES["aws"] and lane_for("aws", "aws_ecs_update_service") is lane
+    assert (lane.scopes, lane.handlers, lane.allow) == (("aws:read",), ("aws",), ("aws.*",))
+    assert "aws:read" in MANAGED_SCOPES and "aws" in MANAGED_HANDLERS and "aws.*" in MANAGED_ALLOW
+    assert {v for v in CLOUD_LABELS if lane_for(v, "") is None} == {"azure"}
+
+
+def test_a_lane_new_to_a_release_reaches_an_agent_that_already_held_the_permission(tmp_path, fake_storage):
+    """Gate (authorization, 2026-11-13): scooby-doo held an AWS permission before the room had
+    an AWS lane. Nobody grants again after the release that adds one: the heal pass finds the
+    gateway grant short, sets it, and the bundle admits `aws.*` in the same pass (one commit).
+    A repository that could not be written is tried again on the next pass, and a pass with
+    nothing owed writes nothing."""
+    import yaml as _yaml
+
+    from kobo_api import gateway_lane
+
+    c, _, bab, github, admin = _github_room(tmp_path, fake_storage, connected=False)
+    bab._integrations.append({"integration": "fleet-audit", "vendor": "aws", "ceiling": ["aws_cloudtrail_read"],
+                              "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"})
+    bab._grants[1] = {"id": 1, "agent": "ledger", "integration": "fleet-audit", "permission": "aws_cloudtrail_read",
+                      "state": "active"}
+
+    github._clone_error = "the repository host is not answering"
+    assert gateway_lane._heal_ready_agents(c.app) == ["ledger"]
+    grant = admin.grants[("cabal-core", "ledger")]
+    assert set(grant.scopes) == {"x:read", "aws:read"} and set(grant.allowed_handlers) == {"scratchpad", "aws"}
+    assert github.pushes == [] and c.app.state.allow_owed == {"ledger"}
+
+    github._clone_error = None
+    assert gateway_lane._heal_ready_agents(c.app) == []
+    assert _yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["tools"]["allow"] == ["colleagues.list_colleagues", "aws.*"]
+    assert github.pushes[-1][1] == "kobo: allow the aws tools; withdraw the github tools"
+    assert c.app.state.allow_owed == set()
+
+    pushes = len(github.pushes)
+    assert gateway_lane._heal_ready_agents(c.app) == [] and len(github.pushes) == pushes
