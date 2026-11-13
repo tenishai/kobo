@@ -758,6 +758,9 @@ def test_render_manifest_settings_and_events_exact():
                 "app_mention",
                 "message.im",
                 "message.mpim",
+                # Reactions reach the agent in every mode (2026-11-13).
+                "reaction_added",
+                "reaction_removed",
             ]
         },
         "interactivity": {"is_enabled": False},
@@ -777,6 +780,8 @@ def test_render_manifest_thread_and_channel_modes_subscribe_channel_messages():
             "message.groups",
             "message.im",
             "message.mpim",
+            "reaction_added",
+            "reaction_removed",
         ]
     # Scopes never move with the mode: no reinstall, only a re-applied manifest.
     assert (

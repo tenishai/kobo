@@ -1622,10 +1622,32 @@ def test_get_slack_app_view_carries_the_install_link_while_created_and_not_insta
     assert {k: v for k, v in view.items() if k != "install_url"} == {
         "enabled": True, "available": True, "state": "created", "app_id": "A0FAKE",
         "workspace": None, "app_name": None, "channels": [CHANNEL], "wake": "mention", "legacy": False,
-        "rebuilding": False,
+        "own_app": False, "rebuilding": False,
     }
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert (detail["slack"]["relay"], detail["slack"]["legacy"]) == (True, False)
+
+
+def test_a_connected_agents_slack_view_says_it_brings_its_own_app(session_factory__api_slack, config__api_slack):
+    """Wire shape: a connected agent's Slack view carries `own_app`, the word
+    the row reads to say the agent brings its own Slack app. The room's app is
+    wired by commits to the agent's repository, which the room never makes to a
+    connected one, so Create is refused and the view must not invite it."""
+    from kobo_api.kinds import KIND_CONNECTED
+
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    client = _make_client__api_slack(session_factory__api_slack, relay_config)
+    _seed_agent__api_slack(session_factory__api_slack, relay_config)
+    with session_factory__api_slack() as s:
+        s.query(Agent).filter_by(name=AGENT_NAME).one().kind = KIND_CONNECTED
+        s.commit()
+
+    view = client.get(f"/api/agents/{AGENT_NAME}/slack").json()
+    assert (view["own_app"], view["state"], view["install_url"]) == (True, "none", None)
+
+    refused = client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"})
+    assert refused.status_code == 409
+    assert "belongs to its team" in refused.json()["error"]
 
 
 def test_put_wake_writes_the_env_key_and_says_when_the_manifest_changed(session_factory__api_slack, config__api_slack):

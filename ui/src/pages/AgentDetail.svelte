@@ -757,7 +757,12 @@
       </dl>
     </header>
 
-    <BuildLogCard agentName={data.name} open={buildLogOpen} onclose={() => (buildLogOpen = false)} />
+    <BuildLogCard
+      agentName={data.name}
+      open={buildLogOpen}
+      onclose={() => (buildLogOpen = false)}
+      connectedRepo={connected ? data.repo_full_name : null}
+    />
     {#if invites.isSuccess}
       <OwnersSheet
         agentName={data.name}

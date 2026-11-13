@@ -120,6 +120,15 @@ _BOT_EVENTS = [
     "app_mention",
     "message.im",
     "message.mpim",
+    # Reactions (2026-11-13): teams build on emoji (a tick to approve, an
+    # eyes to claim), and an agent that brings its own runtime already
+    # listens for them. Delivery only: reactions:read has been a scope
+    # since the first manifest, so this is an EVENT addition and an existing
+    # app takes it the next time its manifest is applied, with no reinstall.
+    # The room's own runtime drops every event that is not a message or a
+    # mention, so nothing changes for an agent until its runtime reads them.
+    "reaction_added",
+    "reaction_removed",
 ]
 
 # How Slack wakes an agent in a channel (2026-10-06). The runtime (daedalus

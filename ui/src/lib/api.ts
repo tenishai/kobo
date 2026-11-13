@@ -138,6 +138,9 @@ export type SlackAppView = {
   channels: string[];
   wake: SlackWake;
   legacy: boolean;
+  /** A connected agent: it runs its team's own code and brings its own Slack
+   * app, so the room offers none and its tokens go under Secrets. */
+  own_app?: boolean;
   /** The build the Slack wiring started has not rolled yet: a mention cannot reach the agent. */
   rebuilding?: boolean;
 };

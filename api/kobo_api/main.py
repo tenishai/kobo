@@ -8903,6 +8903,11 @@ def create_app(
             "channels": channels,
             "wake": effective_wake(agent),
             "legacy": agent.slack_app_id is not None and row is None,
+            # A connected agent runs its team's own code and brings its own
+            # Slack app: the room's app is wired by commits to the agent's
+            # repository, which the room never makes to a connected one, so
+            # the row says so instead of offering a Create that is refused.
+            "own_app": is_connected(agent) and row is None,
             # The build the wiring started has not rolled yet (2026-11-03).
             "rebuilding": state == "installed" and _slack_rebuilding(agent),
         }
@@ -10223,10 +10228,17 @@ def create_app(
         difference between the two lists rather than an oversight: this one
         is for values that are not sensitive, and a list you cannot read is
         not one you can edit.
+
+        Which is also why the read's own rule for a connected repository
+        (issue #200) stands here: this route answers with every value the
+        file holds, so a write nobody checked was the read by another door.
         """
         agent = _secrets_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _connected_read_block(agent, request)
+        if blocked is not None:
+            return blocked
 
         clients = app.state.clients
         try:

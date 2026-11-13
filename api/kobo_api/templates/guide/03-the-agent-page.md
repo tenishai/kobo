@@ -25,7 +25,7 @@ A connected agent has a shorter list: no directory, no first contact, and its wi
 
 A failed step shows a red mark and a **Why it failed** line with the reason the room saw. The banner at the top of the page carries the same text and a **Retry** button. Retry picks up from the failed step. If the image build or deploy failed, Retry also redoes the wiring in front of it, so a fix on the deployment side reaches the agent.
 
-**Build log**, the header button beside **Health**, shows the latest build's result and its log, so you can read the pipeline's own words without leaving the room.
+**Build log**, the header button beside **Health**, shows the latest build's result and its log, so you can read the pipeline's own words without leaving the room. A connected agent is built in its team's own repository, and the room shows that log to room operators only; its owner gets a link to the repository's own builds instead.
 
 ## When a step waits on you
 
