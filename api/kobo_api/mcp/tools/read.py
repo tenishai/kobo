@@ -523,6 +523,11 @@ def register(mcp: FastMCP, app: Any) -> None:
         at all), and `env` (a name-to-value mapping of the variables that
         are not sensitive).
 
+        `env_readable` is false for an agent that runs from its team's own
+        repository unless you are a room operator: its variables live in
+        that repository, the room shows them to operators only, and `env`
+        comes back empty. Its secrets are still listed.
+
         You must own `agent` or be a room operator; an agent you cannot
         see answers "agent not found", the same as kobo_get_agent.
         """
@@ -537,7 +542,13 @@ def register(mcp: FastMCP, app: Any) -> None:
             env = await _off_loop(
                 list_env_endpoint, name=agent, request=req, session=session
             )
-            _refuse_agent_route(env)
+            # The secrets read above already settled that this caller may
+            # see the agent, so a refusal here is not about who they are: it
+            # is the operator-only variables of a connected repository, and
+            # it must not take the secrets down with it as "agent not found".
+            env_readable = env.status_code != 403
+            if env_readable:
+                _refuse_agent_route(env)
         finally:
             session.close()
 
@@ -547,7 +558,8 @@ def register(mcp: FastMCP, app: Any) -> None:
             "secrets_updated_at": rfc3339_str(held["updated_at"]) if held.get("updated_at") else None,
             "secrets_available": bool(held.get("platform")),
             "delivered_as": held.get("secret_name"),
-            "env": _parse(env).get("env", {}),
+            "env": _parse(env).get("env", {}) if env_readable else {},
+            "env_readable": env_readable,
         }
 
     def _refuse_agent_route(response) -> None:

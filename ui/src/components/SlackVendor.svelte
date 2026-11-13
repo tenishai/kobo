@@ -199,6 +199,7 @@
   const headState = $derived.by((): { text: string; tone: Tone } => {
     const data = view.data;
     if (!data) return { text: "", tone: "ink" };
+    if (data.own_app) return { text: "This agent brings its own Slack app", tone: "ink" };
     if (!data.available) return { text: "Not connected to the room", tone: "ink" };
     if (data.legacy) {
       return move.isPending
@@ -230,7 +231,9 @@
   });
   /** The one action while closed: adding Slack, until the app is installed. */
   const action = $derived(
-    view.data?.available && !view.data.legacy && (view.data.state === "none" || view.data.state === "created") ? "Add Slack" : null,
+    view.data?.available && !view.data.legacy && !view.data.own_app && (view.data.state === "none" || view.data.state === "created")
+      ? "Add Slack"
+      : null,
   );
 
   // Something is going in: the row opens itself so the person sees it land,
@@ -310,7 +313,14 @@
         </p>
       {/if}
 
-      {#if !data.available}
+      {#if data.own_app}
+        <!-- A connected agent: the room's app is wired by commits to the
+             agent's repository, and the room makes none to a team's own. -->
+        <p class="copy">
+          This agent runs its team's own code, so it brings its own Slack app: the room does not make one for it.
+          Create the app in Slack, then save its tokens under Secrets on this page. The agent restarts with them.
+        </p>
+      {:else if !data.available}
         <p class="copy">Ask a kobo admin to add the Slack connection under Admin › Integrations. Nothing here works until then.</p>
       {:else if data.legacy}
         <p class="copy">

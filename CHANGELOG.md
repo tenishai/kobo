@@ -6,6 +6,16 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- The owner of a connected agent sees and saves its secrets. The variables of a connected repository are operator-only (#200), and the Secrets tab took that one refusal for a failed load: the owner saw the refusal where the whole table should be and could not add a secret the room would have accepted. The tab now keeps the secrets, drops **+ Variable**, and says the variables live in the agent's own repository. `kobo_list_agent_secrets` answered "agent not found" for the same reason; it now lists the secrets and answers `env_readable: false`.
+- A connected agent's picture can be changed. The picture of a connected agent lives in the room and nowhere in its repository, and both picture routes still refused with "this agent's repository belongs to its team". They now store the picture in the room and never touch the repository.
+- A connected agent's Slack row no longer offers a button that fails. The room's Slack app is wired by commits to the agent's own repository, and the room never makes those to a connected one, so **Create Slack app** was refused with "this agent's repository belongs to its team". The row now says the agent brings its own Slack app and that its tokens go under Secrets.
+- The owner of a connected agent is sent to its repository's own builds. The room keeps a connected repository's build log to operators (#200), and the sheet told the agent's own owner that only an owner could read it. It now links to the repository's builds page, where GitHub checks who may read them.
+- A connected repository's variables cannot be read by saving them (#200). The variables write answers with every value the file holds and carried none of the read's rule, so an owner who was refused the read got the values back from a save that changed nothing. The write is operator-only on the same terms.
+
+### Added
+- A room-made Slack app hears reactions. `reaction_added` and `reaction_removed` are in every manifest the room writes, whichever wake mode; the `reactions:read` scope was already there, so nothing is reinstalled, and an existing app takes the events the next time its manifest is applied. The room's own runtime still drops them; a runtime that reads them gets them through the relay like any other event.
+
 ## [0.3.61] - 2026-11-13
 
 ### Fixed

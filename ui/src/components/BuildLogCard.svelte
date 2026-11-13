@@ -6,7 +6,10 @@
   // failed, whole log otherwise (the server decides). Lazy on purpose: the
   // fetch costs a GitHub round trip, so nothing loads until someone
   // actually asks to see it. Owner-or-operator on the server; a 403 here
-  // renders as the polite line below rather than an error wall. Fully
+  // renders as the polite line below rather than an error wall. A connected
+  // agent's build runs in its team's own repository and the room keeps its
+  // log to operators (issue #200), so its owner is sent to the repository's
+  // own builds page instead: GitHub checks who may read it. Fully
   // controlled by the page (`open` + `onclose`), like every dialog here.
   import { createQuery } from "@tanstack/svelte-query";
   import { ApiError, errorMessage, fetchBuildLog } from "../lib/api";
@@ -16,7 +19,14 @@
     agentName,
     open,
     onclose,
-  }: { agentName: string; open: boolean; onclose: () => void } = $props();
+    connectedRepo = null,
+  }: {
+    agentName: string;
+    open: boolean;
+    onclose: () => void;
+    /** `owner/name` of a connected agent's repository; null for every other agent. */
+    connectedRepo?: string | null;
+  } = $props();
 
   const buildLog = createQuery(() => ({
     queryKey: ["agents", agentName, "build-log"],
@@ -37,6 +47,12 @@
   <p class="build-log__lead">The last build of this agent's code, as the build itself told it.</p>
   {#if buildLog.isPending}
     <p class="build-log__note">Fetching the latest build…</p>
+  {:else if notAllowed && connectedRepo}
+    <p class="build-log__note build-log__note--ink">
+      This agent is built in its team's own repository, so the room shows its build log to room operators only.
+      You can read every build where it runs:
+      <a href={`https://github.com/${connectedRepo}/actions`} target="_blank" rel="noreferrer">builds of {connectedRepo}</a>.
+    </p>
   {:else if notAllowed}
     <p class="build-log__note">Only this agent's owner (or a room operator) can read its build log.</p>
   {:else if noBuilds}
@@ -63,6 +79,10 @@
     margin: 0;
     color: var(--muted);
     font-size: 0.85rem;
+  }
+
+  .build-log__note--ink {
+    color: var(--ink);
   }
 
   .build-log__run {

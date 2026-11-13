@@ -2867,6 +2867,25 @@ def test_a_connected_repositorys_env_is_operator_only(session_factory__web_secre
     assert as_operator.json()["env"] == {"API_BASE": "https://example.test"}
 
 
+def test_a_connected_repositorys_env_cannot_be_read_by_writing_to_it(
+    session_factory__web_secrets, config__web_secrets, fake_storage, _key
+):
+    """Production bug: the variables WRITE answers with every value the file
+    holds, and it carried none of issue #200's rule, so the owner of a connected
+    agent who was refused the read got the same values back from a save that
+    changed nothing. The write is operator-only on the same terms as the read,
+    and a refused write proposes nothing to the repository."""
+    operator = "ops@example.com"
+    operator_config = config__web_secrets.model_copy(update={"operators": [operator]})
+    github = _github(repo_files={"gojira.yaml": "name: clio\nenv:\n  API_BASE: https://example.test\n"})
+    client, _ = _client__web_secrets(session_factory__web_secrets, operator_config, fake_storage, _key, kind=KIND_CONNECTED, github=github)
+
+    as_owner = client.put(f"/api/agents/{AGENT}/env", json={"set": {}, "remove": []}, headers=_as(_key))
+    assert as_owner.status_code == 403
+    assert "operator-only" in as_owner.json()["error"]
+    assert "API_BASE" not in as_owner.text
+
+
 # --- from test_web_teach.py ---
 
 

@@ -177,6 +177,11 @@
 
   let saveError = $state<string | null>(null);
 
+  /** The room keeps this caller out of the agent's variables (a connected
+   * agent's owner, issue #200): the secrets half works, the variables half
+   * says where they live instead of offering rows it could not fill. */
+  const variablesRestricted = $derived(env.data?.restricted === true);
+
   const secretsReadable = $derived(
     !secrets.isPending &&
       !secrets.isError &&
@@ -781,6 +786,12 @@
         {/if}
       </p>
     {/if}
+    {#if variablesRestricted}
+      <p class="secrets__note">
+        This agent's variables are set in its own repository. Only a room operator can
+        read or change them here.
+      </p>
+    {/if}
   </div>
 
   {#if env.isPending || secrets.isPending}
@@ -803,14 +814,16 @@
             + Secret
           </button>
         {/if}
-        <button
-          type="button"
-          class="secrets__button"
-          disabled={frozen}
-          onclick={() => addRow("variable")}
-        >
-          + Variable
-        </button>
+        {#if !variablesRestricted}
+          <button
+            type="button"
+            class="secrets__button"
+            disabled={frozen}
+            onclick={() => addRow("variable")}
+          >
+            + Variable
+          </button>
+        {/if}
       </div>
       {#if secretsReadable}
         <button

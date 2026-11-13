@@ -69,7 +69,7 @@ function stubRoutes(routes: Routes) {
           ...(routes.secrets ?? {}),
         });
       }
-      return json(routes.env ?? { env: {} });
+      return routes.env instanceof Response ? routes.env : json(routes.env ?? { env: {} });
     }),
   );
   return Object.assign(puts, { restarts });
@@ -149,6 +149,33 @@ describe("SecretsPanel", () => {
     // than hiding the whole panel.
     expect(addVariable()).not.toBeNull();
     expect((screen.getByLabelText("Name 1") as HTMLInputElement).value).toBe("API_BASE");
+  });
+
+  it("keeps the secrets when the room will not show this person the variables", async () => {
+    // The owner of a connected agent on production saw one refusal where
+    // the whole table should be (2026-11-13): the variables read is
+    // operator-only for that kind, and the panel took it for a failed load.
+    stubRoutes({
+      secrets: { keys: ["SLACK_BOT_TOKEN"] },
+      env: new Response(
+        JSON.stringify({
+          error:
+            "the build log and environment of a connected repository are operator-only on this room",
+        }),
+        { status: 403, headers: { "Content-Type": "application/json" } },
+      ),
+    });
+    render();
+
+    await waitFor(() => {
+      expect(screen.getByText("SLACK_BOT_TOKEN")).not.toBeNull();
+    });
+    expect(addSecret()).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "+ Variable" })).toBeNull();
+    expect(
+      screen.getByText(/This agent's variables are set in its own repository/),
+    ).not.toBeNull();
+    expect(screen.queryByText(/operator-only on this room/)).toBeNull();
   });
 
   it("says so when the room has nobody to read the secrets as", async () => {

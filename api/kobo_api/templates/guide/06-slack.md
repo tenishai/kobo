@@ -9,6 +9,14 @@ If the room itself has no Slack connection yet, the tab is a greyed box with one
 
 In some rooms Slack is a row on the **Access** tab instead, with the other vendors. There is nothing to copy or paste: pick **Wakes on**, press **Create Slack app**, then **Install to Slack**. Slack asks you to allow the app in your workspace and sends you straight back to the agent's page, with the Slack row in view: the workspace, **Wakes on**, and the row's state. Installing is instant, and the agent restarts to pick Slack up, usually under a minute (in a room still building agents for every change, it rebuilds first, about three minutes, and the row reads **Rebuilding**), so the row reads **Restarting**, and **Live** only once the agent is answering; a mention sent while it restarts is kept and answered once it is back. Invite the agent to any channel in Slack and it answers there; that is the whole of it, there is no channel list on the row. Changing **Wakes on** later applies on its own: the row reads **Applying your change** and then **Restarting** while the agent restarts with the new choice, and **Live** only once the room has seen the agent back and listening, usually within a minute; wait for **Live** before trying the new choice. While it restarts, the agent's page says **Restarting** rather than Down. **Remove** takes the app out of Slack. An agent connected the older way, from the Slack tab, keeps that tab and keeps working. The rest of this section describes the Slack tab.
 
+### Reactions
+
+The app the room makes also hears reactions. When someone adds or removes an emoji on a message in a channel the agent is in, Slack tells the agent, whichever **Wakes on** you picked. An agent the room built does nothing with a reaction yet. An app made before this hears reactions the next time **Wakes on** moves between **Mentions only** and either of the other two; there is nothing to reinstall.
+
+### An agent that runs its team's own code
+
+A connected agent brings its own Slack app, so its Slack row says so and has no **Create Slack app**. Create the app in Slack, then save its tokens as secrets on the **Secrets** tab under the names your code reads. The agent restarts with them.
+
 ### The agent's face
 
 Every message the agent posts in Slack carries the picture it has in kobo. Change the picture on the agent's page and Slack shows the new one from the next message on; there is nothing to set in Slack. An agent connected before this needs one **Reconnect the Slack app** so its app may show a picture; until then it posts without one. The small picture Slack shows beside the agent in its member list is Slack's own and stays as it is.

@@ -1779,11 +1779,27 @@ export function saveAgentSecretsMutation(queryClient: QueryClient, name: string)
 /** An agent's plain environment variables, keys and values --
  * `GET .../env`. Same no-polling reasoning as the secrets query above, and
  * the same `enabled`: this one reads the agent's repository, so an
- * unselected tab would spend a GitHub call per agent page opened. */
+ * unselected tab would spend a GitHub call per agent page opened.
+ *
+ * A 403 here is an answer, not a failed read: the owner of a connected
+ * agent may keep its secrets but not read its repository's variables
+ * (issue #200), and the panel that treated that refusal as an error hid
+ * the secrets with it (an owner on production, 2026-11-13). It comes back
+ * as an empty, `restricted` list; a caller who may not see the agent at
+ * all is refused by the secrets read beside this one. */
 export function agentEnvQuery(name: string, enabled = true) {
   return queryOptions({
     queryKey: ["agents", name, "env"] as const,
-    queryFn: () => listAgentEnv(name),
+    queryFn: async (): Promise<AgentEnv> => {
+      try {
+        return await listAgentEnv(name);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 403) {
+          return { env: {}, restricted: true };
+        }
+        throw error;
+      }
+    },
     enabled,
   });
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import re
@@ -1359,7 +1360,7 @@ def _room_edits_this_agent_or_409(agent: Agent) -> JSONResponse | None:
     repo's branches. Two steps in the connected pipeline honour that by
     construction, but every route below that edits a bundle -- knowledge,
     skills, intake, teach, learnings, tooling, Slack wiring, runtime,
-    metadata, avatar -- clones the agent's repo and pushes to its DEFAULT
+    metadata -- clones the agent's repo and pushes to its DEFAULT
     BRANCH, gated only on "ready" and "owner or operator", both of which a
     connected agent passes the moment it goes READY. So the rule has to be
     said once more, here, and called by each of them.
@@ -1385,6 +1386,22 @@ def _room_edits_this_agent_or_409(agent: Agent) -> JSONResponse | None:
             status_code=409,
         )
     return None
+
+
+def _store_avatar(clients, agent: Agent, png: bytes) -> str:
+    """Put a changed picture where this kind of agent keeps it, and answer
+    the version the page reloads it by.
+
+    The room's own agent carries the picture in its bundle, so it is pushed
+    there and the commit is the version. A connected agent's repository
+    belongs to its team and the room never pushes to it (the same rule
+    `AvatarStep` holds at birth): the room's cached copy is the whole of
+    it, and the version is a digest of the bytes. The caller writes the
+    cache either way.
+    """
+    if is_connected(agent):
+        return hashlib.sha256(png).hexdigest()[:40]
+    return set_avatar(clients.github, repo=agent.repo_full_name, png=png)
 
 
 # The two ways an agent can run, and the one sentence the room says when a
@@ -8886,6 +8903,11 @@ def create_app(
             "channels": channels,
             "wake": effective_wake(agent),
             "legacy": agent.slack_app_id is not None and row is None,
+            # A connected agent runs its team's own code and brings its own
+            # Slack app: the room's app is wired by commits to the agent's
+            # repository, which the room never makes to a connected one, so
+            # the row says so instead of offering a Create that is refused.
+            "own_app": is_connected(agent) and row is None,
             # The build the wiring started has not rolled yet (2026-11-03).
             "rebuilding": state == "installed" and _slack_rebuilding(agent),
         }
@@ -10206,10 +10228,17 @@ def create_app(
         difference between the two lists rather than an oversight: this one
         is for values that are not sensitive, and a list you cannot read is
         not one you can edit.
+
+        Which is also why the read's own rule for a connected repository
+        (issue #200) stands here: this route answers with every value the
+        file holds, so a write nobody checked was the read by another door.
         """
         agent = _secrets_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
+        blocked = _connected_read_block(agent, request)
+        if blocked is not None:
+            return blocked
 
         clients = app.state.clients
         try:
@@ -11347,9 +11376,6 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
-        blocked = _room_edits_this_agent_or_409(agent)
-        if blocked is not None:
-            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -11366,9 +11392,14 @@ def create_app(
         # that's since been removed from the catalog.
         engine = session.get_bind()
         _maybe_refresh_catalogs(app, engine)
-        persona_entry = get_entry(engine, "persona", agent.persona, team=None)
+        # A connected agent has no persona row (its character is its own
+        # code), so its prompt is built the way AvatarStep builds it at birth.
+        connected = is_connected(agent)
+        persona_entry = None if connected else get_entry(engine, "persona", agent.persona, team=None)
         if persona_entry is not None:
             persona_description = persona_entry.description
+        elif connected:
+            persona_description = f"an agent named {agent.name}"
         else:
             log.warning("persona %r not in the catalog, using generic text for avatar prompt", agent.persona)
             persona_description = f"A {agent.persona} agent."
@@ -11393,7 +11424,7 @@ def create_app(
             )
 
         try:
-            sha = set_avatar(clients.github, repo=agent.repo_full_name, png=png)
+            sha = _store_avatar(clients, agent, png)
         except ClientError as exc:
             # The push side's own failure mode (repo unreachable, auth
             # lapsed, ...) — distinct from the image-generation failure
@@ -11436,9 +11467,6 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
-        blocked = _room_edits_this_agent_or_409(agent)
-        if blocked is not None:
-            return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -11458,7 +11486,7 @@ def create_app(
 
         clients = app.state.clients
         try:
-            sha = set_avatar(clients.github, repo=agent.repo_full_name, png=png)
+            sha = _store_avatar(clients, agent, png)
         except ClientError as exc:
             # Same push-side failure family (and same copy) as
             # generate_avatar's own 502 above.

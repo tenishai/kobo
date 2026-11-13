@@ -265,6 +265,21 @@ describe("SlackVendor", () => {
     expect(await screen.findByText(/could not confirm the old app was removed/)).toBeTruthy();
   });
 
+  it("says a connected agent brings its own Slack app and offers no Create", async () => {
+    // Contract: the room's app is wired by commits to the agent's own
+    // repository, which the room never makes to a connected one, so Create
+    // is refused there. The row says where the team's own app's tokens go
+    // instead of offering a button that fails.
+    room({ ...NONE, own_app: true }, { ...AGENT, kind: "connected" });
+
+    expect(await screen.findByText(/it brings its own Slack app: the room does not make one for it/)).toBeTruthy();
+    expect(screen.getByText(/save its tokens under Secrets on this page/)).toBeTruthy();
+    expect(screen.getByRole("status").textContent?.trim()).toBe("This agent brings its own Slack app");
+    expect(screen.queryByRole("button", { name: "Create Slack app" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add Slack" })).toBeNull();
+    expect(screen.queryByRole("radio")).toBeNull();
+  });
+
   it("renders nothing when the room does not make Slack apps", async () => {
     room(NONE, { ...AGENT, slack: { ...AGENT.slack, relay: false } });
 

@@ -138,6 +138,9 @@ export type SlackAppView = {
   channels: string[];
   wake: SlackWake;
   legacy: boolean;
+  /** A connected agent: it runs its team's own code and brings its own Slack
+   * app, so the room offers none and its tokens go under Secrets. */
+  own_app?: boolean;
   /** The build the Slack wiring started has not rolled yet: a mention cannot reach the agent. */
   rebuilding?: boolean;
 };
@@ -3207,6 +3210,11 @@ export type AgentEnv = {
   /** The variables the room set itself (the model, how Slack wakes the
    * agent), shown as locked rows and never sent back in a save. */
   room?: Record<string, string>;
+  /** True when the room would not show this caller the variables at all:
+   * a connected agent's live in its team's repository and only a room
+   * operator reads them here (issue #200). Set by the query, not the
+   * server, which answers that read with a 403. */
+  restricted?: boolean;
 };
 
 export type AgentEnvWriteResult = {
