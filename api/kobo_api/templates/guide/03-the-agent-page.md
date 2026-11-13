@@ -29,7 +29,7 @@ A failed step shows a red mark and a **Why it failed** line with the reason the 
 
 ## When a step waits on you
 
-A connected agent's wiring arrives as a pull request on your repository, and someone on your team merges it. While that pull request is open the agent shows **Waiting**, not Failed (its dashboard card reads "Waiting on a pull request" over its age and author): the **Deployment setup** step carries a **What it is waiting for** line with the link, and the banner at the top offers **Resume**. You do not have to press it. The room checks once a minute and picks the setup back up on its own when the merge lands. Resume is for when you have just merged and do not want to wait.
+A connected agent's wiring arrives as a pull request on your repository, and someone on your team merges it. While that pull request is open the agent shows **Waiting**, not Failed (its dashboard card reads "Waiting on a pull request" over its age and author): the step it stopped at, usually **Deployment setup**, carries a **What it is waiting for** line with the link, and the banner at the top offers **Resume**. A repository can get two pull requests in a row, the room's wiring and then the deployment setup that follows from it; the agent waits on each, and **Image build** does not start judging a build until the second is merged. You do not have to press it. The room checks once a minute and picks the setup back up on its own when the merge lands. Resume is for when you have just merged and do not want to wait.
 
 ## The tabs
 

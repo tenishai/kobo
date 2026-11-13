@@ -68,6 +68,7 @@ from kobo_api.steps import (
     HelloStep,
     OnboardStep,
     StagedSkill,
+    StepWaiting,
 )
 from tests.fakes import (
     FAKE_CONNECTED_DOCKERFILE,
@@ -1752,6 +1753,63 @@ def test_connected_wire_step_sees_nothing_to_change_in_the_generators_own_text(
     clone = wiring.ctx.workdir / "wire"
     for rel_path, text in tree.items():
         assert (clone / rel_path).read_text() == text, rel_path
+
+
+SETUP_PR_URL = "https://github.com/example-org/team-chatbot/pull/7"
+
+
+def _gojira_reading(config, statuses: list[str]) -> FakeGojira:
+    """A FakeGojira holding app id 1 whose status reads go through `statuses`
+    in order (held at the last), with a setup pull request to name."""
+    gojira = FakeGojira(status_sequence=statuses, setup_pr_url=SETUP_PR_URL)
+    gojira.create_app(
+        name=AGENT_NAME,
+        repo_full_name=_repo(config),
+        cluster=config.gojira_cluster,
+        namespace=AGENT_NAME,
+    )
+    return gojira
+
+
+def test_connected_wire_step_does_not_believe_the_active_the_last_run_left(session_factory, config):
+    """Production bug: Connected wire step does not believe the active the last run left.
+
+    The platform answers a provision call before its run has marked the app
+    provisioning, so the read right after the room's wiring merge was still
+    the old `active`. The step returned, and the build step went on to watch
+    a commit that cannot build until the setup pull request is merged
+    (kobo#475, a connect on 2026-11-13). The step waits for the row to leave
+    `active`, and then parks on the setup pull request the platform opened."""
+    gojira = _gojira_reading(config, ["active", "active", "provisioning", "awaiting_pr"])
+    wiring = _wire_ctx(session_factory, config, gojira=gojira)
+
+    with pytest.raises(StepWaiting) as parked:
+        ConnectedWireStep().run(wiring.ctx)
+
+    assert SETUP_PR_URL in str(parked.value)
+    assert gojira.reprovision_calls == [1]
+
+
+def test_build_step_parks_a_connected_agent_on_the_setup_pull_request(session_factory, config):
+    """Production bug: Build step parks a connected agent on the setup pull request.
+
+    Every connect showed a failed image build once: the run on the room's
+    wiring commit fails its manifest check until a person merges the
+    platform's setup pull request, and the step reran it and raised (kobo#475,
+    2026-11-13). With that pull request open the run is neither rerun nor
+    judged; the agent waits on the pull request, link included."""
+    github = FakeGitHub(
+        head_sha="wire1",
+        runs_by_sha={"wire1": [[{"id": 7, "status": "completed", "conclusion": "failure"}]]},
+    )
+    gojira = _gojira_reading(config, ["awaiting_pr"])
+    wiring = _wire_ctx(session_factory, config, github=github, gojira=gojira)
+
+    with pytest.raises(StepWaiting) as parked:
+        BuildStep().run(wiring.ctx)
+
+    assert SETUP_PR_URL in str(parked.value)
+    assert github.rerun_calls == []
 
 
 # --- from test_db.py ---
