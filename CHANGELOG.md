@@ -6,6 +6,17 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.61] - 2026-11-13
+
+### Fixed
+- A new agent's Read on its own repository lands (#476). The room asks for that one read as itself and approves it as itself, and the permission service took an approval from an admin or security reviewer only, so the default never landed anywhere: the Access step went green on Retry with a request left waiting in Review and no read held. With the permission service 0.4.23 the room may approve that one request (its own, Read only, on the agent's own repository set) and nothing else. Retry now picks up a request the room left waiting instead of returning early or asking twice. Against an older permission service the step says the read **waits for a reviewer**, who approves it under Admin, Review. An agent born before this release with a request already waiting is approved the same way; nothing sweeps them.
+- Destroy takes everything the agent held out of the permission service (#476). It removed the agent's `agents` row only, and only when the person destroying was a reviewer; the agent's repository set, its grants on other connections and its pending requests stayed behind, where a later agent of the same name would have inherited them. Once the agent is out of the topology the room now tells the permission service 0.4.23 the agent is gone, which revokes its grants, ends the access it has in hand, withdraws its requests and removes its set. An older permission service gets the old removal, and what was missed is named on the destroy.
+- A connected agent's build no longer fails once per wiring (#475). After the room merged its wiring pull request it read the platform's status at once, saw the stale `active`, and watched a build that must fail until a person merges the setup pull request. The wire step now waits for the platform to notice the change, and the build step waits on the setup pull request, saying so, instead of failing.
+- The same bundle packs to the same bytes whatever second it is. The bundle tarball's gzip header carried the clock, so an unchanged bundle had a different digest each second, against what the packer promised. Nothing skipped work on that digest; it failed a test now and then.
+
+### Added
+- The Access tab greys a permission no tool uses yet (#474). A grant can only open a tool that exists, and the catalogue offers permissions with none behind them: a person could ask, see it approved, and the agent could do nothing more. The picker now carries `tool` on every permission (`gateway_lane.opens_tool`); a row with no tool is greyed, says **no tool uses this yet**, cannot be ticked and is not counted as something to ask for, and one already held or waiting says so beside its state. Google Cloud's 23 read permissions are marked as tooled, which needs the tool gateway's handler package that serves all of them (it served 12); Datadog's nine with tools in the vendor's default set are, and monitors write, SLOs, Synthetics and Security are not. A vendor with no lane (Azure) and any permission the catalogue gains later open nothing until the room learns the tool, so a new one cannot arrive offered and useless unnoticed.
+
 ## [0.3.60] - 2026-11-13
 
 ### Added
