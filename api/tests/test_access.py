@@ -6820,6 +6820,57 @@ def test_the_access_tab_shows_github_as_the_agents_own_repository_set(tmp_path, 
     assert off["available"] is False and off["repositories"] == [] and "Admin > Integrations" in off["note"]
 
 
+def test_a_repository_added_to_a_set_the_agent_holds_a_level_on_waits_for_a_reviewer(tmp_path, fake_storage):
+    """Gate (authorization, bab 0.4.22): an owner who is no reviewer picks any repository the
+    installation carries. Before the agent holds a level the pick lands. Once it does, what
+    the pick removes lands and what it adds waits: the save answers 202 with the set in force
+    and `waiting`, the picker's listing and the Access tab's waiting rows carry it, and the
+    Review pane shows the request with what it would add beside the set as it stands.
+    Approving applies it to the set and follows no gateway lane (no permission changed);
+    saving the set without the addition withdraws what waited."""
+    c, h, bab, _, admin = _github_room(tmp_path, fake_storage)
+    bab.reviewers = {"sec@example.com"}  # the signed-in owner is on neither team
+    assert c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/infra"]}).status_code == 200
+    rid = c.post("/api/agents/ledger/access/requests", headers=h,
+                 json={"integration": "github-ledger", "permissions": ["github_repos_read"], "note": "read"}).json()["id"]
+    assert c.post("/api/admin/access/decide", headers=h, json={"ids": [rid], "verdict": "approve"}).status_code == 200
+    lanes = len(admin.writes)
+
+    r = c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/web", "acme/infra"]})
+    assert r.status_code == 202, r.text
+    waiting = {"id": rid + 1, "added": ["acme/web"], "removed": [], "requested_by": "ops@example.com",
+               "created_at": "2026-10-29T12:00:00"}
+    assert r.json() == {"integration": "github-ledger", "repositories": ["acme/infra"], "changed": False, "waiting": waiting}
+    listing = c.get("/api/agents/ledger/github/repositories", headers=h).json()
+    assert listing["selected"] == ["acme/infra"] and listing["waiting"] == waiting
+    row = next(p for p in c.get("/api/agents/ledger/access", headers=h).json()["pending"] if p["kind"] == "repositories")
+    assert row["proposal"] == {"added": ["acme/web"], "removed": []} and row["permissions"] == ["github_repos_read"]
+    review = next(p for p in c.get("/api/admin/access/requests", headers=h).json()["requests"] if p["id"] == rid + 1)
+    assert review["proposal"]["added"] == ["acme/web"] and review["repositories"] == ["acme/infra"]
+    assert review["owner"] == "ops@example.com"
+
+    out = c.post("/api/admin/access/decide", headers=h, json={"ids": [rid + 1], "verdict": "approve"}).json()["results"]
+    assert out[0]["status"] == "approved" and out[0]["outcome"] == {"acme/web": "added"}
+    listing = c.get("/api/agents/ledger/github/repositories", headers=h).json()
+    assert listing["selected"] == ["acme/infra", "acme/web"] and listing["waiting"] is None
+    assert len(admin.writes) == lanes  # the set changed, not what the agent holds
+    trail = c.get("/api/admin/audit", headers=h, params={"q": "acme/web"}).json()
+    summaries = [e["summary"] for e in trail["rows"]]
+    assert "Approved adding acme/web for ledger on github-ledger" in summaries
+    assert any(s.endswith("asked to add acme/web to ledger's repositories on GitHub; waiting for review") for s in summaries)
+
+    # A pick that drops one and adds another: the drop lands now, the addition waits.
+    r = c.put("/api/agents/ledger/github/repositories", headers=h,
+              json={"repositories": ["acme/web", "example-org/agent-ledger"]})
+    assert r.status_code == 202 and r.json()["repositories"] == ["acme/web"] and r.json()["changed"] is True
+    assert r.json()["waiting"]["added"] == ["example-org/agent-ledger"]
+    # Saving the set without the addition withdraws it.
+    r = c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/web"]})
+    assert r.status_code == 200 and r.json() == {"integration": "github-ledger", "repositories": ["acme/web"], "changed": False}
+    assert c.get("/api/agents/ledger/github/repositories", headers=h).json()["waiting"] is None
+    assert [p["status"] for p in bab.requests("all", "ledger", "x") if p["kind"] == "repositories"] == ["approved", "withdrawn"]
+
+
 def test_the_gateway_lane_follows_each_github_level_and_withdraws_what_is_revoked(tmp_path, fake_storage):
     """Gate (authorization, kobo#365): Read approved opens the read-only target's lane and the
     bundle admits `github-mcp.*`; Open pull requests approved adds the write target's lane with

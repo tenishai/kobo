@@ -539,4 +539,35 @@ describe("PermissionsPanel: GitHub (issue #365)", () => {
     expect(screen.queryByLabelText("Find a repository")).toBeNull();
     expect(screen.queryByRole("button", { name: "Save repositories" })).toBeNull();
   });
+
+  it("sends a repository added to a set the agent holds a level on for review, and marks it waiting", async () => {
+    const saved = ["acme-eng/ledger", "acme-eng/billing"];
+    const waiting = { id: 12, added: ["acme-eng/website"], removed: [], requested_by: "dana@example.com", created_at: "2026-11-12T10:00:00" };
+    let repositories: unknown = { ...REPOSITORIES, selected: saved };
+    stubRoutes({
+      "/api/agents/ledger/access": { body: { ...ACCESS, vendors: [...ACCESS.vendors.slice(0, 2), GITHUB_SET] } },
+      "/api/agents/ledger/github/repositories": () => ({ body: repositories }),
+      "PUT /api/agents/ledger/github/repositories": () => {
+        // The set in force is unchanged: the addition is a reviewer's to allow.
+        repositories = { ...REPOSITORIES, selected: saved, waiting };
+        return { status: 202, body: { integration: "github-ledger", repositories: saved, changed: false, waiting } };
+      },
+    });
+    renderWithClient(PermissionsPanel, { agentName: "ledger" });
+
+    await fireEvent.click(await screen.findByRole("button", { name: /GitHub/ }));
+    await fireEvent.click(await screen.findByLabelText(/acme-eng\/website/));
+    await fireEvent.click(screen.getByRole("button", { name: "Save repositories" }));
+    await vi.waitFor(() => expect(putCalls()).toHaveLength(1));
+    expect(JSON.parse(String(putCalls()[0].body))).toEqual({ repositories: [...saved, "acme-eng/website"] });
+
+    // Still on the repositories: the new one stays ticked and says it waits,
+    // and the way on is the level for the set the agent has now.
+    expect(await screen.findByText(/Waiting for review: acme-eng\/website\./)).not.toBeNull();
+    const added = screen.getByLabelText(/acme-eng\/website/) as HTMLInputElement;
+    expect(added.checked).toBe(true);
+    expect(added.closest("label")?.textContent).toContain("waiting for review");
+    expect(screen.queryByText("Repositories saved. Pick the level next.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Choose the level" })).not.toBeNull();
+  });
 });

@@ -6,6 +6,10 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- An agent's owner picks any repository for it, and what widens a set the agent already holds a level on goes to Review. Saving repositories on the Access tab used to be refused for anyone who is not a reviewer ("is not on the admin or security team"), which left owners unable to ask at all. With the permission service 0.4.22: a set with no level on it, held or asked for, is the owner's to change freely; once the agent holds a level or has one waiting in Review, a repository the owner unticks leaves on save and a repository added waits as one request in Admin, Review, shown with what would be added, the set as it stands and the levels it would be reached with. The Access tab marks the waiting repositories; saving without them takes the request back. A new agent holds Read on its own repository from birth, so in practice every added repository is reviewed. An older permission service keeps refusing as before.
+- A changed repository set applies to the agent's next call. The permission service 0.4.22 ends the hour of access in hand when the set under it changes, and the audit row for the save says so; an older one lets the old set last out its hour.
+
 ## [0.3.58] - 2026-11-09
 
 ### Fixed

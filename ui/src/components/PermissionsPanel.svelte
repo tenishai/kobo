@@ -42,6 +42,9 @@
    * Harness's Agent to agent section, where the pair it makes lives; the
    * tables here leave it out. */
   const ASK_PERMISSION = "a2a_ask";
+  /** A request of this kind is an owner's pick on a repository set the agent
+   * already holds a level on: it adds repositories, it asks for no level. */
+  const REPOSITORIES = "repositories";
   /** How many repository matches the picker draws at once. */
   const REPO_SHOWN = 40;
   /** The two rows that are not permission vendors. */
@@ -124,7 +127,10 @@
   const githubAccount = $derived(isGithub ? (vendor?.accounts[0] ?? null) : null);
 
   const held = $derived(new Set(grants.filter((g) => g.state !== "expired").map((g) => `${g.integration}:${g.permission}`)));
-  const waiting = $derived(new Set(pending.flatMap((r) => (r.permissions ?? []).map((p) => `${r.integration}:${p}`))));
+  // A repository pick names the levels already held on the set; it asks for none.
+  const waiting = $derived(
+    new Set(pending.filter((r) => r.kind !== REPOSITORIES).flatMap((r) => (r.permissions ?? []).map((p) => `${r.integration}:${p}`))),
+  );
 
   /** Every permission's label, across vendors, for the tables. */
   const labels = $derived.by(() => {
@@ -312,7 +318,15 @@
    * the level step says the set is saved. */
   let repoSaved = $state(false);
 
-  const repoSelected = $derived(repos.data?.selected ?? []);
+  /** A pick on a set the agent already holds a level on, waiting for a
+   * reviewer. The ticks show what was asked for: the set in force with the
+   * pick applied, so unticking a waiting repository and saving takes it back. */
+  const repoWaiting = $derived(repos.data?.waiting ?? null);
+  const repoSelected = $derived.by(() => {
+    const now = repos.data?.selected ?? [];
+    if (!repoWaiting) return now;
+    return [...now.filter((r) => !repoWaiting.removed.includes(r)), ...repoWaiting.added.filter((r) => !now.includes(r))];
+  });
   const repoChecked = $derived(repoDraft ?? repoSelected);
   const repoChanged = $derived(
     repoChecked.length !== repoSelected.length || repoChecked.some((r) => !repoSelected.includes(r)),
@@ -350,6 +364,16 @@
     saveRepos.mutate([...repoChecked], {
       onSuccess: (res) => {
         repoDraft = null;
+        if (res.waiting) {
+          // The agent holds a level on its set, so what was added is a
+          // reviewer's to allow: stay on the list, where it shows as waiting.
+          const n = res.waiting.added.length;
+          toast.success(
+            "Sent for review",
+            `${count(n, "repository waits", "repositories wait")} for a reviewer.${res.changed ? " What you removed is gone now." : ""} ${agentName} keeps the rest until then.`,
+          );
+          return;
+        }
         repoSaved = true;
         // The set is the account the request targets: step on to the level.
         accountId = res.integration;
@@ -499,9 +523,14 @@
           </tr>
         {/each}
         {#each asked as r (r.id)}
-          {@const set = r.repositories ?? repoSet(r.integration)}
+          {@const pick = r.kind === REPOSITORIES ? (r.proposal ?? { added: [], removed: [] }) : null}
+          {@const set = pick ? pick.added : (r.repositories ?? repoSet(r.integration))}
           <tr class="vendor__waiting">
-            <td><span class="perm" class:perm--named={r.permissions.some((p) => labels.has(p))}>{requestLabels(r)}</span></td>
+            {#if pick}
+              <td><span class="perm perm--named">{pick.removed.length > 0 ? "Replace the repositories" : `Add ${count(pick.added.length, "repository", "repositories")}`}</span></td>
+            {:else}
+              <td><span class="perm" class:perm--named={r.permissions.some((p) => labels.has(p))}>{requestLabels(r)}</span></td>
+            {/if}
             <td>
               {where(r.integration)}
               {#if set}{@render repoList(set)}{/if}
@@ -570,8 +599,15 @@
               {:else if repos.data}
                 <p class="vendor__copy">
                   Which repositories this agent may reach. One set per agent; the level you pick next
-                  applies to every repository in it. Saving a changed set replaces the old one.
+                  applies to every repository in it. Removing a repository takes effect when you save.
+                  Once the agent holds a level, or has asked for one, a repository you add waits for a reviewer.
                 </p>
+                {#if repoWaiting}
+                  <p class="vendor__copy" role="status">
+                    Waiting for review: {repoWaiting.added.join(", ")}. The agent keeps its current
+                    repositories until a reviewer allows the change.
+                  </p>
+                {/if}
                 <div class="search">
                   <input class="field__input" type="search" placeholder={`Find a repository (${repoTotal} the room can see)`} bind:value={repoQuery} aria-label="Find a repository" disabled={frozen} />
                 </div>
@@ -585,7 +621,7 @@
                         <label class="svc svc--repo">
                           <input type="checkbox" checked={true} disabled={frozen || saveRepos.isPending} onchange={() => toggleRepo(r.full_name)} />
                           <span class="svc__name">{r.full_name}</span>
-                          <span class="svc__desc quiet">{r.private ? "private" : "public"}{#if r.default_branch} · {r.default_branch}{/if}</span>
+                          <span class="svc__desc quiet">{r.private ? "private" : "public"}{#if r.default_branch} · {r.default_branch}{/if}{#if repoWaiting?.added.includes(r.full_name)} · waiting for review{/if}</span>
                         </label>
                       {/each}
                     {/if}
