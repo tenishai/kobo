@@ -6,6 +6,10 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- The owner of a connected agent sees and saves its secrets. The variables of a connected repository are operator-only (#200), and the Secrets tab took that one refusal for a failed load: the owner saw the refusal where the whole table should be and could not add a secret the room would have accepted. The tab now keeps the secrets, drops **+ Variable**, and says the variables live in the agent's own repository. `kobo_list_agent_secrets` answered "agent not found" for the same reason; it now lists the secrets and answers `env_readable: false`.
+- A connected agent's picture can be changed. The picture of a connected agent lives in the room and nowhere in its repository, and both picture routes still refused with "this agent's repository belongs to its team". They now store the picture in the room and never touch the repository.
+
 ## [0.3.61] - 2026-11-13
 
 ### Fixed

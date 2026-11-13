@@ -2835,6 +2835,35 @@ def test_list_agent_secrets_answers_names_and_never_a_value(
     assert SECRET_VALUE__mcp_tools_write not in json.dumps(result)
 
 
+def test_list_agent_secrets_still_answers_a_connected_agents_owner(
+    session_factory__mcp_tools_write, config__mcp_tools_write, fake_storage__mcp_tools_write
+):
+    """Production bug: The owner of a connected agent asked for its secrets and was told "agent not found".
+
+    The variables of a connected repository are operator-only (issue #200),
+    and that one refusal was read as the whole agent being out of sight
+    (2026-11-13). The names of the secrets are the owner's to see."""
+    sero = FakeSero()
+    sero.stored[f"apps/{SECRETS_AGENT}/env"] = {"API_KEY": SECRET_VALUE__mcp_tools_write}
+    _seed_agent__mcp_tools_write(
+        session_factory__mcp_tools_write,
+        name=SECRETS_AGENT,
+        created_by=MEMBER_A_EMAIL,
+        group_name=GROUP_A,
+        repo_full_name=SECRETS_REPO,
+        kind=KIND_CONNECTED,
+    )
+    mcp = build_mcp_server(_secrets_app(session_factory__mcp_tools_write, config__mcp_tools_write, fake_storage__mcp_tools_write, sero=sero))
+
+    result = _call_tool(
+        mcp, "kobo_list_agent_secrets", _ctx_for(MEMBER_A_EMAIL), agent=SECRETS_AGENT
+    )
+
+    assert result["secrets"] == ["API_KEY"]
+    assert result["env"] == {}
+    assert result["env_readable"] is False
+
+
 def test_set_agent_secrets_never_puts_a_value_in_the_audit_row(
     session_factory__mcp_tools_write, config__mcp_tools_write, fake_storage__mcp_tools_write
 ):

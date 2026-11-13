@@ -960,12 +960,8 @@ GUARDED_ROUTES = [
         {"json": {"purpose_tags": ["billing"]}},
     ),
     ("POST", f"/api/agents/{AGENT_NAME}/metadata/regenerate", {"json": {}}),
-    ("POST", f"/api/agents/{AGENT_NAME}/avatar", {"json": {}}),
-    (
-        "PUT",
-        f"/api/agents/{AGENT_NAME}/avatar",
-        {"files": {"file": ("avatar.png", PNG_BYTES, "image/png")}},
-    ),
+    # The picture is not here: a connected agent's lives in the room alone
+    # (the test below), so changing it never reaches the team's repository.
     # Not a repo write, but the same rule: registering a connected agent in
     # the switchboard would create a directory entry destroy then declines
     # to retire, because a connected agent is never listed there.
@@ -1109,6 +1105,28 @@ def test_no_repo_writing_route_refuses_a_composed_agent_with_this_message(
 
     if response.status_code == 409:
         assert response.json().get("error") != REFUSAL
+
+
+def test_a_connected_agents_picture_changes_in_the_room_and_never_in_its_repository(
+    client__web_connected_guard, session_factory__web_connected_guard, github
+):
+    """Gate (ownership): A connected agent's picture changes in the room and never in its repository.
+
+    The owner of a connected agent on production was refused a new picture
+    with the repository sentence (2026-11-13), though the room draws that
+    picture at birth and keeps it in its own store."""
+    _seed(session_factory__web_connected_guard, kind=KIND_CONNECTED)
+
+    response = client__web_connected_guard.put(
+        f"/api/agents/{AGENT_NAME}/avatar", content=PNG_BYTES, headers={"Content-Type": "image/png"}
+    )
+
+    assert response.status_code == 200, response.text
+    assert _touched_the_repo(github) == []
+    assert [call for call in github.calls if "avatar" in call] == []
+    shown = client__web_connected_guard.get(f"/api/agents/{AGENT_NAME}/avatar")
+    assert shown.status_code == 200
+    assert shown.content == PNG_BYTES
 
 
 @pytest.mark.parametrize("path", READ_ROUTES)

@@ -3207,6 +3207,11 @@ export type AgentEnv = {
   /** The variables the room set itself (the model, how Slack wakes the
    * agent), shown as locked rows and never sent back in a save. */
   room?: Record<string, string>;
+  /** True when the room would not show this caller the variables at all:
+   * a connected agent's live in its team's repository and only a room
+   * operator reads them here (issue #200). Set by the query, not the
+   * server, which answers that read with a 403. */
+  restricted?: boolean;
 };
 
 export type AgentEnvWriteResult = {
