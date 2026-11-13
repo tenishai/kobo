@@ -5923,6 +5923,35 @@ def _gcp_bab() -> FakeBab:
     return bab
 
 
+def test_the_picker_says_which_permissions_open_no_tool():
+    """Gate (kobo#474): a permission that could be granted and that no tool uses is
+    marked in the picker, so the page greys it instead of offering access that does
+    nothing. Google Cloud and Datadog go by permission (the model-access row and
+    Datadog's SLOs open no tool), AWS serves every permission through one tool,
+    GitHub goes by level, and a vendor the room has no lane for (Azure), or a row
+    the catalogue gained since, opens nothing until the room learns its tool. And
+    whatever the room says opens a tool has a lane to carry it to the agent."""
+    from kobo_api import gateway_lane
+    from kobo_api.bab import picker
+
+    bab = _gcp_bab()
+    bab._catalogue["azure"] = {"vendor": "azure", "tiers": [], "groups": [{"name": "Management", "permissions": [
+        {"name": "azure_resources_read", "tier": "read", "description": "Everything in the subscription, read-only"}]}]}
+    bab._catalogue["datadog"]["groups"][0]["permissions"].append({"name": "datadog_slos_read", "tier": "read", "description": "SLOs"})
+    bab._catalogue["github"]["groups"][0]["permissions"].append({"name": "github_releases_write", "tier": "mutate", "description": "new"})
+
+    tools = {v["id"]: {p["name"]: p["tool"] for g in v["groups"] for p in g["permissions"]} for v in picker(bab, "x")}
+
+    assert tools["gcp"] == {"gcp_compute_read": True, "gcp_logging_read": True, "gcp_vertex_ai_user": False}
+    assert tools["datadog"] == {"datadog_monitors_read": True, "datadog_slos_read": False}
+    assert all(tools["aws"].values()) and tools["aws"]
+    assert tools["github"] == {"github_repos_read": True, "github_pulls_review": True, "github_pulls_write": True,
+                               "github_releases_write": False}
+    assert tools["azure"] == {"azure_resources_read": False}
+    for vendor, permissions in gateway_lane.TOOLED.items():
+        assert all(gateway_lane.lane_for(vendor, p) for p in permissions), vendor
+
+
 def test_a_google_cloud_project_is_probed_through_the_permission_service_and_held_there_with_the_read_ceiling(tmp_path, fake_storage):
     """Gate (authorization, kobo#390): a project connects only after the permission service
     reads it as its own identity (and Vertex AI there when the models box is ticked); the

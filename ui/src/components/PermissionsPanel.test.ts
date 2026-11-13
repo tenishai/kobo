@@ -62,7 +62,7 @@ const ACCESS = {
       account_noun: "account",
       organizations: [{ id: "acme-aws", name: "acme-aws" }],
       accounts: [
-        { id: "acme-audit", name: "acme-audit", connected: true, ceiling: ["aws_cloudtrail_read", "aws_iam_read", "aws_ecs_update_service"], organization: "acme-aws", account_id: "111111111111", repositories: [], has_repo_set: false },
+        { id: "acme-audit", name: "acme-audit", connected: true, ceiling: ["aws_cloudtrail_read", "aws_iam_read", "aws_ecs_update_service", "aws_macie_read"], organization: "acme-aws", account_id: "111111111111", repositories: [], has_repo_set: false },
         { id: "acme-data", name: "acme-data", connected: false, ceiling: [], organization: "acme-aws", account_id: "222222222222", repositories: [], has_repo_set: false },
       ],
       groups: [
@@ -70,6 +70,7 @@ const ACCESS = {
           { name: "aws_cloudtrail_read", tier: "read", description: "CloudTrail: trails, event history and Lake queries", label: null },
           { name: "aws_iam_read", tier: "read", description: "IAM users, roles, policies", label: null },
           { name: "aws_kms_read", tier: "read", description: "KMS keys (never decrypt)", label: null },
+          { name: "aws_macie_read", tier: "read", description: "Macie findings", label: null, tool: false },
         ] },
         { name: "Compute", permissions: [
           { name: "aws_ec2_read", tier: "read", description: "EC2 instances", label: null },
@@ -178,6 +179,11 @@ describe("PermissionsPanel", () => {
     expect(screen.getAllByText("the connection does not allow this").length).toBe(3);
     expect((screen.getByLabelText(/kms/) as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByLabelText(/Remove an ECS service/) as HTMLInputElement).disabled).toBe(true);
+    // Issue #474: a row the connection allows but no tool uses yet is greyed
+    // too, with its own reason, and is not counted as something to ask for.
+    expect((screen.getByLabelText(/Macie/) as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByText("no tool uses this yet")).not.toBeNull();
+    expect(screen.getByPlaceholderText("Find a permission (3 this connection allows)")).not.toBeNull();
 
     // Search narrows the list.
     await fireEvent.input(screen.getByLabelText("Find a permission"), { target: { value: "iam" } });
