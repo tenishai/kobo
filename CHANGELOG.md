@@ -6,6 +6,11 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Admin, Models opens at once and reads as one list. The page used to wait on one request that asked every connected cloud for its models, one cloud after another, before it drew anything: three to eight seconds on most visits. It now opens on the room's own ticks and whatever list of each cloud the room already holds, asks each cloud that is owed a fresh list on its own and side by side, and says under the table how long ago each was read; a slow cloud holds up only its own column. A tick no longer waits on any cloud.
+- The Models page is laid out by model, not by cloud. **Offered in New agent** is first and always in view, across every cloud. Under it, every model the clouds list is folded by who makes it, with a count of models and of offered ones; a model is one row with a box under each cloud that has it, so which clouds carry a model shows at a glance. Two clouds' entries share a row only when they are surely the same model (same maker, same name once each cloud's own prefix, date and version suffix are taken off); anything less certain stays two rows. Search stays, and a cloud filter sits beside it.
+- `GET /api/admin/models` takes `listing=held` (answer at once from what the room holds; a provider owed a list is `pending`) and `source=<row>` (one provider alone); every model carries the cloud's own `name` beside the room's `label`. The route reads the ticks and lets its database session go before any cloud is asked.
+
 ## [0.3.59] - 2026-11-12
 
 ### Changed

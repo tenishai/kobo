@@ -179,6 +179,7 @@ import {
   fetchAdminModels,
   putAdminModels,
   type AdminModelChange,
+  type AdminModelsView,
   fetchAdminPeople,
   fetchAdminRoles,
   fetchAdminRoom,
@@ -618,20 +619,43 @@ export function checkOrgAccountsMutation(queryClient: QueryClient) {
   };
 }
 
+/** The Models pane's first read: the room's ticks and whatever listing it holds,
+ * at once. A provider it says is `pending` is then listed by `adminModelListingQuery`. */
 export function adminModelsQuery() {
   return queryOptions({
     queryKey: ["admin", "models"] as const,
-    queryFn: fetchAdminModels,
+    queryFn: () => fetchAdminModels({ listing: "held" }),
     staleTime: 15_000,
   });
 }
 
-/** A tick on the Models pane (kobo#405): the pickers and the audit follow. */
+/** One provider's models as its cloud lists them now: the slow read (seconds),
+ * one per provider and side by side, so a slow cloud holds up only its own column. */
+export function adminModelListingQuery(source: string) {
+  return queryOptions({
+    queryKey: ["admin", "models", "listing", source] as const,
+    queryFn: () => fetchAdminModels({ source }),
+    staleTime: 60_000,
+  });
+}
+
+/** A tick on the Models pane (kobo#405): the pickers and the audit follow. The
+ * pane's own reads are not asked again (a cloud's listing does not change with a
+ * tick): the tick is written into what they already hold. */
 export function putAdminModelsMutation(queryClient: QueryClient) {
   return {
     mutationFn: (changes: AdminModelChange[]) => putAdminModels(changes),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["admin", "models"] });
+    onSuccess: (_out: unknown, changes: AdminModelChange[]) => {
+      const ticks = new Map(changes.map((c) => [c.id, c.enabled]));
+      queryClient.setQueriesData<AdminModelsView>({ queryKey: ["admin", "models"] }, (view) =>
+        view && {
+          ...view,
+          providers: view.providers.map((p) => {
+            const discovered = p.discovered.map((m) => (ticks.has(m.id) ? { ...m, enabled: ticks.get(m.id)! } : m));
+            return { ...p, discovered, offered: discovered.filter((m) => m.enabled).map((m) => m.id) };
+          }),
+        },
+      );
       queryClient.invalidateQueries({ queryKey: ["catalog", "models"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "addons"] });

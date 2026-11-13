@@ -4536,16 +4536,29 @@ def create_app(
         return JSONResponse({"integrations": rows})
 
     @app.get("/api/admin/models")
-    def admin_models(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
+    def admin_models(
+        request: Request, listing: str = room_models.LISTING_LIVE, source: str | None = None,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
         """The Models pane (kobo#405): per connected provider, the models the
-        cloud lists merged with which ones the room offers."""
+        cloud lists merged with which ones the room offers. A cloud's listing
+        takes seconds, so the pane reads `?listing=held` first (what the room
+        holds, at once; a section owed a listing says `pending`) and then
+        `?source=<row>` for each such provider on its own. The ticks are read
+        and the session closed BEFORE a cloud is asked (the 2026-10-01 pool
+        incident: never hold a database session across a slow call)."""
         blocked = _admin_panel_gate(request)
         if blocked is not None:
             return blocked
+        if listing not in room_models.LISTINGS:
+            return JSONResponse({"error": f"listing is one of {', '.join(room_models.LISTINGS)}"}, status_code=422)
         bab = getattr(app.state.clients, "bab", None) if app.state.clients is not None else None
         rows = admin_store.list_integrations(session)
-        view = room_models.admin_view(session, app.state.config, rows, bab, _bab_actor(request))
+        table = room_models.read_table(session, app.state.config, rows)
         session.commit()  # the first read seeds the table
+        session.close()
+        view = room_models.build_view(
+            app.state.config, rows, table, bab, _bab_actor(request), listing=listing, source=source)
         return JSONResponse(view)
 
     @app.put("/api/admin/models")
