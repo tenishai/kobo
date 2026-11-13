@@ -2520,10 +2520,22 @@ class FakeBab:
     pick that adds to a set already carrying grants (or a level request still
     waiting) is split as the service splits it: what it removes lands, what it adds waits as a request of kind
     `repositories` (`proposal`), and the answer carries it under `pending`.
-    Approving one applies it to the set; a whole write withdraws it."""
+    Approving one applies it to the set; a whole write withdraws it.
+
+    bab 0.4.23 (kobo#476), on by default as `room_decides` and `agent_route`:
+    with `reviewers` set, a decision by anyone else is refused, except the
+    room (`room@kobo`) approving a Read request it raised itself on an agent's
+    own repository set; `delete_agent` removes what a departed agent held (its
+    grants, its waiting requests, its set, its `agents` row) and is refused
+    while the last topology pushed still lists the agent. A test sets either
+    flag False to be the service before that: the room's decision is refused
+    like anyone's, and `delete_agent` answers Not Found."""
 
     def __init__(self, *, integrations=None, catalogue=None, healthy=True, error=None):
         self.reviewers: set[str] | None = None
+        self.room_decides = True
+        self.agent_route = True
+        self.agents_removed: list[tuple[str, str]] = []
         # Which accounts carry the spoke role when discover probes them (#275): the first
         # does, the second does not, unless a test says otherwise.
         self.reachable_accounts = {"111111111111"}
@@ -2650,8 +2662,22 @@ class FakeBab:
         rows = [dict(r) for r in self._requests.values() if status == "all" or r["status"] == status]
         return [r for r in rows if not agent or r["agent"] == agent]
 
+    def _room_default(self, rid) -> bool:
+        r = self._requests.get(rid)
+        if r is None or r["status"] != "pending" or r["kind"] == "repositories" or r["requested_by"] != "room@kobo":
+            return False
+        row = next((i for i in self._integrations if i["integration"] == r["integration"]), None)
+        return (r["permissions"] == ["github_repos_read"] and row is not None and bool(row.get("parent"))
+                and row["integration"] == f"{row['parent']}-{r['agent']}"
+                and bool((row.get("spec") or {}).get("repositories")))
+
     def decide(self, ids, verdict, reason, actor):
         self._guard()
+        if self.reviewers is not None and actor not in self.reviewers:
+            by_room = self.room_decides and actor == "room@kobo" and verdict == "approve"
+            if not (by_room and all(self._room_default(rid) for rid in ids)):
+                raise ClientError(f"the permission service refused the decision: {actor} is not on the admin or "
+                                  f"security team")
         results = []
         for rid in ids:
             r = self._requests.get(rid)
@@ -2916,6 +2942,29 @@ class FakeBab:
         revoked = sum(1 for g in self._grants.values() if g["integration"] in gone)
         self._grants = {k: g for k, g in self._grants.items() if g["integration"] not in gone}
         return {"removed": integration, "grants_revoked": revoked, "tuples_deleted": revoked + len(gone)}
+
+    def delete_agent(self, agent, actor):
+        self._guard()
+        if not self.agent_route:
+            raise ClientError(f"the permission service refused removing {agent}: Not Found")
+        if self.topologies and any(a.get("name") == agent for a in self.topologies[-1][1]):
+            raise ClientError(f"the permission service refused removing {agent}: {agent!r} is still one of the "
+                              f"room's agents; push the topology without it first")
+        self.agents_removed.append((agent, actor))
+        gone = sorted(i["integration"] for i in self._integrations
+                      if (i.get("parent") and i["integration"] == f"{i['parent']}-{agent}")
+                      or (i["integration"] == agent and i.get("vendor") == "agents"))
+        revoked = [k for k, g in self._grants.items() if g["agent"] == agent or g["integration"] in gone]
+        for k in revoked:
+            del self._grants[k]
+        withdrawn = [r for r in self._requests.values()
+                     if r["status"] == "pending" and (r["agent"] == agent or r["integration"] in gone)]
+        for r in withdrawn:
+            r["status"], r["decided_by"] = "withdrawn", actor
+        self._integrations = [i for i in self._integrations if i["integration"] not in gone]
+        return {"agent": agent, "grants_revoked": len(revoked), "requests_withdrawn": len(withdrawn),
+                "integrations_removed": len(gone), "tuples_deleted": len(revoked) + len(gone), "leases_ended": 0,
+                "removed": gone, "kept": []}
 
 
 class FakeModelsGateway:

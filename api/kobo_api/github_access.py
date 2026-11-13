@@ -194,6 +194,56 @@ def end_open_leases(bab: BabClient, actor: str, agent: str, integration: str) ->
     return LEASES_NOTE
 
 
+# ---- the default: an agent reads its own repository (owner ruling 2026-11-02) --
+
+
+class DefaultWaits(ClientError):
+    """The room asked for the default and could not allow it itself: the
+    request is filed and waits for a reviewer."""
+
+
+def own_repository_default(bab: BabClient, conn: Connection, agent: str, repository: str, note: str) -> str | None:
+    """Read on the agent's own repository, asked for and allowed by the room.
+
+    The room writes the agent's set as its one repository, files a Read request
+    on it as itself and approves it. The permission service lets the room decide
+    exactly that since 0.4.23 (kobo#476): a request the room raised, for a level
+    its catalogue marks `room_default`, on that agent's own set. Before that the
+    decision was refused (the room is on no reviewing team), so the default never
+    landed anywhere and left a request waiting; that is `DefaultWaits` here.
+
+    Safe to run again. A set that is still exactly this repository with the
+    room's own request still waiting on it is approved now. Anything else that
+    already exists stands: a set a person picked, a default a reviewer decided,
+    a Read already held. The room never asks twice.
+
+    Returns the set's id when the agent holds Read on it because of this call
+    (the caller brings the gateway lane in step), else None."""
+    actor = ROOM_ACTOR
+    cid = child_id(conn.id, agent)
+    existing = child(bab, actor, conn.id, agent)
+    if existing is None:
+        write_child(bab, actor, conn, agent, [repository])
+        if any(g.get("permission") == REPOS_READ for g in active_grants(bab, actor, agent, cid)):
+            return cid
+        asked = bab.request(agent, cid, [REPOS_READ], note, actor)
+    else:
+        if child_repositories(existing) != [repository]:
+            return None
+        asked = next((r for r in bab.requests("pending", agent, actor)
+                      if r.get("integration") == cid and r.get("requested_by") == actor
+                      and r.get("kind") != REPOSITORIES_KIND and r.get("permissions") == [REPOS_READ]), None)
+        if asked is None:
+            return None
+    try:
+        results = bab.decide([asked["id"]], "approve", None, actor)
+    except ClientError as exc:
+        raise DefaultWaits(str(exc)) from exc
+    if not any(r.get("id") == asked["id"] and r.get("status") == "approved" for r in results):
+        raise DefaultWaits(f"the permission service did not approve request {asked['id']}")
+    return cid
+
+
 # ---- the one-time move of RepoAccess rows (kobo#365) -------------------------
 
 
@@ -268,6 +318,7 @@ __all__ = [
     "REPOSITORY_RE",
     "REPOS_READ",
     "Connection",
+    "DefaultWaits",
     "Saved",
     "active_grants",
     "child",
@@ -276,6 +327,7 @@ __all__ = [
     "end_open_leases",
     "installation_repositories",
     "migrate_repo_access",
+    "own_repository_default",
     "strays",
     "waiting_on",
     "waiting_pick",
