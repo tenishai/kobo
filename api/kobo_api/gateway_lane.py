@@ -104,6 +104,29 @@ PERMISSION_LANES: dict[tuple[str, str], Lane] = {
                                                        handlers=("atlassian", "jira-write"),
                                                        allow=("atlassian.*", "jira-write.*")),
 }
+# What a permission opens (kobo#474). A lane lets an agent's calls through to a handler; whether
+# the handler has a tool for the permission is a separate fact, and for these vendors it is per
+# permission. Google Cloud cannot narrow a borrowed token to what the agent holds, so the
+# gateway's `gcp` handler has its own tools per permission and refuses the rest (its
+# `PERMISSIONS` table; this is that table's keys, kept in step by hand). Datadog's hosted server
+# serves a fixed default set of tools, and the permissions left out here have none in it. A
+# vendor with a lane and no entry serves every permission through what the lane opens (AWS
+# narrows the borrowed session itself; GitHub and Atlassian go by level, above). A vendor with
+# no lane opens nothing.
+TOOLED: dict[str, frozenset[str]] = {
+    "gcp": frozenset({
+        "gcp_artifactregistry_read", "gcp_asset_read", "gcp_bigquery_read", "gcp_billing_read", "gcp_compute_read",
+        "gcp_dataflow_read", "gcp_dns_read", "gcp_functions_read", "gcp_gke_read", "gcp_iam_read", "gcp_kms_read",
+        "gcp_logging_read", "gcp_memorystore_read", "gcp_monitoring_read", "gcp_network_read", "gcp_pubsub_read",
+        "gcp_resourcemanager_read", "gcp_run_read", "gcp_secretmanager_read", "gcp_securitycenter_read",
+        "gcp_spanner_read", "gcp_sql_read", "gcp_storage_read",
+    }),
+    "datadog": frozenset({
+        "datadog_apm_read", "datadog_dashboards_read", "datadog_events_read", "datadog_hosts_read",
+        "datadog_incidents_read", "datadog_logs_read", "datadog_metrics_read", "datadog_monitors_read",
+        "datadog_rum_read",
+    }),
+}
 # What the room used to put there and no lane earns any more: withdrawn on the
 # next `follow` (the gateway's `github` handler and the broker sidecar's tools,
 # kobo#365). Listed here so `follow` keeps managing them until they are gone.
@@ -136,6 +159,17 @@ def lane_for(vendor: str, permission: str) -> Lane | None:
     """The lane one active grant earns: the permission's own when the vendor
     is per permission, else the vendor's; None for a vendor with no lane."""
     return PERMISSION_LANES.get((vendor, permission)) or GATEWAY_LANES.get(vendor)
+
+
+def opens_tool(vendor: str, permission: str) -> bool:
+    """Whether holding this permission puts any tool in front of an agent. A
+    permission the tables do not know opens nothing, so a new catalogue row,
+    or a whole new vendor, reads as "no tool yet" until the room learns its
+    tools; the picker greys it instead of offering a grant that does nothing."""
+    if lane_for(vendor, permission) is None:
+        return False
+    tooled = TOOLED.get(vendor)
+    return tooled is None or permission in tooled
 
 
 def held_lanes(bab, agent_name: str, actor: str) -> list[Lane]:
@@ -411,6 +445,6 @@ def tally(sentence: str) -> str:
 
 __all__ = [
     "GATEWAY_LANES", "HEAL_INTERVAL_S", "MANAGED_ALLOW", "MANAGED_HANDLERS", "MANAGED_SCOPES", "PERMISSION_LANES", "RETIRED_HANDLERS",
-    "RETIRED_PREFIXES", "Lane", "desired_allow", "desired_lane", "follow", "heal", "heal_loop", "held_lanes", "held_vendors", "lane_for",
-    "sync_allow", "tally",
+    "RETIRED_PREFIXES", "TOOLED", "Lane", "desired_allow", "desired_lane", "follow", "heal", "heal_loop", "held_lanes", "held_vendors",
+    "lane_for", "opens_tool", "sync_allow", "tally",
 ]

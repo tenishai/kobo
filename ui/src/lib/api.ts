@@ -1764,6 +1764,10 @@ export type AccessPermission = {
   /** What the row is called on the page (GitHub's "Read", "Review pull
    * requests", "Open pull requests"); null for a row named by its id. */
   label: string | null;
+  /** Whether holding it puts any tool in front of an agent (issue #474).
+   * False greys the row: a grant that would open nothing is not asked for.
+   * Absent on an older server, which reads as true. */
+  tool?: boolean;
 };
 
 /** One account, project or subscription of a cloud vendor, or the single

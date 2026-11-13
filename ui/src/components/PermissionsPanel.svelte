@@ -243,18 +243,26 @@
     repoSaved = false;
   }
 
-  type RowState = "held" | "waiting" | "above" | "open";
+  type RowState = "held" | "waiting" | "notool" | "above" | "open";
   function rowState(a: AccessAccount, p: AccessPermission): RowState {
     const key = `${a.id}:${p.name}`;
     if (held.has(key)) return "held";
     if (waiting.has(key)) return "waiting";
+    if (p.tool === false) return "notool";
     if (!a.ceiling.includes(p.name)) return "above";
     return "open";
   }
-  const WHY: Record<RowState, string> = { held: "held", waiting: "waiting for review", above: "the connection does not allow this", open: "" };
+  const NO_TOOL = "no tool uses this yet";
+  const WHY: Record<RowState, string> = { held: "held", waiting: "waiting for review", notool: NO_TOOL, above: "the connection does not allow this", open: "" };
+  /** A permission held or asked for before the room knew it opens nothing
+   * still says so, beside its state. */
+  function why(st: RowState, p: AccessPermission): string {
+    return p.tool === false && (st === "held" || st === "waiting") ? `${WHY[st]}; ${NO_TOOL}` : WHY[st];
+  }
 
   // Every row of the vendor's tree, read and write tiers alike: a row the
-  // connection's ceiling does not carry stays greyed with the reason.
+  // connection's ceiling does not carry, or one no tool uses yet (issue #474),
+  // stays greyed with the reason.
   const matches = $derived.by(() => {
     if (!vendor) return [] as { name: string; permissions: AccessPermission[] }[];
     const q = query.trim().toLowerCase();
@@ -273,7 +281,7 @@
       .filter((g) => g.permissions.length > 0);
   });
   const offeredCount = $derived(
-    account && vendor ? vendor.groups.reduce((n, g) => n + g.permissions.filter((p) => account.ceiling.includes(p.name)).length, 0) : 0,
+    account && vendor ? vendor.groups.reduce((n, g) => n + g.permissions.filter((p) => p.tool !== false && account.ceiling.includes(p.name)).length, 0) : 0,
   );
 
   function toggle(name: string): void {
@@ -710,7 +718,7 @@
                         <input type="checkbox" disabled={frozen || st !== "open"} checked={st === "held" || picked.includes(p.name)} onchange={() => toggle(p.name)} />
                         <span class="svc__name" class:svc__name--named={p.label}>{permLabel(p)}</span>
                         <span class="svc__desc quiet">{p.description ?? ""}</span>
-                        <span class="svc__why quiet">{WHY[st]}</span>
+                        <span class="svc__why quiet">{why(st, p)}</span>
                       </label>
                     {/each}
                   {/each}
@@ -799,8 +807,8 @@
   .group { margin: var(--space-sm) 0 var(--space-2xs); color: var(--muted); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
   .svc { display: grid; grid-template-columns: auto 10rem minmax(0, 1fr) auto; gap: var(--space-sm); align-items: baseline; padding: var(--space-2xs) 0; cursor: pointer; }
   .svc--repo { grid-template-columns: auto minmax(0, 1fr) auto; }
-  .svc--above, .svc--held, .svc--waiting { cursor: default; }
-  .svc--above .svc__name, .svc--above .svc__desc { color: var(--muted); }
+  .svc--above, .svc--notool, .svc--held, .svc--waiting { cursor: default; }
+  .svc--above .svc__name, .svc--above .svc__desc, .svc--notool .svc__name, .svc--notool .svc__desc { color: var(--muted); }
   .svc__name { font-family: var(--font-mono); font-size: 0.85rem; font-weight: 600; }
   .svc__name--named { font-family: inherit; font-size: 0.9rem; }
   .svc__desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

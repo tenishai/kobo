@@ -29,6 +29,7 @@ from typing import Protocol
 import httpx
 
 from .clients import ClientError
+from .gateway_lane import opens_tool
 from .kinds import KIND_CONNECTED
 from .models import AgentStatus
 from .timefmt import rfc3339, stamp_strings
@@ -449,10 +450,14 @@ def child_repositories(row: dict | None) -> list[str]:
     return sorted(str(r) for r in repos)
 
 
-def _labelled(tree: dict) -> dict:
+def _labelled(tree: dict, vendor: str) -> dict:
     """The catalogue tree with `label` on every permission: bab's when it sends one
-    (0.4.12), null before that, so the UI reads one shape either way."""
-    groups = [{**g, "permissions": [{**p, "label": p.get("label")} for p in g.get("permissions", [])]}
+    (0.4.12), null before that, so the UI reads one shape either way. And `tool`
+    (kobo#474): whether holding the permission puts any tool in front of an agent
+    (`gateway_lane.opens_tool`); the picker greys a row that opens nothing, so a
+    grant that would do nothing is never asked for."""
+    groups = [{**g, "permissions": [{**p, "label": p.get("label"), "tool": opens_tool(vendor, p["name"])}
+                                    for p in g.get("permissions", [])]}
               for g in tree.get("groups", [])]
     return {**tree, "groups": groups}
 
@@ -521,7 +526,7 @@ def picker(bab: BabClient, actor: str, agent: str | None = None) -> list[dict]:
             if not accounts:
                 accounts.append({"id": vendor, "name": meta["label"], "connected": False, "ceiling": [],
                                  "organization": None, "account_id": None, "repositories": [], "has_repo_set": False})
-        tree = _labelled(tree)
+        tree = _labelled(tree, vendor)
         # Whether the ROOM is connected to this vendor (kobo#371): a cloud when at
         # least one account row is connected; a service (GitHub included) when a
         # parentless row exists. An agent's child alone is not a connection. The
