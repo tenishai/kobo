@@ -1871,6 +1871,10 @@ export type AgentAccess = {
   vendors: AccessVendor[];
   can_request: boolean;
   can_decide: boolean;
+  /** Only for an agent that runs its team's own code, in a room with a
+   * gateway: whether its repository carries the room's wiring yet. Until
+   * it does, the agent cannot use what it holds here. */
+  wiring?: { state: "wired" | "waiting" | "owed"; pull_request: string | null } | null;
 };
 
 export type AccessLease = {

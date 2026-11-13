@@ -566,6 +566,18 @@
         What this agent may do at each vendor: it holds no standing credential and borrows an
         hour of access scoped to exactly these permissions when a task needs one.
       </p>
+      {#if access.data.wiring?.state === "waiting"}
+        <p class="vendors__lead" role="status">
+          Waiting for your team to merge the room's wiring pull request. The agent cannot use what it
+          holds here until that merges.
+          {#if access.data.wiring.pull_request}<a href={access.data.wiring.pull_request} target="_blank" rel="noreferrer">Open the pull request</a>{/if}
+        </p>
+      {:else if access.data.wiring?.state === "owed"}
+        <p class="vendors__lead" role="status">
+          This agent's repository does not carry the room's wiring yet, so it cannot use what it holds
+          here. The room opens a pull request for it within a few minutes of the first approved permission.
+        </p>
+      {/if}
     </div>
 
     {#if vendors.length === 0}

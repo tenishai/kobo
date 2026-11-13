@@ -20,7 +20,7 @@ Kobo is one piece of a set of sibling projects. Each owns one job, and the room 
 ## What it can do for you
 
 - **Build an agent from a persona.** Press **New agent**, then **Build an agent**. See "Create your first agent".
-- **Deploy an agent your team already wrote.** **Connect a repository you already have**: the room scans it and proposes its setup as a pull request. See "Before you start".
+- **Deploy an agent your team already wrote.** **Connect a repository you already have**: the room scans it and proposes its setup as a pull request. It gets the same storage, identity and gateway access as an agent the room builds. See "Before you start" and "Running your own code".
 - **Teach it facts in seconds.** Press **Teach this** on any chat message, or upload documents under **Harness, Memory**. See "Talk to it and teach it".
 - **Review what it learned.** Each night it proposes one-line learnings; nothing is kept until you press **Remember**.
 - **Put it in Slack.** The room writes the Slack app manifest; you paste back three values. See "Slack".

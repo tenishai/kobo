@@ -116,6 +116,13 @@ RESERVED_KEYS = frozenset(
         # delivered by the room.
         "MODELS_GATEWAY_KEY",
         *MODEL_ENV_KEYS,
+        # What the room tells an agent that runs its team's own code
+        # (`kobo_api.steps.add_room_wiring`): where its storage is, and
+        # where the gateways are.
+        "KOBO_DATA_DIR",
+        "KOBO_SWITCHBOARD_URL",
+        "KOBO_GATEWAY_URL",
+        "KOBO_MODELS_URL",
     }
 )
 
@@ -836,9 +843,13 @@ def _propose(
     body: str,
     carries: Callable[[dict], bool] | None,
     already_open: str,
+    files: frozenset[str] | None = None,
 ) -> RepoEdit:
     """The connected half of `edit_gojira_yaml`: one pull request on
-    `branch`, or a plain sentence saying what is in the way."""
+    `branch`, or a plain sentence saying what is in the way. `files` is what
+    a leftover branch may touch and still be the room's to recycle, for the
+    one caller whose request writes more than gojira.yaml
+    (`kobo_api.connected_wiring.offer`)."""
     open_pr = github.find_pr(repo, branch=branch)
     if open_pr is not None:
         # An open pull request is only "already carrying this" if its own
@@ -858,7 +869,10 @@ def _propose(
     # panel permanently unable to save on a repository whose owner merged
     # the room's last pull request without ticking delete-branch.
     if github.branch_exists(repo, branch):
-        require_our_branch(github, repo, branch)
+        if files is None:
+            require_our_branch(github, repo, branch)
+        else:
+            require_our_branch(github, repo, branch, files)
         log.info("recycling the room's own leftover branch %s in %s", branch, repo)
         github.delete_branch(repo, branch)
 

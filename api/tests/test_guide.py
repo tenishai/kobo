@@ -31,6 +31,7 @@ EXPECTED_ORDER = [
     "personas",
     "from-your-own-assistant",
     "what-kobo-is",
+    "running-your-own-code",
     "glossary",
 ]
 

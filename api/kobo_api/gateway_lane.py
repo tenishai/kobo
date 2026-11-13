@@ -430,6 +430,17 @@ async def heal_loop(app, *, interval_s: float = HEAL_INTERVAL_S) -> None:
             raise
         except Exception:
             log.exception("gateway grant heal pass failed")
+        # The same beat keeps agents that run their team's own code wired
+        # (`kobo_api.connected_wiring`). Its own try: a repository the room
+        # cannot read must not cost the grants their heal, or the reverse.
+        try:
+            from . import connected_wiring
+
+            await asyncio.to_thread(connected_wiring.keep, app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("connected wiring pass failed")
 
 
 def tally(sentence: str) -> str:

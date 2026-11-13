@@ -1,0 +1,37 @@
+# Running your own code
+<!-- summary: For a team whose agent is its own code: what the room gives a connected agent, the names it arrives under, and how the agent reaches what it was granted. -->
+
+A connected agent is your team's code in your team's repository. The room gives it the same things it gives an agent it builds: storage that outlives a restart, an identity, model access, secrets, and a way to reach whatever it has been granted on the **Access** tab. Your code finds each of them in its environment. This section is the contract: the names, what each one holds, and what your code does with it.
+
+## How it arrives
+
+All of it is added to your repository's deploy contract by the room's wiring pull request when you connect. An agent connected before the room did this is offered the same pull request within a few minutes of its first approved permission, and its **Access** tab says it is waiting on that merge. The room never merges that later one for you.
+
+Merging a pull request from the room is followed, a few minutes later, by a second one from the deploy service that regenerates the deployment files. Your repository's build refuses to deploy in between; that is expected. Merge the second and the agent restarts with the change. You do not have to ask for it.
+
+## What your code reads
+
+- `KOBO_DATA_DIR`. A folder that is still there after a restart, with 1 GiB to start. Put logs, caches and anything else you want back in it. One copy of the agent runs at a time, so nothing else writes there. If your deploy contract already mounts storage of its own, the room leaves it as it is and sets no folder.
+- `CABAL_COLLEAGUE_TOKEN`. The agent's pass, a secret. It proves which agent is asking. Send it to the switchboard and nowhere else.
+- `KOBO_SWITCHBOARD_URL`. Where the pass is traded for a gateway token.
+- `KOBO_GATEWAY_URL`. The tool gateway, an MCP server. It offers exactly the tools the agent's permissions allow, and nothing when it holds none.
+- `KOBO_MODELS_URL` and `MODELS_GATEWAY_KEY`. Only when the room reaches its models through the model gateway: an OpenAI-compatible address, and the agent's own key for it. Send the key as the bearer token.
+- Your own secrets and variables, under the names you gave them on the **Secrets** tab. See "Secrets and variables".
+
+The pass and both gateway names are there only when the room has a tool gateway. A room without one sets the folder and nothing else.
+
+## Reaching what the agent was granted
+
+The pass does not open the gateway by itself. Three steps:
+
+1. Send a `POST` to `KOBO_SWITCHBOARD_URL` with `/auth/liminal-token` on the end, and the header `Authorization: Bearer` followed by the pass. No body. The answer is JSON with `access_token` and `expires_at`.
+2. Connect to `KOBO_GATEWAY_URL` as an MCP server over HTTP, with the header `Authorization: Bearer` followed by that `access_token`. List the tools and call them like any other MCP server's.
+3. The token lasts 15 minutes. Trade the pass again a minute before `expires_at`, and once more if the gateway answers 401.
+
+A permission approved a minute ago shows up in the tool list without a restart, and a revoked one leaves it. Each vendor call borrows an hour of access scoped to the permissions the agent holds; your code never sees a standing credential. What the agent did, and what it was refused, is under **Harness, Activity**.
+
+The room replaces the pass when the agent's wiring is redone. The agent picks the new one up when it restarts, which the same change brings.
+
+## What stays yours
+
+The room does not read or change your code, your image, or how the agent talks to people. Chat, teaching, skills and colleague modes belong to agents the room builds, and a connected agent has none of them. Your repository's own builds are where its build log lives.
