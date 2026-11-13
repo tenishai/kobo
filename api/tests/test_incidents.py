@@ -73,6 +73,7 @@ from kobo_api.steps import (
 from tests.fakes import (
     FAKE_CONNECTED_DOCKERFILE,
     FakeAgent,
+    FakeBab,
     FakeCabal,
     FakeCloud,
     FakeGitHub,
@@ -1810,6 +1811,50 @@ def test_build_step_parks_a_connected_agent_on_the_setup_pull_request(session_fa
 
     assert SETUP_PR_URL in str(parked.value)
     assert github.rerun_calls == []
+
+
+GITHUB_CONNECTION = {"integration": "github", "vendor": "github", "kind": "connection", "name": "GitHub",
+                     "ceiling": ["github_repos_read", "github_pulls_review", "github_pulls_write"],
+                     "spec": {"installation_id": "151256501", "name": "GitHub"}}
+
+
+def test_the_rooms_own_repository_default_lands_and_a_waiting_one_is_not_asked_twice():
+    """Production bug: The room's own-repository default never landed.
+
+    The room files Read on a new agent's own repository as itself and approves
+    it, and the permission service refused the decision: the room is on no
+    reviewing team (kobo#476, a connect on 2026-11-13; the default had landed
+    in no room). The set and a waiting request stayed behind, and a later run
+    asked for nothing. Against a service that still refuses, the caller hears
+    that the request waits. Against one that lets the room decide its own
+    default (0.4.23), the waiting request is approved, not asked for again,
+    and a set someone has since picked is left to a reviewer."""
+    from kobo_api import github_access
+    from kobo_api.bab import ROOM_ACTOR
+
+    bab = FakeBab(integrations=[dict(GITHUB_CONNECTION)])
+    bab.reviewers = {"reviewer@example.com"}
+    bab.room_decides = False
+    conn = github_access.connection(bab, ROOM_ACTOR, None)
+
+    def default(agent):
+        return github_access.own_repository_default(bab, conn, agent, f"example-org/agent-{agent}", "at create")
+
+    for agent in ("rae", "ivy"):
+        with pytest.raises(github_access.DefaultWaits):
+            default(agent)
+        assert bab.grants(agent, "x") == []
+        assert [r["permissions"] for r in bab.requests("pending", agent, "x")] == [["github_repos_read"]]
+
+    bab.room_decides = True
+    assert default("rae") == "github-rae"
+    assert [(g["permission"], g["granted_by"]) for g in bab.grants("rae", "x")] == [("github_repos_read", ROOM_ACTOR)]
+    assert len(bab.requests("all", "rae", "x")) == 1
+    assert default("rae") is None
+
+    github_access.write_child(bab, "reviewer@example.com", conn, "ivy", ["example-org/payments"])
+    assert default("ivy") is None
+    assert bab.grants("ivy", "x") == []
 
 
 # --- from test_db.py ---

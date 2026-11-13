@@ -80,6 +80,7 @@ class BabClient(Protocol):
     def put_integration(self, integration: str, vendor: str, spec: dict, ceiling: list[str], actor: str,
                         parent: str | None = None) -> dict: ...
     def delete_integration(self, integration: str, actor: str) -> dict: ...
+    def delete_agent(self, agent: str, actor: str) -> dict: ...
     def talks_to(self, agent: str, actor: str) -> list[str]: ...
     def org_accounts(self, integration: str, actor: str) -> list[dict]: ...
     def org_hub_role_arn(self, integration: str, actor: str) -> str: ...
@@ -282,6 +283,12 @@ class HttpxBabClient:
     def delete_integration(self, integration: str, actor: str) -> dict:
         return self._call("DELETE", f"/integrations/{integration}", actor, what=f"disconnecting {integration}")
 
+    def delete_agent(self, agent: str, actor: str) -> dict:
+        """bab 0.4.23: the agent is gone from the room, and what it held goes with it
+        (`{grants_revoked, requests_withdrawn, integrations_removed, removed, kept, ...}`).
+        Refused (409) while the topology still lists the agent."""
+        return self._call("DELETE", f"/agents/{agent}", actor, what=f"removing {agent}")
+
     def talks_to(self, agent: str, actor: str) -> list[str]:
         """The agents `agent` holds an active `a2a_ask` grant on (bab's
         `GET /agents/{asker}/talks-to` -> {"agent", "talks_to": [names]})."""
@@ -384,6 +391,29 @@ def remove_agent_integration(bab: BabClient, name: str, actor: str) -> bool:
             return True
         log.warning("bab kept the agents integration for %s: %s", name, exc)
         return False
+    return True
+
+
+def remove_agent(bab: BabClient, name: str, actor: str) -> bool:
+    """`DELETE /agents/{agent}` on destroy, after the topology push that dropped
+    the agent (bab 0.4.23, kobo#476): every grant it held anywhere is revoked,
+    its waiting requests are withdrawn, and its repository set and its `agents`
+    integration are removed, whoever pressed Destroy. Before this the room
+    deleted the `agents` integration alone, and a destroyed agent's repository
+    set, its grants on it and anything it had asked for stayed in the service.
+    A service older than 0.4.23 has no such route (it answers Not Found); the
+    room then does what it did before. True when the agent's access is gone,
+    False when the service refused or could not be reached."""
+    try:
+        out = bab.delete_agent(name, actor)
+    except ClientError as exc:
+        if "Not Found" in str(exc) or "Method Not Allowed" in str(exc):
+            return remove_agent_integration(bab, name, actor)
+        log.warning("bab kept what %s held: %s", name, exc)
+        return False
+    if out.get("kept"):
+        log.info("bab kept %s after %s was removed: another agent holds or awaits a level there",
+                 ", ".join(out["kept"]), name)
     return True
 
 
@@ -788,6 +818,7 @@ __all__ = [
     "picker",
     "push_topology",
     "read_permissions",
+    "remove_agent",
     "remove_agent_integration",
     "since_days",
     "topology_agent",

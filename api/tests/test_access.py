@@ -6830,10 +6830,18 @@ def test_a_repository_added_to_a_set_the_agent_holds_a_level_on_waits_for_a_revi
     saving the set without the addition withdraws what waited."""
     c, h, bab, _, admin = _github_room(tmp_path, fake_storage)
     bab.reviewers = {"sec@example.com"}  # the signed-in owner is on neither team
+
+    def decide(rid):  # a reviewer's turn: the same sign-in, on the team for the one call
+        bab.reviewers.add("ops@example.com")
+        try:
+            return c.post("/api/admin/access/decide", headers=h, json={"ids": [rid], "verdict": "approve"})
+        finally:
+            bab.reviewers.discard("ops@example.com")
+
     assert c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/infra"]}).status_code == 200
     rid = c.post("/api/agents/ledger/access/requests", headers=h,
                  json={"integration": "github-ledger", "permissions": ["github_repos_read"], "note": "read"}).json()["id"]
-    assert c.post("/api/admin/access/decide", headers=h, json={"ids": [rid], "verdict": "approve"}).status_code == 200
+    assert decide(rid).status_code == 200
     lanes = len(admin.writes)
 
     r = c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/web", "acme/infra"]})
@@ -6849,7 +6857,7 @@ def test_a_repository_added_to_a_set_the_agent_holds_a_level_on_waits_for_a_revi
     assert review["proposal"]["added"] == ["acme/web"] and review["repositories"] == ["acme/infra"]
     assert review["owner"] == "ops@example.com"
 
-    out = c.post("/api/admin/access/decide", headers=h, json={"ids": [rid + 1], "verdict": "approve"}).json()["results"]
+    out = decide(rid + 1).json()["results"]
     assert out[0]["status"] == "approved" and out[0]["outcome"] == {"acme/web": "added"}
     listing = c.get("/api/agents/ledger/github/repositories", headers=h).json()
     assert listing["selected"] == ["acme/infra", "acme/web"] and listing["waiting"] is None

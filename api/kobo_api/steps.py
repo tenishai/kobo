@@ -1631,13 +1631,16 @@ class AccessStep:
         """Every agent reads its own repository on GitHub (owner ruling
         2026-11-02): with the permission service on and GitHub connected, the
         room writes the agent's repository set as its one repository and files
-        and approves a Read request on it, the way an owner would from the
-        Access tab. Read is the one level that stands until revoked, so it is
-        the one level that works as a default; the owner adds repositories or
-        raises the level on the Access tab, and a set already picked stands.
-        The gateway grant follows at once; the bundle's allow entry for the
-        lane goes in with the wiring step's commit (`WireStep`). Best effort:
-        a refusal is a clause in the step's sentence, never a failed create.
+        and approves a Read request on it as itself
+        (`github_access.own_repository_default`; the service lets the room
+        decide that one request since 0.4.23, kobo#476). Read is the one level
+        that stands until revoked, so it is the one level that works as a
+        default; the owner adds repositories or raises the level on the Access
+        tab, and a set already picked stands. The gateway grant follows at
+        once; the bundle's allow entry for the lane goes in with the wiring
+        step's commit (`WireStep`). Best effort: a refusal is a clause in the
+        step's sentence, never a failed create, and a service that will not
+        let the room decide leaves the request for a reviewer and says so.
         Returns a clause for the sentence, or "" when there is nothing to say."""
         agent = ctx.agent
         bab = getattr(ctx.clients, "bab", None)
@@ -1647,14 +1650,13 @@ class AccessStep:
             conn = github_access.connection(bab, BAB_ROOM_ACTOR, ctx.session)
             if conn is None:
                 return "; GitHub is not connected, so its own repository is not granted"
-            if github_access.child(bab, BAB_ROOM_ACTOR, conn.id, agent.name) is not None:
+            cid = github_access.own_repository_default(bab, conn, agent.name, agent.repo_full_name, OWN_REPOSITORY_NOTE)
+            if cid is None:
                 return ""
-            cid = github_access.write_child(bab, BAB_ROOM_ACTOR, conn, agent.name, [agent.repo_full_name]).integration
-            held = github_access.active_grants(bab, BAB_ROOM_ACTOR, agent.name, cid)
-            if not any(g.get("permission") == github_access.REPOS_READ for g in held):
-                asked = bab.request(agent.name, cid, [github_access.REPOS_READ], OWN_REPOSITORY_NOTE, BAB_ROOM_ACTOR)
-                bab.decide([asked["id"]], "approve", None, BAB_ROOM_ACTOR)
             lane = gateway_lane.follow(ctx.session, ctx.clients, bab, agent_name=agent.name, actor=BAB_ROOM_ACTOR)
+        except github_access.DefaultWaits as exc:
+            log.warning("own repository for %s: the room could not allow its own request: %s", agent.name, exc)
+            return "; reading its own repository on GitHub waits for a reviewer"
         except ClientError as exc:
             log.warning("own repository for %s not granted on GitHub: %s", agent.name, exc)
             return f"; its own repository could not be granted on GitHub: {exc}"

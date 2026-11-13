@@ -786,10 +786,14 @@ def _tell_the_room_the_agent_is_gone(
       that could see the departed one gets a fresh colleagues.md over the
       relay. The viewers whose delivery missed are named.
     - Topology (the permission service, kobo_api.bab): the room pushes the
-      agents that remain, then deletes the departed agent's `agents`
-      integration (kobo#310). `push_topology` and `remove_agent_integration`
-      swallow the client error and answer None/False; anything else is
-      caught here.
+      agents that remain, then tells the service the departed agent is gone
+      (`remove_agent`, kobo#476): its grants everywhere, its waiting
+      requests, its repository set and its `agents` integration (kobo#310)
+      go with it. The service refuses that while its topology still lists
+      the agent, so when the push missed the room deletes the `agents`
+      integration alone, as it did before. `push_topology`, `remove_agent`
+      and `remove_agent_integration` swallow the client error and answer
+      None/False; anything else is caught here.
     """
     clients = ctx.clients
     config = ctx.config
@@ -822,7 +826,12 @@ def _tell_the_room_the_agent_is_gone(
 
     bab = getattr(clients, "bab", None)
     if bab is not None:
-        from kobo_api.bab import ROOM_ACTOR, push_topology, remove_agent_integration
+        from kobo_api.bab import (
+            ROOM_ACTOR,
+            push_topology,
+            remove_agent,
+            remove_agent_integration,
+        )
 
         actor = ctx.acting_email or ROOM_ACTOR
         try:
@@ -832,15 +841,18 @@ def _tell_the_room_the_agent_is_gone(
             out = None
         if out is None:
             missed.append("the permission service's topology (next push resends it)")
-        # The agent was also an `agents` integration others could hold an
-        # `a2a_ask` on (kobo#310); deleting it drops those grants with it.
+        # What the agent held goes with it: its grants, its waiting requests,
+        # its repository set, and the `agents` integration others could hold
+        # an `a2a_ask` on (kobo#310). The service takes that only once its
+        # topology no longer lists the agent.
+        forget = remove_agent if out is not None else remove_agent_integration
         try:
-            gone = remove_agent_integration(bab, departing_name, actor)
+            gone = forget(bab, departing_name, actor)
         except Exception:  # same rule
-            log.warning("agents integration delete raised after agent %s was destroyed", departing_name, exc_info=True)
+            log.warning("permission service cleanup raised after agent %s was destroyed", departing_name, exc_info=True)
             gone = False
         if not gone:
-            missed.append("the permission service's entry for asking this agent (remove it there)")
+            missed.append("what this agent held in the permission service (not withdrawn there yet)")
 
     return missed
 

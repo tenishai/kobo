@@ -509,17 +509,37 @@ def test_destroy_forget_names_what_the_switchboard_did_not_take(
     session.close()
 
 
-def test_destroy_forget_removes_the_agents_integration_from_the_permission_service(session_factory, config):
-    """Destruction safety (kobo#310): a destroyed agent stops being something
-    other agents may hold an ask permission on."""
+@pytest.mark.parametrize("agent_route", [True, False])
+def test_destroy_forget_takes_what_the_agent_held_out_of_the_permission_service(session_factory, config, agent_route):
+    """Destruction safety (kobo#310, kobo#476): a destroyed agent stops being
+    something other agents may hold an ask permission on, and its repository
+    set, the grant on it and anything it was still asking for go with it,
+    whoever pressed Destroy. A permission service older than 0.4.23 has no
+    way to be told that; there the room removes the ask entry, as before."""
     session, agent = _make_ctx_agent(session_factory)
-    bab = FakeBab(integrations=[{"integration": agent.name, "vendor": "agents", "ceiling": ["a2a_ask"], "kind": "connection"}])
+    name = agent.name
+    github = {"integration": "github", "vendor": "github", "kind": "connection", "ceiling": ["github_repos_read"]}
+    bab = FakeBab(integrations=[
+        {"integration": name, "vendor": "agents", "ceiling": ["a2a_ask"], "kind": "connection"},
+        dict(github),
+        {"integration": f"github-{name}", "vendor": "github", "kind": "account", "parent": "github",
+         "ceiling": ["github_repos_read"], "spec": {"repositories": [f"example-org/agent-{name}"]}},
+    ])
+    bab.agent_route = agent_route
+    held = bab.request(name, f"github-{name}", ["github_repos_read"], None, "reviewer@example.com")
+    bab.decide([held["id"]], "approve", None, "reviewer@example.com")
+    bab.request(name, f"github-{name}", ["github_pulls_write"], None, "owner@example.com")
     ctx = _ctx(session, agent, config)
     ctx.clients.bab = bab
 
     assert _destroy_forget(ctx) == "forgotten"
 
-    assert bab.integrations("x") == []
+    left = [i["integration"] for i in bab.integrations("x")]
+    if agent_route:
+        assert left == ["github"]
+        assert bab.grants(name, "x") == [] and bab.requests("pending", name, "x") == []
+    else:
+        assert left == ["github", f"github-{name}"]
     session.close()
 
 
