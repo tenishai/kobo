@@ -1274,7 +1274,10 @@ export type AdminDiscoveredModel = {
   id: string;
   /** The provider's own id. */
   model: string;
+  /** The room's name for it, the one New agent shows. */
   label: string;
+  /** The cloud's own name for it; the label again on a row the cloud does not list. */
+  name?: string;
   publisher: string | null;
   /** Bedrock: `on-demand` or `inference-profile`; null elsewhere. */
   via: string | null;
@@ -1298,6 +1301,8 @@ export type AdminModelProvider = {
   offered: string[];
   error: string | null;
   fetched_at: string | null;
+  /** The listing here is not a fresh one and was not asked for: ask for this provider's by `source`. */
+  pending?: boolean;
 };
 
 export type AdminModelsView = {
@@ -1310,8 +1315,15 @@ export type AdminModelsView = {
 
 export type AdminModelChange = { id: string; enabled: boolean; label?: string };
 
-export async function fetchAdminModels(): Promise<AdminModelsView> {
-  const res = await fetch("/api/admin/models");
+/** `GET /api/admin/models`. A cloud's listing takes seconds, so the pane asks twice:
+ * `{ listing: "held" }` answers at once with the room's ticks and whatever listing it
+ * holds (a section owed one is `pending`), then `{ source }` lists that one provider. */
+export async function fetchAdminModels(ask: { listing?: "live" | "held"; source?: string } = {}): Promise<AdminModelsView> {
+  const params = new URLSearchParams();
+  if (ask.listing) params.set("listing", ask.listing);
+  if (ask.source) params.set("source", ask.source);
+  const query = params.toString();
+  const res = await fetch(query ? `/api/admin/models?${query}` : "/api/admin/models");
   return parse<AdminModelsView>(res);
 }
 

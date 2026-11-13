@@ -28,7 +28,7 @@ from mcp.shared.context import RequestContext
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from kobo_api import admin_store, bootstrap, model_providers
+from kobo_api import admin_store, bootstrap, model_providers, room_models
 from kobo_api import audit as room_audit
 from kobo_api.bootstrap import render_org_yaml
 from kobo_api.bundle_publish import bundle_reference
@@ -4345,6 +4345,47 @@ def test_admin_models_lists_each_providers_discovered_models_and_a_tick_offers_o
     with session_factory() as session:
         assert session.query(AuditLog).filter(AuditLog.action == "models.withdrawn").count() == 1
     assert client.put("/api/admin/models", headers=headers, json={"changes": [{"id": "nowhere/x", "enabled": True}]}).status_code == 422
+
+
+def test_admin_models_opens_on_what_the_room_holds_and_lists_one_provider_at_a_time(tmp_path):
+    """Wire shape (the Models pane's fast open): `?listing=held` asks no
+    cloud and answers the ticks at once, each section owed a listing marked
+    `pending`; `?source=<row>` answers that provider's section alone, listed;
+    a held read after that carries the listing with nothing pending, each
+    model with the cloud's own `name` beside the room's `label`; a tick on a
+    listed model asks no cloud again."""
+    room_models.clear_discovery_cache()
+    bab = FakeBab(integrations=[])
+    client, headers, session_factory = _models_room(tmp_path, gateway=FakeModelsGateway(), bab=bab)
+    with session_factory() as session:
+        _vertex_provider(session, row_id="gcp-held", location="us-central1")
+        _bedrock_provider(session, row_id="aws-held", name="aws-held", region="eu-west-1")
+
+    held = client.get("/api/admin/models?listing=held", headers=headers).json()
+
+    assert bab.model_calls == []
+    assert [(p["source"], p["pending"], p["fetched_at"]) for p in held["providers"]] == [("gcp-held", True, None), ("aws-held", True, None)]
+    # The ticks are there before any listing: the seeded org entries, not yet matched to a listing.
+    assert [(m["id"], m["enabled"], m["discovered"]) for m in held["providers"][0]["discovered"]] == [
+        ("vertex_ai/claude-sonnet-4-5", True, False), ("vertex_ai/gemini-2.5-flash", True, False)]
+
+    one = client.get("/api/admin/models?source=aws-held", headers=headers).json()
+
+    assert bab.model_calls == [("aws-held", "eu-west-1")]
+    assert [(p["source"], p["pending"], p["fetched_at"]) for p in one["providers"]] == [("aws-held", False, "2026-11-02T12:00:00Z")]
+    listed = one["providers"][0]["discovered"][0]
+    assert (listed["id"], listed["name"], listed["label"], listed["via"]) == (
+        "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0", "Claude 3.5 Haiku", "Claude 3.5 Haiku", "on-demand")
+    assert one["not_connected"] == held["not_connected"]
+
+    again = client.get("/api/admin/models?listing=held", headers=headers).json()
+    assert [(p["source"], p["pending"], len(p["discovered"])) for p in again["providers"]] == [("gcp-held", True, 2), ("aws-held", False, 2)]
+    put = client.put("/api/admin/models", headers=headers, json={"changes": [
+        {"id": "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0", "enabled": True}]})
+    assert put.status_code == 200 and put.json()["changed"] == ["bedrock/anthropic.claude-3-5-haiku-20241022-v1:0"]
+    # The tick asked only the cloud the room held no listing of, once.
+    assert bab.model_calls == [("aws-held", "eu-west-1"), ("gcp-held", "us-central1")]
+    assert client.get("/api/admin/models?listing=sometimes", headers=headers).status_code == 422
 
 
 def test_catalog_models_is_unchanged_with_the_gateway_off(tmp_path):
