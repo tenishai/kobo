@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.64] - 2026-11-13
+
 ### Added
 - A reaction can wake an agent in Slack. The Slack row has one new field under **Wakes on**, **Also wakes on these emoji**: name the emoji (Slack's names, commas between them, at most ten) and a reaction with one of them on a message in a channel the agent is in wakes it about that message, whatever **Wakes on** is. Empty, the default, means no reaction wakes it. The names travel as `SLACK_WAKE_EMOJI` on the lane the wake mode uses: the deploy contract and the live deployment for an agent the room builds, a pull request for a connected one, whose own code decides what a reaction does. `PUT /api/agents/{name}/slack/wake` takes `emoji` beside `wake` (either may be left out), `kobo_set_slack_wake` takes the same, and both Slack views answer `wake_emoji`. The four marks agents leave on messages they answer cannot be named. A room-made app is handed the current manifest when emoji are saved, so one made before the room subscribed to reactions hears them. Needs a runtime that reads `SLACK_WAKE_EMOJI`; an older one ignores it. Migration `e4a6c8d0f2b3` (`agents.slack_wake_emoji`).
 
