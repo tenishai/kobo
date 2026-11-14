@@ -10,6 +10,9 @@ All notable changes to kobo are documented here. The format follows
 - Slack asks a connected agent's team for no pull request. Until now making the app was one pull request on the team's repository, and every later change to **Wakes on**, the emoji or the slash command choice was another, each followed by a second from the deploy service. Now the wiring pull request a connect opens names the app's Secret `<agent>-slack` under `secrets_from_optional` (in a room that makes Slack apps, for an agent that serves a port), so the agent starts without it and reads it once there is an app. How Slack wakes the agent (`SLACK_WAKE_MODE`, `SLACK_WAKE_EMOJI`, `SLACK_COMMAND_PUBLIC`) travels in that Secret instead of the repository's own variables. Making the app is a delivery and the restart at install; a changed choice is a delivery and one restart, made once the new value has reached the agent's Secret, and `PUT /api/agents/{name}/slack/wake` says so with `restart_pending`. The Slack row reads **Saved. The agent restarts with it in a minute or two.**
 - An agent connected before this keeps working as it is. While its file agrees with the room, a change is a restart and nothing else. The first choice its file would hide (it still sets `SLACK_WAKE_MODE` itself, or does not read the Secret) opens one pull request on `kobo/slack` that takes the three settings out of its variables and names the Secret; that is the last one Slack asks for. `POST /api/agents/{name}/slack/app` and `kobo_create_slack_app` answer `pull_request: null` when none is needed.
 
+### Fixed
+- In a room with no secrets service, an agent's Slack Secret is written back whole when the bot token or a wake choice is added to it. A read of it that failed was taken for an empty Secret, so the write could leave the new value as the only one. A failed read now stops the save; only a Secret that is not there yet starts empty.
+
 ## [0.3.66] - 2026-11-14
 
 ### Changed

@@ -340,12 +340,22 @@ def propose_slack(github, *, repo: str, agent_name: str) -> RepoEdit:
         already_open=SLACK_PR_ALREADY_OPEN,
     )
     if result.how == UNCHANGED:
-        open_pr = github.find_pr(repo, branch=SLACK_BRANCH)
-        if open_pr is not None and not carries(
-            parse_gojira_yaml(github.read_file(repo, GOJIRA_YAML, ref=SLACK_BRANCH) or "")
-        ):
-            raise RepoBusy(f"{SLACK_PR_ALREADY_OPEN}{open_pr}")
+        refuse_other_slack_request(github, repo=repo, agent_name=agent_name)
     return result
+
+
+def refuse_other_slack_request(github, *, repo: str, agent_name: str) -> None:
+    """Raise `RepoBusy` when a request is open on the room's Slack branch
+    that would leave the file setting how the agent wakes: for a repository
+    whose default branch needs no request, where merging that one later
+    would hide what the room delivers. One that hands the settings to the
+    room is left to be merged."""
+    open_pr = github.find_pr(repo, branch=SLACK_BRANCH)
+    if open_pr is None:
+        return
+    data = parse_gojira_yaml(github.read_file(repo, GOJIRA_YAML, ref=SLACK_BRANCH) or "")
+    if not (reads_slack_secret(data, agent_name) and not _set_in_file(data)):
+        raise RepoBusy(f"{SLACK_PR_ALREADY_OPEN}{open_pr}")
 
 
 def slack_state(github, agent) -> dict:

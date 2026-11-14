@@ -670,10 +670,9 @@ def deliver_wake_settings(
             remove=gone or None,
         )
         return
-    try:
-        existing = kubectl.secret_literals(name, f"{name}-slack")
-    except ClientError:
-        existing = {}
+    # Written back whole, so a read that failed must stop this: taken for an
+    # empty Secret it would write away the app's own values.
+    existing = kubectl.secret_literals(name, f"{name}-slack", missing_ok=True)
     kept = {key: value for key, value in existing.items() if key not in gone}
     kubectl.apply_secret(name, f"{name}-slack", {**kept, **values})
 

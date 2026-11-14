@@ -9088,11 +9088,20 @@ def create_app(
                 # is missing (the team closed it). Open it again, with how it
                 # wakes delivered first: an app made before the room kept
                 # that in the Secret has it only in the file this rewrites.
+                acting = getattr(request.state, "iap_email", None) or agent.created_by
+                if clients.sero is not None:
+                    refusal = acting_email_refusal(agent.name, acting)
+                    if refusal is not None:
+                        return JSONResponse({"error": refusal}, status_code=409)
                 try:
                     deliver_wake_settings(
                         clients.kubectl, name=agent.name, settings=wake_settings_of(agent), sero=clients.sero,
-                        acting_email=getattr(request.state, "iap_email", None) or agent.created_by,
+                        acting_email=acting,
                     )
+                except ClientError as exc:
+                    log.warning("slack app: delivery for agent %s failed: %s", agent.name, type(exc).__name__)
+                    return JSONResponse({"error": "couldn't save how it wakes up. Try again."}, status_code=502)
+                try:
                     edit = connected_wiring.propose_slack(
                         clients.github, repo=agent.repo_full_name, agent_name=agent.name,
                     )
@@ -9787,12 +9796,35 @@ def create_app(
             (agent.slack_wake_emoji or "") if emoji is None else emoji,
             previous_public if public is None else public,
         )
+        manifest_changed = wake_subscribes_channel_messages(mode) != wake_subscribes_channel_messages(previous)
+        # Looked for before anything is written: a save Slack has to hear of
+        # is refused whole by a room that cannot reach Slack.
+        slack = None
+        if (manifest_changed or emoji) and relay_row is not None and relay_row.app_id is not None:
+            slack = room_credentials.slack_client(clients)
+            if slack is None:
+                return JSONResponse({"error": "Slack is not configured"}, status_code=503)
         restart_pending = False
         try:
             if connected:
                 follows = connected_wiring.slack_follows_room(
                     clients.github, repo=agent.repo_full_name, agent_name=agent.name, settings=settings
                 )
+                if follows:
+                    connected_wiring.refuse_other_slack_request(
+                        clients.github, repo=agent.repo_full_name, agent_name=agent.name,
+                    )
+                # The Secret before the request, as when the app was made: a
+                # request that takes the settings out of the file is never
+                # open before the Secret carries them.
+                try:
+                    deliver_wake_settings(
+                        clients.kubectl, name=agent.name, settings=settings, sero=clients.sero,
+                        acting_email=acting_email,
+                    )
+                except ClientError as exc:
+                    log.warning("slack wake: delivery for agent %s failed: %s", agent.name, type(exc).__name__)
+                    return JSONResponse({"error": "couldn't save how it wakes up. Try again."}, status_code=502)
                 result = RepoEdit(how=UNCHANGED) if follows else connected_wiring.propose_slack(
                     clients.github, repo=agent.repo_full_name, agent_name=agent.name,
                 )
@@ -9821,22 +9853,6 @@ def create_app(
             return JSONResponse({"error": str(exc)}, status_code=409)
         except ClientError as exc:
             return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
-        if connected:
-            try:
-                deliver_wake_settings(
-                    clients.kubectl, name=agent.name, settings=settings, sero=clients.sero,
-                    acting_email=acting_email,
-                )
-            except ClientError as exc:
-                log.warning("slack wake: delivery for agent %s failed: %s", agent.name, type(exc).__name__)
-                return JSONResponse({"error": "couldn't save how it wakes up. Try again."}, status_code=502)
-            if restart_pending:
-                # Off this request: through the secrets platform the values
-                # land at its next re-read, and a restart before that would
-                # start the agent on the old ones.
-                delivery.restart_once_secret_carries(
-                    clients.kubectl, agent.name, f"{agent.name}-slack", [], settings=settings
-                )
         if payload.wake is not None:
             agent.slack_wake = mode
         if emoji is not None:
@@ -9866,15 +9882,11 @@ def create_app(
             except ClientError as exc:
                 applied_now = False
                 log.warning("slack wake: live apply for agent %s failed: %s", agent.name, exc)
-        manifest_changed = wake_subscribes_channel_messages(mode) != wake_subscribes_channel_messages(previous)
         # A room-made app (issue #371) has no app-level token and nobody to
         # paste a manifest: the room applies the new event list itself with
         # `apps.manifest.update`, so the answer says nothing changed FOR THE
         # PERSON. The paste flow keeps its sentence.
-        if (manifest_changed or emoji) and relay_row is not None and relay_row.app_id is not None:
-            slack = room_credentials.slack_client(clients)
-            if slack is None:
-                return JSONResponse({"error": "Slack is not configured"}, status_code=503)
+        if slack is not None:
             base = slack_relay.public_base_url(request, app.state.config)
             manifest = render_manifest(
                 agent.name,
@@ -9902,6 +9914,14 @@ def create_app(
             summary=summary,
         )
         session.commit()
+        if restart_pending:
+            # After the save is kept, so a save Slack refused restarts
+            # nothing. Off this request: through the secrets platform the
+            # values land at its next re-read, and a restart before that
+            # would start the agent on the old ones.
+            delivery.restart_once_secret_carries(
+                clients.kubectl, agent.name, f"{agent.name}-slack", [], settings=settings
+            )
         log.info("agent %s wakes in Slack on %s (was %s)", agent.name, mode, previous)
         # `applied_at` is the room's own clock, so the page can tell a
         # health reading taken after this save from one another replica

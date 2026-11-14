@@ -1682,12 +1682,14 @@ class FakeKubectl:
         # a cluster rather than reading back whatever was there before.
         self.secrets[(namespace, name)] = dict(literals)
 
-    def secret_literals(self, namespace: str, name: str) -> dict[str, str]:
+    def secret_literals(self, namespace: str, name: str, *, missing_ok: bool = False) -> dict[str, str]:
         if self._secret_read_error is not None:
             raise ClientError(self._secret_read_error)
         try:
             return dict(self.secrets[(namespace, name)])
         except KeyError:
+            if missing_ok:
+                return {}
             # Errors name the object, never a value — the real
             # KubectlCLI.secret_literals' own contract.
             raise ClientError(f"kubectl get secret {namespace}/{name} failed") from None

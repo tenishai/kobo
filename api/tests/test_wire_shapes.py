@@ -1732,6 +1732,73 @@ def test_a_connected_agents_slack_app_and_wake_choices_ask_for_no_pull_request(
     assert github.open_pr_calls == [] and github.push_count == 0 and kubectl.env_sets == []
 
 
+def test_a_connected_wake_save_that_cannot_finish_leaves_the_agent_as_it_was(
+    session_factory__api_slack, config__api_slack
+):
+    """Gate (review of the 2026-11-14 change): a save is all or nothing a team
+    can feel. A Secret the room could not read is not taken for an empty one
+    and written over; a save Slack refuses restarts nothing; an open request
+    that would put the settings back in the file is named, not walked past;
+    and a request that takes them out is never opened before the Secret
+    carries them."""
+    from kobo_api import delivery
+    from kobo_api.connected_wiring import SLACK_BRANCH
+    from kobo_api.kinds import RUN_MODE_HTTP
+
+    pr_url = "https://github.com/acme/agent-clio/pull/9"
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    contract = f"name: clio\nsecrets_from_optional:\n  - {AGENT_NAME}-slack\n"
+    github = FakeGitHub(pr_url=pr_url, repo_files={"gojira.yaml": contract}, clone_tree={"gojira.yaml": contract})
+    kubectl, slack = FakeKubectl(), FakeSlack(app_id="A0MADE")
+    client = _make_client__api_slack(session_factory__api_slack, relay_config, github=github, kubectl=kubectl, slack=slack)
+    _seed_agent__api_slack(session_factory__api_slack, relay_config)
+    _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HTTP)
+    secret = (AGENT_NAME, f"{AGENT_NAME}-slack")
+    wake = f"/api/agents/{AGENT_NAME}/slack/wake"
+    assert client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"}).status_code == 200
+    _installed__api_slack(session_factory__api_slack)
+    held = dict(kubectl.secrets[secret])
+
+    kubectl._secret_read_error = "the cluster did not answer"
+    unread = client.put(wake, json={"wake": "channel"})
+    kubectl._secret_read_error = None
+    assert unread.status_code == 502 and kubectl.secrets[secret] == held
+
+    # A move to or from mentions only is one Slack has to take; one it refuses
+    # is not kept, so the agent is not restarted onto it.
+    slack._update_error = "internal_error"
+    refused = client.put(wake, json={"wake": "mention"})
+    delivery.join_restarts()
+    assert refused.status_code == 502 and kubectl.restarts == []
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["wake"] == "thread"
+    slack._update_error = None
+    again = client.put(wake, json={"wake": "mention"})
+    delivery.join_restarts()
+    assert (again.status_code, again.json()["restart_pending"]) == (200, True)
+    assert kubectl.restarts == [(AGENT_NAME, AGENT_NAME)]
+
+    # A request from before, still open, that pins the mode in the file.
+    github._open_prs[f"{REPO}#{SLACK_BRANCH}"] = pr_url
+    github._branch_files[SLACK_BRANCH] = {"gojira.yaml": contract + "env:\n  SLACK_WAKE_MODE: thread\n"}
+    held = dict(kubectl.secrets[secret])
+    busy = client.put(wake, json={"wake": "channel"})
+    assert busy.status_code == 409 and pr_url in busy.json()["error"]
+    assert kubectl.secrets[secret] == held
+    del github._open_prs[f"{REPO}#{SLACK_BRANCH}"]
+
+    # The file sets the mode itself: the request that takes it out waits on
+    # the delivery, and a delivery that fails opens none.
+    older = contract + "env:\n  SLACK_WAKE_MODE: mention\n"
+    github._repo_files["gojira.yaml"] = github._clone_tree["gojira.yaml"] = older
+    kubectl._apply_secret_error = "the cluster refused"
+    undelivered = client.put(wake, json={"wake": "thread"})
+    assert undelivered.status_code == 502 and github.open_pr_calls == []
+    kubectl._apply_secret_error = None
+    handed = client.put(wake, json={"wake": "thread"})
+    assert (handed.status_code, handed.json()["pull_request"]) == (200, pr_url)
+    assert kubectl.secrets[secret]["SLACK_WAKE_MODE"] == "thread"
+
+
 def test_a_connected_agent_wired_before_gets_one_last_slack_pull_request(
     session_factory__api_slack, config__api_slack
 ):
