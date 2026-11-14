@@ -63,7 +63,9 @@ from kobo_api.clients import (
 )
 from kobo_api.colleagues import deliver_pass
 from kobo_api.composer import (
+    CABAL_COLLEAGUE_TOKEN_ENV,
     COLLEAGUE_MODE_NONE,
+    MODELS_GATEWAY_KEY_ENV,
     BundleSpec,
     _colleagues_md,
     _self_md,
@@ -1477,6 +1479,9 @@ class OnboardStep:
                 # The room merges its own repositories' setup PR without a
                 # person; a team's repository is the team's to merge.
                 auto_merge_setup_pr=not is_connected(agent),
+                # And a team is asked once: what the room would otherwise
+                # propose afterwards rides in that same pull request.
+                seed=connected_seed(agent, config) if is_connected(agent) else None,
             )
         except GojiraConflict as exc:
             if agent.gojira_app_id is None:
@@ -1566,7 +1571,24 @@ class OnboardStep:
             # runs for minutes, and a crash inside it must not forget the id.
             ctx.session.commit()
 
-        return _wait_active(ctx, app_id)
+        try:
+            return _wait_active(ctx, app_id)
+        except StepWaiting:
+            # Parked on the team's merge of the setup pull request. With the
+            # seed that request names the Secrets the room delivers, so they
+            # are delivered now and a merge starts an agent that finds them.
+            # Only what is missing: a Retry while parked takes nothing back.
+            # A delivery that fails must not turn this wait into a failure
+            # (nothing resumes a failed agent when its team merges): the
+            # wiring step runs after the merge and delivers what is missing.
+            try:
+                deliver_connected_identity(ctx.session, ctx.clients, config, agent, only_missing=True)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "onboard: %s's Secrets were not delivered while its setup request waits (%s); "
+                    "the wiring step delivers them after the merge", agent.name, type(exc).__name__,
+                )
+            raise
 
 
 OWN_REPOSITORY_NOTE = "its own repository, granted at create"
@@ -2132,6 +2154,72 @@ CONNECTED_WIRE_SLACK = (
 )
 
 
+# The seed's note, quoted by the deploy platform in its setup pull request
+# under the list of what the seed added. For the same reader as the bodies
+# above, about the same things, in a request the room did not write.
+CONNECTED_SEED_NOTE = (
+    "The room this agent was connected from asked for these, so that this is "
+    "the only pull request connecting it needs:\n\n"
+    "- k8s/base/serviceaccount.yaml and service_account in gojira.yaml: the "
+    "service account the agent runs as.\n"
+    "{models}"
+    "{secrets}"
+    "{room_wiring}"
+)
+CONNECTED_SEED_SECRETS = (
+    "- gojira.yaml: the secret names given when the agent was connected, "
+    "under secrets_from.\n"
+)
+CONNECTED_SEED_MODELS = (
+    "- gojira.yaml: the two VERTEXAI_ environment variables its model access "
+    "needs.\n"
+)
+CONNECTED_SEED_MODELS_GATEWAY = (
+    "- gojira.yaml: the agent's models Secret under secrets_from, its key "
+    "for the room's model gateway.\n"
+)
+
+
+def connected_seed(agent, config) -> dict:
+    """What the room asks the deploy platform to put in its ONE setup pull
+    request for a connected repository that has no deploy files yet
+    (`GojiraClient.create_app`'s `seed`), so the team is not asked a second
+    time by `ConnectedWireStep`: the contract keys, the two files, and a note
+    for whoever reviews it.
+
+    Built by the same writers `ConnectedWireStep` runs over a clone, started
+    from nothing, so the two cannot drift: when the platform has written
+    this into the repository, that step finds the tree already reads the way
+    it would write it and proposes nothing. A repository with deploy files of
+    its own, or a platform that predates the field, ignores the seed, and
+    that step proposes the wiring as it always did."""
+    needs: dict = {}
+    _set_service_account_and_model_env(needs, agent, config)
+    for secret_name in agent.secret_names or []:
+        _append_secrets_from(needs, secret_name)
+    add_room_wiring(needs, agent, config)
+    if slack_app_possible(config, agent):
+        name_slack_secret(needs, agent.name)
+    lines = connected_room_wiring_lines(config)
+    if slack_app_possible(config, agent):
+        lines = lines[:-1] + CONNECTED_WIRE_SLACK + "\n"
+    return {
+        # The platform refuses a key with nothing under it.
+        "needs": {key: value for key, value in needs.items() if value not in ({}, [], None, "")},
+        "base_files": {
+            "serviceaccount.yaml": SERVICEACCOUNT_YAML_TEMPLATE.format(
+                name=agent.name, gsa_email=gsa_email(f"agent-{agent.name}", config.gcp_project)
+            ),
+            CONNECTED_STORAGE_FILE: CONNECTED_STORAGE_YAML_TEMPLATE.format(name=agent.name),
+        },
+        "note": CONNECTED_SEED_NOTE.format(
+            models=CONNECTED_SEED_MODELS_GATEWAY if gateway_on(config) else CONNECTED_SEED_MODELS,
+            secrets=CONNECTED_SEED_SECRETS if agent.secret_names else "",
+            room_wiring=lines,
+        ).rstrip("\n"),
+    }
+
+
 def connected_room_wiring_lines(config) -> str:
     return (
         CONNECTED_WIRE_STORAGE
@@ -2271,11 +2359,16 @@ class ConnectedWireStep:
         write_connected_storage(clone_dir, agent)
 
         if _snapshot(wire_paths) == before:
-            # Already wired on the default branch. Still reprovision: the
-            # attempt that got the wiring merged may have died before the
-            # platform ever regenerated against it, and this step must not
-            # return without confirming the app is active (WireStep's own
-            # invariant, for the same reason).
+            # Already wired on the default branch: the setup pull request
+            # carried the room's seed (`connected_seed`), or a person merged
+            # the wiring between attempts. Nothing to propose, so no request
+            # opens below to deliver the Secrets; make sure they are there.
+            with _sanitized("deliver", agent.name, CONNECTED_WIRE_PLATFORM_UNAVAILABLE):
+                deliver_connected_identity(ctx.session, ctx.clients, config, agent, only_missing=True)
+            # Still reprovision: the attempt that got the wiring merged may
+            # have died before the platform ever regenerated against it, and
+            # this step must not return without confirming the app is active
+            # (WireStep's own invariant, for the same reason).
             return self._reprovision_and_wait(ctx)
 
         with _sanitized("find_pr", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE):
@@ -2508,14 +2601,27 @@ def write_connected_storage(clone_dir: Path, agent) -> None:
     _register_resources(k8s_base / "kustomization.yaml", [CONNECTED_STORAGE_FILE])
 
 
-def deliver_connected_identity(session, clients, config, agent) -> None:
+def deliver_connected_identity(session, clients, config, agent, *, only_missing: bool = False) -> None:
     """Mint and deliver the Secrets `add_room_wiring` names: the gateway
     pass and the models key, each only when the room has that add-on wired.
     Each call takes back the one before it, so this runs when a wiring
-    request is opened and never on a pass that merely checks one."""
-    if gateway_identity_on(config) and clients.cabal is not None:
+    request is opened and never on a pass that merely checks one.
+
+    `only_missing` is for the places with no request to open (the setup pull
+    request carried the seed): a Secret the agent already has is left alone,
+    so nothing a running agent holds is taken back. A read that fails is
+    raised, never taken for "missing"."""
+
+    def has(secret: str, key: str) -> bool:
+        return only_missing and key in clients.kubectl.secret_literals(agent.name, secret, missing_ok=True)
+
+    if gateway_identity_on(config) and clients.cabal is not None and not has(
+        f"{agent.name}-cabal", CABAL_COLLEAGUE_TOKEN_ENV
+    ):
         deliver_pass(clients.kubectl, clients.cabal, agent, clients.sero)
-    if gateway_on(config) and clients.models_gateway is not None:
+    if gateway_on(config) and clients.models_gateway is not None and not has(
+        models_secret_name(agent.name), MODELS_GATEWAY_KEY_ENV
+    ):
         deliver_models_key(
             clients, config, agent,
             models=available_gateway_models(_offered_entries(session, config), _integration_rows(session)),
