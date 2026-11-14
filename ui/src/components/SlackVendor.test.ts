@@ -247,6 +247,23 @@ describe("SlackVendor", () => {
     expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ emoji: [":ticket:", "thumbsup"] });
   });
 
+  it("keeps its slash command to where it has been added until its owner ticks the one box", async () => {
+    roomAfterWakeSave(
+      { wake: "thread", previous_wake: "thread", command_public: true, manifest_changed: false, applied_now: false, wiring: "env" },
+      new Promise<Response>(() => {}),
+    );
+    const box = (await screen.findByRole("checkbox", {
+      name: /Answer its slash command in any public channel/,
+    })) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+
+    await fireEvent.click(box);
+
+    await waitFor(() => expect(box.checked).toBe(true));
+    const put = vi.mocked(fetch).mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "PUT");
+    expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ command_public: true });
+  });
+
   it("says a saved choice waits for the agent's next restart when it could not be applied now", async () => {
     roomAfterWakeSave(
       { wake: "channel", previous_wake: "thread", manifest_changed: false, applied_now: false, wiring: "env" },

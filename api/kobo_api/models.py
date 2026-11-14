@@ -197,6 +197,13 @@ class Agent(Base):
     # the mode above: Slack's names, comma-separated. NULL is none, which is
     # what every agent did before. The runtime reads SLACK_WAKE_EMOJI.
     slack_wake_emoji: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Whether the agent answers its slash command in a public channel it was
+    # never added to (2026-11-14). Off for every agent until its owner says
+    # so: a command is answered only where the agent is. The runtime reads
+    # SLACK_COMMAND_PUBLIC.
+    slack_command_public: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     # Colleague mode (issue #131), set by the owner: "default", "roster-only"
     # or "none" (`kobo_api.composer.COLLEAGUE_MODES`). NULL reads as
     # "default", which is what every agent had before the setting existed.

@@ -113,6 +113,7 @@ RESERVED_KEYS = frozenset(
         # How Slack wakes the agent; set from the Slack tab, written by the room.
         "SLACK_WAKE_MODE",
         "SLACK_WAKE_EMOJI",
+        "SLACK_COMMAND_PUBLIC",
         # The agent's key for the room's model gateway (kobo#390), minted and
         # delivered by the room.
         "MODELS_GATEWAY_KEY",

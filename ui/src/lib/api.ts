@@ -115,6 +115,8 @@ export type AgentSlack = {
   wake: SlackWake;
   /** The emoji whose reaction also wakes the agent. Older rooms omit it. */
   wake_emoji?: string[];
+  /** Whether its slash command is answered in public channels it is not in. */
+  command_public?: boolean;
   /** False when the room has no Slack config-token store, so no app can
    * be created or reconnected from here (issue #262). */
   available: boolean;
@@ -142,6 +144,9 @@ export type SlackAppView = {
   /** The emoji whose reaction also wakes the agent, under Slack's own
    * names. Empty when no reaction wakes it. Older rooms omit it. */
   wake_emoji?: string[];
+  /** Whether its slash command is answered in public channels it has not
+   * been added to. Off until its owner turns it on. Older rooms omit it. */
+  command_public?: boolean;
   legacy: boolean;
   /** A connected agent with no room-made app: it is on its team's own
    * Slack app (tokens under Secrets), or on none yet. */
@@ -2666,6 +2671,8 @@ export type SlackWakeResult = {
   previous_wake: SlackWake;
   /** The emoji now in force, as the room cleaned them. */
   wake_emoji?: string[];
+  /** Where its slash command is answered, as now in force. */
+  command_public?: boolean;
   manifest_changed: boolean;
   applied_now?: boolean;
   /** The room's own clock at the save (when `applied_now`), so a later
@@ -2681,6 +2688,17 @@ export async function setSlackWake(name: string, wake: SlackWake): Promise<Slack
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ wake }),
+  });
+  return parse<SlackWakeResult>(res);
+}
+
+/** The same route with `command_public` alone: whether the agent answers
+ * its slash command in public channels it has not been added to. */
+export async function setSlackCommandPublic(name: string, on: boolean): Promise<SlackWakeResult> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/slack/wake`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ command_public: on }),
   });
   return parse<SlackWakeResult>(res);
 }

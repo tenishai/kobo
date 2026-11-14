@@ -1050,7 +1050,11 @@ def register(mcp: FastMCP, app: Any) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
     @audited("kobo_set_slack_wake")
     async def kobo_set_slack_wake(
-        ctx: Context, agent: str, wake: str | None = None, emoji: list[str] | None = None
+        ctx: Context,
+        agent: str,
+        wake: str | None = None,
+        emoji: list[str] | None = None,
+        command_public: bool | None = None,
     ) -> dict:
         """How Slack wakes `agent` in a channel. `wake` is one of `mention`
         (only an @-mention reaches it), `thread` (a mention, then every reply
@@ -1062,9 +1066,16 @@ def register(mcp: FastMCP, app: Any) -> None:
         them to a message in a channel the agent is in, the agent reads that
         message and answers in its thread, whatever `wake` is. Use Slack's
         names without colons (`ticket`, `rotating_light`), at most ten. An
-        empty list means no reaction wakes it. Send `wake`, `emoji` or both;
-        what you leave out stays as it is, and `wake_emoji` in the answer is
-        the list now in force.
+        empty list means no reaction wakes it.
+
+        `command_public` is where its slash command is answered. False, which
+        is how every agent starts, answers only in a conversation the agent
+        has been added to. True also answers in any public channel, where the
+        agent posts the question and its answer for everyone there.
+
+        Send any of the three; what you leave out stays as it is, and
+        `wake_emoji` and `command_public` in the answer are what is now in
+        force.
 
         `applied_now` true means the running agent is restarting with the
         new choice already. For an agent that runs its team's own code the
@@ -1086,7 +1097,7 @@ def register(mcp: FastMCP, app: Any) -> None:
             response = await _off_loop(
                 set_slack_wake_endpoint,
                 name=agent,
-                payload=SlackWakeRequest(wake=wake, emoji=emoji),
+                payload=SlackWakeRequest(wake=wake, emoji=emoji, command_public=command_public),
                 request=req,
                 session=session,
             )
@@ -1100,6 +1111,7 @@ def register(mcp: FastMCP, app: Any) -> None:
             "wake": body.get("wake"),
             "previous_wake": body.get("previous_wake"),
             "wake_emoji": body.get("wake_emoji"),
+            "command_public": body.get("command_public"),
             "manifest_changed": body.get("manifest_changed"),
             "applied_now": body.get("applied_now"),
             "wiring": body.get("wiring"),

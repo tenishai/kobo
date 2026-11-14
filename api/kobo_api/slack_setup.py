@@ -197,6 +197,19 @@ _EMOJI_ALIASES = {"thumbsup": "+1", "thumbsdown": "-1"}
 _STATUS_EMOJI = ("eyes", "white_check_mark", "x", "octagonal_sign")
 
 
+# Where a slash command is answered (2026-11-14). The app's token can post in
+# any public channel, so the runtime answers a command only in a conversation
+# the agent is in unless this variable says `on`. No value is off.
+COMMAND_PUBLIC_ENV = "SLACK_COMMAND_PUBLIC"
+COMMAND_PUBLIC_ON = "on"
+
+
+def command_public(agent) -> bool:
+    """Whether the agent answers its slash command in a public channel it
+    was never added to."""
+    return bool(getattr(agent, "slack_command_public", False))
+
+
 def wake_emoji(agent) -> list[str]:
     """The emoji whose reaction wakes the agent, in the order they were given."""
     return [name for name in (getattr(agent, "slack_wake_emoji", None) or "").split(",") if name]

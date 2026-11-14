@@ -1572,7 +1572,7 @@ def test_connect_slack_wires_secret_transport_and_secrets_from_returns_sha(
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert detail["slack"] == {
         "app_id": APP_ID, "channels": [CHANNEL], "state": "connected",
-        "wake": "mention", "wake_emoji": [],
+        "wake": "mention", "wake_emoji": [], "command_public": False,
         "available": True,
         # The paste flow's app keeps the Slack tab (issue #371): `legacy`.
         "relay": False,
@@ -1597,7 +1597,7 @@ def test_get_agent_slack_carries_app_id_and_channels_after_connect(session_facto
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert detail["slack"] == {
         "app_id": APP_ID, "channels": [CHANNEL], "state": "connected",
-        "wake": "mention", "wake_emoji": [],
+        "wake": "mention", "wake_emoji": [], "command_public": False,
         "available": True,
         # The paste flow's app keeps the Slack tab (issue #371): `legacy`.
         "relay": False,
@@ -1630,7 +1630,7 @@ def test_get_slack_app_view_carries_the_install_link_while_created_and_not_insta
     assert view["install_url"].startswith("https://slack.com/oauth/v2/authorize?client_id=fake-client-id")
     assert {k: v for k, v in view.items() if k != "install_url"} == {
         "enabled": True, "available": True, "state": "created", "app_id": "A0FAKE",
-        "workspace": None, "app_name": None, "channels": [CHANNEL], "wake": "mention", "wake_emoji": [], "legacy": False,
+        "workspace": None, "app_name": None, "channels": [CHANNEL], "wake": "mention", "wake_emoji": [], "command_public": False, "legacy": False,
         "own_app": False, "room_app": True, "wiring": None, "rebuilding": False,
         "update_due": False,
     }
@@ -1737,6 +1737,21 @@ def test_the_room_makes_a_connected_agent_a_slack_app_through_a_pull_request(
     }
     assert kubectl.env_sets == [] and kubectl.env_unsets == [] and github.push_count == 0
     assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["wiring"]["state"] == "waiting"
+
+    # So is where its slash command is answered.
+    del github._open_prs[f"{REPO}#{SLACK_BRANCH}"]
+    github._repo_files["gojira.yaml"] = github._clone_tree["gojira.yaml"] = github.pushed_file("gojira.yaml")
+    opened = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"command_public": True})
+    assert (opened.status_code, opened.json()["command_public"], opened.json()["pull_request"]) == (200, True, pr_url)
+    assert yaml.safe_load(github.pushed_file("gojira.yaml"))["env"]["SLACK_COMMAND_PUBLIC"] == "on"
+    assert kubectl.env_sets == [] and github.push_count == 0
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["wiring"]["state"] == "waiting"
+
+    # Taken back before the team merged: the default branch already reads off,
+    # but the open request would turn it on, so it has to be settled first.
+    taken_back = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"command_public": False})
+    assert taken_back.status_code == 409 and pr_url in taken_back.json()["error"]
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["command_public"] is True
 
 
 def test_a_connected_agents_closed_slack_request_is_opened_again_without_a_second_app(
@@ -1846,6 +1861,42 @@ def test_put_wake_emoji_names_the_reactions_that_wake_the_agent(session_factory_
     assert (cleared.status_code, cleared.json()["wake_emoji"]) == (200, [])
     assert kubectl.env_unsets == [(AGENT_NAME, AGENT_NAME, "SLACK_WAKE_EMOJI")]
     assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["wake_emoji"] == []
+
+
+def test_put_command_public_lets_a_slash_command_be_answered_where_the_agent_is_not(
+    session_factory__api_slack, config__api_slack
+):
+    """Wire shape: off for every agent, one more key on the wake lane when its
+    owner turns it on, set on the running agent at once, kept by a mode
+    change, and taken away (not set to off) when turned off again."""
+    gojira, app_id = _onboarded_gojira()
+    github = _GojiraCapturingGitHub()
+    kubectl = FakeKubectl()
+    client = _make_client__api_slack(
+        session_factory__api_slack, config__api_slack, github=github, gojira=gojira, kubectl=kubectl
+    )
+    _seed_agent__api_slack(session_factory__api_slack, config__api_slack, gojira_app_id=app_id)
+    wake = f"/api/agents/{AGENT_NAME}/slack/wake"
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["command_public"] is False
+
+    opened = client.put(wake, json={"command_public": True})
+
+    assert opened.status_code == 200, opened.text
+    assert (opened.json()["command_public"], opened.json()["wake"], opened.json()["applied_now"]) == (
+        True, "mention", True
+    )
+    assert github.captured_gojira["env"]["SLACK_COMMAND_PUBLIC"] == "on"
+    assert "SLACK_WAKE_MODE" not in github.captured_gojira["env"]
+    assert kubectl.env_sets == [(AGENT_NAME, AGENT_NAME, "SLACK_COMMAND_PUBLIC", "on")]
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["command_public"] is True
+    assert client.put(wake, json={"wake": "thread"}).json()["command_public"] is True
+
+    closed = client.put(wake, json={"command_public": False})
+
+    assert (closed.status_code, closed.json()["command_public"]) == (200, False)
+    assert "SLACK_COMMAND_PUBLIC" not in github.captured_gojira["env"]
+    assert kubectl.env_unsets == [(AGENT_NAME, AGENT_NAME, "SLACK_COMMAND_PUBLIC")]
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["command_public"] is False
 
 
 def test_put_wake_says_applied_now_false_when_the_live_apply_fails(session_factory__api_slack, config__api_slack):
@@ -2893,7 +2944,7 @@ def test_get_agent_carries_the_detail_routes_full_field_set(session_factory__mcp
     assert result["skills"] == []
     assert result["repo_full_name"] == REPO_TEMPLATE.format(name="agent-a")
     assert result["slack"] == {
-        "app_id": None, "channels": [], "state": "idle", "wake": "mention", "wake_emoji": [],
+        "app_id": None, "channels": [], "state": "idle", "wake": "mention", "wake_emoji": [], "command_public": False,
         "available": False, "relay": False, "legacy": False,
     }
     # What the page's header and Harness tab show, which this tool had
