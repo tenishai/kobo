@@ -59,6 +59,13 @@ What your code does:
 
 The body is Slack's own event envelope, untouched: the same JSON Slack's Events API sends, with `event_id`, `team_id` and the `event` inside it.
 
+Two more kinds of body arrive at the same address, with the same header, and want the same answer. Tell them apart by `type`:
+
+- `block_actions`. Someone pressed a button or picked from a menu on a message your agent posted. The body is the JSON Slack sends for the click, as Slack sent it: `user`, `channel`, `message`, `actions` and a `trigger_id`.
+- `slash_command`. Someone used the agent's slash command, `/` and its name. The body is the command's fields as one JSON object, `command`, `text`, `user_id`, `channel_id`, `trigger_id` and `response_url`, with `type` added by the room. The person sees nothing until your code posts, so post in the channel or answer them alone through `response_url`.
+
+Neither has an `event_id`; drop a repeat by `trigger_id`. Code that reads only `event_callback` bodies can ignore both.
+
 What arrives with the app, beside the names above:
 
 - `SLACK_BOT_TOKEN`. There once the app is installed in a workspace. The agent restarts to pick it up.
@@ -71,7 +78,7 @@ Reactions arrive too, as `reaction_added` and `reaction_removed`, whichever **Wa
 
 So does `member_joined_channel`, when someone joins a channel the agent is in.
 
-The app's token may also post files (`files:write`), list the workspace's custom emoji (`emoji:read`) and read its user groups (`usergroups:read`). An app installed before the room asked for these gets them when its owner presses **Update in Slack** on the Slack row; the token keeps its name and the agent restarts once.
+The app's token may also post files (`files:write`), list the workspace's custom emoji (`emoji:read`), read its user groups (`usergroups:read`), post in a public channel the agent was not invited to (`chat:write.public`), pin and unpin messages (`pins:read`, `pins:write`) and keep a channel's bookmarks (`bookmarks:read`, `bookmarks:write`). An app installed before the room asked for these gets them when its owner presses **Update in Slack** on the Slack row; the token keeps its name and the agent restarts once.
 
 All of it reaches the agent through one pull request on your repository. The room opens it when the app is made, and again when **Wakes on** or the emoji change.
 

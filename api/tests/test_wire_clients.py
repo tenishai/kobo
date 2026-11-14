@@ -746,6 +746,12 @@ def test_render_manifest_scopes_byte_equal_to_constraint():
         "files:write",
         "emoji:read",
         "usergroups:read",
+        "commands",
+        "chat:write.public",
+        "pins:read",
+        "pins:write",
+        "bookmarks:read",
+        "bookmarks:write",
     ]
 
 
@@ -768,11 +774,30 @@ def test_render_manifest_settings_and_events_exact():
                 "member_joined_channel",
             ]
         },
-        "interactivity": {"is_enabled": False},
+        # A click on a choice the agent offered comes back (issue #484).
+        "interactivity": {"is_enabled": True},
         "org_deploy_enabled": False,
         "socket_mode_enabled": True,
         "token_rotation_enabled": False,
     }
+
+
+def test_render_manifest_takes_clicks_and_a_slash_command_at_the_relay():
+    """Wire shape: an app the room makes sends clicks and its slash command to
+    the relay address with `/actions` and `/commands` on the end; the command
+    is the agent's name, and a name Slack keeps for itself gets none (issue #484)."""
+    relay = "https://room.example/slack/relay/abc"
+    manifest = render_manifest("echo", "A friendly test agent.", request_url=relay)
+
+    assert manifest["settings"]["interactivity"] == {"is_enabled": True, "request_url": f"{relay}/actions"}
+    assert manifest["features"]["slash_commands"] == [{
+        "command": "/echo", "description": "Ask echo", "usage_hint": "what you want to ask",
+        "should_escape": True, "url": f"{relay}/commands",
+    }]
+    # Over a socket there is no address to name.
+    socket = render_manifest("echo", "A friendly test agent.")
+    assert "url" not in socket["features"]["slash_commands"][0]
+    assert "slash_commands" not in render_manifest("remind", "x", request_url=relay)["features"]
 
 
 def test_render_manifest_thread_and_channel_modes_subscribe_channel_messages():

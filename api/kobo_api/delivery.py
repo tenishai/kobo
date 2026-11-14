@@ -277,13 +277,21 @@ def wait_for_secret(
 
 def restart_once_secret_carries(
     kubectl: KubectlClient, name: str, secret: str, keys: Iterable[str], *, background: bool = True,
+    before: Callable[[], None] | None = None,
 ) -> threading.Thread | None:
     """Restart agent `name` once its Secret carries `keys`, restarting anyway when the
     wait runs out (the next start then still reads whatever has landed). In the
-    background by default, so a request does not hold for the platform's re-read."""
+    background by default, so a request does not hold for the platform's re-read.
+    `before` runs first, in the same place: a bundle change this one restart should
+    carry too. Whatever it raises is logged and the restart still happens."""
     keys = list(keys)
 
     def _run() -> None:
+        if before is not None:
+            try:
+                before()
+            except Exception as exc:  # noqa: BLE001 -- the restart must not be lost to it
+                log.warning("%s: the step before its restart failed: %s", name, exc)
         if not wait_for_secret(kubectl, name, secret, keys):
             log.warning("%s: %s did not reach the cluster in time; restarting anyway", name, secret)
         try:

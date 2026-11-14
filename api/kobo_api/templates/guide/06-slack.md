@@ -17,11 +17,25 @@ Leave the field empty and no reaction wakes the agent, which is how every agent 
 
 An agent that runs its team's own code is handed the names and its code decides what a reaction does. An app made before the room listened for reactions hears them from the first time you save the field; there is nothing to reinstall.
 
+### What it can do in Slack
+
+Beside answering where it is asked, an agent the room built can do five things in Slack. There is nothing to turn on; they come with the app.
+
+- **Offer choices.** When a question has a short list of answers, the agent posts it with a button for each, or a menu when there are more than five. Press one and that is your answer: the message changes to say who chose what, and the agent carries on in the same thread. The first pick counts and the buttons go away.
+- **Take a slash command.** Type `/` and the agent's name, then what you want: `/clio what changed today?`. The agent posts who asked what in that channel and answers in the thread under it. It works in any public channel, and in a private channel or a group message the agent has been added to; anywhere else the agent tells you, and only you, to add it first. An agent whose name Slack already uses for a command of its own, such as `remind`, has no slash command.
+- **Post in a public channel it was not invited to.** Ask it to announce something in `#releases` and it can, without anyone inviting it there first. It still hears only the channels it is in, so invite it wherever people should be able to talk back. Private channels always need the invite.
+- **Pin a message.** It can pin a message in a channel it is in, list what is pinned, and take a pin off.
+- **Bookmark a link.** It can add a link to the bar at the top of a channel it is in, list what is there, and remove one.
+
+A team's informational guide, which never acts, gets none of the four things an agent does on its own; its slash command still asks it a question.
+
 ### When the room asks Slack for more
 
-Now and then a release of the room lets a Slack app do more. The latest adds three things: posting a file, reading the workspace's custom emoji, and reading its user groups, so an agent can tell who `@oncall` is. It also tells the agent when someone joins a channel it is in. A connected agent's own code can use all of it at once. An agent the room built does nothing with these yet.
+Now and then a release of the room lets a Slack app do more. The latest adds what "What it can do in Slack" describes: choices, the slash command, posting without an invite, pins and bookmarks. The one before added posting a file, reading the workspace's custom emoji, reading its user groups, and hearing when someone joins a channel the agent is in; an agent the room built does nothing with those four yet.
 
-Slack only gives an app more when a person allows it, so an app installed before such a release keeps working exactly as it was and its row shows **Update**. Open the row and press **Update in Slack**: Slack shows what is new and asks you to allow it, then sends you back to the agent's page. The agent keeps answering until then and restarts once after. An app installed after the release has it all from the start, and its row never asks.
+Slack only gives an app more when a person allows it, so an app installed before such a release keeps working exactly as it was and its row shows **Update**. Open the row and press **Update in Slack**: Slack shows what is new and asks you to allow it, then sends you back to the agent's page. The agent keeps answering until then and restarts once after. One update brings everything the app is owed, however many releases it missed. An app installed after the release has it all from the start, and its row never asks.
+
+The agent also has to be on the room's current runtime to use what is new. If the Harness tab offers **Update to current**, press it. An agent connected the older way, from the Slack tab, gets all of this when it moves to the new Slack setup.
 
 ### An agent that runs its team's own code
 

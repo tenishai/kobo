@@ -60,6 +60,8 @@ Beside any of the three, **Also wakes on these emoji** names emoji whose reactio
 
 Direct messages always reach it. Moving to or from **Mentions only** means pasting the manifest again. See "Slack".
 
+Once in Slack, an agent the room built can also offer a choice as buttons, be asked with a slash command that is its own name, post in a public channel it was not invited to, pin a message and bookmark a link. None of it is a setting; an app made before the room could do these is brought up to date with **Update in Slack**.
+
 ### Teaching
 
 - **Teach this** on a chat message saves that message's own words. Use it when either side said something worth keeping.

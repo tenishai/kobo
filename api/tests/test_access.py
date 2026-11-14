@@ -6598,6 +6598,8 @@ def test_team_guide_archetype_composes_no_github_and_no_liminal(tmp_path):
     assert set(tools) == {"provider", "allow", "colleagues"}
     # Colleagues survive untouched -- the guide still talks.
     assert tools["provider"] == "colleagues"
+    # It never acts, in Slack either: no Slack tools (issue #484).
+    assert "slack.*" not in tools["allow"]
     assert tools["colleagues"]["url"] == "http://cabal.example.com"
     # No action surface at all: no sidecar blocks, no github allow entries.
     assert "github" not in tools

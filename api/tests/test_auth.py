@@ -1779,3 +1779,63 @@ def test_relay_is_absent_while_the_switch_is_off(tmp_path, relay_forwards):
     assert client.post(f"/slack/relay/{RELAY_ID}", content=body, headers=_signed(body)).status_code == 404
     assert client.get("/slack/oauth/callback?code=x&state=y", follow_redirects=False).status_code == 404
     assert relay_forwards == []
+
+
+def _form(fields: dict[str, str]) -> bytes:
+    from urllib.parse import urlencode
+
+    return urlencode(fields).encode()
+
+
+def test_relay_hands_a_click_and_a_slash_command_to_the_agent(tmp_path, relay_forwards):
+    """Authentication (relay): a signed click and a signed slash command are
+    answered with an empty 200 and reach the agent's /slack/events as JSON
+    with X-Kobo-Relay-Secret: the click's payload as Slack sent it, the
+    command's fields with `type: slash_command` added (issue #484)."""
+    import json as _json
+
+    client = _relay_room(tmp_path)
+    click = {"type": "block_actions", "trigger_id": "T1", "user": {"id": "U1"},
+             "actions": [{"action_id": "choice_0", "value": "Ship it"}]}
+    clicked = _form({"payload": _json.dumps(click)})
+    command = _form({"command": "/clio", "text": "what broke?", "user_id": "U1", "channel_id": "C1",
+                     "trigger_id": "T2", "response_url": "https://hooks.slack.com/commands/T0/1/x"})
+
+    first = client.post(f"/slack/relay/{RELAY_ID}/actions", content=clicked, headers=_signed(clicked))
+    second = client.post(f"/slack/relay/{RELAY_ID}/commands", content=command, headers=_signed(command))
+
+    assert (first.status_code, first.content) == (200, b"")
+    assert (second.status_code, second.content) == (200, b"")
+    assert [str(r.url) for r in relay_forwards] == ["http://agent-clio.default.svc.cluster.local/slack/events"] * 2
+    assert all(r.headers["X-Kobo-Relay-Secret"] == RELAY_SECRET for r in relay_forwards)
+    assert _json.loads(relay_forwards[0].content) == click
+    assert _json.loads(relay_forwards[1].content) == {
+        "type": "slash_command", "command": "/clio", "text": "what broke?", "user_id": "U1", "channel_id": "C1",
+        "trigger_id": "T2", "response_url": "https://hooks.slack.com/commands/T0/1/x",
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "signed", "relay_on", "status"),
+    [
+        ("actions", b"payload=%7B%7D", False, True, 401),
+        ("commands", b"command=%2Fclio", False, True, 401),
+        ("actions", b"payload=%7B%7D", True, False, 404),
+        ("commands", b"command=%2Fclio", True, False, 404),
+        ("actions", b"payload=not-json", True, True, 400),
+        ("actions", b"payload=%5B%5D", True, True, 400),
+        ("commands", b"text=hello", True, True, 400),
+    ],
+    ids=["click-unsigned", "command-unsigned", "click-switch-off", "command-switch-off",
+         "click-not-json", "click-not-an-object", "command-without-a-name"],
+)
+def test_relay_refuses_a_click_or_a_command_it_cannot_trust(tmp_path, relay_forwards, path, body, signed, relay_on, status):
+    """Authentication (relay): the two form addresses hold the same line as the
+    event address: no signature is a bare 401, the switch off a bare 404, a
+    body that is not what Slack sends a bare 400, and nothing is forwarded."""
+    client = _relay_room(tmp_path, slack_relay=relay_on)
+
+    response = client.post(f"/slack/relay/{RELAY_ID}/{path}", content=body, headers=_signed(body) if signed else {})
+
+    assert (response.status_code, response.content) == (status, b"")
+    assert relay_forwards == []

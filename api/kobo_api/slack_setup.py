@@ -47,7 +47,13 @@ import yaml
 
 from kobo_api import delivery
 from kobo_api.clients import ClientError, GitHubClient, GojiraClient, KubectlClient
-from kobo_api.composer import repin_commit_note, update_dockerfile_runtime_image
+from kobo_api.composer import (
+    SLACK_TOOLS_ALLOW,
+    repin_commit_note,
+    update_agent_yaml_allow,
+    update_dockerfile_runtime_image,
+)
+from kobo_api.repo_lock import repo_write_lock
 from kobo_api.sero import SeroClient, deliver_secret
 
 # --- render_manifest -----------------------------------------------------------
@@ -115,6 +121,17 @@ _BOT_SCOPES = [
     "files:write",
     "emoji:read",
     "usergroups:read",
+    # What an agent does in Slack besides answer (issue #484, 2026-11-14): its
+    # own slash command (`commands`), a post in a public channel nobody
+    # invited it to (`chat:write.public`), and a channel's pins and bookmarks.
+    # Six SCOPE additions in one batch, for the reason above: an installed
+    # app is asked once, with Update in Slack.
+    "commands",
+    "chat:write.public",
+    "pins:read",
+    "pins:write",
+    "bookmarks:read",
+    "bookmarks:write",
 ]
 
 # Tagged-only in channels (2026-08-31 operator ruling, from live use: an
@@ -232,6 +249,35 @@ def wake_events(mode: str) -> list[str]:
     return events
 
 
+# Clicks and the slash command (issue #484, 2026-11-14). Slack sends neither as
+# an event: a click on a button or a menu goes to the app's interactivity
+# address, `/the-agents-name some words` to the command's own. Both hang off
+# the app's relay address (`kobo_api.slack_relay` serves them), so a manifest
+# that knows the one knows the other two. An app on Socket Mode names no
+# address: Slack sends both down the socket.
+ACTIONS_SUFFIX = "/actions"
+COMMANDS_SUFFIX = "/commands"
+
+# Slack's own commands: an app's command by one of these names is never
+# reached, so an agent that shares one simply has no command.
+_SLACK_COMMANDS = frozenset({
+    "active", "apps", "archive", "away", "call", "collapse", "dnd", "expand", "feed", "feedback", "giphy",
+    "huddle", "invite", "join", "kick", "leave", "me", "msg", "mute", "open", "poll", "prefs", "remind",
+    "remove", "rename", "search", "shortcuts", "shrug", "star", "status", "topic", "who",
+})
+_COMMAND_NAME = re.compile(r"^[a-z0-9_-]{1,31}$")
+
+
+def slash_command(agent_name: str) -> str | None:
+    """The agent's slash command, `/its-name`, or None when Slack would not
+    take the name (its rule: lower case, digits, `-` and `_`, 32 characters
+    with the slash) or already uses it itself."""
+    name = agent_name.strip().lower()
+    if not _COMMAND_NAME.match(name) or name in _SLACK_COMMANDS:
+        return None
+    return f"/{name}"
+
+
 def bot_scopes() -> list[str]:
     """The bot scopes every manifest carries, for the install link the relay
     flow builds (issue #371): `oauth/v2/authorize` wants them spelled out."""
@@ -274,6 +320,12 @@ def render_manifest(
     granted), so changing mode never needs a reinstall, only a re-applied
     manifest.
 
+    Interactivity is on and the agent has a slash command by its own name
+    (`slash_command`; none when Slack would refuse the name). With a
+    `request_url` both name an address under it (`ACTIONS_SUFFIX`,
+    `COMMANDS_SUFFIX`); on Socket Mode neither names one. `should_escape`
+    makes Slack send a person or channel named in a command as its id.
+
     Display name and bot display name are both `agent_name`. `description`
     is `persona_first_line`, stripped and truncated to Slack's 100-char
     limit (the caller — `kobo_api.main`'s slack/app route — resolves that
@@ -286,8 +338,27 @@ def render_manifest(
     if redirect_url:
         oauth_config["redirect_urls"] = [redirect_url]
     event_subscriptions: dict = {"bot_events": wake_events(wake)}
+    interactivity: dict = {"is_enabled": True}
     if request_url:
         event_subscriptions = {"request_url": request_url, **event_subscriptions}
+        interactivity["request_url"] = f"{request_url}{ACTIONS_SUFFIX}"
+    features: dict = {
+        "bot_user": {
+            "display_name": agent_name,
+            "always_online": True,
+        },
+    }
+    command = slash_command(agent_name)
+    if command:
+        entry = {
+            "command": command,
+            "description": f"Ask {agent_name}",
+            "usage_hint": "what you want to ask",
+            "should_escape": True,
+        }
+        if request_url:
+            entry["url"] = f"{request_url}{COMMANDS_SUFFIX}"
+        features["slash_commands"] = [entry]
 
     return {
         "display_information": {
@@ -295,16 +366,11 @@ def render_manifest(
             "description": description,
             "background_color": _BACKGROUND_COLOR,
         },
-        "features": {
-            "bot_user": {
-                "display_name": agent_name,
-                "always_online": True,
-            },
-        },
+        "features": features,
         "oauth_config": oauth_config,
         "settings": {
             "event_subscriptions": event_subscriptions,
-            "interactivity": {"is_enabled": False},
+            "interactivity": interactivity,
             "org_deploy_enabled": False,
             "socket_mode_enabled": not request_url,
             "token_rotation_enabled": False,
@@ -632,6 +698,22 @@ def wire_slack_values(
     if previous is not None and on_repin is not None:
         on_repin()
     return head
+
+
+def allow_slack_tools(github: GitHubClient, *, repo: str) -> bool:
+    """Make an agent's own bundle admit the Slack tools (`SLACK_TOOLS_ALLOW`):
+    clone `repo`, add the entry when no pattern there covers it, publish. An
+    agent born since the entry was composed already has it, and then nothing
+    is pushed. No restart of its own: the caller is on its way to one (the
+    install callback restarts the agent for its token). Returns whether the
+    bundle changed. Raises `ClientError`."""
+    with repo_write_lock(repo), tempfile.TemporaryDirectory(prefix="kobo-slack-allow-") as tmp:
+        workdir = Path(tmp) / "repo"
+        github.clone(repo, workdir)
+        if not update_agent_yaml_allow(workdir / "bundle", entries=[SLACK_TOOLS_ALLOW]):
+            return False
+        delivery.push(github, workdir, "kobo: allow the Slack tools", restart=False)
+        return True
 
 
 def rewire_slack_channels(

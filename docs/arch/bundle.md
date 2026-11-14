@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-bundle
-updated: 2026-11-08
-anchor: api/kobo_api/composer.py sha=17d9891a1b988989e327220856c66200418ac664
+updated: 2026-11-14
+anchor: api/kobo_api/composer.py sha=384403e735cf9c004b18cc69095c23deac64a965
 anchor: api/kobo_api/vendor/bundle.schema.json sha=257c9575d4674177daf32d7bc0ad2b1145709552
 ---
 # bundle — the daedalus agent bundle kobo writes into each agent repo
@@ -34,3 +34,4 @@ GOTCHA: slack_setup.py `_update_agent_yaml_transports` round-trips agent.yaml th
 - One runtime, bundles as artifacts (tenishai/kobo#434): `BundleSpec.bundle_artifact` set (the room has `bundle_registry`) composes the new shape: the Dockerfile is the FROM line alone (litestream and the entrypoint ride the runtime, which reads `MEMORY_REPLICA_BUCKET` from the pod's env), and `transports` carries a dormant `{kind: slack, optional: true}` the runtime serves only with a token. Unset keeps the baked-in shape byte for byte.
 - With `bundle_artifact` set, compose also writes a seed `gojira.yaml` (`_seed_gojira_yaml`: `bundle_image`, env `AGENT_NAME`/`MEMORY_REPLICA_BUCKET`, `secrets_from_optional`), because the deploy platform reads an existing gojira.yaml for the app's needs before its first render: the first deployment it makes then already mounts the bundle (dev, 2026-11-03: without it the first pod had no /bundle and crashlooped until the wiring commit's second setup PR).
 - `_self_md` (2026-11-06): a GitHub paragraph. The agent acts through the room's app, so the room signs its comments, reviews and pull requests with its name and portrait via the gateway's `github-write` tools; branches are named `<agent>/<topic>`. 2026-11-08: the same paragraph says Jira works alike, the room's account as author and the agent's `jira-write` issues and comments carrying its name in the summary and a signature at the top.
+- `slack.*` on the allow list (kobo#484, 2026-11-14): `_tools_block` appends `SLACK_TOOLS_ALLOW` on every arm except the team-guide kiosk, which never acts. The runtime's Slack tools (`slack.post_message`, `slack.offer_choices`, `slack.pins`, `slack.bookmarks`) exist only with a Slack transport and a bot token, so the entry opens nothing on an agent that is not in Slack. A bundle built before it gets the entry from `slack_setup.allow_slack_tools` (`update_agent_yaml_allow`), called by the Slack install callback ahead of the token's restart (`delivery.restart_once_secret_carries(before=)`); connected agents are skipped. The pattern also admits a hand-added `slack_read` block's `slack.find_threads` / `slack.read_thread`, which such a bundle already allowed by name. The `default`-mode digests in tests/test_wire_bundle.py were retaken for it.

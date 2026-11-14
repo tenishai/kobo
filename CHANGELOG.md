@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- An agent in Slack can offer choices, take a slash command, post without an invite, pin and bookmark (#484). Every manifest the room writes now turns interactivity on, gives the agent a slash command that is its own name (none for a name Slack keeps for itself, such as `remind`), and asks for six more scopes: `commands`, `chat:write.public`, `pins:read`, `pins:write`, `bookmarks:read` and `bookmarks:write`. For an app the room made, clicks and commands come to two new public addresses beside the events one, `POST /slack/relay/{relay_id}/actions` and `POST /slack/relay/{relay_id}/commands`: each checks Slack's signature over the raw form, answers an empty `200`, and hands the agent a JSON body at `/slack/events` under the same `X-Kobo-Relay-Secret` (the click's payload as Slack sent it, `type: block_actions`; the command's fields with `type: slash_command` added). A bundle the room composes allows `slack.*` from birth, except a team's informational guide, which never acts. An agent built before this gets the entry in the install callback, which is where **Update in Slack** lands, ahead of the one restart its token brings; a connected agent's repository is never pushed to, and its code is handed the new bodies and the wider token. There is no new setting: an installed app shows **Update** once and one approval brings all six scopes. The tools are the runtime's (`slack.post_message`, `slack.offer_choices`, `slack.pins`, `slack.bookmarks`), so the agent has to be on a runtime that has them; an older one drops the two new bodies and offers no tool. An agent wired the older way in a room that does not make Slack apps, and built before this, does not get the allow entry.
+
 ## [0.3.64] - 2026-11-13
 
 ### Added

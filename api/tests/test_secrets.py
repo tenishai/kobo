@@ -1716,6 +1716,53 @@ def test_install_callback_stores_the_bot_token_through_the_lane_and_redirects(
     assert len(sero.puts) == 1
 
 
+@pytest.mark.parametrize(
+    ("kind", "allow", "pushed"),
+    [("composed", "[colleagues.remember]", True), ("composed", "[colleagues.remember, slack.*]", False),
+     ("connected", "[colleagues.remember]", False)],
+    ids=["built-before-the-slack-tools", "already-allowed", "runs-its-own-code"],
+)
+def test_install_callback_opens_the_slack_tools_on_a_bundle_the_room_built(
+    session_factory__api_slack, config__api_slack, monkeypatch, kind, allow, pushed
+):
+    """Integrity: the Slack tools need two things, the token's new scopes and
+    `slack.*` on the agent's allow list (issue #484). The install callback,
+    which is also where Update in Slack lands, adds the entry to a bundle the
+    room built before it was composed at birth, ahead of the one restart the
+    token brings. A bundle that has it is left alone, and a team's own
+    repository is never pushed to."""
+    from kobo_api import slack_relay
+    from kobo_api.models import SlackRelayApp
+
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    tree = {"bundle/agent.yaml": f"name: {AGENT_NAME}\ntools: {{provider: colleagues, allow: {allow}}}\n"}
+    github, kubectl = FakeGitHub(clone_tree=tree), FakeKubectl()
+    monkeypatch.setattr(delivery, "SECRET_POLL", 0.01)
+    client = _make_client(session_factory__api_slack, relay_config, github=github, kubectl=kubectl,
+                          sero=FakeSero(), slack=FakeSlack())
+    _seed_agent(session_factory__api_slack, relay_config, slack_app_id="A0FAKE", created_by=OPERATOR_EMAIL)
+    with session_factory__api_slack() as s:
+        s.query(Agent).filter_by(name=AGENT_NAME).one().kind = kind
+        row = SlackRelayApp(relay_id="relay-id-for-clio-0000", agent_name=AGENT_NAME, app_id="A0FAKE",
+                            client_id="fake-client-id", client_secret="fake-client-secret",
+                            signing_secret="fake-signing-secret", relay_secret="fake-relay-secret",
+                            created_by=OPERATOR_EMAIL, created_at=datetime(2026, 11, 1))
+        s.add(row)
+        state = slack_relay.mint_state(row)
+        s.commit()
+    kubectl.secrets[(AGENT_NAME, f"{AGENT_NAME}-slack")] = {"SLACK_BOT_TOKEN": "xoxb-fake-bot-token"}
+
+    response = client.get(f"/slack/oauth/callback?code=fake-code&state={state}", follow_redirects=False)
+    delivery.join_restarts()
+
+    assert response.status_code == 302
+    assert [m for _, m in github.pushes] == (["kobo: allow the Slack tools"] if pushed else [])
+    if pushed:
+        written = yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["tools"]["allow"]
+        assert written == ["colleagues.remember", "slack.*"]
+    assert kubectl.restarts == [(AGENT_NAME, AGENT_NAME)]
+
+
 def test_an_app_installed_before_the_rooms_latest_slack_scopes_is_updated_by_one_approval(
     session_factory__api_slack, config__api_slack
 ):

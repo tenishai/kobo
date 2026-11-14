@@ -304,6 +304,15 @@ _COLLEAGUES_ASK_TOOL = "colleagues.ask_colleague"
 # provider offers there matches nothing: no runtime version gate needed.
 _SKILLS_LOAD_TOOL = "skills.load"
 
+# What an agent does in Slack besides answer (issue #484, 2026-11-14): the
+# runtime's slack.post_message, slack.offer_choices, slack.pins and
+# slack.bookmarks, one pattern for the lot. The runtime offers them only to a
+# bundle with a Slack transport block and a bot token, so the entry opens
+# nothing until Slack is installed, and nothing at all on an older runtime
+# (the same reasoning as skills.load above). A team-guide kiosk never acts
+# and never carries it.
+SLACK_TOOLS_ALLOW = "slack.*"
+
 # Per-agent colleague mode (issue #131), set by the agent's owner:
 # - default: every colleague tool and the consult-first doctrine, the
 #   standing operator ruling for every agent.
@@ -351,8 +360,10 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
     `update_agent_yaml_tools` below depends on to find and edit this entry.
     """
     skills_allow = [_SKILLS_LOAD_TOOL] if spec.skills else []
+    never_act = spec.archetype == ARCHETYPE_TEAM_GUIDE
+    slack_allow = [] if never_act else [SLACK_TOOLS_ALLOW]
     if not spec.cabal_url:
-        return _FlowDict(provider="none", allow=_FlowList(skills_allow))
+        return _FlowDict(provider="none", allow=_FlowList(skills_allow + slack_allow))
     allow = colleague_tools_allow(spec.colleague_mode) + skills_allow
     block = _FlowDict(
         provider="colleagues",
@@ -376,7 +387,6 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
     # the colleagues provider, the colleague allow-list and the memory
     # block above/below are untouched (the guide still talks and still
     # remembers).
-    never_act = spec.archetype == ARCHETYPE_TEAM_GUIDE
     if never_act:
         block["allow"] = _FlowList(allow)   # colleagues trio (+ skills.load) only
         return block
@@ -399,7 +409,7 @@ def _tools_block(spec: BundleSpec) -> _FlowDict:
             token_env=CABAL_COLLEAGUE_TOKEN_ENV,
             exchange_url=_DoubleQuoted(spec.cabal_url),
         )
-    block["allow"] = _FlowList(allow)
+    block["allow"] = _FlowList(allow + slack_allow)
     return block
 
 
