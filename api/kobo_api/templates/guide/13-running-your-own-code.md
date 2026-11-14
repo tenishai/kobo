@@ -5,7 +5,12 @@ A connected agent is your team's code in your team's repository. The room gives 
 
 ## How it arrives
 
-All of it is added to your repository's deploy contract by the room's wiring pull request when you connect. An agent connected before the room did this is offered the same pull request within a few minutes of its first approved permission, and its **Access** tab says it is waiting on that merge. The room never merges that later one for you.
+All of it is added to your repository's deploy contract when you connect, in a pull request your team merges.
+
+- **A repository with no deploy files yet gets one pull request.** The deploy service's setup pull request carries the room's part too, and lists which lines and files the room asked for. Merge it and the agent starts with everything above. Nothing from the room follows.
+- **A repository that already has deploy files gets two.** The deploy service's setup pull request comes first and leaves your files as you wrote them; the room's wiring pull request follows with its part, so that nothing is laid over a person's work unseen.
+
+A room whose deploy service predates the single pull request sends two in both cases. An agent connected before the room wired anything is offered the wiring pull request within a few minutes of its first approved permission, and its **Access** tab says it is waiting on that merge. The room never merges that later one for you.
 
 Merging a pull request from the room is followed, a few minutes later, by a second one from the deploy service that regenerates the deployment files. Your repository's build refuses to deploy in between; that is expected. Merge the second and the agent restarts with the change. You do not have to ask for it.
 
@@ -81,7 +86,7 @@ So does `member_joined_channel`, when someone joins a channel the agent is in.
 
 The app's token may also post files (`files:write`), list the workspace's custom emoji (`emoji:read`), read its user groups (`usergroups:read`), post in a public channel the agent was not invited to (`chat:write.public`), pin and unpin messages (`pins:read`, `pins:write`) and keep a channel's bookmarks (`bookmarks:read`, `bookmarks:write`). An app installed before the room asked for these gets them when its owner presses **Update in Slack** on the Slack row; the token keeps its name and the agent restarts once.
 
-All of it reaches the agent with no further pull request. The wiring pull request you merged at connect lets the agent read the app's values when there are some, and every name above is one of them, the three choices included. Making the app, or changing **Wakes on**, the emoji or the slash command choice, is a delivery and a restart the room does a minute or two later.
+All of it reaches the agent with no further pull request. The pull request you merged at connect lets the agent read the app's values when there are some, and every name above is one of them, the three choices included. Making the app, or changing **Wakes on**, the emoji or the slash command choice, is a delivery and a restart the room does a minute or two later.
 
 An agent connected before the room did this gets one pull request the first time, which lets it read the app's values and takes `SLACK_WAKE_MODE`, `SLACK_WAKE_EMOJI` and `SLACK_COMMAND_PUBLIC` out of your deploy contract's own variables. A value you set there yourself hides the room's, so leave them out.
 

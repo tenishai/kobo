@@ -1192,6 +1192,7 @@ class FakeGojira:
         namespace,
         workload_class="agent",
         auto_merge_setup_pr=True,
+        seed=None,
     ) -> int:
         self.calls.append(f"create_app:{repo_full_name}")
         self.create_app_calls.append(
@@ -1202,6 +1203,7 @@ class FakeGojira:
                 "namespace": namespace,
                 "workload_class": workload_class,
                 "auto_merge_setup_pr": auto_merge_setup_pr,
+                "seed": seed,
             }
         )
         if repo_full_name in self._conflict_repos:

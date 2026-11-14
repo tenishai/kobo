@@ -1294,8 +1294,17 @@ class GojiraClient(Protocol):
         namespace: str,
         workload_class: str = "agent",
         auto_merge_setup_pr: bool = True,
+        seed: dict | None = None,
     ) -> int:
         """POST /api/v1/apps; returns the new app id. Raises GojiraConflict on 409.
+
+        `seed` is what the room wants the platform's one setup pull request
+        to carry beside its own render, for a repository with no deploy files
+        yet: `{"needs": {...contract keys...}, "base_files": {name: text},
+        "note": "..."}` (`kobo_api.steps.connected_seed`). The platform reads
+        it only for such a repository and refuses it together with
+        `auto_merge_setup_pr`; one that predates the field ignores it, and the
+        room's own wiring pull request follows as before.
 
         `workload_class` chooses how the platform runs and probes the
         workload. It defaults to the one every composed agent has always
@@ -1398,18 +1407,18 @@ class HttpxGojiraClient:
         namespace,
         workload_class="agent",
         auto_merge_setup_pr=True,
+        seed=None,
     ) -> int:
-        resp = self._client.post(
-            f"{self._base_url}/api/v1/apps",
-            json={
-                "name": name,
-                "repo_full_name": repo_full_name,
-                "workload_class": workload_class,
-                "environments": [{"name": "dev", "cluster": cluster, "namespace": namespace}],
-                "auto_merge_setup_pr": auto_merge_setup_pr,
-            },
-            headers=self._headers(),
-        )
+        body = {
+            "name": name,
+            "repo_full_name": repo_full_name,
+            "workload_class": workload_class,
+            "environments": [{"name": "dev", "cluster": cluster, "namespace": namespace}],
+            "auto_merge_setup_pr": auto_merge_setup_pr,
+        }
+        if seed is not None:
+            body["seed"] = seed
+        resp = self._client.post(f"{self._base_url}/api/v1/apps", json=body, headers=self._headers())
         if resp.status_code == 409:
             raise GojiraConflict(f"app already connected for {repo_full_name!r}")
         if resp.status_code != 201:

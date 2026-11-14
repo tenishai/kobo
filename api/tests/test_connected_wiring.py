@@ -15,7 +15,12 @@ from kobo_api.clients import Clients
 from kobo_api.kinds import KIND_CONNECTED, RUN_MODE_HTTP
 from kobo_api.models import Agent, AgentStatus
 from kobo_api.provisioner import Ctx
-from kobo_api.steps import CONNECTED_WIRE_BRANCH, ConnectedWireStep
+from kobo_api.steps import (
+    CONNECTED_WIRE_BRANCH,
+    ConnectedWireStep,
+    OnboardStep,
+    StepWaiting,
+)
 from tests.fakes import (
     FakeBab,
     FakeCabal,
@@ -95,6 +100,62 @@ def test_connect_gives_a_connected_agent_storage_a_pass_and_a_models_key(session
     assert set(room.clients.kubectl.secrets) == {(NAME, f"{NAME}-cabal"), (NAME, f"{NAME}-models")}
     body = room.github.open_pr_calls[0]["body"]
     assert "KOBO_DATA_DIR" in body and "KOBO_GATEWAY_URL" in body and "KOBO_MODELS_URL" in body
+
+
+def test_a_repository_with_no_deploy_files_is_asked_for_one_pull_request(session_factory, gateway_config):
+    """Contract (2026-11-14): connecting a repository used to ask its team twice, once for the
+    deploy service's setup request and once for the room's wiring. The room now hands the
+    deploy service its wiring as a seed for that first request, which is never merged
+    unreviewed; both Secrets it names are there before anyone can merge it; and once it is
+    merged the wiring step finds the repository already reads the way it would write it,
+    opens nothing, and takes back nothing the agent holds."""
+    config = gateway_config.model_copy(update={"slack_relay": True})
+    room = _room(session_factory, config)
+    room.agent.gojira_app_id, room.agent.secret_names = None, ["team-keys"]
+    room.session.commit()
+    gojira = room.clients.gojira = FakeGojira(status_sequence=["awaiting_pr", "active"], setup_pr_url=PR_URL)
+
+    with pytest.raises(StepWaiting):
+        OnboardStep().run(room.ctx)
+
+    asked = gojira.create_app_calls[-1]
+    seed = asked["seed"]
+    assert asked["auto_merge_setup_pr"] is False
+    assert seed["needs"] == {
+        "service_account": f"agent-{NAME}",
+        "env": {
+            "KOBO_DATA_DIR": "/data",
+            "KOBO_SWITCHBOARD_URL": "http://switchboard.internal",
+            "KOBO_GATEWAY_URL": "http://gateway.internal/mcp",
+            "KOBO_MODELS_URL": "http://models.internal/v1",
+        },
+        "secrets_from": ["team-keys", f"{NAME}-cabal", f"{NAME}-models"],
+        "data_mount": {"pvc": f"agent-{NAME}-data", "path": "/data", "fs_group": 10001},
+        "secrets_from_optional": [f"{NAME}-slack"],
+    }
+    kinds = {name: yaml.safe_load(text)["kind"] for name, text in seed["base_files"].items()}
+    assert kinds == {"serviceaccount.yaml": "ServiceAccount", "kobo-storage.yaml": "PersistentVolumeClaim"}
+    assert "KOBO_GATEWAY_URL" in seed["note"] and "secrets_from_optional" in seed["note"] and len(seed["note"]) < 4000
+    assert set(room.clients.kubectl.secrets) == {(NAME, f"{NAME}-cabal"), (NAME, f"{NAME}-models")}
+
+    # The repository as the deploy service's setup request leaves it, merged.
+    room.clients.github = merged = FakeGitHub(pr_url=PR_URL, extra_clone_files={
+        "gojira.yaml": yaml.safe_dump({"name": NAME, "class": "agent", **seed["needs"]}, sort_keys=False),
+        "k8s/base/kustomization.yaml": "resources:\n  - deployment.yaml\n  # kept\n  - serviceaccount.yaml\n  - kobo-storage.yaml\n",
+        **{f"k8s/base/{name}": text for name, text in seed["base_files"].items()},
+    })
+
+    assert "active" in ConnectedWireStep().run(room.ctx)
+
+    assert merged.open_pr_calls == [] and merged.pushes == []
+    assert room.clients.cabal.mint_colleague_calls == [NAME]
+    assert len(room.clients.models_gateway.keys[f"agent:{NAME}"]) == 1
+
+    # A Secret that cannot be read is not taken for a missing one.
+    room.clients.kubectl._secret_read_error = "the cluster did not answer"
+    with pytest.raises(RuntimeError, match="the deploy service did not answer"):
+        ConnectedWireStep().run(room.ctx)
+    assert room.clients.cabal.mint_colleague_calls == [NAME]
 
 
 def test_connect_lets_an_agent_read_a_slack_app_it_does_not_have_yet(session_factory, gateway_config):
