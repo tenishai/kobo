@@ -438,6 +438,22 @@ _SLACK_APP_NOT_CONNECTED = (
 # The persona-change route's own "no such persona" sentence, see `_persona_route_result`.
 _PERSONA_NOT_FOUND_PREFIX = "there is no persona named "
 
+# `kobo_wire_slack`'s two refusals for an agent the paste flow is not for.
+_SLACK_APP_IS_THE_ROOMS = (
+    "This agent's Slack app was made by the room, so there are no tokens to paste. "
+    "kobo_get_slack says where it stands."
+)
+_SLACK_TOKENS_ARE_SECRETS = (
+    "This agent runs its team's own code. Ask the room for a Slack app with "
+    "kobo_create_slack_app, or keep the team's own app and save its tokens with "
+    "kobo_set_agent_secrets (SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SIGNING_SECRET)."
+)
+
+# The variables of a connected repository are operator-only (#200). The
+# route says so after the owner gate has passed, so the sentence is about
+# the caller's standing and carries nothing to enumerate.
+_OPERATOR_ONLY_MARK = "of a connected repository are operator-only"
+
 _SKILL_NOT_FOUND_PREFIX = "skill not found:"
 _SKILL_GONE_FROM_CATALOG_PREFIX = "skill no longer in the catalog:"
 
@@ -565,6 +581,35 @@ def _agent_route_result(response: JSONResponse) -> dict:
     raise ToolError(str(body.get("error", "that request could not be completed")))
 
 
+# A pick that lands and waits for a reviewer answers 202.
+_ROOM_OK_STATUSES = (200, 201, 202)
+
+
+def _room_route_result(response: JSONResponse, agent: str) -> dict:
+    """The status translation for the access and Slack-app tools, whose
+    routes refuse for reasons that are about the room or the request and
+    not about whether the agent exists: "access is off for this room", "this
+    room does not make Slack apps yet", the permission service's own
+    refusal, Slack's.
+
+    The anti-enumeration fold still holds where it matters. Every 403 folds,
+    and so does the visibility gate's own 404 for `agent`, the one the tool
+    was called on (`_visible_agent_or_404`'s sentence, matched whole). What
+    is left fires for an agent the caller can already see, so it says what
+    the route said. `_agent_route_result` would have turned
+    each of those into "agent not found" or "try again", and sent the caller
+    looking at the wrong thing.
+    """
+    if response.status_code in _ROOM_OK_STATUSES:
+        return _parse(response)
+    error = str(_parse(response).get("error", "that request could not be completed"))
+    if response.status_code == 403:
+        raise ToolError(_AGENT_NOT_FOUND)
+    if response.status_code == 404 and error == f"no such agent: {agent!r}":
+        raise ToolError(_AGENT_NOT_FOUND)
+    raise ToolError(error)
+
+
 def _persona_route_result(response: JSONResponse) -> dict:
     """`kobo_set_agent_persona`'s own status translation: table (A), except
     that the route's persona-scoped 404 ("there is no persona named ...")
@@ -665,7 +710,7 @@ def _require_team_membership(app: Any, email: str, team: str) -> None:
 
 
 def register(mcp: FastMCP, app: Any) -> None:
-    """Registers this module's sixteen write tools on `mcp`. Every route this
+    """Registers this module's write tools on `mcp`. Every route this
     module calls is looked up exactly once, here, at registration time --
     never re-resolved per call. `kobo_create_skill`/`kobo_create_tool`
     (Task 5) call `kobo_api.marketplace` directly and have no route of
@@ -705,6 +750,10 @@ def register(mcp: FastMCP, app: Any) -> None:
     set_secrets_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/secrets")
     set_env_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/env")
     restart_endpoint = _endpoint(app, "POST", "/api/agents/{name}/restart")
+    request_access_endpoint = _endpoint(app, "POST", "/api/agents/{name}/access/requests")
+    set_repositories_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/github/repositories")
+    create_slack_app_endpoint = _endpoint(app, "POST", "/api/agents/{name}/slack/app")
+    update_slack_app_endpoint = _endpoint(app, "POST", "/api/agents/{name}/slack/app/update")
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_create_agent")
@@ -718,6 +767,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         skip_baseline: bool = False,
         archetype: str | None = None,
         voice: str | None = None,
+        model: str | None = None,
     ) -> dict:
         """Create a new agent in the room. More capable at create time than
         the room's own modal, which adds skills post-create in the Skills
@@ -729,7 +779,8 @@ def register(mcp: FastMCP, app: Any) -> None:
         optional -- when omitted, the room's own naming station picks one
         for you. `skills`, when given, is a list of `{"id", "team"}` picks
         from the room's skills catalog; `tags` is a short list of purpose
-        tags. Every new agent ships the baseline tooling pack (leakguard
+        tags. `model` is an id from `kobo_list_models`; leave it out for the
+        room's default. Every new agent ships the baseline tooling pack (leakguard
         and probe guard) unless skip_baseline is true. This tool builds on
         the room's one runtime; there is no choice to make here. A team
         that already has an agent in its own repository connects it in the
@@ -754,7 +805,8 @@ def register(mcp: FastMCP, app: Any) -> None:
                 # same as the route's own `finalize_suggestions` fallback
                 # pool cares only that the seed is deterministic, not that
                 # it is semantically distinct text. See module docstring.
-                suggestion_response = name_suggestions_endpoint(
+                suggestion_response = await _off_loop(
+                    name_suggestions_endpoint,
                     payload=NameSuggestionsRequest(
                         who_they_are=who_they_are,
                         what_they_do=who_they_are,
@@ -794,6 +846,7 @@ def register(mcp: FastMCP, app: Any) -> None:
                     skip_baseline=skip_baseline,
                     archetype=archetype,
                     voice=voice,
+                    model=model,
                 )
             except (TypeError, ValidationError) as exc:
                 raise ToolError(_bad_request(exc)) from exc
@@ -933,22 +986,42 @@ def register(mcp: FastMCP, app: Any) -> None:
     async def kobo_wire_slack(
         ctx: Context, agent: str, bot_token: str, app_token: str, channel_id: str
     ) -> dict:
-        """Wire (or rewire) Slack tokens for an agent that already has a
-        Slack app connected -- see this module's own docstring for why
-        this tool cannot create a NEW Slack app (that step is a human-only
-        action at Slack's own site). Sets `channel_id` as the agent's sole
-        listened channel and applies both tokens. You must own `agent` (or
-        be a room operator). Neither token is ever returned or logged in
-        the clear.
+        """The older, paste-the-tokens way to connect Slack: for an agent
+        whose Slack app a person made by hand from the agent's manifest, in a
+        room that does not make Slack apps itself. Sets `channel_id` as the
+        agent's sole listened channel and applies both tokens. Neither token
+        is ever returned or logged in the clear.
+
+        Check `kobo_get_slack` first. In a room that makes Slack apps
+        (`room_makes_apps` true) use `kobo_create_slack_app` instead: there
+        are no tokens to paste, and this tool refuses an agent whose app the
+        room made. An agent that runs its team's own code is refused too: its
+        team either asks the room for an app or keeps its own and saves its
+        tokens with `kobo_set_agent_secrets`.
+
+        You must own `agent` or be a room operator.
         """
+        from kobo_api.kinds import is_connected
         from kobo_api.main import SlackChannelsRequest, SlackConnectRequest
-        from kobo_api.models import Agent
+        from kobo_api.models import Agent, SlackRelayApp
 
         email = get_user_email(ctx)
         req = authz.room_request(app, email)
         session = app.state.session_factory()
         try:
-            channels_response = save_slack_channels_endpoint(
+            # Visibility first, so neither refusal below says anything about
+            # an agent the caller may not see.
+            try:
+                seen = authz.visible_agent_or_not_found(session, app, email, agent)
+            except authz.NotFound as exc:
+                raise ToolError(_AGENT_NOT_FOUND) from exc
+            if session.query(SlackRelayApp).filter_by(agent_name=seen.name).first() is not None:
+                raise ToolError(_SLACK_APP_IS_THE_ROOMS)
+            if is_connected(seen):
+                raise ToolError(_SLACK_TOKENS_ARE_SECRETS)
+
+            channels_response = await _off_loop(
+                save_slack_channels_endpoint,
                 name=agent,
                 payload=SlackChannelsRequest(channels=[channel_id]),
                 request=req,
@@ -961,7 +1034,8 @@ def register(mcp: FastMCP, app: Any) -> None:
             if not app_id:
                 raise ToolError(_SLACK_APP_NOT_CONNECTED)
 
-            connect_response = connect_slack_endpoint(
+            connect_response = await _off_loop(
+                connect_slack_endpoint,
                 name=agent,
                 payload=SlackConnectRequest(app_id=app_id, bot_token=bot_token, app_token=app_token),
                 request=req,
@@ -980,13 +1054,18 @@ def register(mcp: FastMCP, app: Any) -> None:
         (only an @-mention reaches it), `thread` (a mention, then every reply
         in a thread it was asked in at the top, so a conversation continues
         without re-tagging) or `channel` (every message in the channel). New
-        agents start on `thread`. The room sets it in the agent's deploy
-        contract and the agent picks it up on its next roll.
+        agents start on `thread`.
 
-        When the answer says `manifest_changed` is true, the Slack app's own
-        event list changed: the owner must copy the agent's manifest again
-        (the Slack tab, or `GET .../slack/manifest`) and paste it over the old
-        one at api.slack.com/apps, under App Manifest. No reinstall is needed.
+        `applied_now` true means the running agent is restarting with the
+        new choice already. For an agent that runs its team's own code the
+        change is a pull request on its repository: `pull_request` carries
+        the link, and nothing changes until its team merges it.
+
+        `manifest_changed` true means the Slack app's event list changed.
+        For an app the room made there is nothing to do: the room updates it.
+        For an app a person made by hand, the owner copies the agent's
+        manifest again from the Slack tab and pastes it over the old one at
+        api.slack.com/apps, under App Manifest. No reinstall is needed.
         You must own `agent` or be a room operator, and `agent` must be READY.
         """
         from kobo_api.main import SlackWakeRequest
@@ -1011,7 +1090,9 @@ def register(mcp: FastMCP, app: Any) -> None:
             "wake": body.get("wake"),
             "previous_wake": body.get("previous_wake"),
             "manifest_changed": body.get("manifest_changed"),
+            "applied_now": body.get("applied_now"),
             "wiring": body.get("wiring"),
+            "pull_request": body.get("pull_request"),
         }
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
@@ -1027,8 +1108,9 @@ def register(mcp: FastMCP, app: Any) -> None:
         (no colleague tools and no colleague document). Other agents can
         still ask it questions in every mode.
 
-        The room commits the change to the agent's repository, and the agent
-        picks it up when its CI rebuilds and rolls the pod. You must own
+        The room commits the change to the agent's repository and the agent
+        restarts with it, usually within a minute (a room still building an
+        image for every change rebuilds first, a few minutes). You must own
         `agent` or be a room operator, and `agent` must be READY and composed.
         """
         from kobo_api.main import ColleagueModeRequest
@@ -1067,9 +1149,9 @@ def register(mcp: FastMCP, app: Any) -> None:
         `runtime_image` must live under the room's own registry root; an
         image from anywhere else is refused. Prefer `repo:tag@sha256:...`
         to a bare digest: the agent's card takes its `version` from the tag,
-        and a bare digest leaves it showing the digest's first 12 hex. There
-        is no read tool listing what the room runs, so pass an image you
-        already know and read the rejection copy if it is refused. Passing
+        and a bare digest leaves it showing the digest's first 12 hex.
+        `kobo_get_agent` shows what the agent runs (`runtime_image`) and
+        what the room builds on today (`room_runtime_image`). Passing
         the room's own current runtime means "follow the room": the agent
         moves onto it and its hold is cleared, so the room's next move
         carries it too; any other ref is a hold the agent keeps until asked
@@ -1086,7 +1168,8 @@ def register(mcp: FastMCP, app: Any) -> None:
         req = authz.room_request(app, email)
         session = app.state.session_factory()
         try:
-            response = set_runtime_endpoint(
+            response = await _off_loop(
+                set_runtime_endpoint,
                 name=agent,
                 payload=AgentRuntimePatch(runtime_image=runtime_image),
                 request=req,
@@ -1689,6 +1772,10 @@ def register(mcp: FastMCP, app: Any) -> None:
         link to merge), or "unchanged". Changes reach the agent the next
         time it starts.
 
+        For an agent that runs its team's own code the variables live in
+        its repository and are a room operator's to read or change here;
+        its owner is told so, and changes them in the repository.
+
         Marked destructive because `remove` takes a variable away from a
         running agent. You must own `agent` or be a room operator, and
         `agent` must be READY.
@@ -1713,8 +1800,9 @@ def register(mcp: FastMCP, app: Any) -> None:
         """Give a running agent a different persona: `persona` is a catalog id
         (see `kobo_list_personas`). The room rewrites the agent's
         `bundle/persona.md` exactly as it would have at birth, with the
-        agent's own name in place of the persona's placeholder, and its CI
-        rebuilds and rolls the agent. Nothing else about the agent moves:
+        agent's own name in place of the persona's placeholder, and the agent
+        restarts with it, usually within a minute (a room still building an
+        image for every change rebuilds first). Nothing else about the agent moves:
         not its group, its skills, its knowledge or its name. Returns the
         commit that carries the change so you can watch it land.
 
@@ -1747,11 +1835,11 @@ def register(mcp: FastMCP, app: Any) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_set_agent_model")
     async def kobo_set_agent_model(ctx: Context, agent: str, model: str) -> dict:
-        """Move a running agent onto another model: `model` is a catalog id
-        from the room's list (the same ids `kobo_create_agent` accepts). The
-        room sets the model and its region in the agent's deploy contract,
-        commits, and the platform regenerates and rolls the agent. Nothing
-        else about the agent moves.
+        """Move a running agent onto another model: `model` is an id from
+        `kobo_list_models` (the same ids `kobo_create_agent` accepts). The
+        room writes the change into the agent's own files and the agent
+        comes back on the new model; `wiring` says how the change landed.
+        Nothing else about the agent moves.
 
         You must own `agent` or be a room operator, `agent` must be READY,
         and it must be one the room composed -- a connected agent's model is
@@ -1787,7 +1875,8 @@ def register(mcp: FastMCP, app: Any) -> None:
         """Re-file `agent` under `group` -- the ACL namespace that decides who
         may see and act on it. `group` is a room group name, or "shared" for
         the commons everyone sees. Operators only: this changes who the
-        agent is visible to. Nothing in the agent's repository moves; its
+        agent is visible to. Nothing in the agent's repository moves, so an
+        agent that runs its team's own code can be moved like any other; its
         team (the skills axis), skills, knowledge and persona stay as they
         are. Returns the agent and the group it now sits under.
         """
@@ -1852,6 +1941,142 @@ def register(mcp: FastMCP, app: Any) -> None:
         body = _agent_route_result(response)
         return {"agent": agent, "restarted": body.get("restarted", False)}
 
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @audited("kobo_request_access")
+    async def kobo_request_access(
+        ctx: Context, agent: str, integration: str, permissions: list[str], note: str | None = None
+    ) -> dict:
+        """Ask for `agent` to be allowed something outside the room: the
+        Access tab's request, from chat. `integration` and `permissions` are
+        ids from `kobo_get_agent_access` (a vendor's `id` and the ids in its
+        permission tree). `note` tells the reviewer why.
+
+        Nothing is granted by asking. The request waits for a reviewer in
+        Admin, Review, and the agent can use the permission only once it is
+        approved; `kobo_get_agent_access` shows it under `pending` until
+        then. For GitHub, set the agent's repositories first with
+        `kobo_set_agent_repositories`.
+
+        You must own `agent`, manage it, or be a room operator.
+        """
+        from kobo_api.main import AccessRequestBody
+
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            try:
+                payload = AccessRequestBody(integration=integration, permissions=permissions, note=note)
+            except (TypeError, ValidationError) as exc:
+                raise ToolError(_bad_request(exc)) from exc
+            response = await _off_loop(
+                request_access_endpoint, name=agent, payload=payload, request=req, session=session
+            )
+        finally:
+            session.close()
+        return {"agent": agent, "requested": _room_route_result(response, agent)}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+    @audited("kobo_set_agent_repositories")
+    async def kobo_set_agent_repositories(ctx: Context, agent: str, repositories: list[str]) -> dict:
+        """Set the GitHub repositories `agent` may work with: the whole set,
+        each as "owner/name", replacing whatever it had. This picks WHICH
+        repositories; what the agent may do there (read, open pull requests)
+        is asked for with `kobo_request_access`.
+
+        A repository taken out of the set stops at once. One added to a set
+        the agent already holds a permission on waits for a reviewer:
+        `waiting` then names what was added and removed, and the set in force
+        stays as it was until Admin, Review allows it. Only repositories the
+        room's GitHub connection can see are accepted; `kobo_get_agent_access`
+        searches them.
+
+        You must own `agent`, manage it, or be a room operator.
+        """
+        from kobo_api.main import GitHubRepositoriesBody
+
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            try:
+                payload = GitHubRepositoriesBody(repositories=repositories)
+            except (TypeError, ValidationError) as exc:
+                raise ToolError(_bad_request(exc)) from exc
+            response = await _off_loop(
+                set_repositories_endpoint, name=agent, payload=payload, request=req, session=session
+            )
+        finally:
+            session.close()
+        body = _room_route_result(response, agent)
+        return {
+            "agent": agent,
+            "repositories": body.get("repositories", []),
+            "changed": body.get("changed"),
+            "waiting": body.get("waiting"),
+        }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @audited("kobo_create_slack_app")
+    async def kobo_create_slack_app(ctx: Context, agent: str, wake: str = "thread") -> dict:
+        """Have the room make `agent` a Slack app: the Access tab's Create
+        Slack app, from chat. `wake` is `mention`, `thread` or `channel`, as
+        in `kobo_set_slack_wake`. Only in a room that makes Slack apps
+        (`kobo_get_slack` says so).
+
+        The app is made but not yet in a workspace. `install_url` is the
+        link a PERSON opens to allow it in Slack; give it to the agent's
+        owner. Slack sends them back to the agent's page and the agent
+        restarts with Slack on. For an agent that runs its team's own code,
+        `pull_request` is the change its team merges first. Calling this
+        again for an app whose pull request was closed opens it again.
+
+        You must own `agent` or be a room operator, and `agent` must be READY.
+        """
+        from kobo_api.main import SlackAppRequest
+
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                create_slack_app_endpoint,
+                name=agent,
+                payload=SlackAppRequest(wake=wake),
+                request=req,
+                session=session,
+            )
+        finally:
+            session.close()
+        body = _room_route_result(response, agent)
+        return {
+            "agent": agent,
+            "app_id": body.get("app_id"),
+            "install_url": body.get("install_url"),
+            "pull_request": body.get("pull_request"),
+        }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+    @audited("kobo_update_slack_app")
+    async def kobo_update_slack_app(ctx: Context, agent: str) -> dict:
+        """Bring a Slack app the room made up to what the room asks Slack
+        for today: the Slack row's Update in Slack, from chat. Use it when
+        `kobo_get_slack` says `update_due` is true.
+
+        Slack gives an app more only when a person allows it, so this does
+        not finish the job by itself: the room refreshes the app, and
+        `install_url` is the link a PERSON opens to approve what is new. The
+        agent keeps answering until then and restarts once after.
+
+        You must own `agent` or be a room operator, and `agent` must be READY.
+        """
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                update_slack_app_endpoint, name=agent, request=req, session=session
+            )
+        finally:
+            session.close()
+        return {"agent": agent, "install_url": _room_route_result(response, agent).get("install_url")}
+
     async def _write_agent_env(
         ctx: Context,
         endpoint: Callable[..., Any],
@@ -1889,4 +2114,12 @@ def register(mcp: FastMCP, app: Any) -> None:
             raise ToolError(
                 str(_parse(response).get("error", "that request could not be completed"))
             )
+        if response.status_code == 403:
+            # The owner gate folds into "agent not found" like every tool.
+            # This one comes after it: the caller owns the agent and the
+            # refusal is the operator-only variables of a connected
+            # repository (#200), which "not found" would misdescribe.
+            error = str(_parse(response).get("error", ""))
+            if _OPERATOR_ONLY_MARK in error:
+                raise ToolError(error)
         return _agent_route_result(response)

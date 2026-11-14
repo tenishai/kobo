@@ -1379,6 +1379,22 @@ def test_token_verifier_returns_none_for_the_wrong_token_type(session_factory__m
     assert asyncio.run(verifier.verify_token(token)) is None
 
 
+def test_token_verifier_reads_the_key_the_room_names(session_factory__mcp_tools_read, config__mcp_tools_read, monkeypatch):
+    """Gate (authentication): a room that names its own signing key variable
+    (`mcp.jwt_key_env`) signs with it, so the verifier must read the same one.
+    It read the default name whatever the room said, and every token such a
+    room issued was refused."""
+    own = b"r" * 32
+    monkeypatch.setenv("ROOM_OWN_MCP_KEY", base64.b64encode(own).decode())
+    cfg = config__mcp_tools_read.model_copy(
+        update={"mcp": config__mcp_tools_read.mcp.model_copy(update={"jwt_key_env": "ROOM_OWN_MCP_KEY"})}
+    )
+    verifier = _KoboTokenVerifier(_app(session_factory__mcp_tools_read, cfg, groups_resolver=_resolver()))
+    token = mint("access_token", OWNER_A_EMAIL, CLIENT_ID__mcp_tools_read, 900, key=own, scope="mcp")
+
+    assert asyncio.run(verifier.verify_token(token)) is not None
+
+
 # --- from test_api_org_status.py ---
 
 
@@ -1484,7 +1500,7 @@ def test_revoke_cuts_the_families_logs_the_action_and_the_verifier_refuses_old_t
         rt.create_family(session, jti="j1", email="gone@example.com")
         session.commit()
     monkeypatch.setattr(
-        "kobo_api.mcp.server.verify", lambda token, typ, aud: _claims(token)
+        "kobo_api.mcp.server.verify", lambda token, typ, aud, key=None: _claims(token)
     )
     monkeypatch.setattr("kobo_api.mcp.jwt.signing_key", lambda *a, **k: KEY)
     verifier = mcp_server._KoboTokenVerifier(client.app)

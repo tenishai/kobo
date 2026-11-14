@@ -9453,6 +9453,13 @@ def create_app(
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
+        if cfg.slack_relay and _relay_row(session, agent) is not None:
+            # Pasted tokens would put a second Slack app's credentials over
+            # the one the room made and still relays events for.
+            return JSONResponse(
+                {"error": "This agent's Slack app was made by the room, so there are no tokens to paste."},
+                status_code=409,
+            )
 
         clients = app.state.clients
         if not room_credentials.slack_configured(clients):
@@ -10950,9 +10957,14 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
-        blocked = _room_edits_this_agent_or_409(agent)
-        if blocked is not None:
-            return blocked
+        # The card is a file in the agent's repository, which the room does
+        # not edit for a connected agent. The group is the room's own filing
+        # and touches no file, so a move alone goes through for either kind.
+        move_only = payload.team is None and payload.purpose_tags is None and payload.capability is None
+        if not (move_only and payload.group is not None):
+            blocked = _room_edits_this_agent_or_409(agent)
+            if blocked is not None:
+                return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -11023,7 +11035,7 @@ def create_app(
         moved = group_name != agent.group_name
         agent.group_name = group_name
         group = group_name or SHARED_GROUP
-        if payload.team is None and payload.purpose_tags is None and payload.capability is None:
+        if move_only:
             # A move alone. The group is the room's own filing, not something
             # the bundle's card carries, so there is nothing to commit and no
             # directory detail to resync.

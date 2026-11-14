@@ -1753,6 +1753,24 @@ def test_an_app_installed_before_the_rooms_latest_slack_scopes_is_updated_by_one
     view = client.get(f"/api/agents/{AGENT_NAME}/slack", headers=headers).json()
     assert view["state"] == "installed" and view["update_due"] is True
 
+    # The same from an assistant: the row, the update's link for a person to
+    # open, and the paste flow refused for an app the room made.
+    client.app.state.config = relay_config.model_copy(update={"mcp": MCPConfig(
+        allow_without_iap=True, oauth_client_id="cid", workspace_domain="example.com",
+        issuer_base_url="https://room.example.com",
+    )})
+    mcp = build_mcp_server(client.app)
+    seen = _call_tool(mcp, "kobo_get_slack", _ctx_for(OPERATOR_EMAIL), agent=AGENT_NAME)
+    assert (seen["room_makes_apps"], seen["state"], seen["update_due"]) == (True, "installed", True)
+    asked = _call_tool(mcp, "kobo_update_slack_app", _ctx_for(OPERATOR_EMAIL), agent=AGENT_NAME)
+    assert "state=" in asked["install_url"]
+    with pytest.raises(ToolError, match="made by the room"):
+        _call_tool(mcp, "kobo_wire_slack", _ctx_for(OPERATOR_EMAIL), agent=AGENT_NAME,
+                   bot_token=BOT_TOKEN, app_token=APP_TOKEN, channel_id=CHANNEL)
+    pasted = client.post(f"/api/agents/{AGENT_NAME}/slack/connect", headers=headers,
+                         json={"app_id": APP_ID, "bot_token": BOT_TOKEN, "app_token": APP_TOKEN})
+    assert pasted.status_code == 409 and "made by the room" in pasted.json()["error"]
+
     response = client.post(f"/api/agents/{AGENT_NAME}/slack/app/update", headers=headers)
 
     assert response.status_code == 200
@@ -2954,6 +2972,102 @@ def test_list_agent_secrets_still_answers_a_connected_agents_owner(
     assert result["secrets"] == ["API_KEY"]
     assert result["env"] == {}
     assert result["env_readable"] is False
+
+
+def test_set_agent_env_tells_a_connected_agents_owner_it_is_an_operators(
+    session_factory__mcp_tools_write, config__mcp_tools_write, fake_storage__mcp_tools_write
+):
+    """Production bug: the owner of a connected agent who set a variable from
+    an assistant was told "agent not found", for an agent they own and can
+    see. The variables of a connected repository are operator-only (issue
+    #200); the tool says so. A stranger still gets "agent not found"."""
+    _seed_agent__mcp_tools_write(
+        session_factory__mcp_tools_write,
+        name=SECRETS_AGENT,
+        created_by=MEMBER_A_EMAIL,
+        group_name=GROUP_A,
+        repo_full_name=SECRETS_REPO,
+        kind=KIND_CONNECTED,
+    )
+    mcp = build_mcp_server(_secrets_app(session_factory__mcp_tools_write, config__mcp_tools_write, fake_storage__mcp_tools_write))
+
+    with pytest.raises(ToolError, match="operator-only"):
+        _call_tool(mcp, "kobo_set_agent_env", _ctx_for(MEMBER_A_EMAIL), agent=SECRETS_AGENT, values={"LOG_LEVEL": "debug"})
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(mcp, "kobo_set_agent_env", _ctx_for(OWNER_B_EMAIL), agent=SECRETS_AGENT, values={"LOG_LEVEL": "debug"})
+
+
+def test_an_operator_moves_a_connected_agent_between_groups(
+    session_factory__mcp_tools_write, config__mcp_tools_write, fake_storage__mcp_tools_write
+):
+    """Integrity: the group is the room's own filing and touches no file in
+    the agent's repository, so a connected agent moves like any other. It was
+    refused with the sentence for edits the room does not make to a team's
+    own repository. Its directory details are still its repository's."""
+    _seed_agent__mcp_tools_write(
+        session_factory__mcp_tools_write,
+        name=SECRETS_AGENT,
+        created_by=MEMBER_A_EMAIL,
+        group_name=GROUP_A,
+        repo_full_name=SECRETS_REPO,
+        kind=KIND_CONNECTED,
+    )
+    from kobo_api.main import AgentMetadataPatch
+    from kobo_api.mcp import authz
+    from kobo_api.mcp.tools.write import _endpoint
+
+    github = FakeGitHub(existing_repos={SECRETS_REPO})
+    app = _secrets_app(session_factory__mcp_tools_write, config__mcp_tools_write, fake_storage__mcp_tools_write, github=github)
+    mcp = build_mcp_server(app)
+    operator = _ctx_for(OPERATOR_EMAIL__mcp_tools_write)
+
+    moved = _call_tool(mcp, "kobo_move_agent", operator, agent=SECRETS_AGENT, group=GROUP_B)
+
+    assert moved == {"agent": SECRETS_AGENT, "group": GROUP_B}
+    assert _call_tool(mcp, "kobo_get_agent", operator, name=SECRETS_AGENT)["group"] == GROUP_B
+    assert github.push_count == 0
+
+    session = session_factory__mcp_tools_write()
+    try:
+        refused = _endpoint(app, "PATCH", "/api/agents/{name}/metadata")(
+            name=SECRETS_AGENT,
+            payload=AgentMetadataPatch(team="other-team"),
+            request=authz.room_request(app, OPERATOR_EMAIL__mcp_tools_write),
+            session=session,
+        )
+    finally:
+        session.close()
+    assert refused.status_code == 409
+    assert github.push_count == 0
+
+
+def test_an_assistant_reads_the_models_and_is_told_what_the_room_cannot_show(
+    session_factory__mcp_tools_write, config__mcp_tools_write, fake_storage__mcp_tools_write
+):
+    """Wire shape: the model list an assistant picks from is the room's own;
+    Slack in a room that does not make apps answers as the older flow, and
+    asking it to make one says why not; activity the room cannot read comes
+    back unavailable with a note, never as an empty week."""
+    _seed_secrets_agent(session_factory__mcp_tools_write)
+    app = _secrets_app(session_factory__mcp_tools_write, config__mcp_tools_write, fake_storage__mcp_tools_write)
+    mcp = build_mcp_server(app)
+    owner = _ctx_for(MEMBER_A_EMAIL)
+
+    models = _call_tool(mcp, "kobo_list_models", owner)
+    assert models["default"] == config__mcp_tools_write.models[0].id
+    assert [m["id"] for m in models["models"]] == [m.id for m in config__mcp_tools_write.models]
+
+    slack = _call_tool(mcp, "kobo_get_slack", owner, agent=SECRETS_AGENT)
+    assert (slack["room_makes_apps"], slack["state"], slack["wake"]) == (False, "idle", "mention")
+    with pytest.raises(ToolError, match="does not make Slack apps"):
+        _call_tool(mcp, "kobo_create_slack_app", owner, agent=SECRETS_AGENT)
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(mcp, "kobo_get_slack", owner, agent="ghost")
+
+    activity = _call_tool(mcp, "kobo_agent_activity", owner, agent=SECRETS_AGENT)
+    assert (activity["calls_available"], activity["calls"]) == (False, [])
+    assert "gateway" in activity["calls_note"]
+    assert (activity["leases_available"], activity["leases_note"]) == (False, "access is off for this room")
 
 
 def test_set_agent_secrets_never_puts_a_value_in_the_audit_row(

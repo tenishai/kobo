@@ -6776,6 +6776,51 @@ def _github_room(tmp_path, fake_storage, *, connected=True):
     return c, h, bab, github, admin
 
 
+def test_an_assistant_reads_an_agents_access_picks_its_repositories_and_asks(tmp_path, fake_storage):
+    """Wire shape (the room's MCP tools): the Access tab from chat. The read
+    carries what the agent holds, what waits, what it can ask for, and its
+    repository set, with a search over the room's repositories in place of
+    the whole list. The pick and the ask go through the page's own routes, so
+    the request waits for a reviewer exactly as one made on the page does.
+    A refusal that is about the room or the request says so; one about who
+    is asking is "agent not found"."""
+    on = MCPConfig(
+        allow_without_iap=True, oauth_client_id="cid", workspace_domain="example.com",
+        issuer_base_url="https://room.example.com",
+    )
+    c, _, bab, _, _ = _github_room(tmp_path, fake_storage)
+    c.app.state.config = c.app.state.config.model_copy(update={"mcp": on})
+    mcp = build_mcp_server(c.app)
+    ops = _ctx_for("ops@example.com")
+
+    page = _call_tool(mcp, "kobo_get_agent_access", ops, agent="ledger", repository_search="ACME")
+    assert (page["grants"], page["pending"], page["can_request"]) == ([], [], True)
+    assert "github" in {v["id"] for v in page["vendors"]}
+    assert page["github"] == {"available": True, "selected": [], "waiting": None, "total": 3, "note": None,
+                              "matches": ["acme/infra", "acme/web"]}
+
+    saved = _call_tool(mcp, "kobo_set_agent_repositories", ops, agent="ledger", repositories=["acme/web"])
+    assert saved == {"agent": "ledger", "repositories": ["acme/web"], "changed": True, "waiting": None}
+    asked = _call_tool(mcp, "kobo_request_access", ops, agent="ledger", integration="github-ledger",
+                       permissions=["github_repos_read"], note="reads the web app's code")
+    after = _call_tool(mcp, "kobo_get_agent_access", ops, agent="ledger")
+    assert [p["id"] for p in after["pending"]] == [asked["requested"]["id"]] and after["grants"] == []
+    assert after["github"]["selected"] == ["acme/web"] and "matches" not in after["github"]
+    assert bab.grants("ledger", "x") == []  # asking grants nothing
+
+    with pytest.raises(ToolError, match="acme/nope"):
+        _call_tool(mcp, "kobo_set_agent_repositories", ops, agent="ledger", repositories=["acme/nope"])
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(mcp, "kobo_get_agent_access", ops, agent="ghost")
+    with pytest.raises(ToolError, match="agent not found"):
+        _call_tool(mcp, "kobo_request_access", _ctx_for("stranger@example.com"), agent="ledger",
+                   integration="github-ledger", permissions=["github_repos_read"])
+
+    off, _ = _room(tmp_path / "off", fake_storage, bab=None, mcp=on)
+    with pytest.raises(ToolError, match="access is off for this room"):
+        _call_tool(build_mcp_server(off.app), "kobo_get_agent_access", ops, agent="ledger")
+
+
 def test_the_access_tab_shows_github_as_the_agents_own_repository_set(tmp_path, fake_storage):
     """Gate (authorization) and wire shape (kobo#365): with no set picked, GitHub shows as the
     connection with an empty set; the owner lists the installation's repositories and picks
