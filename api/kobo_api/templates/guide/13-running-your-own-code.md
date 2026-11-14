@@ -72,6 +72,7 @@ What arrives with the app, beside the names above:
 - `SLACK_RELAY_SECRET`. The value the room sends in `X-Kobo-Relay-Secret`.
 - `SLACK_WAKE_MODE`. The **Wakes on** choice: `mention`, `thread` or `channel`. With `mention` Slack sends only mentions and direct messages. With the other two it sends every message in a channel the agent is in, and telling a thread the agent was mentioned in from the rest of the channel is your code's to do.
 - `SLACK_WAKE_EMOJI`. The names in **Also wakes on these emoji**, with commas between them and no colons: `ticket,rotating_light`. Not set at all when the field is empty. What a reaction with one of them does is your code's to decide.
+- `SLACK_COMMAND_PUBLIC`. Set to `on` when **Answer its slash command in any public channel** is ticked, and not set at all otherwise. The room hands your code a slash command from wherever it was typed, so answering only where the agent has been added, when this is not set, is your code's to do.
 - `SLACK_ICON_URL`. The agent's picture in the room. Pass it as `icon_url` when you post and each message carries the agent's face.
 
 Reactions arrive too, as `reaction_added` and `reaction_removed`, whichever **Wakes on** is picked and whatever emoji are named: every reaction in a channel the agent is in, for your code to match against `SLACK_WAKE_EMOJI` or to use as it likes.
@@ -80,7 +81,7 @@ So does `member_joined_channel`, when someone joins a channel the agent is in.
 
 The app's token may also post files (`files:write`), list the workspace's custom emoji (`emoji:read`), read its user groups (`usergroups:read`), post in a public channel the agent was not invited to (`chat:write.public`), pin and unpin messages (`pins:read`, `pins:write`) and keep a channel's bookmarks (`bookmarks:read`, `bookmarks:write`). An app installed before the room asked for these gets them when its owner presses **Update in Slack** on the Slack row; the token keeps its name and the agent restarts once.
 
-All of it reaches the agent through one pull request on your repository. The room opens it when the app is made, and again when **Wakes on** or the emoji change.
+All of it reaches the agent through one pull request on your repository. The room opens it when the app is made, and again when **Wakes on**, the emoji or the slash command choice change.
 
 ## What stays yours
 

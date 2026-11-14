@@ -57,6 +57,7 @@
     createSlackAppMutation,
     moveSlackAppMutation,
     removeSlackAppMutation,
+    setSlackCommandPublicMutation,
     setSlackWakeEmojiMutation,
     setSlackWakeMutation,
     slackAppQuery,
@@ -100,6 +101,7 @@
   const move = createMutation(() => moveSlackAppMutation(queryClient, agentName));
   const saveWake = createMutation(() => setSlackWakeMutation(queryClient, agentName));
   const saveEmoji = createMutation(() => setSlackWakeEmojiMutation(queryClient, agentName));
+  const savePublic = createMutation(() => setSlackCommandPublicMutation(queryClient, agentName));
   const update = createMutation(() => updateSlackAppMutation(agentName));
 
   const WAKE_OPTIONS: { value: SlackWake; label: string; help: string }[] = [
@@ -126,7 +128,9 @@
   let wakeApplying = $state(false);
   let wakeWaitsForRestart = $state(false);
   let stopWakeWatch: (() => void) | null = null;
-  const wakeLocked = $derived(frozen || saveWake.isPending || saveEmoji.isPending || create.isPending || wakeApplying);
+  const wakeLocked = $derived(
+    frozen || saveWake.isPending || saveEmoji.isPending || savePublic.isPending || create.isPending || wakeApplying,
+  );
 
   function watchWake(result: SlackWakeResult): void {
     stopWakeWatch?.();
@@ -190,6 +194,29 @@
       if (result.applied_now) watchWake(result);
     } catch (err) {
       emojiError = errorMessage(err, "Couldn't save the emoji. Try again.");
+    }
+  }
+
+  // --- Slash command in public channels: one switch, saved when flipped --------
+  //
+  // The app can post in any public channel, so its slash command could be
+  // answered in one the agent was never added to. Off until the owner says
+  // so. A flip restarts the agent like a Wakes on pick, and shares its lock.
+  let publicDraft = $state<boolean | null>(null);
+  let publicError = $state<string | null>(null);
+  const publicShown = $derived(publicDraft ?? view.data?.command_public ?? false);
+
+  async function pickPublic(next: boolean): Promise<void> {
+    if (wakeLocked || next === publicShown) return;
+    publicDraft = next;
+    publicError = null;
+    try {
+      const result = await savePublic.mutateAsync(next);
+      wakeWaitsForRestart = !result.applied_now && !result.pull_request;
+      if (result.applied_now) watchWake(result);
+    } catch (err) {
+      publicDraft = null;
+      publicError = errorMessage(err, "Couldn't save that. Try again.");
     }
   }
 
@@ -517,6 +544,26 @@
             </p>
           {/if}
         </form>
+        <div class="block">
+          <label class="wake__option" class:wake__option--on={publicShown}>
+            <input
+              type="checkbox"
+              checked={publicShown}
+              disabled={wakeLocked}
+              onchange={(event) => pickPublic(event.currentTarget.checked)}
+            />
+            <span class="wake__text">
+              <span class="wake__label">Answer its slash command in any public channel</span>
+              <span class="help">
+                Off, it answers its slash command only where it has been added. On, anyone can ask it from any public
+                channel, and it posts the question and its answer there.
+              </span>
+            </span>
+          </label>
+          {#if publicError}
+            <p class="copy copy--fail" role="alert">{publicError}</p>
+          {/if}
+        </div>
         {#if !removing}
           <div class="row">
             <button type="button" class="btn btn--quiet" disabled={frozen || remove.isPending} onclick={() => (removing = true)}>Remove</button>

@@ -275,6 +275,7 @@ import {
   searchPersonas,
   searchSkills,
   setSlackWake,
+  setSlackCommandPublic,
   setSlackWakeEmoji,
   type SlackWake,
   syncAccessTopology,
@@ -1672,6 +1673,15 @@ export function setSlackWakeMutation(queryClient: QueryClient, name: string) {
 
 /** The emoji whose reaction also wakes the agent: the same route and the
  * same reads to refresh. */
+export function setSlackCommandPublicMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (on: boolean) => setSlackCommandPublic(name, on),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
+}
+
 export function setSlackWakeEmojiMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (emoji: string[]) => setSlackWakeEmoji(name, emoji),
