@@ -32,6 +32,19 @@ A permission approved a minute ago shows up in the tool list without a restart, 
 
 The room replaces the pass when the agent's wiring is redone. The agent picks the new one up when it restarts, which the same change brings.
 
+## Cloning with git
+
+The gateway's tools read files and pull requests for the agent, and the credential stays on the gateway. That does not help code that runs `git clone`. So an agent that runs its own code and holds **Read** on GitHub has one more tool: `github-clone.clone_token`.
+
+1. Call `github-clone.clone_token` on the gateway, with no arguments, like any other tool.
+2. The answer has `username` (always `x-access-token`), `token`, `expires_at`, and `repositories`: how many the token opens and their names.
+3. Clone over HTTPS from `github.com` with that username and the token as the password. Hand them to `git` through a credential helper or `GIT_ASKPASS`. Do not put the token in the URL, where it ends up in logs and in the clone's own settings.
+4. Ask again shortly before `expires_at`. The token lasts an hour at most.
+
+The token only reads, whatever else the agent holds. An agent with **Open pull requests** still gets a clone token that cannot push, and opens its pull requests through the gateway's tools, where each one is signed with its name. The token opens the repositories picked for the agent on its **Access** tab and no others. Each one is recorded under **Harness, Activity** like any other borrowed access.
+
+Keep the token in memory. Do not write it to `KOBO_DATA_DIR`, and do not print it. An agent the room builds never gets this tool.
+
 ## Taking Slack messages
 
 A connected agent that serves a port can use a Slack app the room makes, set up from the Slack row on the **Access** tab. See "Slack". The room receives Slack's events, checks each one really came from Slack, and hands it to your agent. Slack never calls your agent directly, and your code keeps no connection open to Slack.

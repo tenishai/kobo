@@ -6924,6 +6924,8 @@ def test_the_gateway_lane_follows_each_github_level_and_withdraws_what_is_revoke
     assert out[0]["status"] == "approved" and out[0]["repositories"] == ["acme/infra"]
     lane = admin.grants[("cabal-core", "ledger")]
     assert set(lane.scopes) == {"x:read", "github:read"} and set(lane.allowed_handlers) == {"scratchpad", "github-mcp"}
+    # The token `git` can use is for an agent that runs its own code, never a built one (kobo#483).
+    assert "github-clone" not in lane.allowed_handlers
     pushed = _yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["tools"]["allow"]
     assert pushed == ["colleagues.list_colleagues", "github-mcp.*"], pushed
     assert github.pushes[-1][1] == "kobo: allow the github tools; withdraw the github tools"
@@ -6946,6 +6948,46 @@ def test_the_gateway_lane_follows_each_github_level_and_withdraws_what_is_revoke
     assert "github-mcp.*" not in pushed and "github-mcp-write.*" in pushed and "github-write.*" in pushed
     assert "github.*" not in pushed
     assert c.post("/api/admin/access/sync", headers=h).json()["gateway_lanes"]["failed"] == 0
+
+
+def test_read_opens_the_clone_token_for_an_agent_that_runs_its_own_code_and_for_no_other(tmp_path, fake_storage):
+    """Gate (authorization, kobo#483): Read on GitHub also opens the gateway's `github-clone`
+    handler, which hands out a token `git` can use, for an agent that runs its team's own code
+    and never for one the room builds (a model must not hold a credential). It leaves with the
+    permission, the heal pass owes it to the same agents, and it is withdrawn from a built
+    agent that somehow carries it."""
+    from kobo_api import gateway_lane
+    from kobo_api.models import Agent
+
+    c, h, bab, _github, admin = _github_room(tmp_path, fake_storage)
+    with c.app.state.session_factory() as s:
+        s.query(Agent).filter_by(name="ledger").one().kind = "connected"
+        s.commit()
+    assert c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/infra"]}).status_code == 200
+    rid = c.post("/api/agents/ledger/access/requests", headers=h,
+                 json={"integration": "github-ledger", "permissions": ["github_repos_read"], "note": "clone"}).json()["id"]
+    assert c.post("/api/admin/access/decide", headers=h, json={"ids": [rid], "verdict": "approve"}).status_code == 200
+    lane = admin.grants[("cabal-core", "ledger")]
+    assert set(lane.scopes) == {"x:read", "github:read"}
+    assert set(lane.allowed_handlers) == {"scratchpad", "github-mcp", "github-clone"}
+
+    # Something rewrote the grant: the heal pass owes the handler to the agent that runs its
+    # own code, and takes it from one the room builds.
+    admin.grants[("cabal-core", "ledger")] = GatewayGrant(
+        issuer="cabal-core", persona="ledger", scopes=("github:read",), allowed_handlers=("github-mcp",))
+    assert gateway_lane.heal(c.app.state.clients, bab, ["ledger"], "room@kobo", own_code=frozenset({"ledger"})) == ["ledger"]
+    assert set(admin.grants[("cabal-core", "ledger")].allowed_handlers) == {"github-mcp", "github-clone"}
+    assert gateway_lane.heal(c.app.state.clients, bab, ["ledger"], "room@kobo") == ["ledger"]
+    assert set(admin.grants[("cabal-core", "ledger")].allowed_handlers) == {"github-mcp"}
+    assert "github-clone" in gateway_lane.MANAGED_HANDLERS
+
+    admin.grants[("cabal-core", "ledger")] = GatewayGrant(
+        issuer="cabal-core", persona="ledger", scopes=("x:read", "github:read"),
+        allowed_handlers=("scratchpad", "github-mcp", "github-clone"))
+    read_grant = next(g for g in bab.grants("ledger", "x") if g["permission"] == "github_repos_read")
+    assert c.delete(f"/api/agents/ledger/access/grants/{read_grant['id']}", headers=h).status_code == 200
+    lane = admin.grants[("cabal-core", "ledger")]
+    assert set(lane.scopes) == {"x:read"} and set(lane.allowed_handlers) == {"scratchpad"}
 
 
 def test_the_room_puts_a_gateway_target_an_applied_connection_owes_and_the_gateway_lacks(session__admin_store):
