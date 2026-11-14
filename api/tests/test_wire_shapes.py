@@ -1666,16 +1666,84 @@ def test_a_connected_agent_with_no_port_keeps_its_own_slack_app(session_factory_
     assert "serves no port" in refused.json()["error"]
 
 
-def test_the_room_makes_a_connected_agent_a_slack_app_through_a_pull_request(
+def _installed__api_slack(session_factory__api_slack):
+    from kobo_api.models import SlackRelayApp
+
+    with session_factory__api_slack() as s:
+        s.query(SlackRelayApp).filter_by(agent_name=AGENT_NAME).one().installed_at = datetime(2026, 11, 14)
+        s.commit()
+
+
+def test_a_connected_agents_slack_app_and_wake_choices_ask_for_no_pull_request(
     session_factory__api_slack, config__api_slack
 ):
-    """Wire shape (issue #484): a connected agent that serves a port gets the same
-    room-made app. Its values are delivered before anything names them, the
-    repository half is one pull request on the room's Slack branch (never a
-    commit), and the view says the request is waiting on the team. A wake change
-    is a pull request too, and nothing is set on a deployment the team builds."""
+    """Wire shape (2026-11-14): a connected agent whose file already reads the
+    app's Secret, as every one connected since does, is asked for nothing. Making
+    the app is a delivery; a wake choice is a delivery and one restart once the
+    value has landed, and how it wakes travels in the Secret, never in the file.
+    Nothing is set on a deployment the team builds."""
+    from kobo_api import delivery
+    from kobo_api.kinds import RUN_MODE_HTTP
+
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    contract = f"name: clio\nsecrets_from_optional:\n  - {AGENT_NAME}-slack\nenv:\n  TEAM_SETTING: kept\n"
+    github = FakeGitHub(repo_files={"gojira.yaml": contract}, clone_tree={"gojira.yaml": contract})
+    kubectl = FakeKubectl()
+    client = _make_client__api_slack(
+        session_factory__api_slack, relay_config, github=github, kubectl=kubectl, slack=FakeSlack(app_id="A0MADE")
+    )
+    _seed_agent__api_slack(session_factory__api_slack, relay_config)
+    _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HTTP)
+    secret = (AGENT_NAME, f"{AGENT_NAME}-slack")
+
+    made = client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"})
+
+    assert made.status_code == 200, made.text
+    assert (made.json()["app_id"], made.json()["pull_request"]) == ("A0MADE", None)
+    assert {"SLACK_RELAY_SECRET", "SLACK_SIGNING_SECRET", "SLACK_APP_ID"} <= set(kubectl.secrets[secret])
+    assert kubectl.secrets[secret]["SLACK_WAKE_MODE"] == "thread"
+    view = client.get(f"/api/agents/{AGENT_NAME}/slack").json()
+    assert (view["state"], view["wiring"]) == ("created", {"state": "wired", "pull_request": None})
+
+    # Not installed yet: the install is what restarts it, so a choice only lands.
+    early = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"emoji": ["ticket"]})
+    assert (early.status_code, early.json()["restart_pending"]) == (200, False)
+    delivery.join_restarts()
+    assert kubectl.restarts == [] and kubectl.secrets[secret]["SLACK_WAKE_EMOJI"] == "ticket"
+
+    _installed__api_slack(session_factory__api_slack)
+    woke = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "channel", "emoji": []})
+    assert woke.status_code == 200, woke.text
+    assert (woke.json()["restart_pending"], woke.json()["pull_request"], woke.json()["applied_now"]) == (True, None, False)
+    delivery.join_restarts()
+    assert kubectl.restarts == [(AGENT_NAME, AGENT_NAME)]
+    assert kubectl.secrets[secret]["SLACK_WAKE_MODE"] == "channel" and "SLACK_WAKE_EMOJI" not in kubectl.secrets[secret]
+    assert "SLACK_RELAY_SECRET" in kubectl.secrets[secret]
+
+    opened = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"command_public": True})
+    assert (opened.json()["restart_pending"], opened.json()["command_public"]) == (True, True)
+    assert kubectl.secrets[secret]["SLACK_COMMAND_PUBLIC"] == "on"
+
+    # The same choice again changes nothing, so a team's agent is not bounced.
+    same = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"command_public": True})
+    assert (same.status_code, same.json()["restart_pending"]) == (200, False)
+    delivery.join_restarts()
+    assert len(kubectl.restarts) == 2
+    assert github.open_pr_calls == [] and github.push_count == 0 and kubectl.env_sets == []
+
+
+def test_a_connected_agent_wired_before_gets_one_last_slack_pull_request(
+    session_factory__api_slack, config__api_slack
+):
+    """Wire shape (issue #484): a repository that does not read the Secret gets
+    one pull request on the room's Slack branch (never a commit), and the view
+    says it is waiting on the team. One wired the older way, with the wake
+    setting in its own file, needs nothing while that file agrees with the room;
+    a choice it disagrees with is one request that takes the setting out, after
+    which nothing asks again."""
     import yaml
 
+    from kobo_api import delivery
     from kobo_api.connected_wiring import SLACK_BRANCH
     from kobo_api.kinds import RUN_MODE_HTTP
 
@@ -1689,69 +1757,55 @@ def test_the_room_makes_a_connected_agent_a_slack_app_through_a_pull_request(
     )
     _seed_agent__api_slack(session_factory__api_slack, relay_config)
     _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HTTP)
-    assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["room_app"] is True
+    secret = (AGENT_NAME, f"{AGENT_NAME}-slack")
 
     made = client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"})
 
     assert made.status_code == 200, made.text
     assert (made.json()["app_id"], made.json()["pull_request"]) == ("A0MADE", pr_url)
-    assert made.json()["install_url"].startswith("https://slack.com/oauth/v2/authorize")
-    delivered = kubectl.secrets[(AGENT_NAME, f"{AGENT_NAME}-slack")]
-    assert {"SLACK_RELAY_SECRET", "SLACK_SIGNING_SECRET", "SLACK_APP_ID"} <= set(delivered)
     assert [call["branch"] for call in github.open_pr_calls] == [SLACK_BRANCH]
     proposed = yaml.safe_load(github.pushed_file("gojira.yaml"))
-    assert proposed["secrets_from"] == [f"{AGENT_NAME}-slack"]
-    assert proposed["env"] == {"TEAM_SETTING": "kept", "SLACK_WAKE_MODE": "thread"}
-    assert github.push_count == 0
-
+    assert proposed["secrets_from_optional"] == [f"{AGENT_NAME}-slack"]
+    assert proposed["env"] == {"TEAM_SETTING": "kept"}
+    assert kubectl.secrets[secret]["SLACK_WAKE_MODE"] == "thread" and github.push_count == 0
     view = client.get(f"/api/agents/{AGENT_NAME}/slack").json()
     assert (view["state"], view["own_app"], view["wiring"]) == (
         "created", False, {"state": "waiting", "pull_request": pr_url}
     )
 
-    # The request open on the branch carries `thread`; `channel` is a different
-    # request, so the team is told to settle the open one first.
-    busy = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "channel"})
-    assert busy.status_code == 409 and pr_url in busy.json()["error"]
-
-    # Merged: the default branch reads the Secret, and a new choice is a new request.
+    # The older wiring, merged and installed: the file sets the mode itself,
+    # and it agrees with the room, so a different choice is only a restart.
     del github._open_prs[f"{REPO}#{SLACK_BRANCH}"]
-    github._repo_files["gojira.yaml"] = github._clone_tree["gojira.yaml"] = yaml.safe_dump(proposed)
+    older = f"name: clio\nsecrets_from:\n  - {AGENT_NAME}-slack\nenv:\n  TEAM_SETTING: kept\n  SLACK_WAKE_MODE: thread\n"
+    github._repo_files["gojira.yaml"] = github._clone_tree["gojira.yaml"] = older
+    _installed__api_slack(session_factory__api_slack)
     assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["wiring"]["state"] == "wired"
+    named = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"emoji": ["ticket"]})
+    assert (named.json()["restart_pending"], named.json()["pull_request"]) == (True, None)
+    delivery.join_restarts()
+    assert kubectl.restarts == [(AGENT_NAME, AGENT_NAME)] and len(github.open_pr_calls) == 1
+
+    # The file would hide a new mode, so that one is a request: the mode leaves
+    # the file, the Secret already carries it, and nothing restarts before the merge.
     woke = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "channel"})
     assert woke.status_code == 200, woke.text
-    assert (woke.json()["pull_request"], woke.json()["applied_now"], woke.json()["wiring"]) == (
-        pr_url, False, "pull_request"
+    assert (woke.json()["pull_request"], woke.json()["wiring"], woke.json()["restart_pending"]) == (
+        pr_url, "pull_request", False
     )
-    assert yaml.safe_load(github.pushed_file("gojira.yaml"))["env"]["SLACK_WAKE_MODE"] == "channel"
-    assert kubectl.env_sets == [] and github.push_count == 0
-
-    # The emoji that wake it are one more request, and the wiring waits on it.
-    del github._open_prs[f"{REPO}#{SLACK_BRANCH}"]
-    github._repo_files["gojira.yaml"] = github._clone_tree["gojira.yaml"] = github.pushed_file("gojira.yaml")
-    named = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"emoji": ["ticket"]})
-    assert named.status_code == 200, named.text
-    assert (named.json()["wake_emoji"], named.json()["wake"], named.json()["applied_now"]) == (["ticket"], "channel", False)
-    assert yaml.safe_load(github.pushed_file("gojira.yaml"))["env"] == {
-        "TEAM_SETTING": "kept", "SLACK_WAKE_MODE": "channel", "SLACK_WAKE_EMOJI": "ticket",
-    }
-    assert kubectl.env_sets == [] and kubectl.env_unsets == [] and github.push_count == 0
+    handed = yaml.safe_load(github.pushed_file("gojira.yaml"))
+    assert handed["env"] == {"TEAM_SETTING": "kept"} and handed["secrets_from"] == [f"{AGENT_NAME}-slack"]
+    assert "secrets_from_optional" not in handed
+    assert kubectl.secrets[secret]["SLACK_WAKE_MODE"] == "channel"
     assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["wiring"]["state"] == "waiting"
+    delivery.join_restarts()
+    assert len(kubectl.restarts) == 1 and kubectl.env_sets == [] and github.push_count == 0
 
-    # So is where its slash command is answered.
+    # Merged: every later choice is a delivery and a restart.
     del github._open_prs[f"{REPO}#{SLACK_BRANCH}"]
-    github._repo_files["gojira.yaml"] = github._clone_tree["gojira.yaml"] = github.pushed_file("gojira.yaml")
-    opened = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"command_public": True})
-    assert (opened.status_code, opened.json()["command_public"], opened.json()["pull_request"]) == (200, True, pr_url)
-    assert yaml.safe_load(github.pushed_file("gojira.yaml"))["env"]["SLACK_COMMAND_PUBLIC"] == "on"
-    assert kubectl.env_sets == [] and github.push_count == 0
-    assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["wiring"]["state"] == "waiting"
-
-    # Taken back before the team merged: the default branch already reads off,
-    # but the open request would turn it on, so it has to be settled first.
-    taken_back = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"command_public": False})
-    assert taken_back.status_code == 409 and pr_url in taken_back.json()["error"]
-    assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["command_public"] is True
+    github._repo_files["gojira.yaml"] = github._clone_tree["gojira.yaml"] = yaml.safe_dump(handed)
+    back = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "mention"})
+    assert (back.json()["restart_pending"], back.json()["pull_request"]) == (True, None)
+    assert len(github.open_pr_calls) == 2
 
 
 def test_a_connected_agents_closed_slack_request_is_opened_again_without_a_second_app(
@@ -1759,7 +1813,7 @@ def test_a_connected_agents_closed_slack_request_is_opened_again_without_a_secon
 ):
     """Gate: a team that closed the room's Slack request unmerged asks again with
     the same button. The app and its values exist, so Slack is not asked twice and
-    the Secret (which by then holds the bot token) is not written over."""
+    what the Secret holds by then (the bot token) is kept."""
     from kobo_api.kinds import RUN_MODE_HTTP
 
     pr_url = "https://github.com/acme/agent-clio/pull/9"
@@ -1774,13 +1828,15 @@ def test_a_connected_agents_closed_slack_request_is_opened_again_without_a_secon
     assert client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"}).status_code == 200
     del github._open_prs[f"{REPO}#{SLACK_BRANCH}"]
     assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["wiring"]["state"] == "owed"
-    applied = len(kubectl.calls)
+    secret = (AGENT_NAME, f"{AGENT_NAME}-slack")
+    kubectl.secrets[secret]["SLACK_BOT_TOKEN"] = "xoxb-fake-bot-token"
+    before = dict(kubectl.secrets[secret])
 
     again = client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"})
 
     assert (again.status_code, again.json()["pull_request"]) == (200, pr_url)
     assert len(slack.manifests) == 1 and len(github.open_pr_calls) == 2
-    assert len(kubectl.calls) == applied
+    assert kubectl.secrets[secret] == before
 
 
 def test_put_wake_writes_the_env_key_and_says_when_the_manifest_changed(session_factory__api_slack, config__api_slack):

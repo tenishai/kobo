@@ -293,11 +293,14 @@ from kobo_api.slack_setup import (
     clean_wake_emoji,
     command_public,
     deliver_slack_values,
+    deliver_wake_settings,
     effective_wake,
     render_manifest,
     rewire_slack_channels,
     scopes_owed,
     wake_emoji,
+    wake_settings,
+    wake_settings_of,
     wake_subscribes_channel_messages,
     wire_slack,
     wire_slack_values,
@@ -9039,10 +9042,13 @@ def create_app(
         failed is resumed by calling this again: the app exists, so Slack is
         not asked twice.
 
-        A connected agent (issue #484) gets the same app, relay and Secret;
-        the repository half is one pull request its team merges
-        (`connected_wiring.propose_slack`), and the answer carries its link.
-        Calling this again for an app whose request was closed opens it again.
+        A connected agent (issue #484) gets the same app, relay and Secret.
+        That asks nothing of a repository that already reads the Secret,
+        which every agent connected since 2026-11-14 does: the app reaches it
+        by a restart at install. One connected before is asked once, as a
+        pull request its team merges (`connected_wiring.propose_slack`), and
+        the answer carries its link. Calling this again for an app whose
+        request was closed opens it again.
         """
         cfg: Config = app.state.config
         if not cfg.slack_relay:
@@ -9079,12 +9085,16 @@ def create_app(
         if row is not None and row.app_id is not None and row.wired_at is not None:
             if connected and (_slack_wiring(agent) or {}).get("state") == connected_wiring.OWED:
                 # The app is made and its values delivered; only the request
-                # is missing (the team closed it). Open it again, nothing else.
+                # is missing (the team closed it). Open it again, with how it
+                # wakes delivered first: an app made before the room kept
+                # that in the Secret has it only in the file this rewrites.
                 try:
+                    deliver_wake_settings(
+                        clients.kubectl, name=agent.name, settings=wake_settings_of(agent), sero=clients.sero,
+                        acting_email=getattr(request.state, "iap_email", None) or agent.created_by,
+                    )
                     edit = connected_wiring.propose_slack(
                         clients.github, repo=agent.repo_full_name, agent_name=agent.name,
-                        mode=effective_wake(agent), emoji=agent.slack_wake_emoji or "",
-                        public=command_public(agent),
                     )
                 except RepoBusy as exc:
                     return JSONResponse({"error": str(exc)}, status_code=409)
@@ -9256,17 +9266,27 @@ def create_app(
             "SLACK_ICON_URL": slack_relay.face_url(base, row.relay_id),
         }
         if is_connected(agent):
+            # How it wakes travels in the Secret too: the room cannot commit
+            # to this repository, and a setting kept in its files would be a
+            # pull request every time it changed.
+            settings = wake_settings(mode, agent.slack_wake_emoji or "", command_public(agent))
+            values.update({key: value for key, value in settings.items() if value is not None})
+            gone = tuple(key for key, value in settings.items() if value is None)
             # The Secret first, so it exists by the time anything can merge
-            # the request that names it; then the request, never a commit.
+            # a request that names it. A file that already reads it is asked
+            # for nothing: the restart at install is the whole delivery.
+            pull_request = None
             try:
                 deliver_slack_values(
                     clients.kubectl, name=agent.name, values=values, sero=clients.sero,
-                    acting_email=acting_email, remove_keys=remove_keys,
+                    acting_email=acting_email, remove_keys=(*remove_keys, *gone),
                 )
-                edit = connected_wiring.propose_slack(
-                    clients.github, repo=agent.repo_full_name, agent_name=agent.name,
-                    mode=mode, emoji=agent.slack_wake_emoji or "", public=command_public(agent),
-                )
+                if not connected_wiring.slack_follows_room(
+                    clients.github, repo=agent.repo_full_name, agent_name=agent.name, settings=settings
+                ):
+                    pull_request = connected_wiring.propose_slack(
+                        clients.github, repo=agent.repo_full_name, agent_name=agent.name,
+                    ).pull_request
             except RepoBusy as exc:
                 return JSONResponse({"error": str(exc)}, status_code=409)
             except ClientError as exc:
@@ -9275,7 +9295,7 @@ def create_app(
             row.wired_at = datetime.now(UTC).replace(tzinfo=None)
             state_token = slack_relay.mint_state(row)
             install = slack_relay.install_url(row.client_id or "", state_token, slack_relay.callback_url(base))
-            return row, install, edit.pull_request
+            return row, install, pull_request
         try:
             wire_slack_values(
                 clients.github,
@@ -9677,9 +9697,13 @@ def create_app(
         old one. Scopes never change, so a reinstall is never needed.
 
         A connected agent with a room-made app (issue #484) gets the same
-        choice as a pull request its team merges (`pull_request`); nothing is
-        set on its live deployment, which belongs to its own build. One on
-        its own Slack app is refused: the room has no say in that app.
+        choice through the app's Secret, where the room keeps how it wakes
+        (2026-11-14): the values are delivered and the agent is restarted
+        once they have landed (`restart_pending`). Nothing is set on its
+        live deployment, which belongs to its own build. Only a repository
+        that does not read the Secret yet, or sets one of these itself to
+        something else, is asked for a pull request (`pull_request`), once.
+        One on its own Slack app is refused: the room has no say in that app.
 
         `emoji` (2026-11-13) rides the same lane as a second variable,
         `SLACK_WAKE_EMOJI`: the emoji whose reaction also wakes the agent,
@@ -9752,11 +9776,34 @@ def create_app(
             )
         previous_public = command_public(agent)
         clients = app.state.clients
+        acting_email = getattr(request.state, "iap_email", None) or agent.created_by
+        if connected and clients.sero is not None:
+            refusal = acting_email_refusal(agent.name, acting_email)
+            if refusal is not None:
+                return JSONResponse({"error": refusal}, status_code=409)
+        # All three as this save leaves them: what the agent's Secret carries.
+        settings = wake_settings(
+            mode,
+            (agent.slack_wake_emoji or "") if emoji is None else emoji,
+            previous_public if public is None else public,
+        )
+        restart_pending = False
         try:
             if connected:
-                result = connected_wiring.propose_slack(
-                    clients.github, repo=agent.repo_full_name, agent_name=agent.name, mode=mode, emoji=emoji,
-                    public=public,
+                follows = connected_wiring.slack_follows_room(
+                    clients.github, repo=agent.repo_full_name, agent_name=agent.name, settings=settings
+                )
+                result = RepoEdit(how=UNCHANGED) if follows else connected_wiring.propose_slack(
+                    clients.github, repo=agent.repo_full_name, agent_name=agent.name,
+                )
+                # A restart is owed only to a running app whose choice really
+                # changed: one not installed yet restarts at install, and a
+                # save that changes nothing should not bounce a team's agent.
+                restart_pending = (
+                    follows
+                    and relay_row is not None
+                    and relay_row.installed_at is not None
+                    and settings != wake_settings_of(agent)
                 )
             else:
                 result = edit_gojira_yaml(
@@ -9774,6 +9821,22 @@ def create_app(
             return JSONResponse({"error": str(exc)}, status_code=409)
         except ClientError as exc:
             return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
+        if connected:
+            try:
+                deliver_wake_settings(
+                    clients.kubectl, name=agent.name, settings=settings, sero=clients.sero,
+                    acting_email=acting_email,
+                )
+            except ClientError as exc:
+                log.warning("slack wake: delivery for agent %s failed: %s", agent.name, type(exc).__name__)
+                return JSONResponse({"error": "couldn't save how it wakes up. Try again."}, status_code=502)
+            if restart_pending:
+                # Off this request: through the secrets platform the values
+                # land at its next re-read, and a restart before that would
+                # start the agent on the old ones.
+                delivery.restart_once_secret_carries(
+                    clients.kubectl, agent.name, f"{agent.name}-slack", [], settings=settings
+                )
         if payload.wake is not None:
             agent.slack_wake = mode
         if emoji is not None:
@@ -9852,6 +9915,7 @@ def create_app(
                 "manifest_changed": manifest_changed,
                 "applied_now": applied_now,
                 "applied_at": rfc3339(datetime.now(UTC)) if applied_now else None,
+                "restart_pending": restart_pending,
                 "wiring": result.how,
                 "pull_request": result.pull_request,
             }

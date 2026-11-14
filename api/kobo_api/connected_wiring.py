@@ -23,12 +23,14 @@ Both run from the worker's five-minute pass (`keep`), beside the gateway
 heal, and neither ever pushes to a team's branch.
 
 Slack. A connected agent that serves a port can have a Slack app the room
-makes (issue #484). The app's values go to the Secret `<agent>-slack` the
-moment the app exists; what the agent's repository owes is one reference to
-that Secret and the wake mode, and that is a pull request on `kobo/slack`
-(`propose_slack`), opened by the route that makes the app and again by the
-one that changes the wake mode. `slack_state` is what the Slack row reads:
-wired, waiting on the team, or owed because the request was closed.
+makes (issue #484). The app's values and how Slack wakes the agent go to the
+Secret `<agent>-slack`; what the agent's repository owes is one reference to
+that Secret, which its connect wrote (2026-11-14), so the app and every
+later change reach it by a restart. A repository that lacks the reference,
+or still sets a wake setting itself that the room has since changed, is
+asked once, as a pull request on `kobo/slack` (`propose_slack`).
+`slack_state` is what the Slack row reads: wired, waiting on the team, or
+owed because the request was closed.
 """
 
 from __future__ import annotations
@@ -60,8 +62,7 @@ from kobo_api.slack_setup import (
     COMMAND_PUBLIC_ON,
     WAKE_EMOJI_ENV,
     WAKE_ENV,
-    command_public,
-    effective_wake,
+    wake_settings_of,
 )
 from kobo_api.steps import (
     CONNECTED_GATEWAY_URL_ENV,
@@ -72,6 +73,8 @@ from kobo_api.steps import (
     connected_room_wiring_lines,
     deliver_connected_identity,
     gateway_identity_on,
+    name_slack_secret,
+    reads_slack_secret,
     write_connected_storage,
 )
 
@@ -223,24 +226,36 @@ def offer(session, clients, config, agent) -> str | None:
 
 # --- a room-made Slack app (issue #484) ----------------------------------------
 #
-# For an agent the room builds, the app's wiring is a commit. Here it is one
-# pull request on its own branch: the Secret reference and the wake mode,
-# nothing else, since there is no bundle and no runtime pin. The Secret
-# itself is delivered before the request opens, so it exists by the time
-# anything can merge it.
+# For an agent the room builds, the app's wiring is a commit. Here the room
+# cannot commit, so everything the app needs travels in the Secret
+# `<agent>-slack`, how Slack wakes the agent included, and the repository
+# owes one line: that it reads the Secret when it exists. An agent connected
+# since 2026-11-14 has that line from its connect (`steps.name_slack_secret`),
+# so making its app and changing how it wakes are a delivery and a restart.
+# One connected before gets the line as a single pull request on its own
+# branch, the last one Slack asks of it.
 
 SLACK_BRANCH = "kobo/slack"
 SLACK_PR_TITLE = "kobo: Slack app made by the room"
 SLACK_PR_BODY = (
-    "The room made a Slack app for this agent. This lets the agent read the "
-    "app's values and says how Slack wakes it.\n\n"
+    "The room made a Slack app for this agent, and keeps the app's values "
+    "and how Slack wakes the agent in the Secret `{agent}-slack`. This makes "
+    "the agent read all of it from there.\n\n"
     "Files changed:\n"
-    "- gojira.yaml: `secrets_from` gains `{agent}-slack` (`SLACK_BOT_TOKEN` "
-    "once the app is installed, `SLACK_RELAY_SECRET`, `SLACK_SIGNING_SECRET`, "
-    "`SLACK_ICON_URL` and the app's ids), and `SLACK_WAKE_MODE` is set, with "
-    "`SLACK_WAKE_EMOJI` when its owner named emoji that wake it and "
-    "`SLACK_COMMAND_PUBLIC` when its owner lets its slash command be answered "
-    "in public channels it is not in.\n\n"
+    "- gojira.yaml: `secrets_from_optional` gains `{agent}-slack`, unless "
+    "the file already reads that Secret. It carries `SLACK_BOT_TOKEN` once "
+    "the app is installed, `SLACK_RELAY_SECRET`, `SLACK_SIGNING_SECRET`, "
+    "`SLACK_ICON_URL`, the app's ids, `SLACK_WAKE_MODE`, `SLACK_WAKE_EMOJI` "
+    "when its owner named emoji that wake it, and `SLACK_COMMAND_PUBLIC` "
+    "when its owner lets its slash command be answered in public channels "
+    "it is not in.\n"
+    "- gojira.yaml: `SLACK_WAKE_MODE`, `SLACK_WAKE_EMOJI` and "
+    "`SLACK_COMMAND_PUBLIC` are taken out of `env` where they are set. A "
+    "value there hides the one in the Secret, so the agent would keep "
+    "waking the old way.\n\n"
+    "This is the last pull request Slack asks of this repository: from here "
+    "a change to how Slack wakes the agent is delivered to the Secret and "
+    "the agent is restarted.\n\n"
     "The room hands Slack's events to the agent at `POST /slack/events` with "
     "the header `X-Kobo-Relay-Secret`. The guide section \"Running your own "
     "code\" has the whole contract.\n\n"
@@ -255,78 +270,60 @@ SLACK_PR_ALREADY_OPEN = (
     "close it: "
 )
 
-
-def slack_wired(data: dict, agent_name: str) -> bool:
-    return f"{agent_name}-slack" in (data.get("secrets_from") or [])
+_WAKE_KEYS = (WAKE_ENV, WAKE_EMOJI_ENV, COMMAND_PUBLIC_ENV)
 
 
-def _emoji_in(data: dict) -> str:
-    env = data.get("env")
-    return str(env.get(WAKE_EMOJI_ENV) or "") if isinstance(env, dict) else ""
-
-
-def _public_in(data: dict) -> bool:
-    env = data.get("env")
-    return isinstance(env, dict) and str(env.get(COMMAND_PUBLIC_ENV) or "").lower() == COMMAND_PUBLIC_ON
-
-
-def add_slack_wiring(
-    data: dict, agent_name: str, mode: str, emoji: str | None = None, public: bool | None = None
-) -> bool:
-    """The Secret reference and the wake mode into a parsed gojira.yaml, and
-    the emoji that wake the agent when `emoji` is given ("" takes the key
-    out; None leaves it as it is). `public` is whether its slash command is
-    answered in public channels it is not in (False takes the key out; None
-    leaves it as it is). True when it changed."""
-    changed = False
-    secrets = data.get("secrets_from")
-    if not isinstance(secrets, list):
-        secrets = []
-        data["secrets_from"] = secrets
-    if f"{agent_name}-slack" not in secrets:
-        secrets.append(f"{agent_name}-slack")
-        changed = True
+def _set_in_file(data: dict) -> dict[str, str]:
+    """The wake settings a gojira.yaml sets itself. Each hides the one the
+    room delivers, which is how every connected agent was wired until
+    2026-11-14 and how a team may still choose to hold one."""
     env = data.get("env")
     if not isinstance(env, dict):
-        env = {}
-        data["env"] = env
-    if env.get(WAKE_ENV) != mode:
-        env[WAKE_ENV] = mode
-        changed = True
-    if emoji is not None and _emoji_in(data) != emoji:
-        if emoji:
-            env[WAKE_EMOJI_ENV] = emoji
-        else:
-            env.pop(WAKE_EMOJI_ENV, None)
-        changed = True
-    if public is not None and _public_in(data) != public:
-        if public:
-            env[COMMAND_PUBLIC_ENV] = COMMAND_PUBLIC_ON
-        else:
-            env.pop(COMMAND_PUBLIC_ENV, None)
+        return {}
+    return {key: str(env[key] or "") for key in _WAKE_KEYS if key in env}
+
+
+def _same(key: str, in_file: str, wanted: str | None) -> bool:
+    if key == COMMAND_PUBLIC_ENV:
+        return (in_file.lower() == COMMAND_PUBLIC_ON) == (wanted == COMMAND_PUBLIC_ON)
+    return in_file == (wanted or "")
+
+
+def follows_room(data: dict, agent_name: str, settings: dict[str, str | None]) -> bool:
+    """Whether an agent started from this gojira.yaml wakes the way
+    `settings` say once they are delivered: it reads the Secret, and
+    whatever the file still sets itself says the same."""
+    return reads_slack_secret(data, agent_name) and all(
+        _same(key, value, settings.get(key)) for key, value in _set_in_file(data).items()
+    )
+
+
+def slack_follows_room(github, *, repo: str, agent_name: str, settings: dict[str, str | None]) -> bool:
+    """`follows_room` for the default branch: when true, a delivery and a
+    restart are the whole change and the team is asked for nothing."""
+    return follows_room(parse_gojira_yaml(github.read_file(repo, GOJIRA_YAML) or ""), agent_name, settings)
+
+
+def hand_slack_to_room(data: dict, agent_name: str) -> bool:
+    """The Secret reference into a parsed gojira.yaml that lacks it, and the
+    wake settings out of its `env`. True when it changed."""
+    changed = name_slack_secret(data, agent_name)
+    env = data.get("env")
+    for key in _set_in_file(data):
+        del env[key]
         changed = True
     return changed
 
 
-def propose_slack(
-    github, *, repo: str, agent_name: str, mode: str, emoji: str | None = None, public: bool | None = None
-) -> RepoEdit:
-    """One pull request carrying the Slack wiring with `mode` (and `emoji`
-    and `public`, as `add_slack_wiring` reads them), or the one already open that carries
-    exactly that; `unchanged` when the default branch already does. Raises
-    `RepoBusy` when a different request from the room is open on the branch,
-    which includes the case where the default branch already reads this way:
-    a request opened for a choice since taken back would otherwise sit open,
-    and merging it would undo what the room shows."""
+def propose_slack(github, *, repo: str, agent_name: str) -> RepoEdit:
+    """One pull request that leaves the agent reading `<agent>-slack` and
+    setting none of the wake settings itself, or the one already open that
+    does exactly that; `unchanged` when the default branch already does.
+    Raises `RepoBusy` when a different request from the room is open on the
+    branch, which includes the case where the default branch already reads
+    this way: merging what is open would hide what the room delivers."""
     def carries(data: dict) -> bool:
-        env = data.get("env")
-        return (
-            slack_wired(data, agent_name)
-            and isinstance(env, dict)
-            and env.get(WAKE_ENV) == mode
-            and (emoji is None or _emoji_in(data) == emoji)
-            and (public is None or _public_in(data) == public)
-        )
+        return reads_slack_secret(data, agent_name) and not _set_in_file(data)
 
     result = edit_gojira_yaml(
         github,
@@ -334,7 +331,7 @@ def propose_slack(
         repo=repo,
         connected=True,
         gojira_app_id=None,
-        edit=lambda data: add_slack_wiring(data, agent_name, mode, emoji, public),
+        edit=lambda data: hand_slack_to_room(data, agent_name),
         message=SLACK_PR_TITLE,
         branch=SLACK_BRANCH,
         title=SLACK_PR_TITLE,
@@ -353,19 +350,11 @@ def propose_slack(
 
 def slack_state(github, agent) -> dict:
     """Where a connected agent's room-made Slack app stands in its
-    repository: `wired` (the default branch reads the Secret and wakes the
+    repository: `wired` (an agent started from the default branch wakes the
     way the room's row says), `waiting` (the room's request is open) or
     `owed` (neither: the request was closed, or never opened)."""
     repo = agent.repo_full_name
-    data = parse_gojira_yaml(github.read_file(repo, GOJIRA_YAML) or "")
-    env = data.get("env")
-    if (
-        slack_wired(data, agent.name)
-        and isinstance(env, dict)
-        and env.get(WAKE_ENV) == effective_wake(agent)
-        and _emoji_in(data) == (agent.slack_wake_emoji or "")
-        and _public_in(data) == command_public(agent)
-    ):
+    if slack_follows_room(github, repo=repo, agent_name=agent.name, settings=wake_settings_of(agent)):
         return {"state": WIRED, "pull_request": None}
     open_pr = github.find_pr(repo, branch=SLACK_BRANCH)
     return {"state": WAITING if open_pr else OWED, "pull_request": open_pr}

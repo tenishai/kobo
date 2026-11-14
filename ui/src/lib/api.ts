@@ -2679,7 +2679,11 @@ export type SlackWakeResult = {
    * health reading is told apart from an older one by `checked_at`. */
   applied_at?: string | null;
   wiring: string;
-  /** A connected agent: the choice is a pull request its team merges. */
+  /** A connected agent: the choice was delivered and the room restarts the
+   * agent once it has landed, a minute or two later. */
+  restart_pending?: boolean;
+  /** A connected agent whose files do not read the app's values yet: a
+   * pull request its team merges. */
   pull_request?: string | null;
 };
 

@@ -256,6 +256,16 @@ def test_the_restart_after_a_delivered_secret_waits_for_the_key_to_land():
     assert kubectl.restarts == [("ledger", "ledger")]
 
 
+def test_a_restart_for_a_changed_setting_waits_for_the_new_value():
+    """A key that is already there says nothing about a value that changed, so the wait
+    for a plain setting reads the value, and a setting taken away waits for the key to go."""
+    kubectl = SecretKubectl(keys_after=0)
+    kubectl.secret_literals = lambda ns, name: {"SLACK_WAKE_MODE": "thread", "SLACK_WAKE_EMOJI": "ticket"}
+    carries = lambda settings: delivery.secret_carries(kubectl, "ledger", "ledger-slack", [], settings)
+    assert carries({"SLACK_WAKE_MODE": "thread"}) and not carries({"SLACK_WAKE_MODE": "channel"})
+    assert carries({"SLACK_COMMAND_PUBLIC": None}) and not carries({"SLACK_WAKE_EMOJI": None})
+
+
 def test_a_step_before_the_restart_runs_first_and_cannot_lose_it():
     kubectl = SecretKubectl(keys_after=0)
     order: list[str] = []
@@ -286,5 +296,6 @@ def test_a_key_that_never_lands_still_restarts_when_the_wait_runs_out(monkeypatc
     ticks = iter([0.0, 1.0, 200.0, 201.0])
     monkeypatch.setattr(delivery, "SECRET_WAIT", 150.0)
     assert not delivery.wait_for_secret(kubectl, "ledger", "ledger-slack", ["SLACK_BOT_TOKEN"], sleep=lambda s: None, clock=lambda: next(ticks))
+    monkeypatch.setattr(delivery, "SECRET_WAIT", 0.0)  # the restart's own wait runs on the real clock
     delivery.restart_once_secret_carries(kubectl, "ledger", "ledger-slack", ["SLACK_BOT_TOKEN"], background=False)
     assert kubectl.restarts == [("ledger", "ledger")]

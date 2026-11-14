@@ -276,6 +276,20 @@ describe("SlackVendor", () => {
     expect(radio(/Mentions only/).disabled).toBe(false);
   });
 
+  it("says the room restarts a connected agent with a saved choice shortly", async () => {
+    // Contract (2026-11-14): how Slack wakes a connected agent travels with
+    // its app's values, so a pick is no pull request; the room restarts the
+    // agent once the choice has landed, and the row says so.
+    roomAfterWakeSave(
+      { wake: "channel", previous_wake: "thread", manifest_changed: false, applied_now: false, restart_pending: true, wiring: "unchanged" },
+      new Promise<Response>(() => {}),
+    );
+
+    await fireEvent.click(await screen.findByRole("radio", { name: /Every message in the channel/ }));
+
+    await waitFor(() => expect(screen.getByRole("status").textContent?.trim()).toBe("Saved. The agent restarts with it in a minute or two."));
+  });
+
   it("shows the old app with one Move button for a legacy agent, and the move calls the route (kobo#304)", async () => {
     // Contract (phase 3 of #304): an agent with an app from the Slack tab
     // reads "Connected the old way" with its app id and offers nothing but
@@ -316,12 +330,12 @@ describe("SlackVendor", () => {
 
   it("offers a connected agent that serves a port the room's app, or its own", async () => {
     // Contract (issue #484): the same Create, with the two things its team
-    // has to know first: the change arrives as a pull request, and an app
-    // of its own is still a choice.
+    // has to know first: files that do not read the app yet mean one pull
+    // request, and an app of its own is still a choice.
     room({ ...NONE, own_app: true, room_app: true }, { ...AGENT, kind: "connected" });
 
     expect(await screen.findByRole("button", { name: "Create Slack app" })).toBeTruthy();
-    expect(screen.getByText(/arrives as a pull request for its team to merge/)).toBeTruthy();
+    expect(screen.getByText(/its team\s+merges one pull request first/)).toBeTruthy();
     expect(screen.getByText(/Already has a Slack app of its own\? Keep it/)).toBeTruthy();
     expect(screen.getAllByRole("radio")).toHaveLength(3);
   });

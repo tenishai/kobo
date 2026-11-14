@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -246,31 +246,39 @@ SECRET_POLL = 5.0
 STEP_WAIT = 300.0
 
 
-def secret_carries(kubectl: KubectlClient, namespace: str, secret: str, keys: Iterable[str]) -> bool:
-    """Whether the cluster Secret holds every key named. Only the names are looked at."""
+def secret_carries(
+    kubectl: KubectlClient, namespace: str, secret: str, keys: Iterable[str],
+    settings: Mapping[str, str | None] | None = None,
+) -> bool:
+    """Whether the cluster Secret holds every key named. Only the names are looked at,
+    except for `settings`: plain settings the room wrote there itself, never a credential,
+    which must read as given (None: the key is gone). A setting changed on a key the
+    Secret already carried looks the same by name before and after it lands."""
     try:
-        present = set(kubectl.secret_literals(namespace, secret))
+        present = kubectl.secret_literals(namespace, secret)
     except ClientError:
         return False
-    return set(keys) <= present
+    return set(keys) <= set(present) and all(present.get(k) == v for k, v in (settings or {}).items())
 
 
 def wait_for_secret(
     kubectl: KubectlClient, namespace: str, secret: str, keys: Iterable[str],
-    *, timeout: float | None = None, interval: float | None = None,
+    *, settings: Mapping[str, str | None] | None = None,
+    timeout: float | None = None, interval: float | None = None,
     sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
 ) -> bool:
     """Wait until the Secret carries `keys`, up to `timeout` seconds. A value delivered
     through the secrets platform reaches the cluster at its next re-read, a minute or so
     later; a pod restarted before that starts on the old Secret (scooby-doo, 2026-11-03:
     the install's restart beat the bot token to the cluster by five seconds and the agent
-    never answered in Slack). Returns whether the keys were seen."""
+    never answered in Slack). `settings` as `secret_carries` reads them. Returns whether
+    the keys were seen."""
     keys = list(keys)
     timeout = SECRET_WAIT if timeout is None else timeout
     interval = SECRET_POLL if interval is None else interval
     deadline = clock() + timeout
     while True:
-        if secret_carries(kubectl, namespace, secret, keys):
+        if secret_carries(kubectl, namespace, secret, keys, settings):
             return True
         if clock() >= deadline:
             return False
@@ -279,11 +287,12 @@ def wait_for_secret(
 
 def restart_once_secret_carries(
     kubectl: KubectlClient, name: str, secret: str, keys: Iterable[str], *, background: bool = True,
-    before: Callable[[], None] | None = None,
+    before: Callable[[], None] | None = None, settings: Mapping[str, str | None] | None = None,
 ) -> threading.Thread | None:
-    """Restart agent `name` once its Secret carries `keys`, restarting anyway when the
-    wait runs out (the next start then still reads whatever has landed). In the
-    background by default, so a request does not hold for the platform's re-read.
+    """Restart agent `name` once its Secret carries `keys` (and reads `settings`, as
+    `secret_carries` does), restarting anyway when the wait runs out (the next start
+    then still reads whatever has landed). In the background by default, so a
+    request does not hold for the platform's re-read.
     `before` is a bundle change this one restart should carry too: it runs beside the
     wait and the restart follows it. Whatever it raises is logged, and one still
     running `STEP_WAIT` seconds after the wait is left behind; the restart happens
@@ -301,7 +310,7 @@ def restart_once_secret_carries(
         if before is not None:
             step = threading.Thread(target=_before, name=f"before-restart-{name}", daemon=True)
             step.start()
-        if not wait_for_secret(kubectl, name, secret, keys):
+        if not wait_for_secret(kubectl, name, secret, keys, settings=settings):
             log.warning("%s: %s did not reach the cluster in time; restarting anyway", name, secret)
         if step is not None:
             step.join(STEP_WAIT)

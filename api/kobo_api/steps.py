@@ -2119,6 +2119,17 @@ CONNECTED_WIRE_MODELS = (
     "- gojira.yaml: KOBO_MODELS_URL, the room's model gateway. The key is "
     "MODELS_GATEWAY_KEY, from the models Secret.\n"
 )
+# Named at connect so that a Slack app made later, and every later change to
+# how Slack wakes the agent, reaches it by a restart and never by another
+# pull request (2026-11-14; until then each was a pull request and a second
+# one from the deploy platform).
+CONNECTED_WIRE_SLACK = (
+    "- gojira.yaml: the Secret <agent>-slack under secrets_from_optional. "
+    "Nothing is in it until the agent's owner makes it a Slack app in the "
+    "room; from then it carries that app's values and how Slack wakes the "
+    "agent, and the agent is restarted to read them. No pull request "
+    "follows.\n"
+)
 
 
 def connected_room_wiring_lines(config) -> str:
@@ -2130,9 +2141,13 @@ def connected_room_wiring_lines(config) -> str:
     )
 
 
-def connected_wire_body(config) -> str:
+def connected_wire_body(config, agent=None) -> str:
     body = CONNECTED_WIRE_BODY_GATEWAY if gateway_on(config) else CONNECTED_WIRE_BODY
-    return body.replace("{room_wiring}", connected_room_wiring_lines(config))
+    lines = connected_room_wiring_lines(config)
+    if agent is not None and slack_app_possible(config, agent):
+        lines = lines[:-1] + CONNECTED_WIRE_SLACK + "\n"
+    return body.replace("{room_wiring}", lines)
+
 
 # What the room says rather than taking over identity wiring a team already
 # set for itself. Named once because two different checks raise it.
@@ -2290,7 +2305,7 @@ class ConnectedWireStep:
                     repo=repo,
                     branch=CONNECTED_WIRE_BRANCH,
                     title=CONNECTED_WIRE_TITLE,
-                    body=connected_wire_body(config),
+                    body=connected_wire_body(config, agent),
                 )
 
         with _sanitized("merge_pr", agent.name, CONNECTED_WIRE_GITHUB_UNAVAILABLE):
@@ -2355,6 +2370,8 @@ def _update_connected_gojira_yaml(gojira_yaml_path: Path, agent, config) -> None
     for secret_name in agent.secret_names or []:
         _append_secrets_from(data, secret_name)
     add_room_wiring(data, agent, config)
+    if slack_app_possible(config, agent):
+        name_slack_secret(data, agent.name)
     if data == (yaml.safe_load(text) or {}):
         # The file already means this. Keep the owner's bytes (comments,
         # key order, indentation): a re-dump is a change ConnectedWireStep
@@ -2449,6 +2466,31 @@ def add_room_wiring(data: dict, agent, config) -> None:
         env[CONNECTED_MODELS_URL_ENV] = f"{config.models_gateway_url.rstrip('/')}/v1"
     if env:
         data["env"] = env
+
+
+def slack_app_possible(config, agent) -> bool:
+    """Whether the room could make this agent a Slack app: the room hands
+    Slack's events on, and the agent serves a port to take them at."""
+    return bool(getattr(config, "slack_relay", False)) and getattr(agent, "run_mode", None) != RUN_MODE_HEADLESS
+
+
+def reads_slack_secret(data: dict, agent_name: str) -> bool:
+    """Whether an agent started from this gojira.yaml reads `<agent>-slack`."""
+    entry = f"{agent_name}-slack"
+    return entry in (data.get("secrets_from") or []) or entry in (data.get("secrets_from_optional") or [])
+
+
+def name_slack_secret(data: dict, agent_name: str) -> bool:
+    """Name `<agent>-slack` as a Secret the agent reads when it exists, in a
+    parsed gojira.yaml that does not read it yet. True when it changed."""
+    if reads_slack_secret(data, agent_name):
+        return False
+    optional = data.get("secrets_from_optional")
+    if not isinstance(optional, list):
+        optional = []
+        data["secrets_from_optional"] = optional
+    optional.append(f"{agent_name}-slack")
+    return True
 
 
 def write_connected_storage(clone_dir: Path, agent) -> None:
