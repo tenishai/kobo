@@ -1509,6 +1509,12 @@ def test_slack_manifest_renders_agent_manifest(session_factory__api_slack, confi
         "files:write",
         "emoji:read",
         "usergroups:read",
+        "commands",
+        "chat:write.public",
+        "pins:read",
+        "pins:write",
+        "bookmarks:read",
+        "bookmarks:write",
     ]
 
 

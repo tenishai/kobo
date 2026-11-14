@@ -256,6 +256,31 @@ def test_the_restart_after_a_delivered_secret_waits_for_the_key_to_land():
     assert kubectl.restarts == [("ledger", "ledger")]
 
 
+def test_a_step_before_the_restart_runs_first_and_cannot_lose_it():
+    kubectl = SecretKubectl(keys_after=0)
+    order: list[str] = []
+
+    def before() -> None:
+        order.append(f"before:{len(kubectl.restarts)}")
+        raise RuntimeError("the push failed")
+
+    delivery.restart_once_secret_carries(kubectl, "ledger", "ledger-slack", ["SLACK_BOT_TOKEN"], background=False, before=before)
+    assert order == ["before:0"] and kubectl.restarts == [("ledger", "ledger")]
+
+
+def test_a_step_that_never_returns_does_not_hold_the_restart(monkeypatch):
+    import threading
+
+    kubectl = SecretKubectl(keys_after=0)
+    stuck = threading.Event()
+    monkeypatch.setattr(delivery, "STEP_WAIT", 0.05)
+    delivery.restart_once_secret_carries(
+        kubectl, "ledger", "ledger-slack", ["SLACK_BOT_TOKEN"], background=False, before=stuck.wait
+    )
+    stuck.set()
+    assert kubectl.restarts == [("ledger", "ledger")]
+
+
 def test_a_key_that_never_lands_still_restarts_when_the_wait_runs_out(monkeypatch):
     kubectl = SecretKubectl(keys_after=10**6)
     ticks = iter([0.0, 1.0, 200.0, 201.0])

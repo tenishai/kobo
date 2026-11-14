@@ -14,6 +14,13 @@ room's OAuth server and MCP surface (`kobo_api.iap.EXEMPT_PREFIXES`):
   `X-Kobo-Relay-Secret`. Unknown id and bad signature are a bare 404 and
   401. A token bucket per relay id keeps one app from flooding the room.
   Log lines carry the agent's name and an outcome word, never a body.
+- `POST /slack/relay/{relay_id}/actions` and `.../commands` (issue #484):
+  the two things Slack sends that are not events, a click on a button or a
+  menu the agent posted and the agent's slash command. Slack posts both as
+  a form, signed the same way; the routes verify, answer an empty `200` at
+  once and forward JSON to the same agent address the events go to: a
+  click's `payload` as Slack sent it (its `type` is `block_actions`), a
+  command's fields as one object with `"type": "slash_command"` added.
 - `GET /slack/oauth/callback`: where Slack sends the person after Install
   to Slack. `state` is the single-use nonce the room minted for that agent
   (`<relay_id>.<nonce>`, fifteen minutes); the code is exchanged with
@@ -46,12 +53,13 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import threading
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qs, quote, urlencode
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
@@ -59,12 +67,19 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api import audit, delivery
+from kobo_api.archetypes import ARCHETYPE_TEAM_GUIDE
 from kobo_api.clients import ClientError
 from kobo_api.config import Config
+from kobo_api.kinds import KIND_COMPOSED
 from kobo_api.models import Agent, SlackRelayApp
 from kobo_api.room_credentials import slack_client
 from kobo_api.sero import deliver_secret
-from kobo_api.slack_setup import bot_scopes
+from kobo_api.slack_setup import (
+    ACTIONS_SUFFIX,
+    COMMANDS_SUFFIX,
+    allow_slack_tools,
+    bot_scopes,
+)
 
 log = logging.getLogger(__name__)
 
@@ -423,6 +438,115 @@ async def relay(
     return JSONResponse({"accepted": True})
 
 
+# What a slash command is called on its way to the agent: Slack's form has no
+# `type` of its own, so the room adds one beside the fields.
+SLASH_COMMAND_TYPE = "slash_command"
+# The one kind of click the agent is handed. Slack posts other things to the
+# same address (a shortcut, a dialog's answer); none is something an agent
+# asked for, so each is acknowledged and goes no further.
+ACTION_TYPE = "block_actions"
+# Every field of a Slack form is a plain lowercase name. A signed post of
+# another kind (an event's JSON) read as a form has a first field that is not,
+# which is how one is told from the other: the signature covers the body, not
+# the address it was sent to.
+_FORM_FIELD = re.compile(r"^[a-z_]+$")
+
+
+async def _signed_form(
+    relay_id: str, request: Request, session: Session
+) -> tuple[SlackRelayApp, dict[str, str], str | None] | Response:
+    """The common front of the two form routes: the switch, the bucket, the
+    row, Slack's signature over the raw body. Answers the row, the form's
+    fields (first value of each) and the agent's address, or what to send
+    back instead. Slack never challenges these two addresses, so a row with
+    no signing secret yet has nothing to answer here."""
+    cfg: Config = request.app.state.config
+    if not cfg.slack_relay:
+        return _bare(404)
+    if not bucket.allow(relay_id):
+        return _bare(429)
+    row = session.get(SlackRelayApp, relay_id)
+    if row is None:
+        return _bare(404)
+    body = await request.body()
+    if not row.signing_secret or not verify_signature(
+        row.signing_secret, request.headers.get(TIMESTAMP_HEADER), body, request.headers.get(SIGNATURE_HEADER)
+    ):
+        return _bare(401)
+    try:
+        form = {key: values[0] for key, values in parse_qs(body.decode("utf-8"), keep_blank_values=True).items()}
+    except (UnicodeDecodeError, ValueError):
+        return _bare(400)
+    if not form or not all(_FORM_FIELD.match(key) for key in form):
+        return _bare(400)
+    return row, form, agent_events_url(cfg, row.agent_name)
+
+
+def _repeated(relay_id: str, trigger_id: object) -> bool:
+    """Whether this click or command was already taken: Slack's `trigger_id`
+    is one per interaction, and the same dedupe that holds event ids holds it."""
+    return isinstance(trigger_id, str) and bool(trigger_id) and dedupe.seen(relay_id, trigger_id)
+
+
+@router.post("/slack/relay/{relay_id}" + ACTIONS_SUFFIX)
+async def relay_action(
+    relay_id: str,
+    request: Request,
+    background: BackgroundTasks,
+    session: Session = Depends(get_session),  # noqa: B008
+) -> Response:
+    """A click on something the agent posted (Slack's interactivity address).
+    The form carries one field, `payload`, a JSON object; that object is what
+    the agent receives when it is a click (`ACTION_TYPE`), once. An empty `200`
+    is the whole answer Slack wants."""
+    admitted = await _signed_form(relay_id, request, session)
+    if isinstance(admitted, Response):
+        return admitted
+    row, form, url = admitted
+    try:
+        payload = json.loads(form.get("payload", ""))
+    except ValueError:
+        return _bare(400)
+    if not isinstance(payload, dict):
+        return _bare(400)
+    if payload.get("type") != ACTION_TYPE or _repeated(relay_id, payload.get("trigger_id")):
+        return _bare(200)
+    if url is None:
+        log.warning("slack relay: no agent endpoint template; click for agent %s dropped", row.agent_name)
+        return _bare(200)
+    background.add_task(
+        forward_event, url, row.relay_secret, json.dumps(payload).encode("utf-8"), agent_name=row.agent_name
+    )
+    return _bare(200)
+
+
+@router.post("/slack/relay/{relay_id}" + COMMANDS_SUFFIX)
+async def relay_command(
+    relay_id: str,
+    request: Request,
+    background: BackgroundTasks,
+    session: Session = Depends(get_session),  # noqa: B008
+) -> Response:
+    """The agent's slash command. Slack shows the person nothing for an empty
+    `200`; the agent then says in the channel who asked what and answers in
+    that thread, or tells the person alone why it cannot (the form's
+    `response_url` goes along for that)."""
+    admitted = await _signed_form(relay_id, request, session)
+    if isinstance(admitted, Response):
+        return admitted
+    row, form, url = admitted
+    if not form.get("command"):
+        return _bare(400)
+    if _repeated(relay_id, form.get("trigger_id")):
+        return _bare(200)
+    if url is None:
+        log.warning("slack relay: no agent endpoint template; command for agent %s dropped", row.agent_name)
+        return _bare(200)
+    body = json.dumps({**form, "type": SLASH_COMMAND_TYPE}).encode("utf-8")
+    background.add_task(forward_event, url, row.relay_secret, body, agent_name=row.agent_name)
+    return _bare(200)
+
+
 def _agent_page(name: str | None, *, failed: bool) -> str:
     """Where the callback sends the person: the agent's Access tab with the
     Slack row brought into view (`?vendor=slack`, which the page reads once),
@@ -524,7 +648,21 @@ def oauth_callback(
     # The token is stored; the pod reads it at its next start. Through the secrets
     # platform that start must come AFTER the cluster has re-read the value, so the
     # restart waits for the key, off the request (tenishai/kobo#434 follow-up).
-    delivery.restart_once_secret_carries(clients.kubectl, name, f"{name}-slack", ["SLACK_BOT_TOKEN"])
+    # The same restart carries the Slack tools into an agent born before the room
+    # composed them (issue #484): an install, or an Update in Slack, is the moment
+    # its app can use them. Only the room's own agents; a team's repository is its
+    # own, and a team guide never acts.
+    github = getattr(clients, "github", None)
+    repo = agent.repo_full_name if agent.kind == KIND_COMPOSED and agent.archetype != ARCHETYPE_TEAM_GUIDE else None
+
+    def _allow_tools() -> None:
+        if allow_slack_tools(github, repo=repo):
+            log.info("slack install: agent %s now allows the Slack tools", name)
+
+    delivery.restart_once_secret_carries(
+        clients.kubectl, name, f"{name}-slack", ["SLACK_BOT_TOKEN"],
+        before=_allow_tools if repo and github is not None else None,
+    )
     log.info("slack install: agent %s installed to a workspace", name)
     return RedirectResponse(_agent_page(name, failed=False), status_code=302)
 

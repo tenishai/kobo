@@ -1716,6 +1716,103 @@ def test_install_callback_stores_the_bot_token_through_the_lane_and_redirects(
     assert len(sero.puts) == 1
 
 
+@pytest.mark.parametrize(
+    ("kind", "archetype", "allow", "pushed"),
+    [("composed", None, "[colleagues.remember]", True), ("composed", None, "[colleagues.remember, slack.*]", False),
+     ("connected", None, "[colleagues.remember]", False), ("composed", "team_guide", "[colleagues.remember]", False)],
+    ids=["built-before-the-slack-tools", "already-allowed", "runs-its-own-code", "never-acts"],
+)
+def test_install_callback_opens_the_slack_tools_on_a_bundle_the_room_built(
+    session_factory__api_slack, config__api_slack, monkeypatch, kind, archetype, allow, pushed
+):
+    """Integrity: the Slack tools need two things, the token's new scopes and
+    `slack.*` on the agent's allow list (issue #484). The install callback,
+    which is also where Update in Slack lands, adds the entry to a bundle the
+    room built before it was composed at birth, ahead of the one restart the
+    token brings. A bundle that has it is left alone, a team's own
+    repository is never pushed to, and a team guide never gets them."""
+    from kobo_api import slack_relay
+    from kobo_api.models import SlackRelayApp
+
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    tree = {"bundle/agent.yaml": f"name: {AGENT_NAME}\ntools: {{provider: colleagues, allow: {allow}}}\n"}
+    github, kubectl = FakeGitHub(clone_tree=tree), FakeKubectl()
+    monkeypatch.setattr(delivery, "SECRET_POLL", 0.01)
+    client = _make_client(session_factory__api_slack, relay_config, github=github, kubectl=kubectl,
+                          sero=FakeSero(), slack=FakeSlack())
+    _seed_agent(session_factory__api_slack, relay_config, slack_app_id="A0FAKE", created_by=OPERATOR_EMAIL)
+    with session_factory__api_slack() as s:
+        seeded = s.query(Agent).filter_by(name=AGENT_NAME).one()
+        seeded.kind = kind
+        if archetype is not None:
+            seeded.archetype = archetype
+        row = SlackRelayApp(relay_id="relay-id-for-clio-0000", agent_name=AGENT_NAME, app_id="A0FAKE",
+                            client_id="fake-client-id", client_secret="fake-client-secret",
+                            signing_secret="fake-signing-secret", relay_secret="fake-relay-secret",
+                            created_by=OPERATOR_EMAIL, created_at=datetime(2026, 11, 1))
+        s.add(row)
+        state = slack_relay.mint_state(row)
+        s.commit()
+    kubectl.secrets[(AGENT_NAME, f"{AGENT_NAME}-slack")] = {"SLACK_BOT_TOKEN": "xoxb-fake-bot-token"}
+
+    response = client.get(f"/slack/oauth/callback?code=fake-code&state={state}", follow_redirects=False)
+    delivery.join_restarts()
+
+    assert response.status_code == 302
+    assert [m for _, m in github.pushes] == (["kobo: allow the Slack tools"] if pushed else [])
+    if pushed:
+        written = yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["tools"]["allow"]
+        assert written == ["colleagues.remember", "slack.*"]
+    assert kubectl.restarts == [(AGENT_NAME, AGENT_NAME)]
+
+
+def test_the_slack_tools_backfill_tries_again_and_delivers_a_commit_that_landed(monkeypatch):
+    """Integrity: nothing asks for the Slack tools a second time once the app
+    holds its scopes (issue #484), so the one moment tries again. A push that
+    fails is repeated; when the repository already carries the entry by then
+    (the commit landed, its delivery did not), what it holds is published."""
+    from kobo_api import slack_setup
+
+    tree = {"bundle/agent.yaml": f"name: {AGENT_NAME}\ntools: {{provider: colleagues, allow: [colleagues.remember]}}\n"}
+
+    class _LandsThenFails(FakeGitHub):
+        def clone(self, repo, dest):
+            super().clone(repo, dest)
+            if self.pushes:  # the first commit is in the repository by now
+                (dest / "bundle" / "agent.yaml").write_text(self.pushed_file("bundle/agent.yaml"))
+
+    github, pauses, published = _LandsThenFails(clone_tree=tree), [], []
+    failures = iter([ClientError("the bundle was not delivered")])
+
+    def push(gh, workdir, message, **kwargs):
+        gh.commit_push(workdir, message)
+        if (failure := next(failures, None)) is not None:
+            raise failure
+        return True
+
+    monkeypatch.setattr(slack_setup.delivery, "push", push)
+    monkeypatch.setattr(slack_setup.delivery, "agent_name_of", lambda workdir: AGENT_NAME)
+    monkeypatch.setattr(slack_setup.delivery, "publish", lambda workdir, name, head_sha: published.append(name))
+
+    assert slack_setup.allow_slack_tools(github, repo=f"acme/{AGENT_NAME}", sleep=pauses.append) is True
+    assert [m for _, m in github.pushes] == ["kobo: allow the Slack tools"]
+    assert published == [AGENT_NAME] and pauses == [slack_setup._ALLOW_PAUSE]
+
+
+def test_connecting_slack_opens_the_slack_tools_in_the_same_commit():
+    """Integrity: an agent built before the room composed the Slack tools gets
+    them when Slack is connected, in the commit that wires it (issue #484);
+    without the caller's word (a team guide) the allow list is left alone."""
+    tree = {
+        "bundle/agent.yaml": f"name: {NAME}\ntools: {{provider: colleagues, allow: [colleagues.remember]}}\n",
+        "gojira.yaml": f"name: {NAME}\n",
+        "Dockerfile": "FROM example.test/runtime:old\n",
+    }
+    for allow_tools, expected in ((True, ["colleagues.remember", "slack.*"]), (False, ["colleagues.remember"])):
+        _, github, _, _ = _wire(github=_CapturingGitHub(clone_tree=tree), allow_tools=allow_tools)
+        assert yaml.safe_load(github.captured_agent_yaml)["tools"]["allow"] == expected
+
+
 def test_an_app_installed_before_the_rooms_latest_slack_scopes_is_updated_by_one_approval(
     session_factory__api_slack, config__api_slack
 ):

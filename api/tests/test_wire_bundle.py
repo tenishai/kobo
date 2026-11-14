@@ -85,7 +85,9 @@ def test_compose_agent_yaml_parses_with_expected_transport_and_gate(tmp_path):
 
     data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
     assert data["transports"] == [{"kind": "a2a", "host": "0.0.0.0", "port": 8080}]
-    assert data["tools"] == {"provider": "none", "allow": []}
+    # The Slack tools are allowed from birth; they exist only once the agent
+    # has a Slack app (issue #484).
+    assert data["tools"] == {"provider": "none", "allow": ["slack.*"]}
     assert data["approvals"]["gates"] == [{"match": "*", "require": "plan_approval"}]
     # the placeholder is a literal string pre-validation: not yet substituted
     assert data["model"]["id"] == "${AGENT_MODEL:-vertex_ai/claude-sonnet-4-5}"
@@ -120,7 +122,7 @@ def test_compose_agent_yaml_carries_auth_block_when_cabal_url_configured(tmp_pat
         '"http://cabal.example.com/.well-known/jwks.json", issuer: "cabal-core", '
         'audience: "sam"}}\n'
         'tools: {provider: colleagues, allow: [colleagues.list_colleagues, '
-        'colleagues.ask_colleague, colleagues.remember], colleagues: {url: "http://cabal.example.com", '
+        'colleagues.ask_colleague, colleagues.remember, slack.*], colleagues: {url: "http://cabal.example.com", '
         'token_env: CABAL_COLLEAGUE_TOKEN, self: "sam"}}\n'
         "memory: {personal: techne, home: /techne, revision: operator}\n"
         "checkpoints: sqlite\n"
@@ -173,7 +175,7 @@ def test_compose_agent_yaml_carries_colleagues_tools_block_when_cabal_url_config
     data = yaml.safe_load((dest / "bundle" / "agent.yaml").read_text())
     assert data["tools"] == {
         "provider": "colleagues",
-        "allow": ["colleagues.list_colleagues", "colleagues.ask_colleague", "colleagues.remember"],
+        "allow": ["colleagues.list_colleagues", "colleagues.ask_colleague", "colleagues.remember", "slack.*"],
         "colleagues": {
             "url": "http://cabal.example.com",
             "token_env": "CABAL_COLLEAGUE_TOKEN",
@@ -349,7 +351,8 @@ def test_default_mode_composes_the_same_bytes_as_before_the_setting(tmp_path):
     bundle, agora discussion #55 item 7), and again on 2026-10-29 when the
     roster stopped telling the agent the live list_colleagues read wins
     (issue #274), and once more on 2026-11-01 when the github broker sidecar
-    left the bundle (kobo#365). Nothing in the colleague-mode work may change them."""
+    left the bundle (kobo#365), and on 2026-11-14 when the allow list gained
+    `slack.*` (issue #484). Nothing in the colleague-mode work may change them."""
     on = _compose(tmp_path / "on", _spec(colleague_mode="default"))
     off = _compose(tmp_path / "off", _spec(switchboard=False, colleague_mode="default"))
 
@@ -359,9 +362,9 @@ def test_default_mode_composes_the_same_bytes_as_before_the_setting(tmp_path):
         "off/agent.yaml": _sha(off / "agent.yaml"),
         "off/colleagues.md": _sha(off / "knowledge" / "colleagues.md"),
     } == {
-        "on/agent.yaml": "ac4bb068205750c83852adce30fd59111521cebb1daae5d346e751cf1e6d0e70",
+        "on/agent.yaml": "c18699c54eff619769d419d28cae469ba60004bd747f57212ef74701def69932",
         "on/colleagues.md": "d06ee4e0a42fb564e458e3a119460880b0538257a4c92bf6283122ed27544f8d",
-        "off/agent.yaml": "aef18cec1a2ce13072097b7c108ed8abb91114087ecd50d26f8b46e4476be5e6",
+        "off/agent.yaml": "49506d5ef07c485517abe98c526589df10fbb96e11b1f35298a71b6d1b4a7801",
         "off/colleagues.md": "06be61b3e459caffaf6439d577616128f9f4d42dbc76e315b0411a348d722d86",
     }
 

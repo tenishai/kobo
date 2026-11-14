@@ -9289,6 +9289,7 @@ def create_app(
                 # A moved agent's saved channels stay and still narrow it.
                 every_channel=True,
                 remove_keys=remove_keys,
+                allow_tools=agent.kind == KIND_COMPOSED and agent.archetype != ARCHETYPE_TEAM_GUIDE,
             )
         except ClientError as exc:
             log.warning("slack app wiring failed for agent %s: %s", agent.name, type(exc).__name__)
@@ -9549,6 +9550,7 @@ def create_app(
                 # instead of a direct Secret write (kobo_api.sero).
                 sero=clients.sero,
                 acting_email=acting_email,
+                allow_tools=agent.kind == KIND_COMPOSED and agent.archetype != ARCHETYPE_TEAM_GUIDE,
             )
         except ClientError as exc:
             log.warning("slack connect failed: %s", exc)
