@@ -72,7 +72,7 @@ from pydantic import AnyHttpUrl
 
 from kobo_api.config import Config
 from kobo_api.mcp import audit
-from kobo_api.mcp.jwt import TokenError, verify
+from kobo_api.mcp.jwt import TokenError, signing_key, verify
 from kobo_api.mcp.refresh_tokens import email_revoked_at
 
 
@@ -115,7 +115,14 @@ class _KoboTokenVerifier(TokenVerifier):
     async def verify_token(self, token: str) -> AccessToken | None:
         cfg: Config = self._app.state.config
         try:
-            claims = verify(token, "access_token", aud=cfg.mcp.oauth_client_id)
+            # The key the authorization server signed with (`oauth_as._key`):
+            # a room that names its own key variable must verify with it too.
+            claims = verify(
+                token,
+                "access_token",
+                aud=cfg.mcp.oauth_client_id,
+                key=signing_key(cfg.mcp.jwt_key_env),
+            )
         except TokenError:
             return None
 

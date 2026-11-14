@@ -48,8 +48,7 @@ from kobo_api.mcp.audit import audited
 from kobo_api.mcp.server import get_user_email
 from kobo_api.purpose_tags import decode_tags
 from kobo_api.search import read_marketplace_catalog
-from kobo_api.slack_state import decode_channels, derive_state
-from kobo_api.timefmt import rfc3339, rfc3339_str
+from kobo_api.timefmt import rfc3339_str
 
 # The one error message both agent-scoped tools raise for "doesn't exist"
 # and "exists but you can't see it" alike -- see `kobo_api.mcp.authz.
@@ -57,6 +56,13 @@ from kobo_api.timefmt import rfc3339, rfc3339_str
 # identically. Named here once so `kobo_get_agent` and `kobo_feed` can
 # never drift apart on the wording.
 _AGENT_NOT_FOUND = "agent not found"
+
+# `kobo_get_agent_access` answers a repository search with this many names
+# at most; an installation can carry thousands.
+_REPOSITORY_MATCHES = 50
+
+# `kobo_agent_activity` cuts each of its two lists here whatever is asked.
+_ACTIVITY_ROWS_MAX = 200
 
 _SWITCHBOARD_DID_NOT_ANSWER = "The switchboard did not answer. Try again shortly."
 
@@ -89,7 +95,7 @@ _MARKETPLACE_DID_NOT_ANSWER = "The marketplace did not answer. Try again shortly
 
 
 def register(mcp: FastMCP, app: Any) -> None:
-    """Registers this module's eight read tools on `mcp`. Each closes over
+    """Registers this module's read tools on `mcp`. Each closes over
     `app` -- the same FastAPI app `kobo_api.mcp.authz.room_request` builds
     its synthetic `Request` from, and the source of the session factory,
     switchboard client, storage client, and GitHub client every tool
@@ -183,79 +189,71 @@ def register(mcp: FastMCP, app: Any) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     @audited("kobo_get_agent")
     async def kobo_get_agent(ctx: Context, name: str) -> dict:
-        """Get one agent's card: its kind, persona, team, purpose, model,
-        status, and status checklist -- plus its skills, Slack wiring,
-        avatar/repo facts, and pending-learnings state, the same detail
-        the room's own agent page shows. A `connected` agent is a team's
-        own repo the room only deploys, so its persona, skills and chat
-        fields carry nothing to act on. Answers "agent not found" both
-        for a name that does not exist and for one you are not allowed to
-        see -- the two are never told apart.
-        """
-        # Deferred import: kobo_api.main is a large module, and the same
-        # circularity concern this module's own docstring already
-        # documents for kobo_feed's imports from kobo_api.main applies
-        # here too -- this module is imported at kobo_api.mcp.server load
-        # time, well before kobo_api.main is guaranteed to have finished
-        # importing everything it does.
-        from kobo_api.main import _decider_or_403, _model_label, _operator_block
-        from kobo_api.models import LEARNING_PENDING, AgentLearning
-        from kobo_api.room_models import known_entries
+        """Get one agent's page: its kind, persona, team, purpose, model,
+        status and status checklist, plus what the page's header and tabs
+        show. `health` is the room's last look at the running agent (`null`
+        before the first look). `identity` is the cloud identity it runs as,
+        the one an access request to another project names. `runtime_image`
+        is what it runs on, `room_runtime_image` what the room builds on
+        today, `runtime_pinned` whether it deliberately holds its own.
+        `colleague_mode` and `archetype` are as the page shows them.
+        `slack` carries the listened channels, `wake`, and whether this room
+        makes Slack apps itself (`relay`); `kobo_get_slack` has the rest.
 
-        email = get_user_email(ctx)
-        cfg = app.state.config
+        A `connected` agent is a team's own repository the room deploys, so
+        its persona and skills carry nothing to act on. Answers "agent not
+        found" both for a name that does not exist and for one you are not
+        allowed to see; the two are never told apart.
+        """
+        # The page's own route, not a second copy of it: this tool rebuilt
+        # the card field by field and fell behind the page twice (health,
+        # identity, runtime, the Slack wake). `get_agent_endpoint` is
+        # resolved further down `register`, with the other routes; a closure
+        # reads it at call time.
+        req = authz.room_request(app, get_user_email(ctx))
         session = app.state.session_factory()
         try:
-            try:
-                agent = authz.visible_agent_or_not_found(session, app, email, name)
-            except authz.NotFound as exc:
-                raise ToolError(_AGENT_NOT_FOUND) from exc
-
-            # Same synthetic room Request every write tool already builds
-            # (`authz.room_request`'s own docstring) -- `_operator_block`/
-            # `_decider_or_403` below were both written against a real HTTP
-            # `Request`, and this is the one bridge that lets them run
-            # unmodified for an MCP caller too.
-            req = authz.room_request(app, email)
-
-            channels = decode_channels(agent.slack_channels)
-            slack = {
-                "app_id": agent.slack_app_id,
-                "channels": channels,
-                "state": derive_state(channels, wired=agent.slack_wired),
-            }
-
-            return {
-                "name": agent.name,
-                "persona": agent.persona,
-                "group": agent.group_name,
-                "team": agent.team,
-                "owner": agent.created_by,
-                "purpose": decode_tags(agent.purpose_tags),
-                "capability": agent.capability,
-                "model": agent.model_id,
-                "model_label": _model_label(known_entries(session, cfg), agent.model_id),
-                "skills": agent.skills,
-                "status": agent.status,
-                "kind": agent.kind,
-                "repo_full_name": agent.repo_full_name,
-                "steps": [
-                    {"name": step.name, "status": step.status, "error": step.error}
-                    for step in agent.steps
-                ],
-                "first_reply": agent.first_reply,
-                "error": agent.error,
-                "created_at": rfc3339(agent.created_at),
-                "slack": slack,
-                "destroy_visible": _operator_block(req, cfg) is None,
-                "has_avatar": agent.avatar_png is not None,
-                "pending_learnings": session.query(AgentLearning)
-                .filter_by(agent_name=agent.name, status=LEARNING_PENDING)
-                .count(),
-                "can_decide_learnings": _decider_or_403(agent, req, session) is None,
-            }
+            response = await _off_loop(get_agent_endpoint, name=name, request=req, session=session)
         finally:
             session.close()
+        _refuse_agent_route(response)
+        body = _parse(response)
+        # The names this tool has always answered with (`group`, `owner`,
+        # `purpose`) stay; a client reads them next to `kobo_list_agents`.
+        return {
+            "name": body["name"],
+            "persona": body["persona"],
+            "group": body["group_name"],
+            "team": body["team"],
+            "owner": body["created_by"],
+            "purpose": body["purpose_tags"],
+            "capability": body["capability"],
+            "archetype": body["archetype"],
+            "model": body["model"],
+            "model_label": body["model_label"],
+            "skills": body["skills"],
+            "status": body["status"],
+            "health": body["health"],
+            "kind": body["kind"],
+            "repo_full_name": body["repo_full_name"],
+            "identity": body["identity"],
+            "steps": [
+                {"name": step["name"], "status": step["status"], "error": step["error"]}
+                for step in body["steps"]
+            ],
+            "first_reply": body["first_reply"],
+            "error": body["error"],
+            "created_at": body["created_at"],
+            "slack": body["slack"],
+            "colleague_mode": body["colleague_mode"],
+            "runtime_image": body["runtime_image"],
+            "runtime_pinned": body["runtime_pinned"],
+            "room_runtime_image": body["room_runtime_image"],
+            "destroy_visible": body["destroy_visible"],
+            "has_avatar": body["has_avatar"],
+            "pending_learnings": body["pending_learnings"],
+            "can_decide_learnings": body["can_decide_learnings"],
+        }
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     @audited("kobo_feed")
@@ -424,12 +422,24 @@ def register(mcp: FastMCP, app: Any) -> None:
     # have finished importing everything it does. Deferring the import to
     # inside `register` (which only ever runs once `build_mcp_server` is
     # actually called) sidesteps that ordering entirely.
-    from kobo_api.mcp.tools.write import _endpoint, _off_loop, _parse
+    from kobo_api.mcp.tools.write import (
+        _endpoint,
+        _off_loop,
+        _parse,
+        _room_route_result,
+    )
 
     search_personas_endpoint = _endpoint(app, "GET", "/api/personas/search")
     list_learnings_endpoint = _endpoint(app, "GET", "/api/agents/{name}/learnings")
     list_secrets_endpoint = _endpoint(app, "GET", "/api/agents/{name}/secrets")
     list_env_endpoint = _endpoint(app, "GET", "/api/agents/{name}/env")
+    get_agent_endpoint = _endpoint(app, "GET", "/api/agents/{name}")
+    models_endpoint = _endpoint(app, "GET", "/api/catalog/models")
+    access_endpoint = _endpoint(app, "GET", "/api/agents/{name}/access")
+    repositories_endpoint = _endpoint(app, "GET", "/api/agents/{name}/github/repositories")
+    slack_endpoint = _endpoint(app, "GET", "/api/agents/{name}/slack")
+    activity_endpoint = _endpoint(app, "GET", "/api/agents/{name}/activity")
+    leases_endpoint = _endpoint(app, "GET", "/api/agents/{name}/leases")
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     @audited("kobo_list_personas")
@@ -560,6 +570,153 @@ def register(mcp: FastMCP, app: Any) -> None:
             "delivered_as": held.get("secret_name"),
             "env": _parse(env).get("env", {}) if env_readable else {},
             "env_readable": env_readable,
+        }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @audited("kobo_list_models")
+    async def kobo_list_models(ctx: Context) -> dict:
+        """List the models this room offers: the ids `kobo_create_agent`
+        and `kobo_set_agent_model` accept, each with its label. `default` is
+        the one a new agent gets when none is named. In a room that takes
+        its models from connected clouds each entry also says which cloud
+        serves it and whether it can be picked now.
+        """
+        get_user_email(ctx)
+        session = app.state.session_factory()
+        try:
+            return await _off_loop(models_endpoint, session=session)
+        finally:
+            session.close()
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @audited("kobo_get_agent_access")
+    async def kobo_get_agent_access(
+        ctx: Context, agent: str, repository_search: str | None = None
+    ) -> dict:
+        """What `agent` may reach outside the room: the Access tab, from
+        chat. `grants` is what it holds, `pending` what waits for a
+        reviewer, and `vendors` what it can ask for, each with its `id` and
+        its tree of permission ids (what `kobo_request_access` takes).
+        `can_request` says whether you may ask on its behalf. For an agent
+        that runs its team's own code, `wiring` says whether its repository
+        carries what it needs to use a grant.
+
+        `github` is its repository set, when you may read it: `selected` is
+        the set in force, `waiting` a pick held for review, `total` how many
+        repositories the room's GitHub connection can see. Pass
+        `repository_search` (part of a name) to get up to 50 `matches` to
+        choose from with `kobo_set_agent_repositories`; the whole list is
+        never returned.
+        """
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            access = await _off_loop(access_endpoint, name=agent, request=req, session=session)
+            body = _room_route_result(access, agent)
+            repos = await _off_loop(repositories_endpoint, name=agent, request=req, session=session)
+        finally:
+            session.close()
+        github = None
+        if repos.status_code == 200:
+            held = _parse(repos)
+            github = {
+                "available": held.get("available"),
+                "selected": held.get("selected", []),
+                "waiting": held.get("waiting"),
+                "total": held.get("total", 0),
+                "note": held.get("note"),
+            }
+            if repository_search:
+                needle = repository_search.strip().lower()
+                github["matches"] = [
+                    r["full_name"]
+                    for r in held.get("repositories", [])
+                    if needle in r["full_name"].lower()
+                ][:_REPOSITORY_MATCHES]
+        return {
+            "agent": body.get("agent", agent),
+            "grants": body.get("grants", []),
+            "pending": body.get("pending", []),
+            "vendors": body.get("vendors", []),
+            "wiring": body.get("wiring"),
+            "can_request": body.get("can_request", False),
+            # Null when the set is not this caller's to read (the owner's,
+            # a manager's or an operator's), or the read failed.
+            "github": github,
+        }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @audited("kobo_get_slack")
+    async def kobo_get_slack(ctx: Context, agent: str) -> dict:
+        """Where `agent` stands with Slack. `room_makes_apps` says whether
+        this room makes Slack apps itself. When it does, `state` is `none`
+        (no app; `kobo_create_slack_app` makes one), `created` (made, and
+        waiting for a person to open `install_url` and allow it in Slack) or
+        `installed`, with the `workspace` it is in, the `channels` it
+        listens to and its `wake`. `update_due` true means the room asks
+        Slack for more today than this app was allowed when it was
+        installed; `kobo_update_slack_app` starts that. `legacy` marks an
+        older app a person made by hand, and `own_app` an agent that runs
+        its team's own code on its team's own Slack app.
+
+        When `room_makes_apps` is false, Slack is the older paste flow: a
+        person makes the app from the agent's manifest and
+        `kobo_wire_slack` saves its tokens.
+        """
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(slack_endpoint, name=agent, request=req, session=session)
+            if response.status_code == 404 and _parse(response).get("error") != f"no such agent: {agent!r}":
+                # The room does not make Slack apps. That is an answer, not
+                # an error; say what the agent's page says instead.
+                detail = await _off_loop(get_agent_endpoint, name=agent, request=req, session=session)
+                _refuse_agent_route(detail)
+                return {"agent": agent, "room_makes_apps": False, **_parse(detail)["slack"]}
+        finally:
+            session.close()
+        view = _room_route_result(response, agent)
+        view.pop("enabled", None)
+        return {"agent": agent, "room_makes_apps": True, **view}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @audited("kobo_agent_activity")
+    async def kobo_agent_activity(ctx: Context, agent: str, days: int = 7, limit: int = 50) -> dict:
+        """What `agent` did outside the room over the last `days` (1 to
+        90): the Activity tab, from chat. `calls` is every tool call the
+        gateway let through or refused, newest first, with the tool, the
+        outcome and why a refusal was refused. `leases` is every credential
+        it borrowed and the task it named. Each list is cut to `limit` (at
+        most 200) and `*_total` says how many there were. A list the room
+        cannot read comes back empty with `*_available` false and a note
+        saying why, never as if nothing happened.
+        """
+        limit = max(1, min(limit, _ACTIVITY_ROWS_MAX))
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            activity = await _off_loop(
+                activity_endpoint, name=agent, request=req, days=days, session=session
+            )
+            _refuse_agent_route(activity)
+            leases = await _off_loop(
+                leases_endpoint, name=agent, request=req, days=days, session=session
+            )
+            _refuse_agent_route(leases)
+        finally:
+            session.close()
+        calls, borrowed = _parse(activity), _parse(leases)
+        return {
+            "agent": agent,
+            "days": days,
+            "calls_available": calls.get("available", False),
+            "calls_note": calls.get("note"),
+            "calls_total": len(calls.get("rows", [])),
+            "calls": calls.get("rows", [])[:limit],
+            "leases_available": borrowed.get("available", False),
+            "leases_note": borrowed.get("note"),
+            "leases_total": len(borrowed.get("leases", [])),
+            "leases": borrowed.get("leases", [])[:limit],
         }
 
     def _refuse_agent_route(response) -> None:

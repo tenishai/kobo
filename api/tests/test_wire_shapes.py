@@ -2836,7 +2836,18 @@ def test_get_agent_carries_the_detail_routes_full_field_set(session_factory__mcp
     assert result["model_label"] == "Claude Sonnet 4.5"
     assert result["skills"] == []
     assert result["repo_full_name"] == REPO_TEMPLATE.format(name="agent-a")
-    assert result["slack"] == {"app_id": None, "channels": [], "state": "idle"}
+    assert result["slack"] == {
+        "app_id": None, "channels": [], "state": "idle", "wake": "mention",
+        "available": False, "relay": False, "legacy": False,
+    }
+    # What the page's header and Harness tab show, which this tool had
+    # fallen behind: it answers from the page's own route now.
+    assert result["health"] is None
+    assert result["identity"]["service_account"] == "agent-agent-a"
+    assert result["colleague_mode"] == "default"
+    assert result["runtime_pinned"] is False
+    assert result["runtime_image"] == result["room_runtime_image"]
+    assert (result["group"], result["owner"], result["purpose"]) == (GROUP_A, OWNER_A_EMAIL, [])
     # OWNER_A_EMAIL owns this agent (can_decide_learnings above) but holds
     # no operator standing -- destroy stays operator-only regardless.
     assert result["destroy_visible"] is False
