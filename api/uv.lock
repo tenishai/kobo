@@ -1483,7 +1483,7 @@ wheels = [
 
 [[package]]
 name = "tenish-kobo"
-version = "0.3.66"
+version = "0.3.67"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
