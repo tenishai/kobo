@@ -830,7 +830,10 @@ class SlackRelayApp(Base):
     `app_id`, the credentials and `wired_at` fill in as the create and the
     wiring land, and `installed_at` when the owner finishes Install to
     Slack. `oauth_state` is the single-use nonce the install link carries
-    (`<relay_id>.<nonce>`), cleared when the callback consumes it.
+    (`<relay_id>.<nonce>`), cleared when the callback consumes it. `scopes`
+    is what Slack said the install was granted, comma-separated as Slack
+    gives it; NULL is an install from before the room kept it. The row's
+    Update in Slack reads it (`slack_setup.scopes_owed`).
 
     What is held here and why (the PR says this too): the signing secret
     (verifies that an event came from Slack), the relay secret (lets the
@@ -858,6 +861,7 @@ class SlackRelayApp(Base):
     app_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     wired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     installed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    scopes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 

@@ -68,6 +68,10 @@ What arrives with the app, beside the names above:
 
 Reactions arrive too, as `reaction_added` and `reaction_removed`, whichever **Wakes on** is picked.
 
+So does `member_joined_channel`, when someone joins a channel the agent is in.
+
+The app's token may also post files (`files:write`), list the workspace's custom emoji (`emoji:read`) and read its user groups (`usergroups:read`). An app installed before the room asked for these gets them when its owner presses **Update in Slack** on the Slack row; the token keeps its name and the agent restarts once.
+
 All of it reaches the agent through one pull request on your repository. The room opens it when the app is made, and again when **Wakes on** changes.
 
 ## What stays yours

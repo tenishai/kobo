@@ -743,6 +743,9 @@ def test_render_manifest_scopes_byte_equal_to_constraint():
         "reactions:write",
         "users:read",
         "users:read.email",
+        "files:write",
+        "emoji:read",
+        "usergroups:read",
     ]
 
 
@@ -761,6 +764,8 @@ def test_render_manifest_settings_and_events_exact():
                 # Reactions reach the agent in every mode (2026-11-13).
                 "reaction_added",
                 "reaction_removed",
+                # Someone joined a channel the agent is in (issue #484).
+                "member_joined_channel",
             ]
         },
         "interactivity": {"is_enabled": False},
@@ -782,6 +787,7 @@ def test_render_manifest_thread_and_channel_modes_subscribe_channel_messages():
             "message.mpim",
             "reaction_added",
             "reaction_removed",
+            "member_joined_channel",
         ]
     # Scopes never move with the mode: no reinstall, only a re-applied manifest.
     assert (

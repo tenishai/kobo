@@ -310,6 +310,29 @@ describe("SlackVendor", () => {
     expect(String(post![0])).toContain("/api/agents/clio/slack/app");
   });
 
+  it("offers Update in Slack to an app installed before the room's latest Slack permissions", async () => {
+    // Contract (issue #484): Slack gives an app more only when a person
+    // allows it, so the row asks once and sends its owner to Slack; an app
+    // that holds everything is never asked.
+    const first = room({ ...INSTALLED, update_due: false });
+    expect(await screen.findByRole("button", { name: "Remove" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Update in Slack" })).toBeNull();
+    first.unmount();
+
+    room({ ...INSTALLED, update_due: true });
+    const button = await screen.findByRole("button", { name: "Update in Slack" });
+    expect(screen.getByText(/installed before the room's latest Slack permissions/)).toBeTruthy();
+
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ install_url: "#slack-would-open-here" }), { status: 200 }),
+    );
+    await fireEvent.click(button);
+
+    const post = vi.mocked(fetch).mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST");
+    expect(String(post![0])).toContain("/api/agents/clio/slack/app/update");
+    await waitFor(() => expect(window.location.hash).toBe("#slack-would-open-here"));
+  });
+
   it("renders nothing when the room does not make Slack apps", async () => {
     room(NONE, { ...AGENT, slack: { ...AGENT.slack, relay: false } });
 

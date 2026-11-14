@@ -152,6 +152,9 @@ export type SlackAppView = {
   wiring?: { state: "wired" | "waiting" | "owed"; pull_request: string | null } | null;
   /** The build the Slack wiring started has not rolled yet: a mention cannot reach the agent. */
   rebuilding?: boolean;
+  /** The app was installed before the room asked Slack for everything it
+   * asks for today; its owner approves the rest once. Older rooms omit it. */
+  update_due?: boolean;
 };
 
 export type AgentDetail = AgentSummary & {
@@ -2703,6 +2706,16 @@ export async function createSlackApp(
 export async function removeSlackApp(name: string): Promise<{ removed: boolean }> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/slack/app`, { method: "DELETE" });
   return parse<{ removed: boolean }>(res);
+}
+
+/**
+ * `POST /api/agents/{name}/slack/app/update` (issue #484): the room brings
+ * an installed app's manifest up to today's and answers with a fresh install
+ * link; the owner follows it and approves what is new, once.
+ */
+export async function updateSlackApp(name: string): Promise<{ install_url: string }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/slack/app/update`, { method: "POST" });
+  return parse<{ install_url: string }>(res);
 }
 
 /** What the move answers: the new app and its install link, like Create,

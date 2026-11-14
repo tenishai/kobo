@@ -44,6 +44,12 @@
   // files is a pull request its team merges (`wiring`), so the row carries
   // the link while it waits and a button to open it again if it was closed;
   // a Wakes on pick is a pull request too, never a restart.
+  //
+  // What the room asks Slack to let an app do grows with releases, and Slack
+  // grants it only when a person approves. An installed app that predates
+  // the latest list (`update_due`, issue #484) keeps working and shows one
+  // button, Update in Slack: the room refreshes the app, Slack shows what is
+  // new, and the person comes back here as after an install.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { errorMessage, type SlackWake, type SlackWakeResult } from "../lib/api";
   import {
@@ -53,6 +59,7 @@
     removeSlackAppMutation,
     setSlackWakeMutation,
     slackAppQuery,
+    updateSlackAppMutation,
   } from "../lib/queries";
   import { beginRestart, endRestart } from "../lib/delivery.svelte";
   import { watchWakeLive } from "../lib/slackWake";
@@ -91,6 +98,7 @@
   const remove = createMutation(() => removeSlackAppMutation(queryClient, agentName));
   const move = createMutation(() => moveSlackAppMutation(queryClient, agentName));
   const saveWake = createMutation(() => setSlackWakeMutation(queryClient, agentName));
+  const update = createMutation(() => updateSlackAppMutation(agentName));
 
   const WAKE_OPTIONS: { value: SlackWake; label: string; help: string }[] = [
     { value: "mention", label: "Mentions only", help: "Only a message that @-mentions the agent reaches it." },
@@ -189,6 +197,25 @@
     }
   }
 
+  // --- Update in Slack (issue #484) ----------------------------------------------
+  //
+  // One press, then Slack's own page in this tab, like Install to Slack. The
+  // link exists only once the room has refreshed the app, so it is asked for
+  // here and followed, never drawn as a link.
+  let updateError = $state<string | null>(null);
+  let updating = $state(false);
+
+  async function handleUpdate(): Promise<void> {
+    updateError = null;
+    try {
+      const result = await update.mutateAsync();
+      updating = true;
+      window.location.assign(result.install_url);
+    } catch (err) {
+      updateError = errorMessage(err, "Couldn't start the update. Try again.");
+    }
+  }
+
   // --- Remove, in two presses ----------------------------------------------------
   let removing = $state(false);
   let removeError = $state<string | null>(null);
@@ -239,11 +266,14 @@
     if (detail?.status === "ready") return { text: "Live", tone: "ok" };
     return { text: "Not ready yet", tone: "warn" };
   });
-  /** The one action while closed: adding Slack, until the app is installed. */
+  /** The one action while closed: adding Slack, until the app is installed;
+   * after that, only an update the app is owed. */
   const action = $derived(
     view.data?.available && !view.data.legacy && (!view.data.own_app || view.data.room_app) && (view.data.state === "none" || view.data.state === "created")
       ? "Add Slack"
-      : null,
+      : view.data?.available && view.data.state === "installed" && view.data.update_due
+        ? "Update"
+        : null,
   );
 
   // Something is going in: the row opens itself so the person sees it land,
@@ -315,6 +345,8 @@
     <div class="body">
       {#if installFailed && data.state !== "installed"}
         <p class="copy copy--fail" role="alert">Installing to Slack did not finish. Try Install to Slack again.</p>
+      {:else if installFailed && data.update_due}
+        <p class="copy copy--fail" role="alert">The update did not finish in Slack. Try Update in Slack again.</p>
       {/if}
 
       {#if oldAppKept && data.state !== "installed"}
@@ -408,6 +440,23 @@
           <div><dt>App</dt><dd>{data.app_name ?? agentName}</dd></div>
         </dl>
         <p class="copy">Invite @{agentName} to a channel in Slack and it answers there.</p>
+        {#if data.update_due}
+          <div class="block">
+            <p class="copy">
+              This app was installed before the room's latest Slack permissions, so the agent cannot yet do
+              everything a new one can. Update it: Slack shows what is new and asks you to allow it, then brings you
+              back here. The agent keeps answering until then and restarts once after.
+            </p>
+            <div class="row">
+              <button type="button" class="btn btn--primary" disabled={frozen || update.isPending || updating} onclick={handleUpdate}>
+                {update.isPending || updating ? "Opening Slack…" : "Update in Slack"}
+              </button>
+              {#if updateError}
+                <span class="copy copy--fail" role="alert">{updateError}</span>
+              {/if}
+            </div>
+          </div>
+        {/if}
         <div class="block">
           {@render wakeChoice()}
         </div>

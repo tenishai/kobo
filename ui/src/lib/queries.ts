@@ -287,6 +287,7 @@ import {
   type ToolingFile,
   type ToolingListResponse,
   unarchivePersona,
+  updateSlackApp,
   uploadAvatar,
   uploadIntake,
   uploadTooling,
@@ -1698,6 +1699,12 @@ export function removeSlackAppMutation(queryClient: QueryClient, name: string) {
       queryClient.invalidateQueries({ queryKey: ["agents", name] });
     },
   };
+}
+
+/** Ask Slack for what the room's app may do today (issue #484); the answer
+ * is an install link the row sends the person to, so nothing is invalidated. */
+export function updateSlackAppMutation(name: string) {
+  return { mutationFn: () => updateSlackApp(name) };
 }
 
 /** Move a legacy agent to the room-made Slack app (issue #304, phase 3);

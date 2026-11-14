@@ -1716,6 +1716,62 @@ def test_install_callback_stores_the_bot_token_through_the_lane_and_redirects(
     assert len(sero.puts) == 1
 
 
+def test_an_app_installed_before_the_rooms_latest_slack_scopes_is_updated_by_one_approval(
+    session_factory__api_slack, config__api_slack
+):
+    """Integrity: Slack grants a scope only when a person approves it, so an app
+    installed before a release that asks for more does not hold the new ones
+    (issue #484). The row says so (`update_due`); Update refreshes the app's
+    manifest at Slack and answers with an install link; the callback keeps what
+    Slack granted, and the row stops asking."""
+    from kobo_api import slack_setup
+    from kobo_api.models import SlackRelayApp
+
+    private_key, jwk = _generate_jwk()
+    relay_config = config__api_slack.model_copy(
+        update={"iap_audience": IAP_AUDIENCE, "slack_relay": True, "operators": [OPERATOR_EMAIL]}
+    )
+    everything = ",".join(slack_setup.bot_scopes())
+    slack = FakeSlack(oauth_result={"ok": True, "access_token": "xoxb-fake-bot-token", "scope": everything,
+                                    "team": {"id": "T0FAKE", "name": "Fake Workspace"}})
+    client = _make_client(
+        session_factory__api_slack, relay_config, kubectl=FakeKubectl(), sero=FakeSero(), slack=slack,
+        iap_jwks_fetcher=_fetcher(jwk),
+    )
+    _seed_agent(session_factory__api_slack, relay_config, slack_app_id="A0FAKE", created_by=OPERATOR_EMAIL)
+    headers = {ASSERTION_HEADER: _sign(private_key, email=OPERATOR_EMAIL)}
+    with session_factory__api_slack() as s:
+        s.add(SlackRelayApp(relay_id="relay-id-for-clio-0000", agent_name=AGENT_NAME, app_id="A0FAKE",
+                            client_id="fake-client-id", client_secret="fake-client-secret",
+                            signing_secret="fake-signing-secret", relay_secret="fake-relay-secret",
+                            created_by=OPERATOR_EMAIL, created_at=datetime(2026, 11, 1),
+                            wired_at=datetime(2026, 11, 1), installed_at=datetime(2026, 11, 1),
+                            # What an install from early November was granted.
+                            scopes="app_mentions:read,chat:write,files:read"))
+        s.commit()
+
+    view = client.get(f"/api/agents/{AGENT_NAME}/slack", headers=headers).json()
+    assert view["state"] == "installed" and view["update_due"] is True
+
+    response = client.post(f"/api/agents/{AGENT_NAME}/slack/app/update", headers=headers)
+
+    assert response.status_code == 200
+    app_id, manifest = slack.updates[-1]
+    assert app_id == "A0FAKE"
+    assert "files:write" in manifest["oauth_config"]["scopes"]["bot"]
+    assert manifest["settings"]["socket_mode_enabled"] is False
+    link = response.json()["install_url"]
+    assert "files%3Awrite" in link or "files:write" in link
+    state = link.split("state=", 1)[1].split("&", 1)[0]
+
+    back = client.get(f"/slack/oauth/callback?code=fake-code&state={state}", follow_redirects=False)
+
+    assert back.headers["location"] == f"/#/agents/{AGENT_NAME}/access?vendor=slack"
+    with session_factory__api_slack() as s:
+        assert s.query(SlackRelayApp).filter_by(agent_name=AGENT_NAME).one().scopes == everything
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack", headers=headers).json()["update_due"] is False
+
+
 def test_connect_slack_with_nobody_to_record_the_write_against_is_a_409(
     session_factory__api_slack, config__api_slack
 ):

@@ -500,6 +500,9 @@ def oauth_callback(
     row.workspace_id = str(team.get("id") or "")[:32] or None
     row.app_name = agent.name
     row.installed_at = datetime.now(UTC).replace(tzinfo=None)
+    # What this install may do, in Slack's words: the row offers Update in
+    # Slack when a later release asks for more (`slack_setup.scopes_owed`).
+    row.scopes = str(answer.get("scope") or "")
     agent.slack_wired = True
     if row.app_id and not agent.slack_app_id:
         agent.slack_app_id = row.app_id
