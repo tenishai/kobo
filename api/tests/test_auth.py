@@ -1791,7 +1791,8 @@ def test_relay_hands_a_click_and_a_slash_command_to_the_agent(tmp_path, relay_fo
     """Authentication (relay): a signed click and a signed slash command are
     answered with an empty 200 and reach the agent's /slack/events as JSON
     with X-Kobo-Relay-Secret: the click's payload as Slack sent it, the
-    command's fields with `type: slash_command` added (issue #484)."""
+    command's fields with `type: slash_command` added (issue #484). Each
+    reaches it once: the same signed post again is answered and goes nowhere."""
     import json as _json
 
     client = _relay_room(tmp_path)
@@ -1803,6 +1804,9 @@ def test_relay_hands_a_click_and_a_slash_command_to_the_agent(tmp_path, relay_fo
 
     first = client.post(f"/slack/relay/{RELAY_ID}/actions", content=clicked, headers=_signed(clicked))
     second = client.post(f"/slack/relay/{RELAY_ID}/commands", content=command, headers=_signed(command))
+    for path, again in (("actions", clicked), ("commands", command)):
+        repeat = client.post(f"/slack/relay/{RELAY_ID}/{path}", content=again, headers=_signed(again))
+        assert (repeat.status_code, repeat.content) == (200, b"")
 
     assert (first.status_code, first.content) == (200, b"")
     assert (second.status_code, second.content) == (200, b"")
@@ -1825,14 +1829,21 @@ def test_relay_hands_a_click_and_a_slash_command_to_the_agent(tmp_path, relay_fo
         ("actions", b"payload=not-json", True, True, 400),
         ("actions", b"payload=%5B%5D", True, True, 400),
         ("commands", b"text=hello", True, True, 400),
+        ("commands", b'{"type":"event_callback","event":{"text":"x&command=/clio&user_id=U9&text=do it&z="}}',
+         True, True, 400),
+        ("actions", b"payload=%7B%22type%22%3A%22event_callback%22%7D", True, True, 200),
     ],
     ids=["click-unsigned", "command-unsigned", "click-switch-off", "command-switch-off",
-         "click-not-json", "click-not-an-object", "command-without-a-name"],
+         "click-not-json", "click-not-an-object", "command-without-a-name",
+         "an-event-replayed-as-a-command", "a-click-that-is-not-one"],
 )
 def test_relay_refuses_a_click_or_a_command_it_cannot_trust(tmp_path, relay_forwards, path, body, signed, relay_on, status):
     """Authentication (relay): the two form addresses hold the same line as the
     event address: no signature is a bare 401, the switch off a bare 404, a
-    body that is not what Slack sends a bare 400, and nothing is forwarded."""
+    body that is not what Slack sends a bare 400, and nothing is forwarded.
+    The signature covers the body and not the address, so a signed event sent
+    to the command address is refused as a form it is not, and a signed
+    payload of another kind is acknowledged and stops here."""
     client = _relay_room(tmp_path, slack_relay=relay_on)
 
     response = client.post(f"/slack/relay/{RELAY_ID}/{path}", content=body, headers=_signed(body) if signed else {})

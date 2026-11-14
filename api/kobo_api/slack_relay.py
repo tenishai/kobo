@@ -53,6 +53,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import threading
 import time
@@ -440,6 +441,15 @@ async def relay(
 # What a slash command is called on its way to the agent: Slack's form has no
 # `type` of its own, so the room adds one beside the fields.
 SLASH_COMMAND_TYPE = "slash_command"
+# The one kind of click the agent is handed. Slack posts other things to the
+# same address (a shortcut, a dialog's answer); none is something an agent
+# asked for, so each is acknowledged and goes no further.
+ACTION_TYPE = "block_actions"
+# Every field of a Slack form is a plain lowercase name. A signed post of
+# another kind (an event's JSON) read as a form has a first field that is not,
+# which is how one is told from the other: the signature covers the body, not
+# the address it was sent to.
+_FORM_FIELD = re.compile(r"^[a-z_]+$")
 
 
 async def _signed_form(
@@ -467,7 +477,15 @@ async def _signed_form(
         form = {key: values[0] for key, values in parse_qs(body.decode("utf-8"), keep_blank_values=True).items()}
     except (UnicodeDecodeError, ValueError):
         return _bare(400)
+    if not form or not all(_FORM_FIELD.match(key) for key in form):
+        return _bare(400)
     return row, form, agent_events_url(cfg, row.agent_name)
+
+
+def _repeated(relay_id: str, trigger_id: object) -> bool:
+    """Whether this click or command was already taken: Slack's `trigger_id`
+    is one per interaction, and the same dedupe that holds event ids holds it."""
+    return isinstance(trigger_id, str) and bool(trigger_id) and dedupe.seen(relay_id, trigger_id)
 
 
 @router.post("/slack/relay/{relay_id}" + ACTIONS_SUFFIX)
@@ -479,7 +497,8 @@ async def relay_action(
 ) -> Response:
     """A click on something the agent posted (Slack's interactivity address).
     The form carries one field, `payload`, a JSON object; that object is what
-    the agent receives. An empty `200` is the whole answer Slack wants."""
+    the agent receives when it is a click (`ACTION_TYPE`), once. An empty `200`
+    is the whole answer Slack wants."""
     admitted = await _signed_form(relay_id, request, session)
     if isinstance(admitted, Response):
         return admitted
@@ -490,6 +509,8 @@ async def relay_action(
         return _bare(400)
     if not isinstance(payload, dict):
         return _bare(400)
+    if payload.get("type") != ACTION_TYPE or _repeated(relay_id, payload.get("trigger_id")):
+        return _bare(200)
     if url is None:
         log.warning("slack relay: no agent endpoint template; click for agent %s dropped", row.agent_name)
         return _bare(200)
@@ -516,6 +537,8 @@ async def relay_command(
     row, form, url = admitted
     if not form.get("command"):
         return _bare(400)
+    if _repeated(relay_id, form.get("trigger_id")):
+        return _bare(200)
     if url is None:
         log.warning("slack relay: no agent endpoint template; command for agent %s dropped", row.agent_name)
         return _bare(200)

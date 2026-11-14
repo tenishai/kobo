@@ -242,6 +242,8 @@ def _restart(name: str) -> None:
 
 SECRET_WAIT = 150.0
 SECRET_POLL = 5.0
+# How long a restart waits on the step given to run before it.
+STEP_WAIT = 300.0
 
 
 def secret_carries(kubectl: KubectlClient, namespace: str, secret: str, keys: Iterable[str]) -> bool:
@@ -282,18 +284,29 @@ def restart_once_secret_carries(
     """Restart agent `name` once its Secret carries `keys`, restarting anyway when the
     wait runs out (the next start then still reads whatever has landed). In the
     background by default, so a request does not hold for the platform's re-read.
-    `before` runs first, in the same place: a bundle change this one restart should
-    carry too. Whatever it raises is logged and the restart still happens."""
+    `before` is a bundle change this one restart should carry too: it runs beside the
+    wait and the restart follows it. Whatever it raises is logged, and one still
+    running `STEP_WAIT` seconds after the wait is left behind; the restart happens
+    either way."""
     keys = list(keys)
 
+    def _before() -> None:
+        try:
+            before()
+        except Exception as exc:  # noqa: BLE001 -- the restart must not be lost to it
+            log.warning("%s: the step before its restart failed: %s", name, exc)
+
     def _run() -> None:
+        step = None
         if before is not None:
-            try:
-                before()
-            except Exception as exc:  # noqa: BLE001 -- the restart must not be lost to it
-                log.warning("%s: the step before its restart failed: %s", name, exc)
+            step = threading.Thread(target=_before, name=f"before-restart-{name}", daemon=True)
+            step.start()
         if not wait_for_secret(kubectl, name, secret, keys):
             log.warning("%s: %s did not reach the cluster in time; restarting anyway", name, secret)
+        if step is not None:
+            step.join(STEP_WAIT)
+            if step.is_alive():
+                log.warning("%s: the step before its restart is still running; restarting without it", name)
         try:
             kubectl.restart_deploy(name, name)
         except ClientError as exc:

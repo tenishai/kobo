@@ -37,6 +37,7 @@ Two independent responsibilities live here:
 
 from __future__ import annotations
 
+import logging
 import re
 import tempfile
 import time
@@ -55,6 +56,8 @@ from kobo_api.composer import (
 )
 from kobo_api.repo_lock import repo_write_lock
 from kobo_api.sero import SeroClient, deliver_secret
+
+log = logging.getLogger(__name__)
 
 # --- render_manifest -----------------------------------------------------------
 
@@ -517,6 +520,7 @@ def wire_slack(
     sero: SeroClient | None = None,
     acting_email: str | None = None,
     on_repin: Callable[[], None] | None = None,
+    allow_tools: bool = False,
 ) -> str:
     """Deliver `bot_token`/`app_token` to the agent's namespace and wire its
     repo's Slack transports, mirroring `kobo_api.steps.WireStep` end to end:
@@ -578,6 +582,7 @@ def wire_slack(
         gojira_app_id=gojira_app_id,
         channels=channels,
         values={"SLACK_BOT_TOKEN": bot_token, "SLACK_APP_TOKEN": app_token},
+        allow_tools=allow_tools,
         runtime_image=runtime_image,
         sero=sero,
         acting_email=acting_email,
@@ -630,6 +635,7 @@ def wire_slack_values(
     message: str = "kobo: connect slack",
     every_channel: bool = False,
     remove_keys: Sequence[str] = (),
+    allow_tools: bool = False,
 ) -> str:
     """`wire_slack` over any set of Slack values (issue #371): the relay flow
     delivers the app's five credentials at Create (no app-level token
@@ -644,7 +650,11 @@ def wire_slack_values(
     and the old bot token go as the new app's five values arrive, so the
     runtime takes the HTTP way in at its next start). Through the lane that
     is one `put` with `remove`; the direct write replaces the Secret's data
-    with `values` whole, so anything not named is gone by construction."""
+    with `values` whole, so anything not named is gone by construction.
+
+    `allow_tools` opens the Slack tools (`SLACK_TOOLS_ALLOW`, issue #484) in
+    the same commit, for an agent born before the room composed them. The
+    caller says so: it knows whether this is an agent that may act."""
     deliver_slack_values(
         kubectl, name=name, values=values, sero=sero, acting_email=acting_email, remove_keys=remove_keys
     )
@@ -659,6 +669,12 @@ def wire_slack_values(
             # say so as a ClientError (the routes' 502) rather than crash.
             raise ClientError(f"{repo} has no bundle/agent.yaml to wire Slack into")
         _update_agent_yaml_transports(agent_yaml_path, channels, every_channel=every_channel)
+        if allow_tools:
+            try:
+                update_agent_yaml_allow(workdir / "bundle", entries=[SLACK_TOOLS_ALLOW])
+            except ClientError as exc:
+                # No tools section to open them in: the wiring still lands.
+                log.info("%s: the Slack tools were not opened: %s", name, exc)
         gojira_yaml_path = workdir / "gojira.yaml"
         contract_before = gojira_yaml_path.read_text() if gojira_yaml_path.exists() else ""
         _update_gojira_secrets_from(gojira_yaml_path, name)
@@ -700,20 +716,48 @@ def wire_slack_values(
     return head
 
 
-def allow_slack_tools(github: GitHubClient, *, repo: str) -> bool:
+# The tools backfill's tries, and the pause before each later one (times its number).
+_ALLOW_TRIES = 3
+_ALLOW_PAUSE = 5.0
+
+
+def allow_slack_tools(github: GitHubClient, *, repo: str, sleep: Callable[[float], None] = time.sleep) -> bool:
     """Make an agent's own bundle admit the Slack tools (`SLACK_TOOLS_ALLOW`):
     clone `repo`, add the entry when no pattern there covers it, publish. An
     agent born since the entry was composed already has it, and then nothing
     is pushed. No restart of its own: the caller is on its way to one (the
     install callback restarts the agent for its token). Returns whether the
-    bundle changed. Raises `ClientError`."""
-    with repo_write_lock(repo), tempfile.TemporaryDirectory(prefix="kobo-slack-allow-") as tmp:
-        workdir = Path(tmp) / "repo"
-        github.clone(repo, workdir)
-        if not update_agent_yaml_allow(workdir / "bundle", entries=[SLACK_TOOLS_ALLOW]):
-            return False
-        delivery.push(github, workdir, "kobo: allow the Slack tools", restart=False)
-        return True
+    bundle changed. Raises `ClientError`.
+
+    The clone and the push are tried `_ALLOW_TRIES` times, since nothing asks
+    for this a second time once the app holds its scopes. A try that finds the
+    entry already there after a failed push publishes what the repository
+    holds: the commit landed and its delivery did not."""
+    failed: ClientError | None = None
+    for attempt in range(_ALLOW_TRIES):
+        if attempt:
+            sleep(_ALLOW_PAUSE * attempt)
+        with repo_write_lock(repo), tempfile.TemporaryDirectory(prefix="kobo-slack-allow-") as tmp:
+            workdir = Path(tmp) / "repo"
+            try:
+                github.clone(repo, workdir)
+            except ClientError as exc:
+                failed = exc
+                continue
+            changed = update_agent_yaml_allow(workdir / "bundle", entries=[SLACK_TOOLS_ALLOW])
+            if not changed and failed is None:
+                return False
+            try:
+                if changed:
+                    delivery.push(github, workdir, "kobo: allow the Slack tools", restart=False)
+                elif (agent_name := delivery.agent_name_of(workdir)) is not None:
+                    delivery.publish(workdir, agent_name, head_sha=github.local_head(workdir) or "")
+            except ClientError as exc:
+                failed = exc
+                continue
+            return True
+    assert failed is not None
+    raise failed
 
 
 def rewire_slack_channels(
