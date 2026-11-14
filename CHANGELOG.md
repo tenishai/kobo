@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.66] - 2026-11-14
+
 ### Changed
 - An agent answers its slash command only where it has been added, unless its owner says otherwise. The app's token can post in any public channel, so a command typed anywhere used to be answered there. One box on the Slack row, **Answer its slash command in any public channel**, turns that back on for one agent; it is off for every agent. It rides the wake lane: `command_public` on `PUT /api/agents/{name}/slack/wake` and on `kobo_set_slack_wake`, `SLACK_COMMAND_PUBLIC=on` in the agent's environment (set on the running agent at once, a pull request for a connected agent, absent when off), and a new column `agents.slack_command_public` (migration `f5b7d9e1a3c4`, false for every row). `slack.command_public` is on the agent's detail and on `GET /api/agents/{name}/slack`. The runtime enforces it, so it needs a runtime that reads the variable; posting in a public channel the agent was not invited to, when it is asked to, is unchanged.
 
