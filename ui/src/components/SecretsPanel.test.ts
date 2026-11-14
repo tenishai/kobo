@@ -398,6 +398,22 @@ describe("SecretsPanel", () => {
     expect(puts).toHaveLength(0);
   });
 
+  it("takes Slack's names as secrets from an agent on its own Slack app", async () => {
+    // The read lists the reserved names this agent's team keeps (`released`),
+    // so a secret by one of those names is typed and saved like any other.
+    const puts = stubRoutes({ secrets: { released: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"] } });
+    render();
+    await loaded();
+
+    await fireEvent.click(addSecret());
+    await fireEvent.input(screen.getByLabelText("Name 1"), { target: { value: "SLACK_BOT_TOKEN" } });
+    await fireEvent.input(screen.getByLabelText("Value 1"), { target: { value: VALUE } });
+    expect(screen.queryByText(/the room sets this one/)).toBeNull();
+    await fireEvent.click(save());
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0].body.set).toEqual({ SLACK_BOT_TOKEN: VALUE });
+  });
+
   it("refuses a name that is already listed, whichever kind carries it", async () => {
     // Both kinds land in the pod as one variable (issue #272). The newer
     // row is the one refused; the stored one keeps its name.

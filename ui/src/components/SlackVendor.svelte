@@ -37,6 +37,13 @@
   // button, Move to the new Slack setup (issue #304, phase 3): the room
   // removes the old app, makes a new one and the row becomes the created
   // state above, Install to Slack and all. Channels and Wakes on carry over.
+  //
+  // An agent that runs its team's own code (issue #484) gets the same app
+  // when it serves a port (`room_app`): the copy says what its code has to
+  // serve and that it may keep an app of its own instead. The change to its
+  // files is a pull request its team merges (`wiring`), so the row carries
+  // the link while it waits and a button to open it again if it was closed;
+  // a Wakes on pick is a pull request too, never a restart.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { errorMessage, type SlackWake, type SlackWakeResult } from "../lib/api";
   import {
@@ -140,7 +147,8 @@
     if (view.data?.state !== "installed") return;
     try {
       const result = await saveWake.mutateAsync(next);
-      wakeWaitsForRestart = !result.applied_now;
+      // A connected agent's choice is a pull request: the row's wiring line says so.
+      wakeWaitsForRestart = !result.applied_now && !result.pull_request;
       if (result.applied_now) watchWake(result);
     } catch (err) {
       wake = null;
@@ -199,7 +207,7 @@
   const headState = $derived.by((): { text: string; tone: Tone } => {
     const data = view.data;
     if (!data) return { text: "", tone: "ink" };
-    if (data.own_app) return { text: "This agent brings its own Slack app", tone: "ink" };
+    if (data.own_app && !(data.room_app && data.available)) return { text: "This agent brings its own Slack app", tone: "ink" };
     if (!data.available) return { text: "Not connected to the room", tone: "ink" };
     if (data.legacy) {
       return move.isPending
@@ -212,6 +220,8 @@
         : { text: "App made; install it to finish", tone: "ink" };
     }
     if (data.state !== "installed") return { text: "Not connected for this agent", tone: "ink" };
+    if (data.wiring?.state === "waiting") return { text: "Waiting for its team to merge a pull request", tone: "warn" };
+    if (data.wiring?.state === "owed") return { text: "Its pull request was closed", tone: "warn" };
     if (wakeApplying) return { text: "Applying your change. Give it a minute.", tone: "warn" };
     if (wakeWaitsForRestart) return { text: "Saved. Takes effect when the agent next restarts.", tone: "warn" };
     const detail = agent.data;
@@ -231,7 +241,7 @@
   });
   /** The one action while closed: adding Slack, until the app is installed. */
   const action = $derived(
-    view.data?.available && !view.data.legacy && !view.data.own_app && (view.data.state === "none" || view.data.state === "created")
+    view.data?.available && !view.data.legacy && (!view.data.own_app || view.data.room_app) && (view.data.state === "none" || view.data.state === "created")
       ? "Add Slack"
       : null,
   );
@@ -313,9 +323,27 @@
         </p>
       {/if}
 
-      {#if data.own_app}
-        <!-- A connected agent: the room's app is wired by commits to the
-             agent's repository, and the room makes none to a team's own. -->
+      {#if data.wiring?.state === "waiting"}
+        <p class="copy">
+          The change to this agent's files is waiting in a pull request. Its team merges it, then the one the deploy
+          platform sends after it; the agent restarts with its Slack app.
+          {#if data.wiring.pull_request}<a href={data.wiring.pull_request} target="_blank" rel="noreferrer">Open the pull request</a>{/if}
+        </p>
+      {:else if data.wiring?.state === "owed"}
+        <p class="copy">The pull request that lets this agent read its Slack app was closed before it was merged.</p>
+        <div class="row">
+          <button type="button" class="btn" disabled={frozen || create.isPending} onclick={handleCreate}>
+            {create.isPending ? "Opening…" : "Open it again"}
+          </button>
+          {#if createError}
+            <span class="copy copy--fail" role="alert">{createError}</span>
+          {/if}
+        </div>
+      {/if}
+
+      {#if data.own_app && !(data.room_app && data.available)}
+        <!-- A connected agent the room cannot make an app for: it serves no
+             port for Slack's messages, or the room has no Slack connection. -->
         <p class="copy">
           This agent runs its team's own code, so it brings its own Slack app: the room does not make one for it.
           Create the app in Slack, then save its tokens under Secrets on this page. The agent restarts with them.
@@ -336,10 +364,21 @@
           {/if}
         </div>
       {:else if data.state === "none"}
-        <p class="copy">
-          The room makes a Slack app for this agent and connects it. Pick how it wakes up first: the choice decides
-          which messages Slack sends it.
-        </p>
+        {#if data.own_app}
+          <p class="copy">
+            This agent runs its team's own code. The room can make it a Slack app: you install it once, the room hands
+            Slack's messages to the agent, and the change to its files arrives as a pull request for its team to merge.
+            The agent has to take those messages; "Running your own code" in the guide says how.
+          </p>
+          <p class="copy">
+            Already has a Slack app of its own? Keep it: save its tokens under Secrets on this page and skip this.
+          </p>
+        {:else}
+          <p class="copy">
+            The room makes a Slack app for this agent and connects it. Pick how it wakes up first: the choice decides
+            which messages Slack sends it.
+          </p>
+        {/if}
         {@render wakeChoice()}
         <div class="row">
           <button type="button" class="btn btn--primary" disabled={frozen || create.isPending} onclick={handleCreate}>

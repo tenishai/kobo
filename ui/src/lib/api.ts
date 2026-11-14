@@ -138,9 +138,18 @@ export type SlackAppView = {
   channels: string[];
   wake: SlackWake;
   legacy: boolean;
-  /** A connected agent: it runs its team's own code and brings its own Slack
-   * app, so the room offers none and its tokens go under Secrets. */
+  /** A connected agent with no room-made app: it is on its team's own
+   * Slack app (tokens under Secrets), or on none yet. */
   own_app?: boolean;
+  /** Whether the room can make this agent a Slack app. False for a
+   * connected agent that serves no port: the room hands Slack's messages
+   * over HTTP, so it keeps its own app. Older rooms omit it. */
+  room_app?: boolean;
+  /** A connected agent's room-made app is wired by a pull request its team
+   * merges: `wired`, `waiting` (open, with its link) or `owed` (closed, or
+   * never opened). Null for every other agent, and when the room could not
+   * read the agent's files. */
+  wiring?: { state: "wired" | "waiting" | "owed"; pull_request: string | null } | null;
   /** The build the Slack wiring started has not rolled yet: a mention cannot reach the agent. */
   rebuilding?: boolean;
 };
@@ -2653,6 +2662,8 @@ export type SlackWakeResult = {
    * health reading is told apart from an older one by `checked_at`. */
   applied_at?: string | null;
   wiring: string;
+  /** A connected agent: the choice is a pull request its team merges. */
+  pull_request?: string | null;
 };
 
 export async function setSlackWake(name: string, wake: SlackWake): Promise<SlackWakeResult> {
@@ -2678,13 +2689,13 @@ export async function fetchSlackApp(name: string): Promise<SlackAppView> {
 export async function createSlackApp(
   name: string,
   wake: SlackWake,
-): Promise<{ app_id: string; install_url: string }> {
+): Promise<{ app_id: string; install_url: string | null; pull_request?: string | null }> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/slack/app`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ wake }),
   });
-  return parse<{ app_id: string; install_url: string }>(res);
+  return parse<{ app_id: string; install_url: string | null; pull_request?: string | null }>(res);
 }
 
 /** `DELETE /api/agents/{name}/slack/app`: the app at Slack, its values and
@@ -3190,6 +3201,10 @@ export type AgentSecrets = {
   wired: boolean | null;
   /** The secrets the room set itself, if any. */
   managed: ManagedSecret[];
+  /** Reserved names this agent's team may save all the same: Slack's, for
+   * an agent that runs its team's own code on a Slack app of its own.
+   * Older rooms omit it. */
+  released?: string[];
 };
 
 export type AgentSecretsWrite = {

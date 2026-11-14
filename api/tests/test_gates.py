@@ -970,7 +970,8 @@ GUARDED_ROUTES = [
     # chat relay are the room's hand on a bundle it does not own.
     ("PUT", f"/api/agents/{AGENT_NAME}/colleague-mode", {"json": {"mode": "roster-only"}}),
     ("POST", f"/api/agents/{AGENT_NAME}/chat", {"json": {"messages": [{"role": "user", "text": "hi"}]}}),
-    ("POST", f"/api/agents/{AGENT_NAME}/slack/app", {"json": {"wake": "thread"}}),
+    # Making a Slack app is not here since issue #484: for a connected agent it
+    # proposes a pull request (tests/test_wire_shapes.py), never a push.
     ("POST", f"/api/agents/{AGENT_NAME}/slack/move", {}),
 ]
 

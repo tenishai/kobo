@@ -55,6 +55,7 @@ from kobo_api.agent_env import (
     SECRETS_WIRING_BRANCH,
     SECRETS_WIRING_PR_BODY,
     SECRETS_WIRING_PR_TITLE,
+    TEAM_SLACK_KEYS,
     UNCHANGED,
     WIRING_PR_ALREADY_OPEN,
     DeployTriggerFailed,
@@ -286,6 +287,7 @@ from kobo_api.slack_setup import (
     WAKE_DEFAULT_NEW,
     WAKE_ENV,
     WAKE_MODES,
+    deliver_slack_values,
     effective_wake,
     render_manifest,
     rewire_slack_channels,
@@ -8860,6 +8862,13 @@ def create_app(
         log.warning("persona %r not in the catalog, using generic text for slack manifest", agent.persona)
         return f"A {agent.persona} agent, reachable in Slack."
 
+    def _slack_description(session: Session, agent: Agent) -> str:
+        """The manifest's one line. A connected agent has no persona in the
+        catalog (its code is its own), so it gets a plain sentence."""
+        if is_connected(agent):
+            return f"{agent.name}, an agent in kobo."
+        return _persona_first_line(session, agent)
+
     # --- Slack as a vendor on Access (issue #371, phase 2 of #304) -------------
     #
     # Behind `config.slack_relay`. The room creates the agent's Slack app from
@@ -8873,6 +8882,15 @@ def create_app(
 
     def _relay_row(session: Session, agent: Agent) -> SlackRelayApp | None:
         return session.query(SlackRelayApp).filter_by(agent_name=agent.name).first()
+
+    def _released_keys(session: Session, agent: Agent) -> frozenset[str]:
+        """The reserved names this agent's team may save under Secrets after
+        all: Slack's, for a connected agent on a Slack app of its own. Its
+        code reads them and nothing of the room's sets them. Once the room
+        has made it an app they are the room's again."""
+        if is_connected(agent) and _relay_row(session, agent) is None:
+            return TEAM_SLACK_KEYS
+        return frozenset()
 
     def _relay_off() -> JSONResponse:
         return JSONResponse({"error": "this room does not make Slack apps yet"}, status_code=404)
@@ -8889,6 +8907,29 @@ def create_app(
             return False
         verdict = getattr(app.state, "health", {}).get(agent.name)
         return getattr(verdict, "image", None) == agent.slack_rebuild_image
+
+    def _slack_wiring(agent: Agent) -> dict | None:
+        """Where a connected agent's room-made app stands in its repository,
+        or None when the repository could not be read: no claim is made
+        about a file nobody saw."""
+        try:
+            return connected_wiring.slack_state(app.state.clients.github, agent)
+        except ClientError as exc:
+            log.warning("slack wiring of %s could not be read: %s", agent.name, type(exc).__name__)
+            return None
+
+    def _own_slack_tokens(agent: Agent, acting_email: str | None) -> list[str]:
+        """The Slack names this agent's team saved under Secrets for an app
+        of its own. Empty when the room has no secrets platform, or cannot
+        ask it: the create goes on and the team sorts out a clash it made."""
+        sero = app.state.clients.sero
+        if sero is None or not (acting_email or "").strip():
+            return []
+        try:
+            held = sero.list_keys(acting_email, secret_path(agent.name))
+        except ClientError:
+            return []
+        return sorted(set(held.keys) & TEAM_SLACK_KEYS)
 
     def _slack_app_view(request: Request, session: Session, agent: Agent, row: SlackRelayApp | None) -> dict:
         """The Access tab's Slack section, in one read. `install_url` is for
@@ -8914,11 +8955,16 @@ def create_app(
             "channels": channels,
             "wake": effective_wake(agent),
             "legacy": agent.slack_app_id is not None and row is None,
-            # A connected agent runs its team's own code and brings its own
-            # Slack app: the room's app is wired by commits to the agent's
-            # repository, which the room never makes to a connected one, so
-            # the row says so instead of offering a Create that is refused.
+            # A connected agent runs its team's own code. With no room-made app
+            # it is on its own Slack app, or on none; the row says so.
             "own_app": is_connected(agent) and row is None,
+            # Whether the room can make it one (issue #484): the relay hands
+            # events to the agent over HTTP, so an agent that serves no port
+            # has nowhere to take them and keeps its own app.
+            "room_app": not is_connected(agent) or agent.run_mode == RUN_MODE_HTTP,
+            # A connected agent's room-made app is wired by a pull request its
+            # team merges: wired, waiting, or owed (closed, or never opened).
+            "wiring": _slack_wiring(agent) if is_connected(agent) and row is not None and row.app_id else None,
             # The build the wiring started has not rolled yet (2026-11-03).
             "rebuilding": state == "installed" and _slack_rebuilding(agent),
         }
@@ -8962,6 +9008,11 @@ def create_app(
         runtime pin, plus the wake mode in one commit). A create whose wiring
         failed is resumed by calling this again: the app exists, so Slack is
         not asked twice.
+
+        A connected agent (issue #484) gets the same app, relay and Secret;
+        the repository half is one pull request its team merges
+        (`connected_wiring.propose_slack`), and the answer carries its link.
+        Calling this again for an app whose request was closed opens it again.
         """
         cfg: Config = app.state.config
         if not cfg.slack_relay:
@@ -8971,9 +9022,13 @@ def create_app(
         )
         if isinstance(agent, JSONResponse):
             return agent
-        blocked = _room_edits_this_agent_or_409(agent)
-        if blocked is not None:
-            return blocked
+        connected = is_connected(agent)
+        if connected and agent.run_mode != RUN_MODE_HTTP:
+            return JSONResponse(
+                {"error": "This agent serves no port, so the room has nowhere to hand it Slack's events. "
+                          "It keeps its own Slack app."},
+                status_code=409,
+            )
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -8992,6 +9047,18 @@ def create_app(
                 {"error": "This agent already has a Slack app from the Slack tab."}, status_code=409
             )
         if row is not None and row.app_id is not None and row.wired_at is not None:
+            if connected and (_slack_wiring(agent) or {}).get("state") == connected_wiring.OWED:
+                # The app is made and its values delivered; only the request
+                # is missing (the team closed it). Open it again, nothing else.
+                try:
+                    edit = connected_wiring.propose_slack(
+                        clients.github, repo=agent.repo_full_name, agent_name=agent.name, mode=effective_wake(agent)
+                    )
+                except RepoBusy as exc:
+                    return JSONResponse({"error": str(exc)}, status_code=409)
+                except ClientError as exc:
+                    return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
+                return JSONResponse({"app_id": row.app_id, "install_url": None, "pull_request": edit.pull_request})
             return JSONResponse({"error": "This agent already has a Slack app."}, status_code=409)
 
         acting_email = getattr(request.state, "iap_email", None) or agent.created_by
@@ -8999,19 +9066,29 @@ def create_app(
             refusal = acting_email_refusal(agent.name, acting_email)
             if refusal is not None:
                 return JSONResponse({"error": refusal}, status_code=409)
+        if connected:
+            own = _own_slack_tokens(agent, acting_email)
+            if own:
+                # Both Secrets would hand the agent the same name, and which
+                # value it read would be whichever the deployment listed last.
+                return JSONResponse(
+                    {"error": f"This agent has Slack tokens of its own under Secrets ({', '.join(own)}). "
+                              "Remove them first: the room's app brings its own."},
+                    status_code=409,
+                )
 
         previous_wake = effective_wake(agent)
         made = _make_room_slack_app(request, session, agent, slack, mode, row=row, acting_email=acting_email)
         if isinstance(made, JSONResponse):
             return made
-        row, install = made
+        row, install, pull_request = made
         audit.record(
             session, request=request, action="slack.app.create", target_kind="agent", target_id=agent.name,
             agent_name=agent.name, summary=f"{audit.who(request)} created a Slack app for agent {agent.name}",
             detail={"app_id": row.app_id, "wake": mode, "previous_wake": previous_wake},
         )
         session.commit()
-        return JSONResponse({"app_id": row.app_id, "install_url": install})
+        return JSONResponse({"app_id": row.app_id, "install_url": install, "pull_request": pull_request})
 
     def _make_room_slack_app(
         request: Request,
@@ -9024,7 +9101,7 @@ def create_app(
         acting_email: str | None,
         remove_keys: tuple[str, ...] = (),
         message: str = "kobo: slack app made by the room",
-    ) -> JSONResponse | tuple[SlackRelayApp, str]:
+    ) -> JSONResponse | tuple[SlackRelayApp, str, str | None]:
         """The room-made app, from nothing to install link: mint and commit
         the relay row, create the app at Slack from the manifest, store the
         five values through the agent's Slack secret (taking `remove_keys`
@@ -9032,7 +9109,8 @@ def create_app(
         transport block and the wake mode. Shared by Create and by the move
         from the old setup (issue #304, phase 3), which differ only in what
         comes before (the old app's removal) and in `remove_keys`. Returns
-        the row and the install url, or the error answer to send."""
+        the row, the install url and, for a connected agent, the pull request
+        that carries the repository half; or the error answer to send."""
         cfg: Config = app.state.config
         clients = app.state.clients
         base = slack_relay.public_base_url(request, cfg)
@@ -9051,7 +9129,7 @@ def create_app(
         if row.app_id is None:
             manifest = render_manifest(
                 agent.name,
-                _persona_first_line(session, agent),
+                _slack_description(session, agent),
                 wake=mode,
                 request_url=slack_relay.relay_url(base, row.relay_id),
                 redirect_url=slack_relay.callback_url(base),
@@ -9083,6 +9161,26 @@ def create_app(
             # The agent's face on every message it posts (chat:write.customize).
             "SLACK_ICON_URL": slack_relay.face_url(base, row.relay_id),
         }
+        if is_connected(agent):
+            # The Secret first, so it exists by the time anything can merge
+            # the request that names it; then the request, never a commit.
+            try:
+                deliver_slack_values(
+                    clients.kubectl, name=agent.name, values=values, sero=clients.sero,
+                    acting_email=acting_email, remove_keys=remove_keys,
+                )
+                edit = connected_wiring.propose_slack(
+                    clients.github, repo=agent.repo_full_name, agent_name=agent.name, mode=mode
+                )
+            except RepoBusy as exc:
+                return JSONResponse({"error": str(exc)}, status_code=409)
+            except ClientError as exc:
+                log.warning("slack app wiring failed for agent %s: %s", agent.name, type(exc).__name__)
+                return JSONResponse({"error": "couldn't set up Slack. Try again."}, status_code=502)
+            row.wired_at = datetime.now(UTC).replace(tzinfo=None)
+            state_token = slack_relay.mint_state(row)
+            install = slack_relay.install_url(row.client_id or "", state_token, slack_relay.callback_url(base))
+            return row, install, edit.pull_request
         try:
             wire_slack_values(
                 clients.github,
@@ -9119,7 +9217,7 @@ def create_app(
         agent.slack_rebuild_at = row.wired_at
         state_token = slack_relay.mint_state(row)
         install = slack_relay.install_url(row.client_id or "", state_token, slack_relay.callback_url(base))
-        return row, install
+        return row, install, None
 
     # The two values the old setup put in the agent's Slack secret: the
     # app-level token Socket Mode needs and the bot token of the old app.
@@ -9190,7 +9288,7 @@ def create_app(
         )
         if isinstance(made, JSONResponse):
             return made
-        row, install = made
+        row, install, _ = made
         # The old bot token is gone, so the agent is not wired to Slack until
         # the owner installs the new app; the callback sets this back.
         agent.slack_wired = False
@@ -9473,15 +9571,23 @@ def create_app(
         adds or removes the channel-message events, and only Slack can apply
         that, so the owner copies the manifest again and pastes it over the
         old one. Scopes never change, so a reinstall is never needed.
+
+        A connected agent with a room-made app (issue #484) gets the same
+        choice as a pull request its team merges (`pull_request`); nothing is
+        set on its live deployment, which belongs to its own build. One on
+        its own Slack app is refused: the room has no say in that app.
         """
         agent = _ready_agent_or_error(
             session, request, name, not_ready_message="agent is not ready for Slack changes yet"
         )
         if isinstance(agent, JSONResponse):
             return agent
-        blocked = _room_edits_this_agent_or_409(agent)
-        if blocked is not None:
-            return blocked
+        connected = is_connected(agent)
+        relay_row = _relay_row(session, agent) if app.state.config.slack_relay else None
+        if connected and (relay_row is None or relay_row.app_id is None):
+            blocked = _room_edits_this_agent_or_409(agent)
+            if blocked is not None:
+                return blocked
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
@@ -9493,15 +9599,20 @@ def create_app(
         previous = effective_wake(agent)
         clients = app.state.clients
         try:
-            result = edit_gojira_yaml(
-                clients.github,
-                clients.gojira,
-                repo=agent.repo_full_name,
-                connected=False,
-                gojira_app_id=agent.gojira_app_id,
-                edit=lambda data: _set_env_key(data, WAKE_ENV, mode),
-                message=f"kobo: in Slack, wake on {mode}",
-            )
+            if connected:
+                result = connected_wiring.propose_slack(
+                    clients.github, repo=agent.repo_full_name, agent_name=agent.name, mode=mode
+                )
+            else:
+                result = edit_gojira_yaml(
+                    clients.github,
+                    clients.gojira,
+                    repo=agent.repo_full_name,
+                    connected=False,
+                    gojira_app_id=agent.gojira_app_id,
+                    edit=lambda data: _set_env_key(data, WAKE_ENV, mode),
+                    message=f"kobo: in Slack, wake on {mode}",
+                )
         except DeployTriggerFailed as exc:
             return _deploy_trigger_failed(agent, exc)
         except RepoBusy as exc:
@@ -9515,18 +9626,18 @@ def create_app(
         # rolls the pods by itself); the later apply finds nothing to
         # change. A cluster that refuses is reported, never a 5xx: the
         # commit already landed and the next roll carries it.
-        applied_now = True
-        try:
-            clients.kubectl.set_env(agent.name, agent.name, WAKE_ENV, mode)
-        except ClientError as exc:
-            applied_now = False
-            log.warning("slack wake: live apply for agent %s failed: %s", agent.name, exc)
+        applied_now = not connected
+        if not connected:
+            try:
+                clients.kubectl.set_env(agent.name, agent.name, WAKE_ENV, mode)
+            except ClientError as exc:
+                applied_now = False
+                log.warning("slack wake: live apply for agent %s failed: %s", agent.name, exc)
         manifest_changed = wake_subscribes_channel_messages(mode) != wake_subscribes_channel_messages(previous)
         # A room-made app (issue #371) has no app-level token and nobody to
         # paste a manifest: the room applies the new event list itself with
         # `apps.manifest.update`, so the answer says nothing changed FOR THE
         # PERSON. The paste flow keeps its sentence.
-        relay_row = _relay_row(session, agent) if app.state.config.slack_relay else None
         if manifest_changed and relay_row is not None and relay_row.app_id is not None:
             slack = room_credentials.slack_client(clients)
             if slack is None:
@@ -9534,7 +9645,7 @@ def create_app(
             base = slack_relay.public_base_url(request, app.state.config)
             manifest = render_manifest(
                 agent.name,
-                _persona_first_line(session, agent),
+                _slack_description(session, agent),
                 wake=mode,
                 request_url=slack_relay.relay_url(base, relay_row.relay_id),
                 redirect_url=slack_relay.callback_url(base),
@@ -9565,6 +9676,7 @@ def create_app(
                 "applied_now": applied_now,
                 "applied_at": rfc3339(datetime.now(UTC)) if applied_now else None,
                 "wiring": result.how,
+                "pull_request": result.pull_request,
             }
         )
 
@@ -9803,6 +9915,7 @@ def create_app(
                     "sync": sync_state(None),
                     "wired": None,
                     "managed": [],
+                    "released": [],
                 }
             )
 
@@ -9825,6 +9938,8 @@ def create_app(
                 "sync": _sync_for(agent, env_secret_name(agent.name)),
                 "wired": _wired_on_default(agent),
                 "managed": _managed_secret_rows(agent, sero, email),
+                # Reserved names this agent may hold all the same.
+                "released": sorted(_released_keys(session, agent)),
             }
         )
 
@@ -9897,6 +10012,7 @@ def create_app(
             held.keys,
             taken=read_env(gojira_data),
             taken_as="variable",
+            released=_released_keys(session, agent),
         )
         if refusal is not None:
             return JSONResponse({"error": refusal}, status_code=422)

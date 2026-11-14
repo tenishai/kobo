@@ -349,7 +349,8 @@
     if (row.name.length === 0 || (row.kind === "secret" && !row.fresh)) {
       return null;
     }
-    const refusal = keyRefusal(row.name);
+    // Only the secrets list takes a released name: a token is never a variable.
+    const refusal = keyRefusal(row.name, row.kind === "secret" ? (secrets.data?.released ?? []) : []);
     if (refusal !== null) {
       return refusal;
     }
@@ -680,7 +681,7 @@
     if (frozen) {
       return;
     }
-    const parsed = parseEnvPaste(paste);
+    const parsed = parseEnvPaste(paste, secrets.data?.released ?? []);
     pasteProblems = parsed.problems;
     if (parsed.problems.length > 0) {
       // Nothing is added until every line is fixed: half a pasted file is

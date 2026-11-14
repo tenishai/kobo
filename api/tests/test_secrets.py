@@ -534,6 +534,42 @@ def test_a_room_managed_name_still_cannot_be_written_or_removed(
     assert sero.puts == []
 
 
+def test_a_connected_agent_on_its_own_slack_app_keeps_its_tokens_under_secrets(
+    session_factory__web_secrets, config__web_secrets, fake_storage, _key
+):
+    """Gate (2026-11-13): an agent that runs its team's own code and brings its own
+    Slack app reads its tokens under Slack's usual names, so its Secrets list takes
+    them (`released`); every other room name stays refused, and so do Slack's once
+    the room has made the agent an app, when the room's own Secret carries them."""
+    from datetime import datetime
+
+    from kobo_api.agent_env import TEAM_SLACK_KEYS
+    from kobo_api.models import SlackRelayApp
+
+    sero = FakeSero()
+    client, _ = _client(
+        session_factory__web_secrets, config__web_secrets, fake_storage, _key, sero=sero, kind=KIND_CONNECTED
+    )
+    slack = {"SLACK_BOT_TOKEN": VALUE, "SLACK_APP_TOKEN": VALUE}
+
+    assert client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()["released"] == sorted(TEAM_SLACK_KEYS)
+    saved = client.put(f"/api/agents/{AGENT}/secrets", json={"set": slack, "remove": []}, headers=_as(_key))
+    assert saved.status_code == 200, saved.text
+    assert sero.stored[f"apps/{AGENT}/env"] == slack
+    other = client.put(
+        f"/api/agents/{AGENT}/secrets", json={"set": {"CABAL_COLLEAGUE_TOKEN": VALUE}, "remove": []}, headers=_as(_key)
+    )
+    assert other.status_code == 422 and ROOM_SETS_THIS_ONE in other.json()["error"]
+
+    with session_factory__web_secrets() as s:
+        s.add(SlackRelayApp(relay_id="relay-id-0000", agent_name=AGENT, app_id="A0MADE", relay_secret="fake-relay-secret",
+                            created_at=datetime(2026, 11, 13)))
+        s.commit()
+    assert client.get(f"/api/agents/{AGENT}/secrets", headers=_as(_key)).json()["released"] == []
+    held = client.put(f"/api/agents/{AGENT}/secrets", json={"set": slack, "remove": []}, headers=_as(_key))
+    assert held.status_code == 422 and ROOM_SETS_THIS_ONE in held.json()["error"]
+
+
 def test_a_cluster_that_refuses_says_the_house_sentence_and_nothing_of_its_own(
     session_factory__web_secrets, config__web_secrets, fake_storage, _key
 ):

@@ -15,7 +15,11 @@ The app the room makes also hears reactions. When someone adds or removes an emo
 
 ### An agent that runs its team's own code
 
-A connected agent brings its own Slack app, so its Slack row says so and has no **Create Slack app**. Create the app in Slack, then save its tokens as secrets on the **Secrets** tab under the names your code reads. The agent restarts with them.
+A connected agent that serves a port can have the room make its Slack app the same way: pick **Wakes on**, press **Create Slack app**, then **Install to Slack**. One thing differs. The room never pushes to a team's repository, so the change that hands the app to the agent arrives there as a pull request, and the row reads **Waiting for its team to merge a pull request**, with a link to it, until the team merges it. Changing **Wakes on** later is a pull request too. If the request is closed without being merged the row says so, and **Open it again** opens it afresh; no second app is made. The agent's code has to take the messages the room hands it. See "Running your own code".
+
+A team that already has a Slack app of its own can keep it. Save its tokens as secrets on the **Secrets** tab, under `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `SLACK_SIGNING_SECRET` or whatever names the code reads, and the agent restarts with them. Take those tokens off the **Secrets** tab before asking the room for an app: the room's app brings its own, under the same names.
+
+A connected agent that serves no port has nowhere to be handed Slack's messages, so it always brings its own app, and its row has no **Create Slack app**.
 
 ### The agent's face
 
