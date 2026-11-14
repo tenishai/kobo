@@ -13,6 +13,12 @@ In some rooms Slack is a row on the **Access** tab instead, with the other vendo
 
 The app the room makes also hears reactions. When someone adds or removes an emoji on a message in a channel the agent is in, Slack tells the agent, whichever **Wakes on** you picked. An agent the room built does nothing with a reaction yet. An app made before this hears reactions the next time **Wakes on** moves between **Mentions only** and either of the other two; there is nothing to reinstall.
 
+### When the room asks Slack for more
+
+Now and then a release of the room lets a Slack app do more. The latest adds three things: posting a file, reading the workspace's custom emoji, and reading its user groups, so an agent can tell who `@oncall` is. It also tells the agent when someone joins a channel it is in. A connected agent's own code can use all of it at once. An agent the room built does nothing with these yet.
+
+Slack only gives an app more when a person allows it, so an app installed before such a release keeps working exactly as it was and its row shows **Update**. Open the row and press **Update in Slack**: Slack shows what is new and asks you to allow it, then sends you back to the agent's page. The agent keeps answering until then and restarts once after. An app installed after the release has it all from the start, and its row never asks.
+
 ### An agent that runs its team's own code
 
 A connected agent that serves a port can have the room make its Slack app the same way: pick **Wakes on**, press **Create Slack app**, then **Install to Slack**. One thing differs. The room never pushes to a team's repository, so the change that hands the app to the agent arrives there as a pull request, and the row reads **Waiting for its team to merge a pull request**, with a link to it, until the team merges it. Changing **Wakes on** later is a pull request too. If the request is closed without being merged the row says so, and **Open it again** opens it afresh; no second app is made. The agent's code has to take the messages the room hands it. See "Running your own code".

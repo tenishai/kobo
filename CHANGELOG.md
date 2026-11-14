@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- A room-made Slack app can do more, and an installed one can be brought up to date (#484). Every manifest the room writes now asks for `files:write` (post a file), `emoji:read` (the workspace's custom emoji) and `usergroups:read` (who a user group is), and subscribes to `member_joined_channel`. Slack grants a scope only when a person approves it, and until now nothing could send an installed room-made app back through Slack's approval, so a scope the room added later never reached it. The room now remembers what each install was granted (`slack_relay_apps.scopes`, migration `c8e2a4f6b1d9`); a row that holds less than the room asks for shows **Update**, and **Update in Slack** refreshes the app's manifest and sends its owner through one approval. The agent keeps answering until then and restarts once after. A connected agent's code can use the new abilities at once; the room's own runtime does nothing with them yet.
+
 ## [0.3.62] - 2026-11-13
 
 ### Fixed

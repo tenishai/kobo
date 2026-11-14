@@ -291,6 +291,7 @@ from kobo_api.slack_setup import (
     effective_wake,
     render_manifest,
     rewire_slack_channels,
+    scopes_owed,
     wake_subscribes_channel_messages,
     wire_slack,
     wire_slack_values,
@@ -8967,6 +8968,9 @@ def create_app(
             "wiring": _slack_wiring(agent) if is_connected(agent) and row is not None and row.app_id else None,
             # The build the wiring started has not rolled yet (2026-11-03).
             "rebuilding": state == "installed" and _slack_rebuilding(agent),
+            # The app was installed before the room asked Slack for what it
+            # asks for today (issue #484): its owner approves the rest once.
+            "update_due": state == "installed" and row is not None and bool(scopes_owed(row.scopes)),
         }
         if state == "created" and row is not None and row.client_id and _owner_or_operator_or_403(agent, request) is None:
             state_token = slack_relay.current_state(row) or slack_relay.mint_state(row)
@@ -9089,6 +9093,68 @@ def create_app(
         )
         session.commit()
         return JSONResponse({"app_id": row.app_id, "install_url": install, "pull_request": pull_request})
+
+    @app.post("/api/agents/{name}/slack/app/update")
+    def update_slack_app(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Bring an installed room-made app up to what the room asks Slack
+        for today (issue #484). The list of bot scopes grows with releases,
+        and Slack grants a scope only when a person approves it, so an app
+        installed earlier keeps working without the new ones until its owner
+        says yes once more.
+
+        Two halves, in the order Slack needs them: the room replaces the
+        app's manifest with today's (`apps.manifest.update`; an install link
+        may only ask for scopes the app declares), then answers with a fresh
+        install link. The person follows it, Slack shows what is new, and the
+        ordinary callback finishes: it stores the token Slack answers with
+        and what was granted. Nothing in the agent's files changes, so a
+        connected agent takes this path too, with no pull request.
+
+        The agent keeps answering throughout: until the approval the app
+        simply does not hold the new scopes.
+        """
+        cfg: Config = app.state.config
+        if not cfg.slack_relay:
+            return _relay_off()
+        agent = _ready_agent_or_error(
+            session, request, name, not_ready_message="agent is not ready for Slack changes yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+        row = _relay_row(session, agent)
+        if row is None or row.app_id is None or row.installed_at is None or not row.client_id:
+            return JSONResponse({"error": "This agent has no installed Slack app to update."}, status_code=409)
+        slack = room_credentials.slack_client(app.state.clients)
+        if slack is None:
+            return JSONResponse({"error": "Slack is not configured"}, status_code=503)
+        base = slack_relay.public_base_url(request, cfg)
+        manifest = render_manifest(
+            agent.name,
+            _slack_description(session, agent),
+            wake=effective_wake(agent),
+            request_url=slack_relay.relay_url(base, row.relay_id),
+            redirect_url=slack_relay.callback_url(base),
+        )
+        try:
+            slack.update_app(row.app_id, manifest)
+        except ClientError as exc:
+            log.warning("slack manifest update failed for agent %s: %s", agent.name, exc)
+            return JSONResponse({"error": "Slack did not take the change. Try again."}, status_code=502)
+        state_token = slack_relay.mint_state(row)
+        audit.record(
+            session, request=request, action="slack.app.update", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, summary=f"{audit.who(request)} updated agent {agent.name}'s Slack app",
+            detail={"app_id": row.app_id, "owed": scopes_owed(row.scopes)},
+        )
+        session.commit()
+        return JSONResponse(
+            {"install_url": slack_relay.install_url(row.client_id, state_token, slack_relay.callback_url(base))}
+        )
 
     def _make_room_slack_app(
         request: Request,

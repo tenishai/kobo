@@ -1506,6 +1506,9 @@ def test_slack_manifest_renders_agent_manifest(session_factory__api_slack, confi
         "reactions:write",
         "users:read",
         "users:read.email",
+        "files:write",
+        "emoji:read",
+        "usergroups:read",
     ]
 
 
@@ -1623,6 +1626,7 @@ def test_get_slack_app_view_carries_the_install_link_while_created_and_not_insta
         "enabled": True, "available": True, "state": "created", "app_id": "A0FAKE",
         "workspace": None, "app_name": None, "channels": [CHANNEL], "wake": "mention", "legacy": False,
         "own_app": False, "room_app": True, "wiring": None, "rebuilding": False,
+        "update_due": False,
     }
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert (detail["slack"]["relay"], detail["slack"]["legacy"]) == (True, False)

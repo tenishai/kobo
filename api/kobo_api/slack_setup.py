@@ -105,6 +105,15 @@ _BOT_SCOPES = [
     # SCOPE addition: an existing agent's app takes it on its next reinstall.
     "users:read",
     "users:read.email",
+    # What teams asked an agent to do next in Slack (issue #484, 2026-11-13):
+    # hand back a file (a report, a chart, a log), know the workspace's own
+    # emoji by name, and say who is in a user group someone mentioned. Three
+    # SCOPE additions in one batch, so an existing app is asked once: a
+    # room-made app shows Update in Slack on its row (`scopes_owed`), one
+    # from the Slack tab takes them at its next Reconnect the Slack app.
+    "files:write",
+    "emoji:read",
+    "usergroups:read",
 ]
 
 # Tagged-only in channels (2026-08-31 operator ruling, from live use: an
@@ -129,6 +138,11 @@ _BOT_EVENTS = [
     # mention, so nothing changes for an agent until its runtime reads them.
     "reaction_added",
     "reaction_removed",
+    # Someone joined a channel the agent is in, the agent itself included
+    # (issue #484): how an agent learns it was just invited somewhere. An
+    # EVENT addition under channels:read / groups:read, which every manifest
+    # has carried; the room's own runtime drops it like the reactions above.
+    "member_joined_channel",
 ]
 
 # How Slack wakes an agent in a channel (2026-10-06). The runtime (daedalus
@@ -175,6 +189,17 @@ def bot_scopes() -> list[str]:
     """The bot scopes every manifest carries, for the install link the relay
     flow builds (issue #371): `oauth/v2/authorize` wants them spelled out."""
     return list(_BOT_SCOPES)
+
+
+def scopes_owed(granted: str | None) -> list[str]:
+    """The scopes a room-made app was not installed with, in manifest order.
+    `granted` is Slack's own comma-separated answer at install; None is an
+    app installed before the room kept that answer, which owes whatever this
+    release added, and nobody can say what else, so it owes the lot."""
+    if granted is None:
+        return list(_BOT_SCOPES)
+    held = {scope.strip() for scope in granted.split(",") if scope.strip()}
+    return [scope for scope in _BOT_SCOPES if scope not in held]
 
 
 def render_manifest(
