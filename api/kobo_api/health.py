@@ -68,6 +68,10 @@ class AgentHealth:
     # build-and-roll changes, so a row can tell "still the old build" from
     # "back on the new one" (the Slack row's Rebuilding, 2026-11-03).
     image: str | None = None
+    # The cluster could not be asked. `state` is up all the same (see
+    # `probe_health`), so nothing is refused on a guess; a line that would
+    # say "running" as a fact reads this first and says nothing.
+    unread: bool = False
 
     def body(self) -> dict:
         return asdict(self)
@@ -157,7 +161,7 @@ def probe_health(kubectl: KubectlClient, name: str, *, now: datetime | None = No
         dep = kubectl.deployment_status_json(name, name)
     except Exception:  # noqa: BLE001
         log.info("health probe could not read deployment for %s", name)
-        return AgentHealth(UP, None, checked_at)
+        return AgentHealth(UP, None, checked_at, unread=True)
     spec = dep.get("spec") or {}
     status = dep.get("status") or {}
     wanted = spec.get("replicas", 1) or 0

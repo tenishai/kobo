@@ -9,7 +9,8 @@ it. Each of those used to be found by reading logs.
 So the page says three things, each one sentence, in the order they have to
 come true:
 
-- `running`: the cluster's own word (`kobo_api.health`).
+- `running`: the cluster's own word (`kobo_api.health`), and nothing when
+  the cluster could not be asked.
 - `gateway`: whether its files carry the room's setup for the tool gateway
   (`connected_wiring.state`), and when the gateway last saw a call from it.
   Left out when the room has no gateway to set an agent up for.
@@ -34,7 +35,7 @@ from __future__ import annotations
 
 from kobo_api.connected_wiring import OWED, WAITING
 from kobo_api.health import DOWN
-from kobo_api.slack_relay import LOST, REFUSED, TAKEN
+from kobo_api.slack_relay import LOST, REFUSED, SLOW, TAKEN
 
 STATE_OK = "ok"
 STATE_WAITING = "waiting"
@@ -57,6 +58,8 @@ def running(health: dict | None) -> dict:
     """`health` is `AgentHealth.body()`, or None before the first reading."""
     if health is None:
         return _check("running", STATE_IDLE, "The room has not looked at it yet. It does once a minute.")
+    if health.get("unread"):
+        return _check("running", STATE_IDLE, "The room could not check on it just now. It tries again in a minute.")
     if health.get("state") == DOWN:
         if health.get("rolling"):
             return _check("running", STATE_WAITING, "Restarting. Back in about a minute.")
@@ -120,6 +123,13 @@ def slack(app_state: str, wiring: object, *, outcome: str | None, at: str | None
         return _check(
             "slack", STATE_MISSING,
             "It refused the last message from Slack. Its code has to take the messages the room hands it.",
+            at=at,
+        )
+    if outcome == SLOW:
+        return _check(
+            "slack", STATE_MISSING,
+            "It did not answer the last message from Slack in time. "
+            "Its code has to answer at once and do the work after.",
             at=at,
         )
     if outcome == LOST:

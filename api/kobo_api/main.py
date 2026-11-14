@@ -8404,20 +8404,26 @@ def create_app(
     def _last_gateway_call(agent: Agent) -> object:
         """When the gateway last saw a call from `agent` (admitted or
         refused) in `connected_checks.LAST_CALL_DAYS` days, None when it saw
-        none, `UNREAD` when the room has no admin plane or it did not answer."""
+        none, `UNREAD` when the room has no admin plane or it did not answer.
+        The gateway hands back its newest rows of every kind and cannot be
+        asked for calls alone, so a full page with no call in it is `UNREAD`
+        too: there may be one further back."""
         admin = getattr(app.state.clients, "liminal_admin", None)
         if admin is None:
             return connected_checks.UNREAD
         since = time.time() - connected_checks.LAST_CALL_DAYS * 86400
+        page = 200
         try:
-            raw = admin.audit(persona=agent.name, since=since, limit=20)
+            raw = admin.audit(persona=agent.name, since=since, limit=page)
         except ClientError:
             return connected_checks.UNREAD
         seen = [
             r["ts"] for r in raw
             if r.get("action") in ("access_allow", "access_deny") and isinstance(r.get("ts"), (int, float))
         ]
-        return rfc3339(datetime.fromtimestamp(max(seen), UTC)) if seen else None
+        if not seen:
+            return connected_checks.UNREAD if len(raw) >= page else None
+        return rfc3339(datetime.fromtimestamp(max(seen), UTC))
 
     @app.get("/api/agents/{name}/checks")
     def agent_checks(
@@ -8437,6 +8443,21 @@ def create_app(
             return JSONResponse({"checks": []})
         cfg: Config = app.state.config
         github = app.state.clients.github
+        slack_on = bool(cfg.slack_relay) and agent.run_mode == RUN_MODE_HTTP
+        row = session.query(SlackRelayApp).filter_by(agent_name=agent.name).one_or_none() if slack_on else None
+        if row is None or row.app_id is None:
+            app_state = "none"
+        elif row.installed_at is None:
+            app_state = "created"
+        else:
+            app_state = "installed"
+        outcome = row.last_event_outcome if row is not None else None
+        outcome_at = rfc3339(row.last_event_at) if row is not None else None
+        # Everything the room's own tables say is read by here, and the
+        # session closed BEFORE the repository or the gateway is asked (the
+        # 2026-10-01 pool incident: never hold a database session across a
+        # slow call). An open page asks this once a minute.
+        session.close()
         lines = [connected_checks.running(_health_body(agent.name))]
         if connected_wiring.gateway_identity_on(cfg):
             wiring: object = connected_checks.UNREAD
@@ -8448,23 +8469,11 @@ def create_app(
             lines.append(connected_checks.gateway(
                 wiring, last_call_at=_last_gateway_call(agent) if wired else connected_checks.UNREAD
             ))
-        if cfg.slack_relay and agent.run_mode == RUN_MODE_HTTP:
-            row = session.query(SlackRelayApp).filter_by(agent_name=agent.name).one_or_none()
-            if row is None or row.app_id is None:
-                app_state = "none"
-            elif row.installed_at is None:
-                app_state = "created"
-            else:
-                app_state = "installed"
+        if slack_on:
             slack_wiring: object = connected_checks.UNREAD
             if app_state == "installed":
                 slack_wiring = _slack_wiring(agent) or connected_checks.UNREAD
-            lines.append(connected_checks.slack(
-                app_state,
-                slack_wiring,
-                outcome=row.last_event_outcome if row is not None else None,
-                at=rfc3339(row.last_event_at) if row is not None else None,
-            ))
+            lines.append(connected_checks.slack(app_state, slack_wiring, outcome=outcome, at=outcome_at))
         return JSONResponse({"checks": lines})
 
     @app.get("/api/agents/{name}/learnings")

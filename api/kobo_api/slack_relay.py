@@ -67,6 +67,7 @@ from urllib.parse import parse_qs, quote, urlencode
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy import or_, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api import audit, delivery
@@ -314,38 +315,44 @@ _sleep = time.sleep  # tests swap it for a recorder
 
 
 # What became of a hand-off, as the app's row keeps it: the agent took it,
-# the agent answered with a refusal, or it never arrived (every try met no
-# agent). A try that is still being repeated is none of the three yet.
+# the agent answered with a refusal, the agent was reached and did not answer
+# in time, or it never arrived (every try met no agent). A try that is still
+# being repeated is none of the four yet.
 TAKEN = "taken"
 REFUSED = "refused"
+SLOW = "slow"
 LOST = "lost"
-# The same outcome is written again at most this often per app and process:
-# a busy channel is one write a minute, and a change of outcome is written
-# at once.
+# The same outcome is written again at most this often per app: a busy
+# channel is one write a minute, and a change of outcome is written at once.
+# The row itself is asked, in the one statement that writes it, because the
+# room runs as more than one process and each sees only its own hand-offs:
+# a count kept in memory left "refused" on the row after another process
+# had since seen the agent take a message.
 RECORD_EVERY_S = 60.0
-_recorded: dict[str, tuple[str, float]] = {}
-_recorded_lock = threading.Lock()
 
 
 def record_outcome(
-    session_factory: sessionmaker[Session], relay_id: str, outcome: str, *, clock: Callable[[], float] = time.monotonic
+    session_factory: sessionmaker[Session], relay_id: str, outcome: str, *, now: datetime | None = None
 ) -> None:
     """Keep what became of the last hand-off on the app's row. Never a
     reason for the relay to fail: a row that is gone, or a store that cannot
     be written, is logged and the event has already gone where it was going."""
-    now = clock()
-    with _recorded_lock:
-        last = _recorded.get(relay_id)
-        if last is not None and last[0] == outcome and now - last[1] < RECORD_EVERY_S:
-            return
-        _recorded[relay_id] = (outcome, now)
+    now = now or datetime.now(UTC).replace(tzinfo=None)
     try:
         with session_factory() as session:
-            row = session.get(SlackRelayApp, relay_id)
-            if row is None:
-                return
-            row.last_event_at = datetime.now(UTC).replace(tzinfo=None)
-            row.last_event_outcome = outcome
+            session.execute(
+                update(SlackRelayApp)
+                .where(
+                    SlackRelayApp.relay_id == relay_id,
+                    or_(
+                        SlackRelayApp.last_event_outcome.is_(None),
+                        SlackRelayApp.last_event_outcome != outcome,
+                        SlackRelayApp.last_event_at.is_(None),
+                        SlackRelayApp.last_event_at < now - timedelta(seconds=RECORD_EVERY_S),
+                    ),
+                )
+                .values(last_event_at=now, last_event_outcome=outcome)
+            )
             session.commit()
     except Exception as exc:  # noqa: BLE001
         log.warning("slack relay: could not keep the last outcome (%s)", type(exc).__name__)
@@ -366,9 +373,13 @@ def forward_event(
     the outcome word once it is known."""
     record = record or (lambda outcome: None)
     delays = (0.0, *RETRY_DELAYS_S)
+    # The last try reached something and waited out its answer: the agent has
+    # the message and is slow with it, which is not the same as no agent.
+    slow = False
     for attempt, delay in enumerate(delays):
         if delay:
             _sleep(delay)
+        slow = False
         try:
             resp = _client().post(
                 url,
@@ -376,6 +387,7 @@ def forward_event(
                 headers={RELAY_SECRET_HEADER: relay_secret, "Content-Type": "application/json"},
             )
         except httpx.HTTPError as exc:
+            slow = isinstance(exc, httpx.ReadTimeout)
             outcome = f"unreachable ({type(exc).__name__})"
         else:
             if resp.status_code < 400:
@@ -391,7 +403,7 @@ def forward_event(
         last = attempt == len(delays) - 1
         log.log(logging.WARNING if last else logging.INFO, "slack relay: agent %s %s; %s", agent_name, outcome,
                 "the event is dropped" if last else "trying again, it may be restarting")
-    record(LOST)
+    record(SLOW if slow else LOST)
 
 
 # --- session --------------------------------------------------------------------

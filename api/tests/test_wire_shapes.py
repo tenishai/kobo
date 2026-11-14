@@ -1844,6 +1844,46 @@ def test_a_connected_agents_page_says_what_is_missing(session_factory__api_slack
     assert refused["line"].startswith("It refused the last message from Slack.")
 
 
+def test_a_connected_agents_page_claims_nothing_it_could_not_see(
+    session_factory__api_slack, config__api_slack, monkeypatch
+):
+    """Wire shape (2026-11-14): a cluster that could not be asked is not "running",
+    and the gateway hands back its newest rows of every kind, so a full page with
+    no call in it is not "no call in seven days". Either line says only what the
+    room saw."""
+    from kobo_api.kinds import RUN_MODE_HTTP
+
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    gateway_config = config__api_slack.model_copy(update={
+        "cabal_url": "http://switchboard.internal",
+        "agent_endpoint_template": "http://agent-{name}.internal",
+        "liminal_url": "http://gateway.internal/mcp",
+    })
+    contract = (
+        f"name: clio\nsecrets_from:\n  - {AGENT_NAME}-cabal\n"
+        "env:\n  KOBO_SWITCHBOARD_URL: http://switchboard.internal\n  KOBO_GATEWAY_URL: http://gateway.internal/mcp\n"
+    )
+    kubectl = FakeKubectl(deployment_status_error="the cluster did not answer")
+    client = _make_client__api_slack(
+        session_factory__api_slack, gateway_config, github=FakeGitHub(repo_files={"gojira.yaml": contract}), kubectl=kubectl
+    )
+    _seed_agent__api_slack(session_factory__api_slack, gateway_config)
+    _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HTTP)
+    client.app.state.health = {AGENT_NAME: probe_health(kubectl, AGENT_NAME)}
+
+    def lines(rows) -> dict[str, tuple[str, str]]:
+        client.app.state.clients.liminal_admin = FakeAudit(rows)
+        return {c["id"]: (c["state"], c["line"]) for c in client.get(f"/api/agents/{AGENT_NAME}/checks").json()["checks"]}
+
+    grant = {"ts": 1700000000.0, "action": "grant", "persona": AGENT_NAME, "detail": {}}
+    quiet = lines([grant])
+    assert quiet["running"] == ("idle", "The room could not check on it just now. It tries again in a minute.")
+    assert quiet["gateway"] == ("idle", "Set up to reach the tool gateway. No call from it in the last 7 days.")
+    assert lines([grant] * 200)["gateway"] == ("ok", "Set up to reach the tool gateway.")
+    called = lines([grant] * 199 + [{"ts": 1700000000.0, "action": "access_deny", "persona": AGENT_NAME, "detail": {}}])
+    assert called["gateway"] == ("ok", "Reaching the tool gateway.")
+
+
 def test_every_line_a_connected_agents_page_can_say_follows_the_house_rules():
     """House rule: the sentences are the room's own copy, so no em dashes and
     none of the words its pages avoid. Each state gets a sentence of its own, a
@@ -1860,6 +1900,7 @@ def test_every_line_a_connected_agents_page_can_say_follows_the_house_rules():
         cc.running({"state": "up", "rolling": True}),
         cc.running({"state": "down", "rolling": True}),
         cc.running({"state": "down", "rolling": False, "reason": "0 of 1 running; restarted 12 times"}),
+        cc.running({"state": "up", "rolling": False, "unread": True}),
         cc.gateway(cc.UNREAD),
         cc.gateway({"state": "waiting", "pull_request": request}),
         cc.gateway({"state": "owed", "pull_request": None}),
@@ -1874,6 +1915,7 @@ def test_every_line_a_connected_agents_page_can_say_follows_the_house_rules():
         cc.slack("installed", {"state": "wired", "pull_request": None}, outcome="taken", at="2026-11-14T12:00:00Z"),
         cc.slack("installed", {"state": "wired", "pull_request": None}, outcome="refused", at=None),
         cc.slack("installed", {"state": "wired", "pull_request": None}, outcome="lost", at=None),
+        cc.slack("installed", {"state": "wired", "pull_request": None}, outcome="slow", at=None),
         cc.slack("installed", cc.UNREAD, outcome=None, at=None),
     ]
 
@@ -1882,10 +1924,11 @@ def test_every_line_a_connected_agents_page_can_say_follows_the_house_rules():
         assert "\u2014" not in check["line"] and not forbidden.search(check["line"]), check["line"]
         assert check["line"].endswith(".")
     assert [c["state"] for c in said] == [
-        "idle", "ok", "waiting", "waiting", "missing",
+        "idle", "ok", "waiting", "waiting", "missing", "idle",
         "idle", "waiting", "missing", "ok", "idle", "ok",
-        "idle", "waiting", "waiting", "missing", "idle", "ok", "missing", "missing", "idle",
+        "idle", "waiting", "waiting", "missing", "idle", "ok", "missing", "missing", "missing", "idle",
     ]
+    assert len({c["line"] for c in said}) == len(said) - 1  # only "could not read its files" is said twice
     assert [c["pull_request"] for c in said if c["pull_request"]] == [request, request]
     assert said[4]["line"] == "Not running: 0 of 1 running; restarted 12 times."
 
