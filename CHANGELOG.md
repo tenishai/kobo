@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.62] - 2026-11-13
+
 ### Fixed
 - A connected repository's build no longer stays red after its team merges a pull request from the room. Every change the room proposes to a connected agent edits its deploy contract, and the repository's own build refuses to deploy until the deploy platform regenerates the files rendered from it. Nothing asked the platform to: the platform regenerates on a provision call, never on a push, and the room made that call only inside the connect pipeline. A secrets wiring or a variables pull request merged days later left the team with a failing build and a message telling them to press a button on a page they cannot open. The room now compares the contract on the default branch with the one the deploy files were rendered from, every five minutes, and asks for the regeneration once per version; the platform's setup pull request follows, as the guide already said it would.
 - A connected agent in a room with the model gateway gets its key. The wire step took the cloud model variables out, as it should when models go through the gateway, and delivered no key and no address in their place, while the pull request's text said the Secret was there. The key is now minted and delivered before the request opens, `<agent>-models` is in the contract, and `KOBO_MODELS_URL` carries the address.
