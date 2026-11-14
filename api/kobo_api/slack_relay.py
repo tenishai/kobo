@@ -14,6 +14,9 @@ room's OAuth server and MCP surface (`kobo_api.iap.EXEMPT_PREFIXES`):
   `X-Kobo-Relay-Secret`. Unknown id and bad signature are a bare 404 and
   401. A token bucket per relay id keeps one app from flooding the room.
   Log lines carry the agent's name and an outcome word, never a body.
+  What became of the last hand-off is kept on the app's row too (`taken`,
+  `refused`, `lost`), which is what a connected agent's page reads to say
+  whether it is taking Slack's messages.
 - `POST /slack/relay/{relay_id}/actions` and `.../commands` (issue #484):
   the two things Slack sends that are not events, a click on a button or a
   menu the agent posted and the agent's slash command. Slack posts both as
@@ -57,13 +60,14 @@ import re
 import secrets
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, quote, urlencode
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy import or_, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api import audit, delivery
@@ -310,14 +314,72 @@ RETRY_STATUSES: frozenset[int] = frozenset({404, 502, 503, 504})
 _sleep = time.sleep  # tests swap it for a recorder
 
 
-def forward_event(url: str, relay_secret: str, body: bytes, *, agent_name: str) -> None:
+# What became of a hand-off, as the app's row keeps it: the agent took it,
+# the agent answered with a refusal, the agent was reached and did not answer
+# in time, or it never arrived (every try met no agent). A try that is still
+# being repeated is none of the four yet.
+TAKEN = "taken"
+REFUSED = "refused"
+SLOW = "slow"
+LOST = "lost"
+# The same outcome is written again at most this often per app: a busy
+# channel is one write a minute, and a change of outcome is written at once.
+# The row itself is asked, in the one statement that writes it, because the
+# room runs as more than one process and each sees only its own hand-offs:
+# a count kept in memory left "refused" on the row after another process
+# had since seen the agent take a message.
+RECORD_EVERY_S = 60.0
+
+
+def record_outcome(
+    session_factory: sessionmaker[Session], relay_id: str, outcome: str, *, now: datetime | None = None
+) -> None:
+    """Keep what became of the last hand-off on the app's row. Never a
+    reason for the relay to fail: a row that is gone, or a store that cannot
+    be written, is logged and the event has already gone where it was going."""
+    now = now or datetime.now(UTC).replace(tzinfo=None)
+    try:
+        with session_factory() as session:
+            session.execute(
+                update(SlackRelayApp)
+                .where(
+                    SlackRelayApp.relay_id == relay_id,
+                    or_(
+                        SlackRelayApp.last_event_outcome.is_(None),
+                        SlackRelayApp.last_event_outcome != outcome,
+                        SlackRelayApp.last_event_at.is_(None),
+                        SlackRelayApp.last_event_at < now - timedelta(seconds=RECORD_EVERY_S),
+                    ),
+                )
+                .values(last_event_at=now, last_event_outcome=outcome)
+            )
+            session.commit()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("slack relay: could not keep the last outcome (%s)", type(exc).__name__)
+
+
+def _recorder(request: Request, relay_id: str) -> Callable[[str], None]:
+    """`record_outcome` for one app, on the room's own session factory."""
+    session_factory: sessionmaker[Session] = request.app.state.session_factory
+    return lambda outcome: record_outcome(session_factory, relay_id, outcome)
+
+
+def forward_event(
+    url: str, relay_secret: str, body: bytes, *, agent_name: str, record: Callable[[str], None] | None = None
+) -> None:
     """Hand one envelope to the agent, trying again through a restart (see
     `RETRY_DELAYS_S`). Outcome is logged by word and status only; the body
-    never reaches a log line. Runs after Slack has its 200."""
+    never reaches a log line. Runs after Slack has its 200. `record` is told
+    the outcome word once it is known."""
+    record = record or (lambda outcome: None)
     delays = (0.0, *RETRY_DELAYS_S)
+    # The last try reached something and waited out its answer: the agent has
+    # the message and is slow with it, which is not the same as no agent.
+    slow = False
     for attempt, delay in enumerate(delays):
         if delay:
             _sleep(delay)
+        slow = False
         try:
             resp = _client().post(
                 url,
@@ -325,19 +387,23 @@ def forward_event(url: str, relay_secret: str, body: bytes, *, agent_name: str) 
                 headers={RELAY_SECRET_HEADER: relay_secret, "Content-Type": "application/json"},
             )
         except httpx.HTTPError as exc:
+            slow = isinstance(exc, httpx.ReadTimeout)
             outcome = f"unreachable ({type(exc).__name__})"
         else:
             if resp.status_code < 400:
                 log.info("slack relay: forwarded one event to agent %s%s", agent_name,
                          f" after {attempt} more {'try' if attempt == 1 else 'tries'}" if attempt else "")
+                record(TAKEN)
                 return
             if resp.status_code not in RETRY_STATUSES:
                 log.warning("slack relay: agent %s refused an event (%s)", agent_name, resp.status_code)
+                record(REFUSED)
                 return
             outcome = f"answered {resp.status_code}"
         last = attempt == len(delays) - 1
         log.log(logging.WARNING if last else logging.INFO, "slack relay: agent %s %s; %s", agent_name, outcome,
                 "the event is dropped" if last else "trying again, it may be restarting")
+    record(SLOW if slow else LOST)
 
 
 # --- session --------------------------------------------------------------------
@@ -434,7 +500,9 @@ async def relay(
         log.warning("slack relay: no agent endpoint template; event for agent %s dropped", row.agent_name)
         return JSONResponse({"accepted": True})
 
-    background.add_task(forward_event, url, row.relay_secret, body, agent_name=row.agent_name)
+    background.add_task(
+        forward_event, url, row.relay_secret, body, agent_name=row.agent_name, record=_recorder(request, relay_id)
+    )
     return JSONResponse({"accepted": True})
 
 
@@ -515,7 +583,8 @@ async def relay_action(
         log.warning("slack relay: no agent endpoint template; click for agent %s dropped", row.agent_name)
         return _bare(200)
     background.add_task(
-        forward_event, url, row.relay_secret, json.dumps(payload).encode("utf-8"), agent_name=row.agent_name
+        forward_event, url, row.relay_secret, json.dumps(payload).encode("utf-8"), agent_name=row.agent_name,
+        record=_recorder(request, relay_id),
     )
     return _bare(200)
 
@@ -543,7 +612,9 @@ async def relay_command(
         log.warning("slack relay: no agent endpoint template; command for agent %s dropped", row.agent_name)
         return _bare(200)
     body = json.dumps({**form, "type": SLASH_COMMAND_TYPE}).encode("utf-8")
-    background.add_task(forward_event, url, row.relay_secret, body, agent_name=row.agent_name)
+    background.add_task(
+        forward_event, url, row.relay_secret, body, agent_name=row.agent_name, record=_recorder(request, relay_id)
+    )
     return _bare(200)
 
 

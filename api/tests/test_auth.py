@@ -1696,7 +1696,8 @@ def test_relay_keeps_an_event_through_an_agent_restart_and_drops_it_on_a_refusal
     """Wire shape (relay): an agent mid-restart answers 404 from its old pod or
     nothing at all; the relay sends the same event again on its schedule and
     stops at the first success. A refusal (a wrong relay secret, 403) is final,
-    and after the whole schedule the event is dropped with one warning."""
+    and after the whole schedule the event is dropped with one warning. Each
+    ends in one word for the app's row, and a try still being repeated in none."""
     from kobo_api import slack_relay
 
     def room(answers):
@@ -1707,6 +1708,8 @@ def test_relay_keeps_an_event_through_an_agent_restart_and_drops_it_on_a_refusal
             answer = answers.pop(0)
             if answer == "down":
                 raise httpx.ConnectError("connection refused")
+            if answer == "slow":
+                raise httpx.ReadTimeout("no answer in time")
             return httpx.Response(answer, json={"accepted": answer == 200})
 
         naps: list[float] = []
@@ -1714,18 +1717,67 @@ def test_relay_keeps_an_event_through_an_agent_restart_and_drops_it_on_a_refusal
         monkeypatch.setattr(slack_relay, "_sleep", naps.append)
         return seen, naps
 
+    words: list[str] = []
     seen, naps = room(["down", 404, 200])
-    slack_relay.forward_event("http://agent.test/slack/events", "s3cret", b"{}", agent_name="rae")
+    slack_relay.forward_event("http://agent.test/slack/events", "s3cret", b"{}", agent_name="rae", record=words.append)
     assert len(seen) == 3 and naps == [5.0, 15.0]
     assert all(r.headers["X-Kobo-Relay-Secret"] == "s3cret" for r in seen)
 
     seen, naps = room([403])
-    slack_relay.forward_event("http://agent.test/slack/events", "s3cret", b"{}", agent_name="rae")
+    slack_relay.forward_event("http://agent.test/slack/events", "s3cret", b"{}", agent_name="rae", record=words.append)
     assert len(seen) == 1 and naps == []
 
     seen, naps = room([404] * (len(slack_relay.RETRY_DELAYS_S) + 1))
-    slack_relay.forward_event("http://agent.test/slack/events", "s3cret", b"{}", agent_name="rae")
+    slack_relay.forward_event("http://agent.test/slack/events", "s3cret", b"{}", agent_name="rae", record=words.append)
     assert len(seen) == len(slack_relay.RETRY_DELAYS_S) + 1 and naps == list(slack_relay.RETRY_DELAYS_S)
+
+    # An agent that was reached and sat on its answer has the message: slow, not lost.
+    seen, naps = room(["down", *["slow"] * len(slack_relay.RETRY_DELAYS_S)])
+    slack_relay.forward_event("http://agent.test/slack/events", "s3cret", b"{}", agent_name="rae", record=words.append)
+    assert words == ["taken", "refused", "lost", "slow"]
+
+
+def test_relay_keeps_what_became_of_the_last_hand_off_on_the_apps_row(tmp_path, relay_forwards, monkeypatch):
+    """Wire shape (relay, 2026-11-14): the app's row carries when the relay last
+    handed the agent something and what became of it, which is what a connected
+    agent's page reads. The same word again within a minute is not written twice,
+    and it is the row that is asked, never this process's memory: the room runs
+    as more than one, and a word another one wrote is a change like any other."""
+    from datetime import datetime, timedelta
+
+    from kobo_api import slack_relay
+    from kobo_api.models import SlackRelayApp
+
+    client = _relay_room(tmp_path)
+    factory = client.app.state.session_factory
+
+    def row():
+        with factory() as s:
+            return s.get(SlackRelayApp, RELAY_ID)
+
+    assert (row().last_event_at, row().last_event_outcome) == (None, None)
+    body = _event()
+    assert client.post(f"/slack/relay/{RELAY_ID}", content=body, headers=_signed(body)).status_code == 200
+    first = row()
+    assert first.last_event_outcome == "taken" and first.last_event_at is not None
+
+    start = first.last_event_at + timedelta(hours=1)
+    at = lambda seconds: start + timedelta(seconds=seconds)
+    slack_relay.record_outcome(factory, RELAY_ID, "taken", now=at(0))
+    slack_relay.record_outcome(factory, RELAY_ID, "taken", now=at(10))
+    assert row().last_event_at == at(0)
+    # Another process saw a refusal and wrote it; this one's next "taken" is a change.
+    with factory() as s:
+        other = s.get(SlackRelayApp, RELAY_ID)
+        other.last_event_outcome, other.last_event_at = "refused", at(20)
+        s.commit()
+    slack_relay.record_outcome(factory, RELAY_ID, "taken", now=at(30))
+    assert (row().last_event_outcome, row().last_event_at) == ("taken", at(30))
+    slack_relay.record_outcome(factory, RELAY_ID, "taken", now=at(100))
+    assert row().last_event_at == at(100)
+    # A row that is gone is nothing to keep, and never an error for the relay.
+    slack_relay.record_outcome(factory, "no-such-relay-id", "taken", now=at(110))
+    assert isinstance(row().last_event_at, datetime)
 
 
 def test_relay_answers_the_challenge_for_a_pending_id_then_demands_a_signature(tmp_path, relay_forwards):

@@ -42,6 +42,7 @@ from mcp.types import ToolAnnotations
 
 from kobo_api.clients import ClientError
 from kobo_api.guide import find_section, load_guide
+from kobo_api.kinds import KIND_CONNECTED
 from kobo_api.marketplace import MarketplaceError, list_tools
 from kobo_api.mcp import authz
 from kobo_api.mcp.audit import audited
@@ -201,7 +202,14 @@ def register(mcp: FastMCP, app: Any) -> None:
         makes Slack apps itself (`relay`); `kobo_get_slack` has the rest.
 
         A `connected` agent is a team's own repository the room deploys, so
-        its persona and skills carry nothing to act on. Answers "agent not
+        its persona and skills carry nothing to act on. For one that is
+        ready, `checks` is what its page says is missing, in order: whether
+        it is `running`, whether it is set up for the tool `gateway`, and
+        whether it takes messages from `slack`. Each has a `state` (`ok`,
+        `waiting`, `missing`, `idle`), one sentence in `line` to tell the
+        person as written, `at` (when that was last seen, or null) and
+        `pull_request` (the one its team merges, when it waits on one).
+        Empty for every other agent. Answers "agent not
         found" both for a name that does not exist and for one you are not
         allowed to see; the two are never told apart.
         """
@@ -214,10 +222,15 @@ def register(mcp: FastMCP, app: Any) -> None:
         session = app.state.session_factory()
         try:
             response = await _off_loop(get_agent_endpoint, name=name, request=req, session=session)
+            _refuse_agent_route(response)
+            body = _parse(response)
+            checks: list = []
+            if body["kind"] == KIND_CONNECTED:
+                checks = _parse(
+                    await _off_loop(checks_endpoint, name=name, request=req, session=session)
+                ).get("checks", [])
         finally:
             session.close()
-        _refuse_agent_route(response)
-        body = _parse(response)
         # The names this tool has always answered with (`group`, `owner`,
         # `purpose`) stay; a client reads them next to `kobo_list_agents`.
         return {
@@ -235,6 +248,7 @@ def register(mcp: FastMCP, app: Any) -> None:
             "status": body["status"],
             "health": body["health"],
             "kind": body["kind"],
+            "checks": checks,
             "repo_full_name": body["repo_full_name"],
             "identity": body["identity"],
             "steps": [
@@ -434,6 +448,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     list_secrets_endpoint = _endpoint(app, "GET", "/api/agents/{name}/secrets")
     list_env_endpoint = _endpoint(app, "GET", "/api/agents/{name}/env")
     get_agent_endpoint = _endpoint(app, "GET", "/api/agents/{name}")
+    checks_endpoint = _endpoint(app, "GET", "/api/agents/{name}/checks")
     models_endpoint = _endpoint(app, "GET", "/api/catalog/models")
     access_endpoint = _endpoint(app, "GET", "/api/agents/{name}/access")
     repositories_endpoint = _endpoint(app, "GET", "/api/agents/{name}/github/repositories")

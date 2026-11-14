@@ -85,6 +85,18 @@ All of it reaches the agent with no further pull request. The wiring pull reques
 
 An agent connected before the room did this gets one pull request the first time, which lets it read the app's values and takes `SLACK_WAKE_MODE`, `SLACK_WAKE_EMOJI` and `SLACK_COMMAND_PUBLIC` out of your deploy contract's own variables. A value you set there yourself hides the room's, so leave them out.
 
+## What its page tells you
+
+Under a connected agent's name, its page keeps three lines in the order they have to come true. Each is one sentence with a dot beside it: green when it holds, amber when it waits on someone, red when something is missing, a ring when there is nothing to report.
+
+- **Deployed.** Whether the agent is running now, looked at once a minute, and why not when it is not.
+- **Tools.** Whether your repository carries the room's setup for the tool gateway, and when the gateway last heard from the agent. A line that waits on a pull request links to it. Left out in a room with no tool gateway.
+- **Slack.** Where the room-made app stands: none yet, made and waiting to be installed, waiting on a pull request, or installed. Once it is installed, the line says what became of the last message the room handed your agent. Left out for an agent that serves no port.
+
+Three of the Slack sentences point at your code. **It refused the last message from Slack** means your code answered with an error: check that it compares `X-Kobo-Relay-Secret` with `SLACK_RELAY_SECRET` and answers `200`. **It did not answer the last message from Slack in time** means your code took the message and kept the room waiting past its ten seconds: answer `200` first and do the work after. **The last message from Slack did not reach it** means nothing took the message at `/slack/events` for about four minutes: the agent was not running, or your code does not serve that address.
+
+The lines only report. What one asks for is done where it always was, in a pull request your team merges or on the **Access** tab. From your own assistant, **get agent** carries the same lines as `checks`.
+
 ## What stays yours
 
 The room does not read or change your code, your image, or how the agent talks to people. Chat, teaching, skills and colleague modes belong to agents the room builds, and a connected agent has none of them. Your repository's own builds are where its build log lives.

@@ -1799,6 +1799,140 @@ def test_a_connected_wake_save_that_cannot_finish_leaves_the_agent_as_it_was(
     assert kubectl.secrets[secret]["SLACK_WAKE_MODE"] == "thread"
 
 
+def test_a_connected_agents_page_says_what_is_missing(session_factory__api_slack, config__api_slack):
+    """Wire shape (2026-11-14): `GET /api/agents/{name}/checks` is what a connected
+    agent's page says about where it stands, one sentence each and in order: is
+    it running, and does it take Slack's messages (the gateway line is left out
+    of a room with no gateway). The Slack line follows the app from none, to made,
+    to installed, to what became of the last message the room handed it. An agent
+    the room builds has nothing to say here."""
+    from kobo_api.kinds import RUN_MODE_HTTP
+    from kobo_api.models import SlackRelayApp
+
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    contract = f"name: clio\nsecrets_from_optional:\n  - {AGENT_NAME}-slack\n"
+    github = FakeGitHub(repo_files={"gojira.yaml": contract}, clone_tree={"gojira.yaml": contract})
+    client = _make_client__api_slack(
+        session_factory__api_slack, relay_config, github=github, kubectl=FakeKubectl(), slack=FakeSlack(app_id="A0MADE")
+    )
+    _seed_agent__api_slack(session_factory__api_slack, relay_config)
+
+    def lines() -> dict[str, tuple[str, str]]:
+        body = client.get(f"/api/agents/{AGENT_NAME}/checks").json()
+        assert all(set(c) == {"id", "state", "line", "at", "pull_request"} for c in body["checks"])
+        return {c["id"]: (c["state"], c["line"]) for c in body["checks"]}
+
+    assert lines() == {}
+
+    _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HTTP)
+    assert list(lines()) == ["running", "slack"]
+    assert lines()["running"][0] == "idle"
+    assert lines()["slack"] == ("idle", "No Slack app from the room. Add one under Access.")
+
+    assert client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"}).status_code == 200
+    assert lines()["slack"][0] == "waiting"
+
+    _installed__api_slack(session_factory__api_slack)
+    assert lines()["slack"] == ("idle", "In Slack. No message has come for it yet.")
+
+    with session_factory__api_slack() as s:
+        row = s.query(SlackRelayApp).filter_by(agent_name=AGENT_NAME).one()
+        row.last_event_outcome, row.last_event_at = "refused", datetime(2026, 11, 14, 12, 0)
+        s.commit()
+    refused = client.get(f"/api/agents/{AGENT_NAME}/checks").json()["checks"][-1]
+    assert (refused["state"], refused["at"]) == ("missing", "2026-11-14T12:00:00Z")
+    assert refused["line"].startswith("It refused the last message from Slack.")
+
+
+def test_a_connected_agents_page_claims_nothing_it_could_not_see(
+    session_factory__api_slack, config__api_slack, monkeypatch
+):
+    """Wire shape (2026-11-14): a cluster that could not be asked is not "running",
+    and the gateway hands back its newest rows of every kind, so a full page with
+    no call in it is not "no call in seven days". Either line says only what the
+    room saw."""
+    from kobo_api.kinds import RUN_MODE_HTTP
+
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    gateway_config = config__api_slack.model_copy(update={
+        "cabal_url": "http://switchboard.internal",
+        "agent_endpoint_template": "http://agent-{name}.internal",
+        "liminal_url": "http://gateway.internal/mcp",
+    })
+    contract = (
+        f"name: clio\nsecrets_from:\n  - {AGENT_NAME}-cabal\n"
+        "env:\n  KOBO_SWITCHBOARD_URL: http://switchboard.internal\n  KOBO_GATEWAY_URL: http://gateway.internal/mcp\n"
+    )
+    kubectl = FakeKubectl(deployment_status_error="the cluster did not answer")
+    client = _make_client__api_slack(
+        session_factory__api_slack, gateway_config, github=FakeGitHub(repo_files={"gojira.yaml": contract}), kubectl=kubectl
+    )
+    _seed_agent__api_slack(session_factory__api_slack, gateway_config)
+    _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HTTP)
+    client.app.state.health = {AGENT_NAME: probe_health(kubectl, AGENT_NAME)}
+
+    def lines(rows) -> dict[str, tuple[str, str]]:
+        client.app.state.clients.liminal_admin = FakeAudit(rows)
+        return {c["id"]: (c["state"], c["line"]) for c in client.get(f"/api/agents/{AGENT_NAME}/checks").json()["checks"]}
+
+    grant = {"ts": 1700000000.0, "action": "grant", "persona": AGENT_NAME, "detail": {}}
+    quiet = lines([grant])
+    assert quiet["running"] == ("idle", "The room could not check on it just now. It tries again in a minute.")
+    assert quiet["gateway"] == ("idle", "Set up to reach the tool gateway. No call from it in the last 7 days.")
+    assert lines([grant] * 200)["gateway"] == ("ok", "Set up to reach the tool gateway.")
+    called = lines([grant] * 199 + [{"ts": 1700000000.0, "action": "access_deny", "persona": AGENT_NAME, "detail": {}}])
+    assert called["gateway"] == ("ok", "Reaching the tool gateway.")
+
+
+def test_every_line_a_connected_agents_page_can_say_follows_the_house_rules():
+    """House rule: the sentences are the room's own copy, so no em dashes and
+    none of the words its pages avoid. Each state gets a sentence of its own, a
+    fact that could not be read claims nothing, and a request the team has to
+    merge rides along as a link."""
+    import re
+
+    from kobo_api import connected_checks as cc
+
+    request = "https://github.test/example-org/agent-clio/pull/7"
+    said = [
+        cc.running(None),
+        cc.running({"state": "up", "rolling": False, "ready_since": "2026-11-14T12:00:00Z"}),
+        cc.running({"state": "up", "rolling": True}),
+        cc.running({"state": "down", "rolling": True}),
+        cc.running({"state": "down", "rolling": False, "reason": "0 of 1 running; restarted 12 times"}),
+        cc.running({"state": "up", "rolling": False, "unread": True}),
+        cc.gateway(cc.UNREAD),
+        cc.gateway({"state": "waiting", "pull_request": request}),
+        cc.gateway({"state": "owed", "pull_request": None}),
+        cc.gateway({"state": "wired", "pull_request": None}),
+        cc.gateway({"state": "wired", "pull_request": None}, last_call_at=None),
+        cc.gateway({"state": "wired", "pull_request": None}, last_call_at="2026-11-14T12:00:00Z"),
+        cc.slack("none", cc.UNREAD, outcome=None, at=None),
+        cc.slack("created", cc.UNREAD, outcome=None, at=None),
+        cc.slack("installed", {"state": "waiting", "pull_request": request}, outcome=None, at=None),
+        cc.slack("installed", {"state": "owed", "pull_request": None}, outcome="taken", at=None),
+        cc.slack("installed", {"state": "wired", "pull_request": None}, outcome=None, at=None),
+        cc.slack("installed", {"state": "wired", "pull_request": None}, outcome="taken", at="2026-11-14T12:00:00Z"),
+        cc.slack("installed", {"state": "wired", "pull_request": None}, outcome="refused", at=None),
+        cc.slack("installed", {"state": "wired", "pull_request": None}, outcome="lost", at=None),
+        cc.slack("installed", {"state": "wired", "pull_request": None}, outcome="slow", at=None),
+        cc.slack("installed", cc.UNREAD, outcome=None, at=None),
+    ]
+
+    forbidden = re.compile(r"\b(kubernetes|kubectl|pods?|yaml|namespace|secrets?|deployment|container)\b", re.IGNORECASE)
+    for check in said:
+        assert "\u2014" not in check["line"] and not forbidden.search(check["line"]), check["line"]
+        assert check["line"].endswith(".")
+    assert [c["state"] for c in said] == [
+        "idle", "ok", "waiting", "waiting", "missing", "idle",
+        "idle", "waiting", "missing", "ok", "idle", "ok",
+        "idle", "waiting", "waiting", "missing", "idle", "ok", "missing", "missing", "missing", "idle",
+    ]
+    assert len({c["line"] for c in said}) == len(said) - 1  # only "could not read its files" is said twice
+    assert [c["pull_request"] for c in said if c["pull_request"]] == [request, request]
+    assert said[4]["line"] == "Not running: 0 of 1 running; restarted 12 times."
+
+
 def test_a_connected_agent_wired_before_gets_one_last_slack_pull_request(
     session_factory__api_slack, config__api_slack
 ):
