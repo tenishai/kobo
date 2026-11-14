@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.67] - 2026-11-14
+
 ### Added
 - A connected agent's page says where it stands, under its name: whether it is deployed, whether its files carry the room's setup for the tool gateway (and when the gateway last heard from it), and whether it takes messages from Slack. One sentence each, no controls. The relay keeps what became of the last message it handed each agent (taken, refused, reached but not answered in time, never arrived) on the app's row, which is new: `slack_relay_apps.last_event_at` and `last_event_outcome` (migration `a7c9e1b3d5f6`). `GET /api/agents/{name}/checks` serves the lines, and `kobo_get_agent` carries them as `checks`. A line says only what the room saw: a cluster or a gateway that could not be asked gets no claim either way.
 
