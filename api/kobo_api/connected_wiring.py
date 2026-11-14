@@ -45,6 +45,7 @@ import yaml
 
 from kobo_api.agent_env import (
     GOJIRA_YAML,
+    UNCHANGED,
     RepoBusy,
     RepoEdit,
     _propose,
@@ -313,7 +314,10 @@ def propose_slack(
     """One pull request carrying the Slack wiring with `mode` (and `emoji`
     and `public`, as `add_slack_wiring` reads them), or the one already open that carries
     exactly that; `unchanged` when the default branch already does. Raises
-    `RepoBusy` when a different request from the room is open on the branch."""
+    `RepoBusy` when a different request from the room is open on the branch,
+    which includes the case where the default branch already reads this way:
+    a request opened for a choice since taken back would otherwise sit open,
+    and merging it would undo what the room shows."""
     def carries(data: dict) -> bool:
         env = data.get("env")
         return (
@@ -324,7 +328,7 @@ def propose_slack(
             and (public is None or _public_in(data) == public)
         )
 
-    return edit_gojira_yaml(
+    result = edit_gojira_yaml(
         github,
         None,
         repo=repo,
@@ -338,6 +342,13 @@ def propose_slack(
         carries=carries,
         already_open=SLACK_PR_ALREADY_OPEN,
     )
+    if result.how == UNCHANGED:
+        open_pr = github.find_pr(repo, branch=SLACK_BRANCH)
+        if open_pr is not None and not carries(
+            parse_gojira_yaml(github.read_file(repo, GOJIRA_YAML, ref=SLACK_BRANCH) or "")
+        ):
+            raise RepoBusy(f"{SLACK_PR_ALREADY_OPEN}{open_pr}")
+    return result
 
 
 def slack_state(github, agent) -> dict:

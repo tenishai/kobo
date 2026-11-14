@@ -205,6 +205,11 @@
   let publicDraft = $state<boolean | null>(null);
   let publicError = $state<string | null>(null);
   const publicShown = $derived(publicDraft ?? view.data?.command_public ?? false);
+  // Once the room's own reading says the same, the draft has done its job;
+  // dropping it lets a change made elsewhere show.
+  $effect(() => {
+    if (publicDraft !== null && !savePublic.isPending && view.data?.command_public === publicDraft) publicDraft = null;
+  });
 
   async function pickPublic(next: boolean): Promise<void> {
     if (wakeLocked || next === publicShown) return;

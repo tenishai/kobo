@@ -1747,6 +1747,12 @@ def test_the_room_makes_a_connected_agent_a_slack_app_through_a_pull_request(
     assert kubectl.env_sets == [] and github.push_count == 0
     assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["wiring"]["state"] == "waiting"
 
+    # Taken back before the team merged: the default branch already reads off,
+    # but the open request would turn it on, so it has to be settled first.
+    taken_back = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"command_public": False})
+    assert taken_back.status_code == 409 and pr_url in taken_back.json()["error"]
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["command_public"] is True
+
 
 def test_a_connected_agents_closed_slack_request_is_opened_again_without_a_second_app(
     session_factory__api_slack, config__api_slack
