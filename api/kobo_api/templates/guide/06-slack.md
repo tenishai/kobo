@@ -11,7 +11,11 @@ In some rooms Slack is a row on the **Access** tab instead, with the other vendo
 
 ### Reactions
 
-The app the room makes also hears reactions. When someone adds or removes an emoji on a message in a channel the agent is in, Slack tells the agent, whichever **Wakes on** you picked. An agent the room built does nothing with a reaction yet. An app made before this hears reactions the next time **Wakes on** moves between **Mentions only** and either of the other two; there is nothing to reinstall.
+A reaction can wake the agent. On the Slack row, under **Wakes on**, the field **Also wakes on these emoji** takes the names of the emoji that should, as Slack shows them, with commas between them: `ticket, rotating_light`. Press **Save** and the agent restarts with them, the way it does for a **Wakes on** change. From then on, when someone adds one of those emoji to a message in a channel the agent is in, the agent reads that message and answers in its thread, whichever **Wakes on** you picked. The reaction is the ask: nobody has to write anything, and the person who reacted is the one the agent answers.
+
+Leave the field empty and no reaction wakes the agent, which is how every agent starts. The rest is fixed. Taking a reaction off does nothing. The agent answers once for each emoji on a message, however many people add it. Its own reactions never wake it. You can name up to ten, and not the four marks agents leave on the messages they answer (`eyes`, `white_check_mark`, `x`, `octagonal_sign`).
+
+An agent that runs its team's own code is handed the names and its code decides what a reaction does. An app made before the room listened for reactions hears them from the first time you save the field; there is nothing to reinstall.
 
 ### When the room asks Slack for more
 

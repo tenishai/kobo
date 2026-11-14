@@ -2397,6 +2397,15 @@ class KubectlClient(Protocol):
         """
         ...
 
+    def unset_env(self, namespace: str, deploy: str, name: str) -> None:
+        """Take one environment variable off the live Deployment now
+        (`kubectl set env deployment/<deploy> NAME-`), the other half of
+        `set_env`: a value the room cleared is removed from the committed
+        `gojira.yaml`, so it is removed here, not set to nothing. A variable
+        that was never there is a success. Raises `ClientError` when the
+        cluster refuses."""
+        ...
+
     def namespace_created_at(self, namespace: str) -> datetime | None:
         """When `namespace` was created, as naive UTC, or None when there is
         no such namespace (issue #193). An agent's namespace is its name, so
@@ -2520,6 +2529,11 @@ class KubectlCLI:
     def set_env(self, namespace: str, deploy: str, name: str, value: str) -> None:
         self._runner.run(
             [self._kubectl, "-n", namespace, "set", "env", f"deployment/{deploy}", f"{name}={value}"]
+        )
+
+    def unset_env(self, namespace: str, deploy: str, name: str) -> None:
+        self._runner.run(
+            [self._kubectl, "-n", namespace, "set", "env", f"deployment/{deploy}", f"{name}-"]
         )
 
     def namespace_created_at(self, namespace: str) -> datetime | None:

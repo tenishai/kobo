@@ -1566,7 +1566,7 @@ def test_connect_slack_wires_secret_transport_and_secrets_from_returns_sha(
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert detail["slack"] == {
         "app_id": APP_ID, "channels": [CHANNEL], "state": "connected",
-        "wake": "mention",
+        "wake": "mention", "wake_emoji": [],
         "available": True,
         # The paste flow's app keeps the Slack tab (issue #371): `legacy`.
         "relay": False,
@@ -1591,7 +1591,7 @@ def test_get_agent_slack_carries_app_id_and_channels_after_connect(session_facto
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert detail["slack"] == {
         "app_id": APP_ID, "channels": [CHANNEL], "state": "connected",
-        "wake": "mention",
+        "wake": "mention", "wake_emoji": [],
         "available": True,
         # The paste flow's app keeps the Slack tab (issue #371): `legacy`.
         "relay": False,
@@ -1624,7 +1624,7 @@ def test_get_slack_app_view_carries_the_install_link_while_created_and_not_insta
     assert view["install_url"].startswith("https://slack.com/oauth/v2/authorize?client_id=fake-client-id")
     assert {k: v for k, v in view.items() if k != "install_url"} == {
         "enabled": True, "available": True, "state": "created", "app_id": "A0FAKE",
-        "workspace": None, "app_name": None, "channels": [CHANNEL], "wake": "mention", "legacy": False,
+        "workspace": None, "app_name": None, "channels": [CHANNEL], "wake": "mention", "wake_emoji": [], "legacy": False,
         "own_app": False, "room_app": True, "wiring": None, "rebuilding": False,
         "update_due": False,
     }
@@ -1720,6 +1720,18 @@ def test_the_room_makes_a_connected_agent_a_slack_app_through_a_pull_request(
     assert yaml.safe_load(github.pushed_file("gojira.yaml"))["env"]["SLACK_WAKE_MODE"] == "channel"
     assert kubectl.env_sets == [] and github.push_count == 0
 
+    # The emoji that wake it are one more request, and the wiring waits on it.
+    del github._open_prs[f"{REPO}#{SLACK_BRANCH}"]
+    github._repo_files["gojira.yaml"] = github._clone_tree["gojira.yaml"] = github.pushed_file("gojira.yaml")
+    named = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"emoji": ["ticket"]})
+    assert named.status_code == 200, named.text
+    assert (named.json()["wake_emoji"], named.json()["wake"], named.json()["applied_now"]) == (["ticket"], "channel", False)
+    assert yaml.safe_load(github.pushed_file("gojira.yaml"))["env"] == {
+        "TEAM_SETTING": "kept", "SLACK_WAKE_MODE": "channel", "SLACK_WAKE_EMOJI": "ticket",
+    }
+    assert kubectl.env_sets == [] and kubectl.env_unsets == [] and github.push_count == 0
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["wiring"]["state"] == "waiting"
+
 
 def test_a_connected_agents_closed_slack_request_is_opened_again_without_a_second_app(
     session_factory__api_slack, config__api_slack
@@ -1790,6 +1802,44 @@ def test_put_wake_writes_the_env_key_and_says_when_the_manifest_changed(session_
     # thread <-> channel keeps the same events: nothing to re-apply in Slack.
     again = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "thread"}).json()
     assert (again["previous_wake"], again["manifest_changed"]) == ("channel", False)
+
+
+def test_put_wake_emoji_names_the_reactions_that_wake_the_agent(session_factory__api_slack, config__api_slack):
+    """Wire shape: the emoji are a second key on the wake lane. They are written
+    under Slack's own names, set on the running agent at once, kept by a mode
+    change, and taken away (not set to nothing) when the list is emptied."""
+    gojira, app_id = _onboarded_gojira()
+    github = _GojiraCapturingGitHub()
+    kubectl = FakeKubectl()
+    client = _make_client__api_slack(
+        session_factory__api_slack, config__api_slack, github=github, gojira=gojira, kubectl=kubectl
+    )
+    _seed_agent__api_slack(session_factory__api_slack, config__api_slack, gojira_app_id=app_id)
+    wake = f"/api/agents/{AGENT_NAME}/slack/wake"
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["wake_emoji"] == []
+
+    saved = client.put(wake, json={"emoji": [":Ticket:", "thumbsup, ticket", "wave::skin-tone-3"]})
+
+    assert saved.status_code == 200, saved.text
+    assert (saved.json()["wake_emoji"], saved.json()["wake"], saved.json()["applied_now"]) == (
+        ["ticket", "+1", "wave"], "mention", True
+    )
+    assert github.captured_gojira["env"]["SLACK_WAKE_EMOJI"] == "ticket,+1,wave"
+    # The mode was not part of the save: its key is not written, nor set live.
+    assert "SLACK_WAKE_MODE" not in github.captured_gojira["env"]
+    assert kubectl.env_sets == [(AGENT_NAME, AGENT_NAME, "SLACK_WAKE_EMOJI", "ticket,+1,wave")]
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["wake_emoji"] == ["ticket", "+1", "wave"]
+
+    # Not a name, a mark every agent leaves on what it answers, too many, nothing.
+    for refused in ({"emoji": ["not an emoji!"]}, {"emoji": ["eyes"]}, {"emoji": [f"e{n}" for n in range(11)]}, {}):
+        assert client.put(wake, json=refused).status_code == 422, refused
+    assert client.put(wake, json={"wake": "thread"}).json()["wake_emoji"] == ["ticket", "+1", "wave"]
+
+    cleared = client.put(wake, json={"emoji": []})
+
+    assert (cleared.status_code, cleared.json()["wake_emoji"]) == (200, [])
+    assert kubectl.env_unsets == [(AGENT_NAME, AGENT_NAME, "SLACK_WAKE_EMOJI")]
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["wake_emoji"] == []
 
 
 def test_put_wake_says_applied_now_false_when_the_live_apply_fails(session_factory__api_slack, config__api_slack):
@@ -2837,7 +2887,7 @@ def test_get_agent_carries_the_detail_routes_full_field_set(session_factory__mcp
     assert result["skills"] == []
     assert result["repo_full_name"] == REPO_TEMPLATE.format(name="agent-a")
     assert result["slack"] == {
-        "app_id": None, "channels": [], "state": "idle", "wake": "mention",
+        "app_id": None, "channels": [], "state": "idle", "wake": "mention", "wake_emoji": [],
         "available": False, "relay": False, "legacy": False,
     }
     # What the page's header and Harness tab show, which this tool had

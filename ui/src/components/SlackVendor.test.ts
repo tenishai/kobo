@@ -111,8 +111,9 @@ describe("SlackVendor", () => {
     expect((await screen.findByText("Acme")).textContent).toBe("Acme");
     expect(screen.getByRole("status").textContent?.trim()).toBe("Live");
     expect(screen.getByText("Invite @clio to a channel in Slack and it answers there.")).toBeDefined();
-    // No channel list on a room-made app: inviting it in Slack is the only control.
-    expect(screen.queryByRole("textbox")).toBeNull();
+    // No channel list on a room-made app: inviting it in Slack is the only
+    // control. The one text field is the emoji that also wake it.
+    expect(screen.getAllByRole("textbox")).toEqual([screen.getByLabelText("Also wakes on these emoji")]);
     expect(screen.queryByRole("button", { name: "Add channel" })).toBeNull();
     expect((screen.getByRole("radio", { name: /Mentions, then the thread/ }) as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByRole("link", { name: "Install to Slack" })).toBeNull();
@@ -227,6 +228,23 @@ describe("SlackVendor", () => {
     );
     await waitFor(() => expect(screen.getByRole("status").textContent?.trim()).toBe("Restarting. A mention sent now is answered once it is back."));
     expect(onOpenChange).toHaveBeenCalledWith(true);
+  });
+
+  it("saves the emoji that also wake the agent as a list of names, and shows what the room kept", async () => {
+    roomAfterWakeSave(
+      { wake: "thread", previous_wake: "thread", wake_emoji: ["ticket", "+1"], manifest_changed: false, applied_now: false, wiring: "env" },
+      new Promise<Response>(() => {}),
+    );
+    const field = (await screen.findByLabelText("Also wakes on these emoji")) as HTMLInputElement;
+    const save = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+    expect([field.value, save.disabled]).toEqual(["", true]);
+
+    await fireEvent.input(field, { target: { value: ":ticket:, thumbsup" } });
+    await fireEvent.click(save);
+
+    await waitFor(() => expect(field.value).toBe("ticket, +1"));
+    const put = vi.mocked(fetch).mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "PUT");
+    expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ emoji: [":ticket:", "thumbsup"] });
   });
 
   it("says a saved choice waits for the agent's next restart when it could not be applied now", async () => {

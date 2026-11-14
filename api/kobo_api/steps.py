@@ -1864,6 +1864,9 @@ def _set_service_account_and_model_env(data: dict, agent, config) -> None:
     wake = getattr(agent, "slack_wake", None)
     if wake:
         model_env["SLACK_WAKE_MODE"] = wake
+    wake_emoji = getattr(agent, "slack_wake_emoji", None)
+    if wake_emoji:
+        model_env["SLACK_WAKE_EMOJI"] = wake_emoji
 
     existing = data.get("env")
     if existing is not None and not isinstance(existing, dict):
