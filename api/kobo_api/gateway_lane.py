@@ -24,6 +24,13 @@ ways: a pattern the agent now earns is added, one it no longer earns is
 withdrawn (one commit, one restart). Best effort: it never raises, it
 answers one sentence for the audit row.
 
+A third, small table, `OWN_CODE_LANES`, is what a permission opens on top
+for an agent that runs its team's own code (kobo#483): Read on GitHub also
+opens the gateway's `github-clone` handler, whose one tool hands the agent a
+read-only token `git clone` can use. Never for an agent the room builds: its
+caller is a model, and a credential in a model's context is what every other
+route exists to avoid.
+
 A lane added to these tables in a release reaches the agents that already
 hold its vendor without anyone granting again: the heal pass finds their
 gateway grant short of what the tables now owe, sets it, and brings the
@@ -46,7 +53,7 @@ from sqlalchemy.orm import Session
 from . import delivery
 from .clients import ClientError
 from .composer import update_agent_yaml_allow
-from .kinds import KIND_COMPOSED
+from .kinds import KIND_COMPOSED, KIND_CONNECTED
 from .liminal_admin import ISSUER, GatewayGrant
 from .models import Agent, AgentStatus
 from .repo_lock import repo_write_lock
@@ -104,6 +111,15 @@ PERMISSION_LANES: dict[tuple[str, str], Lane] = {
                                                        handlers=("atlassian", "jira-write"),
                                                        allow=("atlassian.*", "jira-write.*")),
 }
+# (vendor, permission) -> what that permission opens ON TOP of its lane for an agent that runs
+# its team's own code (kobo#483). Its code shells out to `git`, which the tools above cannot
+# serve, so Read also opens the gateway's `github-clone` handler: one tool, `clone_token`, that
+# leases a token for Read alone (never the agent's working lease, which may carry writes) and
+# hands it over. No allow pattern: such an agent has no bundle. The handler is managed like any
+# other, so it leaves with the permission, and an agent the room builds never keeps it.
+OWN_CODE_LANES: dict[tuple[str, str], Lane] = {
+    ("github", "github_repos_read"): Lane(scopes=("github:read",), handlers=("github-clone",), allow=()),
+}
 # What a permission opens (kobo#474). A lane lets an agent's calls through to a handler; whether
 # the handler has a tool for the permission is a separate fact, and for these vendors it is per
 # permission. Google Cloud cannot narrow a borrowed token to what the agent holds, so the
@@ -140,7 +156,11 @@ RETIRED_ALLOW: dict[str, str] = {"github.*": "github"}
 # match "github.".
 RETIRED_PREFIXES: tuple[str, ...] = ("github.", "jira.")
 
-_ALL_LANES: list[tuple[str, Lane]] = [*GATEWAY_LANES.items(), *((v, lane) for (v, _), lane in PERMISSION_LANES.items())]
+_ALL_LANES: list[tuple[str, Lane]] = [
+    *GATEWAY_LANES.items(),
+    *((v, lane) for (v, _), lane in PERMISSION_LANES.items()),
+    *((v, lane) for (v, _), lane in OWN_CODE_LANES.items()),
+]
 MANAGED_SCOPES: frozenset[str] = frozenset(s for _, lane in _ALL_LANES for s in lane.scopes)
 MANAGED_HANDLERS: frozenset[str] = frozenset(h for _, lane in _ALL_LANES for h in lane.handlers) | frozenset(RETIRED_HANDLERS)
 # allow pattern -> the vendor it belongs to, for the commit message.
@@ -172,10 +192,19 @@ def opens_tool(vendor: str, permission: str) -> bool:
     return tooled is None or permission in tooled
 
 
-def held_lanes(bab, agent_name: str, actor: str) -> list[Lane]:
+def runs_own_code(session: Session, agent_name: str) -> bool:
+    """Whether this agent is a team's own code on the team's own runtime, so
+    `OWN_CODE_LANES` applies to it. Compared, never truth-tested: any other
+    kind, and an agent the room does not know, gets what a built one gets."""
+    agent = session.query(Agent).filter_by(name=agent_name).one_or_none()
+    return agent is not None and agent.kind == KIND_CONNECTED
+
+
+def held_lanes(bab, agent_name: str, actor: str, *, own_code: bool = False) -> list[Lane]:
     """The lanes of every (vendor, permission) the agent holds an active grant
     on. A grant on an integration the permission service no longer lists
-    counts for nothing."""
+    counts for nothing. `own_code` adds what the same permissions open for an
+    agent that runs its team's own code (`OWN_CODE_LANES`)."""
     vendor_of = {i.get("integration"): i.get("vendor") for i in bab.integrations(actor)}
     lanes: list[Lane] = []
     for g in bab.grants(agent_name, actor):
@@ -184,18 +213,20 @@ def held_lanes(bab, agent_name: str, actor: str) -> list[Lane]:
         vendor = vendor_of.get(g.get("integration"))
         if not vendor:
             continue
-        lane = lane_for(str(vendor), str(g.get("permission") or ""))
-        if lane is not None and lane not in lanes:
-            lanes.append(lane)
+        permission = str(g.get("permission") or "")
+        extra = OWN_CODE_LANES.get((str(vendor), permission)) if own_code else None
+        for lane in (lane_for(str(vendor), permission), extra):
+            if lane is not None and lane not in lanes:
+                lanes.append(lane)
     return lanes
 
 
-def desired_lane(bab, agent_name: str, actor: str) -> tuple[set[str], set[str]]:
+def desired_lane(bab, agent_name: str, actor: str, *, own_code: bool = False) -> tuple[set[str], set[str]]:
     """The scopes and handlers the gateway owes this agent: the union over the
     lanes of every (vendor, permission) it holds an active grant on."""
     scopes: set[str] = set()
     handlers: set[str] = set()
-    for lane in held_lanes(bab, agent_name, actor):
+    for lane in held_lanes(bab, agent_name, actor, own_code=own_code):
         scopes.update(lane.scopes)
         handlers.update(lane.handlers)
     return scopes, handlers
@@ -309,7 +340,7 @@ def follow(session: Session, clients, bab, *, agent_name: str, actor: str) -> st
     if admin is None:
         return NOT_WIRED
     try:
-        lanes = held_lanes(bab, agent_name, actor)
+        lanes = held_lanes(bab, agent_name, actor, own_code=runs_own_code(session, agent_name))
         allowed = sync_allow(session, clients, agent_name=agent_name, patterns=desired_allow(lanes))
         existing = next((g for g in admin.list_grants() if g.issuer == ISSUER and g.persona == agent_name), None)
         old_scopes, old_handlers, new_scopes, new_handlers = _owed_grant(existing, lanes)
@@ -336,14 +367,16 @@ def follow(session: Session, clients, bab, *, agent_name: str, actor: str) -> st
 HEAL_INTERVAL_S = 300.0
 
 
-def heal(clients, bab, agent_names: list[str], actor: str) -> list[str]:
+def heal(clients, bab, agent_names: list[str], actor: str, *, own_code: frozenset[str] = frozenset()) -> list[str]:
     """Set each agent's gateway grant back to what its permissions owe when
     something else has changed it, and name the agents it set back. Only the
     gateway grant: the bundle allow list lives in the agent's repository,
     which nothing but the room writes, so the caller brings it in step for
     the agents named here and no others. An agent holding no permission is
     left alone, so an agent whose grant lives only in the gateway's own
-    file keeps it. Best effort: one agent's failure never stops the rest."""
+    file keeps it. `own_code` names the agents that run their team's own
+    code, which the same permissions open a little more for
+    (`OWN_CODE_LANES`). Best effort: one agent's failure never stops the rest."""
     admin = getattr(clients, "liminal_admin", None) if clients is not None else None
     if admin is None or bab is None:
         return []
@@ -355,7 +388,7 @@ def heal(clients, bab, agent_names: list[str], actor: str) -> list[str]:
     healed: list[str] = []
     for name in agent_names:
         try:
-            lanes = held_lanes(bab, name, actor)
+            lanes = held_lanes(bab, name, actor, own_code=name in own_code)
             if not lanes:
                 continue
             existing = live.get(name)
@@ -389,9 +422,11 @@ def _heal_ready_agents(app) -> list[str]:
     clients = app.state.clients
     bab = getattr(clients, "bab", None)
     with app.state.session_factory() as session:
-        names = [a.name for a in session.query(Agent).filter(Agent.status == AgentStatus.READY).all()]
+        ready = session.query(Agent).filter(Agent.status == AgentStatus.READY).all()
+        names = [a.name for a in ready]
+        own_code = frozenset(a.name for a in ready if a.kind == KIND_CONNECTED)
         reconcile_targets(session, clients)
-    healed = heal(clients, bab, names, ROOM_ACTOR)
+    healed = heal(clients, bab, names, ROOM_ACTOR, own_code=own_code)
     # A grant that was short is also how a lane new to this release shows up on an agent
     # that already held its vendor (AWS, 2026-11-13): the bundle has to admit the lane's
     # tools too, or the agent holds a permission it has no tool for. An agent whose
@@ -455,7 +490,8 @@ def tally(sentence: str) -> str:
 
 
 __all__ = [
-    "GATEWAY_LANES", "HEAL_INTERVAL_S", "MANAGED_ALLOW", "MANAGED_HANDLERS", "MANAGED_SCOPES", "PERMISSION_LANES", "RETIRED_HANDLERS",
+    "GATEWAY_LANES", "HEAL_INTERVAL_S", "MANAGED_ALLOW", "MANAGED_HANDLERS", "MANAGED_SCOPES", "OWN_CODE_LANES", "PERMISSION_LANES",
+    "RETIRED_HANDLERS",
     "RETIRED_PREFIXES", "TOOLED", "Lane", "desired_allow", "desired_lane", "follow", "heal", "heal_loop", "held_lanes", "held_vendors",
-    "lane_for", "opens_tool", "sync_allow", "tally",
+    "lane_for", "opens_tool", "runs_own_code", "sync_allow", "tally",
 ]
