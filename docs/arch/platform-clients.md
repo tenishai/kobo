@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-platform-clients
 updated: 2026-11-14
-anchor: api/kobo_api/clients.py sha=2d32fd02b6355d631a9cd7a0b25d0c1c3601b256
+anchor: api/kobo_api/clients.py sha=ea82683bedd0098d2bc020e179caf48892203954
 anchor: api/tests/fakes.py sha=d4ed53ed3916ebb3d51488be256a9e8cc877ae14
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
@@ -27,7 +27,7 @@ INVARIANTS:
 - Never put a token or secret value in a raised message or log. WHY: raised messages can reach route responses. `CabalClient` and `HttpxStorageClient` go further and keep response bodies out of raised messages (logged truncated, `resp.text[:200]`); `HttpxGojiraClient` does NOT (its `ClientError` includes `resp.text`), so don't copy it for a client whose responses may echo secrets.
 - A new external call gets a Protocol method + a fake method in tests/fakes.py in the same change; the fakes mirror P0-observed backend behavior (e.g. gojira's generated kustomization) so step tests mean something.
 - `GojiraConflict` (409 on create) is distinct from `ClientError` so onboard can decide whether the app is its own.
-- `GojiraClient.create_app(..., seed=None)` (2026-11-14): the caller's share of the platform's first setup PR, `{needs, base_files, note}`; sent only when given, so an older platform sees the body it always did. The platform refuses a seed together with `auto_merge_setup_pr`, and refuses a contract key with nothing under it. `FakeGojira.create_app_calls` records it.
+- `GojiraClient.create_app(..., seed=None)` (2026-11-14): the caller's share of the platform's first setup PR, `{needs, base_files, note}`; sent only when given, so an older platform sees the body it always did. The platform refuses a seed together with `auto_merge_setup_pr`, a key outside the ones a pod reads, and a name its written contract would read back differently. A 422 to a call that carried a seed is asked again without it: the seed saves a pull request and is never a condition of connecting. `FakeGojira.create_app_calls` records it.
 CONSUMERS: api/kobo_api/steps.py, provisioner.py, health.py (ready agents probed once a minute; verdict kept in memory per replica), destroy.py, main.py (routes), directory.py, colleagues.py, pairs.py, learnings.py, knowledge.py, slack_setup.py, agent_env.py, mcp/tools/*.py; api/tests/* via tests/fakes.py.
 API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provider(config)`; `probe_slack_token_store(clients)` (boot write-probe of the Slack token Secret); `gsa_email(name, project)`; errors `ClientError`, `GojiraConflict`, `SlackApiError`, `StorageNotFound`, `CabalError`; value type `SlackAppCredentials`.
 

@@ -106,15 +106,23 @@ def test_a_repository_with_no_deploy_files_is_asked_for_one_pull_request(session
     """Contract (2026-11-14): connecting a repository used to ask its team twice, once for the
     deploy service's setup request and once for the room's wiring. The room now hands the
     deploy service its wiring as a seed for that first request, which is never merged
-    unreviewed; both Secrets it names are there before anyone can merge it; and once it is
-    merged the wiring step finds the repository already reads the way it would write it,
-    opens nothing, and takes back nothing the agent holds."""
+    unreviewed; both Secrets it names are delivered while it waits, and a delivery that
+    fails leaves the agent waiting, not failed; and once it is merged the wiring step finds
+    the repository already reads the way it would write it, opens nothing, and takes back
+    nothing the agent holds."""
     config = gateway_config.model_copy(update={"slack_relay": True})
     room = _room(session_factory, config)
     room.agent.gojira_app_id, room.agent.secret_names = None, ["team-keys"]
     room.session.commit()
-    gojira = room.clients.gojira = FakeGojira(status_sequence=["awaiting_pr", "active"], setup_pr_url=PR_URL)
+    gojira = room.clients.gojira = FakeGojira(
+        status_sequence=["awaiting_pr", "awaiting_pr", "active"], setup_pr_url=PR_URL)
 
+    room.clients.kubectl._secret_read_error = "the cluster did not answer"
+    with pytest.raises(StepWaiting):
+        OnboardStep().run(room.ctx)
+    assert room.clients.kubectl.secrets == {} and room.clients.cabal.mint_colleague_calls == []
+
+    room.clients.kubectl._secret_read_error = None
     with pytest.raises(StepWaiting):
         OnboardStep().run(room.ctx)
 

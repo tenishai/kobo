@@ -1576,10 +1576,18 @@ class OnboardStep:
         except StepWaiting:
             # Parked on the team's merge of the setup pull request. With the
             # seed that request names the Secrets the room delivers, so they
-            # are there before anyone can merge it (WireStep's rule). Only
-            # what is missing: a Retry while parked takes nothing back.
-            with _sanitized("deliver", agent.name, CONNECTED_WIRE_PLATFORM_UNAVAILABLE):
+            # are delivered now and a merge starts an agent that finds them.
+            # Only what is missing: a Retry while parked takes nothing back.
+            # A delivery that fails must not turn this wait into a failure
+            # (nothing resumes a failed agent when its team merges): the
+            # wiring step runs after the merge and delivers what is missing.
+            try:
                 deliver_connected_identity(ctx.session, ctx.clients, config, agent, only_missing=True)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "onboard: %s's Secrets were not delivered while its setup request waits (%s); "
+                    "the wiring step delivers them after the merge", agent.name, type(exc).__name__,
+                )
             raise
 
 

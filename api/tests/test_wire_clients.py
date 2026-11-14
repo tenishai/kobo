@@ -173,6 +173,33 @@ def test_gojira_create_app_request_shape_and_auth_header():
     assert captured["auth"] == "Bearer secret-token"
 
 
+def test_gojira_create_app_connects_without_a_seed_the_deploy_service_refuses():
+    """Wire shape (2026-11-14): `seed` rides on the connect call so a team is asked for
+    one pull request. A deploy service that refuses it must not refuse the connect: the
+    room asks again without it, and its own wiring request follows as it did before. A
+    deploy service too old to know the field ignores it and answers the first call."""
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        if "seed" in bodies[-1]:
+            return httpx.Response(422, json={"detail": "seed.needs: would not read back"})
+        return httpx.Response(201, json={"id": 7})
+
+    client = HttpxGojiraClient(
+        "http://gojira.local", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    seed = {"needs": {"secrets_from": ["on"]}}
+    app_id = client.create_app(
+        name="clio", repo_full_name="acme/clio", cluster="dev", namespace="clio",
+        auto_merge_setup_pr=False, seed=seed,
+    )
+
+    assert app_id == 7
+    assert [body.get("seed") for body in bodies] == [seed, None]
+    assert bodies[1] == {key: value for key, value in bodies[0].items() if key != "seed"}
+
+
 def test_gojira_create_app_carries_the_workload_class_it_is_given():
     """Wire shape: Gojira create app carries the workload class it is given.
 

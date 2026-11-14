@@ -1419,6 +1419,14 @@ class HttpxGojiraClient:
         if seed is not None:
             body["seed"] = seed
         resp = self._client.post(f"{self._base_url}/api/v1/apps", json=body, headers=self._headers())
+        if resp.status_code == 422 and seed is not None:
+            # The seed saves the repository's team a pull request; it is never
+            # a condition of connecting. A deploy service that will not take
+            # this one (a name its contract cannot hold, say) is asked again
+            # without it, and the room's own wiring request follows as before.
+            log.warning("gojira refused the seed for %s; connecting without it", repo_full_name)
+            del body["seed"]
+            resp = self._client.post(f"{self._base_url}/api/v1/apps", json=body, headers=self._headers())
         if resp.status_code == 409:
             raise GojiraConflict(f"app already connected for {repo_full_name!r}")
         if resp.status_code != 201:
