@@ -844,7 +844,10 @@ class SlackRelayApp(Base):
     (`<relay_id>.<nonce>`), cleared when the callback consumes it. `scopes`
     is what Slack said the install was granted, comma-separated as Slack
     gives it; NULL is an install from before the room kept it. The row's
-    Update in Slack reads it (`slack_setup.scopes_owed`).
+    Update in Slack reads it (`slack_setup.scopes_owed`). `last_event_at`
+    and `last_event_outcome` are what became of the last thing the relay
+    handed the agent (`slack_relay.record_outcome`); NULL is an app nothing
+    has been handed to since the room began keeping it.
 
     What is held here and why (the PR says this too): the signing secret
     (verifies that an event came from Slack), the relay secret (lets the
@@ -873,6 +876,8 @@ class SlackRelayApp(Base):
     wired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     installed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     scopes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_event_outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 

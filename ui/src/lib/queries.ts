@@ -167,6 +167,7 @@ import {
   fetchAccessSummary,
   fetchAgentConnections,
   fetchActivity,
+  fetchAgentChecks,
   fetchAdminAddons,
   type AuditAgentsFilters,
   type AuditFilters,
@@ -1310,6 +1311,17 @@ export function activityQuery(name: string, days = 7) {
     queryKey: ["agents", name, "activity", days] as const,
     queryFn: () => fetchActivity(name, days),
     staleTime: 30_000,
+  });
+}
+
+/** Where a connected agent stands (deployed, tools, Slack). Read again
+ * once a minute, which is how often the room itself looks at the agent. */
+export function agentChecksQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "checks"] as const,
+    queryFn: () => fetchAgentChecks(name),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 }
 

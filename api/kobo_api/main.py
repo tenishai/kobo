@@ -34,6 +34,7 @@ from kobo_api import (
     admin_store,
     audit,
     audit_agents,
+    connected_checks,
     connected_wiring,
     delivery,
     gateway_lane,
@@ -8399,6 +8400,72 @@ def create_app(
                 "detail": d.get("error") or d.get("reason") or ("" if d.get("kind") == "call" else _deny_words(d)),
             })
         return JSONResponse({"available": True, "note": None, "rows": rows})
+
+    def _last_gateway_call(agent: Agent) -> object:
+        """When the gateway last saw a call from `agent` (admitted or
+        refused) in `connected_checks.LAST_CALL_DAYS` days, None when it saw
+        none, `UNREAD` when the room has no admin plane or it did not answer."""
+        admin = getattr(app.state.clients, "liminal_admin", None)
+        if admin is None:
+            return connected_checks.UNREAD
+        since = time.time() - connected_checks.LAST_CALL_DAYS * 86400
+        try:
+            raw = admin.audit(persona=agent.name, since=since, limit=20)
+        except ClientError:
+            return connected_checks.UNREAD
+        seen = [
+            r["ts"] for r in raw
+            if r.get("action") in ("access_allow", "access_deny") and isinstance(r.get("ts"), (int, float))
+        ]
+        return rfc3339(datetime.fromtimestamp(max(seen), UTC)) if seen else None
+
+    @app.get("/api/agents/{name}/checks")
+    def agent_checks(
+        name: str,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """What a connected agent's page says is missing, one sentence each
+        (`kobo_api.connected_checks`): running, set up for the tool gateway,
+        taking Slack's messages. Empty for an agent the room builds, whose
+        parts the room made, and for one that is not ready yet, whose steps
+        already tell the story."""
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        if not is_connected(agent) or agent.status != AgentStatus.READY:
+            return JSONResponse({"checks": []})
+        cfg: Config = app.state.config
+        github = app.state.clients.github
+        lines = [connected_checks.running(_health_body(agent.name))]
+        if connected_wiring.gateway_identity_on(cfg):
+            wiring: object = connected_checks.UNREAD
+            try:
+                wiring = connected_wiring.state(github, agent, cfg)
+            except ClientError as exc:
+                log.warning("wiring state of %s could not be read: %s", agent.name, exc)
+            wired = isinstance(wiring, dict) and wiring.get("state") == connected_wiring.WIRED
+            lines.append(connected_checks.gateway(
+                wiring, last_call_at=_last_gateway_call(agent) if wired else connected_checks.UNREAD
+            ))
+        if cfg.slack_relay and agent.run_mode == RUN_MODE_HTTP:
+            row = session.query(SlackRelayApp).filter_by(agent_name=agent.name).one_or_none()
+            if row is None or row.app_id is None:
+                app_state = "none"
+            elif row.installed_at is None:
+                app_state = "created"
+            else:
+                app_state = "installed"
+            slack_wiring: object = connected_checks.UNREAD
+            if app_state == "installed":
+                slack_wiring = _slack_wiring(agent) or connected_checks.UNREAD
+            lines.append(connected_checks.slack(
+                app_state,
+                slack_wiring,
+                outcome=row.last_event_outcome if row is not None else None,
+                at=rfc3339(row.last_event_at) if row is not None else None,
+            ))
+        return JSONResponse({"checks": lines})
 
     @app.get("/api/agents/{name}/learnings")
     def list_learnings(

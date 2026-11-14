@@ -57,6 +57,7 @@
   } from "phosphor-svelte";
   import AccessPanel from "../components/AccessPanel.svelte";
   import BuildLogCard from "../components/BuildLogCard.svelte";
+  import ConnectedChecks from "../components/ConnectedChecks.svelte";
   import DangerZone from "../components/DangerZone.svelte";
   import ChatPanel from "../components/ChatPanel.svelte";
   import ColleagueConversations from "../components/ColleagueConversations.svelte";
@@ -596,6 +597,12 @@
               <p class="agent-detail__capability">
                 {data.capability ?? "Not written yet. It arrives after first contact."}
               </p>
+            {:else if data.status === "ready"}
+              <!-- In its place, what the room does know about one: whether
+                   it is running, set up for the tools, and taking Slack's
+                   messages. Only once setup is done; before that the
+                   checklist tells the story. -->
+              <ConnectedChecks agentName={data.name} />
             {/if}
           </div>
         </div>

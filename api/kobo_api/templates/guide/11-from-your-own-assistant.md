@@ -16,7 +16,7 @@ The guide tool returns this guide, section by section. "What kobo is" is the ove
 ## The tools, by what they do
 
 Look around:
-- **whoami**, **list agents**, **get agent**: who you are and what you can see. An agent's page carries its persona, model, skills, checklist, whether it is up, what it runs on and its Slack state.
+- **whoami**, **list agents**, **get agent**: who you are and what you can see. An agent's page carries its persona, model, skills, checklist, whether it is up, what it runs on and its Slack state. For a connected agent it also carries the three lines its page shows about where it stands (`checks`): deployed, set up for the tools, taking messages from Slack.
 - **list personas**, **list skills**, **list tools**, **list models**: the catalogs the create form draws from.
 - **get agent access**: the Access tab. What the agent holds, what is waiting for a reviewer, what it can ask for, and its GitHub repositories.
 - **get slack**: where the agent stands with Slack, and whether its app needs an update.

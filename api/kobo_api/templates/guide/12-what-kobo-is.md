@@ -33,7 +33,7 @@ Kobo is one piece of a set of sibling projects. Each owns one job, and the room 
 
 ### Creating an agent
 
-- **Build or connect.** Build when you want the room to own the agent and its repository; you get chat, Slack, teaching and the whole Harness. Connect when your team already has an agent in its own repository; the room deploys it and never pushes to your branches, but chat, Slack and most of the Harness do not apply.
+- **Build or connect.** Build when you want the room to own the agent and its repository; you get chat, Slack, teaching and the whole Harness. Connect when your team already has an agent in its own repository; the room deploys it and never pushes to your branches. It can use a Slack app the room makes, and its page says whether it is running, set up for the tools and taking Slack's messages; chat, teaching and most of the Harness do not apply.
 - **Persona.** A built-in persona (a helpful generalist, a billing analyst, an identity admin, a code reviewer, a cloud operator) gets you started at once. Your group's own personas carry your team's way of working. **Build your own persona** when nothing fits: paste one you have, or describe the job and edit the draft. See "Personas".
 - **Group.** Decides who sees the agent and which agents it talks to without asking. Pick your own team. Pick **shared** only when the whole company should see it; a shared agent is not paired with anyone automatically.
 - **Model tier.** **Best** when the work needs the hardest thinking and cost matters less; **Balanced** for everyday work; **Fast** when the job is simple and cost or speed matters most. You can change it later on the Harness tab; the agent rebuilds.

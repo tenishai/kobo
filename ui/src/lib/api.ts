@@ -2253,6 +2253,22 @@ export type AgentActivityRow = {
 };
 export type AgentActivity = { available: boolean; note: string | null; rows: AgentActivityRow[] };
 
+/** One thing a connected agent's page says about where it stands
+ * (`kobo_api.connected_checks`): the sentence is the server's. */
+export type AgentCheck = {
+  id: "running" | "gateway" | "slack" | string;
+  state: "ok" | "waiting" | "missing" | "idle" | string;
+  line: string;
+  at: string | null;
+  pull_request: string | null;
+};
+export type AgentChecks = { checks: AgentCheck[] };
+
+export async function fetchAgentChecks(name: string): Promise<AgentChecks> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/checks`);
+  return parse<AgentChecks>(res);
+}
+
 export async function fetchActivity(name: string, days = 7): Promise<AgentActivity> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/activity?days=${days}`);
   return parse<AgentActivity>(res);
