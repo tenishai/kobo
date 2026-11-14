@@ -40,10 +40,12 @@
   //
   // An agent that runs its team's own code (issue #484) gets the same app
   // when it serves a port (`room_app`): the copy says what its code has to
-  // serve and that it may keep an app of its own instead. The change to its
-  // files is a pull request its team merges (`wiring`), so the row carries
-  // the link while it waits and a button to open it again if it was closed;
-  // a Wakes on pick is a pull request too, never a restart.
+  // serve and that it may keep an app of its own instead. Its files already
+  // read the app's values when it was connected since the room wrote that at
+  // connect; one connected before owes that as a pull request its team merges
+  // (`wiring`), so the row carries the link while it waits and a button to
+  // open it again if it was closed. A Wakes on pick is delivered and the room
+  // restarts the agent a minute or two later (`restart_pending`).
   //
   // What the room asks Slack to let an app do grows with releases, and Slack
   // grants it only when a person approves. An installed app that predates
@@ -127,6 +129,9 @@
   let wakeError = $state<string | null>(null);
   let wakeApplying = $state(false);
   let wakeWaitsForRestart = $state(false);
+  // A connected agent: the choice is delivered and the room restarts the
+  // agent once it has landed, a minute or two after the save.
+  let wakeRestartsSoon = $state(false);
   let stopWakeWatch: (() => void) | null = null;
   const wakeLocked = $derived(
     frozen || saveWake.isPending || saveEmoji.isPending || savePublic.isPending || create.isPending || wakeApplying,
@@ -161,8 +166,10 @@
     if (view.data?.state !== "installed") return;
     try {
       const result = await saveWake.mutateAsync(next);
-      // A connected agent's choice is a pull request: the row's wiring line says so.
-      wakeWaitsForRestart = !result.applied_now && !result.pull_request;
+      // A connected agent's choice is restarted in shortly, or is a pull
+      // request the row's wiring line speaks for.
+      wakeRestartsSoon = !!result.restart_pending;
+      wakeWaitsForRestart = !result.applied_now && !result.pull_request && !result.restart_pending;
       if (result.applied_now) watchWake(result);
     } catch (err) {
       wake = null;
@@ -190,7 +197,8 @@
       const result = await saveEmoji.mutateAsync(emojiShown.split(/[\s,]+/).filter(Boolean));
       // What the room kept: its own spelling of each name, each once.
       emojiDraft = (result.wake_emoji ?? []).join(", ");
-      wakeWaitsForRestart = !result.applied_now && !result.pull_request;
+      wakeRestartsSoon = !!result.restart_pending;
+      wakeWaitsForRestart = !result.applied_now && !result.pull_request && !result.restart_pending;
       if (result.applied_now) watchWake(result);
     } catch (err) {
       emojiError = errorMessage(err, "Couldn't save the emoji. Try again.");
@@ -217,7 +225,8 @@
     publicError = null;
     try {
       const result = await savePublic.mutateAsync(next);
-      wakeWaitsForRestart = !result.applied_now && !result.pull_request;
+      wakeRestartsSoon = !!result.restart_pending;
+      wakeWaitsForRestart = !result.applied_now && !result.pull_request && !result.restart_pending;
       if (result.applied_now) watchWake(result);
     } catch (err) {
       publicDraft = null;
@@ -312,6 +321,7 @@
     if (data.wiring?.state === "owed") return { text: "Its pull request was closed", tone: "warn" };
     if (wakeApplying) return { text: "Applying your change. Give it a minute.", tone: "warn" };
     if (wakeWaitsForRestart) return { text: "Saved. Takes effect when the agent next restarts.", tone: "warn" };
+    if (wakeRestartsSoon) return { text: "Saved. The agent restarts with it in a minute or two.", tone: "warn" };
     const detail = agent.data;
     // The wiring commit started a build that has not rolled: the agent still
     // runs without its Slack app, about three minutes. The room retries a
@@ -459,9 +469,10 @@
       {:else if data.state === "none"}
         {#if data.own_app}
           <p class="copy">
-            This agent runs its team's own code. The room can make it a Slack app: you install it once, the room hands
-            Slack's messages to the agent, and the change to its files arrives as a pull request for its team to merge.
-            The agent has to take those messages; "Running your own code" in the guide says how.
+            This agent runs its team's own code. The room can make it a Slack app: you install it once and the room
+            hands Slack's messages to the agent. If the agent's files do not read the app's values yet, its team
+            merges one pull request first. The agent has to take those messages; "Running your own code" in the guide
+            says how.
           </p>
           <p class="copy">
             Already has a Slack app of its own? Keep it: save its tokens under Secrets on this page and skip this.

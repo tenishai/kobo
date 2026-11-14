@@ -1078,9 +1078,11 @@ def register(mcp: FastMCP, app: Any) -> None:
         force.
 
         `applied_now` true means the running agent is restarting with the
-        new choice already. For an agent that runs its team's own code the
-        change is a pull request on its repository: `pull_request` carries
-        the link, and nothing changes until its team merges it.
+        new choice already. For an agent that runs its team's own code,
+        `restart_pending` true means the room restarts it with the choice in
+        a minute or two. If its repository does not read the app's values
+        yet, the change waits on one pull request instead: `pull_request`
+        carries the link, and nothing changes until its team merges it.
 
         `manifest_changed` true means the Slack app's event list changed.
         For an app the room made there is nothing to do: the room updates it.
@@ -1114,6 +1116,7 @@ def register(mcp: FastMCP, app: Any) -> None:
             "command_public": body.get("command_public"),
             "manifest_changed": body.get("manifest_changed"),
             "applied_now": body.get("applied_now"),
+            "restart_pending": body.get("restart_pending"),
             "wiring": body.get("wiring"),
             "pull_request": body.get("pull_request"),
         }
@@ -2049,8 +2052,11 @@ def register(mcp: FastMCP, app: Any) -> None:
         link a PERSON opens to allow it in Slack; give it to the agent's
         owner. Slack sends them back to the agent's page and the agent
         restarts with Slack on. For an agent that runs its team's own code,
-        `pull_request` is the change its team merges first. Calling this
-        again for an app whose pull request was closed opens it again.
+        `pull_request` is null when its repository already reads the app's
+        values, which every agent connected since the room wrote that at
+        connect does; otherwise it is the one change its team merges first.
+        Calling this again for an app whose pull request was closed opens it
+        again.
 
         You must own `agent` or be a room operator, and `agent` must be READY.
         """

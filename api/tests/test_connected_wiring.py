@@ -97,6 +97,25 @@ def test_connect_gives_a_connected_agent_storage_a_pass_and_a_models_key(session
     assert "KOBO_DATA_DIR" in body and "KOBO_GATEWAY_URL" in body and "KOBO_MODELS_URL" in body
 
 
+def test_connect_lets_an_agent_read_a_slack_app_it_does_not_have_yet(session_factory, gateway_config):
+    """Wire shape (2026-11-14): in a room that makes Slack apps, the one request a connect
+    opens also names the app's Secret, as one the agent starts without. Making the app
+    later is then a delivery and a restart, with no second request. The catch-up offer
+    does not ask for it: an agent wired before is asked when its owner makes an app."""
+    room = _room(session_factory, gateway_config.model_copy(update={"slack_relay": True}))
+
+    ConnectedWireStep().run(room.ctx)
+
+    data = _proposed(room.github)
+    assert data["secrets_from_optional"] == [f"{NAME}-slack"]
+    assert data["secrets_from"] == [f"{NAME}-cabal", f"{NAME}-models"]
+    assert "secrets_from_optional" in room.github.open_pr_calls[0]["body"]
+    assert (NAME, f"{NAME}-slack") not in room.clients.kubectl.secrets
+    without = {key: value for key, value in data.items() if key != "secrets_from_optional"}
+    connected_wiring.add_room_wiring(without, room.agent, room.ctx.config)
+    assert "secrets_from_optional" not in without
+
+
 def test_a_room_with_no_gateway_wires_storage_and_nothing_of_the_gateway(session_factory, config):
     """Gate: the gateway is an add-on. A room without one mints nothing and names no Secret
     that would never arrive (a pod waits forever on a Secret that does not exist)."""

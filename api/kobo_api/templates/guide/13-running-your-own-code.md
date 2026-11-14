@@ -81,7 +81,9 @@ So does `member_joined_channel`, when someone joins a channel the agent is in.
 
 The app's token may also post files (`files:write`), list the workspace's custom emoji (`emoji:read`), read its user groups (`usergroups:read`), post in a public channel the agent was not invited to (`chat:write.public`), pin and unpin messages (`pins:read`, `pins:write`) and keep a channel's bookmarks (`bookmarks:read`, `bookmarks:write`). An app installed before the room asked for these gets them when its owner presses **Update in Slack** on the Slack row; the token keeps its name and the agent restarts once.
 
-All of it reaches the agent through one pull request on your repository. The room opens it when the app is made, and again when **Wakes on**, the emoji or the slash command choice change.
+All of it reaches the agent with no further pull request. The wiring pull request you merged at connect lets the agent read the app's values when there are some, and every name above is one of them, the three choices included. Making the app, or changing **Wakes on**, the emoji or the slash command choice, is a delivery and a restart the room does a minute or two later.
+
+An agent connected before the room did this gets one pull request the first time, which lets it read the app's values and takes `SLACK_WAKE_MODE`, `SLACK_WAKE_EMOJI` and `SLACK_COMMAND_PUBLIC` out of your deploy contract's own variables. A value you set there yourself hides the room's, so leave them out.
 
 ## What stays yours
 

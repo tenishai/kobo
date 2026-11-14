@@ -2313,9 +2313,14 @@ class KubectlClient(Protocol):
         """
         ...
 
-    def secret_literals(self, namespace: str, name: str) -> dict[str, str]:
+    def secret_literals(self, namespace: str, name: str, *, missing_ok: bool = False) -> dict[str, str]:
         """The Secret `name`'s data as plain, base64-DECODED values — the
         read half of `apply_secret` above.
+
+        `missing_ok` reads an absent Secret as `{}` and still raises when
+        the cluster could not be asked: what a caller that reads the Secret
+        to write it back whole needs, since taking "could not look" for
+        "nothing there" would write away every value it held.
 
         Used by `KubeSlackTokenStore` (below) to keep the Slack
         config-token pair in a Secret rather than on a ReadWriteOnce disk,
@@ -2591,10 +2596,13 @@ class KubectlCLI:
         # exactly what it is.
         return status if isinstance(status, dict) else {}
 
-    def secret_literals(self, namespace: str, name: str) -> dict[str, str]:
+    def secret_literals(self, namespace: str, name: str, *, missing_ok: bool = False) -> dict[str, str]:
+        # `--ignore-not-found` makes "no such Secret" an empty success, the
+        # one way to tell it from a cluster that could not be reached.
+        absent_ok = ["--ignore-not-found"] if missing_ok else []
         try:
             out = self._runner.run(
-                [self._kubectl, "-n", namespace, "get", "secret", name, "-o", "json"]
+                [self._kubectl, "-n", namespace, "get", "secret", name, *absent_ok, "-o", "json"]
             )
         except ClientError as exc:
             # NOT `from exc`, unlike every other re-raise in this class:
@@ -2608,6 +2616,8 @@ class KubectlCLI:
                 f"kubectl get secret {namespace}/{name} failed",
                 returncode=exc.returncode,
             ) from None
+        if missing_ok and not out.strip():
+            return {}
 
         try:
             data = json.loads(out).get("data") or {}

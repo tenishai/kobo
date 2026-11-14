@@ -250,6 +250,21 @@ def effective_wake(agent) -> str:
     return mode if mode in WAKE_MODES else WAKE_MENTION
 
 
+def wake_settings(mode: str, emoji: str, public: bool) -> dict[str, str | None]:
+    """How Slack wakes an agent, as the variables its code reads. None is a
+    variable that is not set: no emoji wake it, or its slash command stays
+    where it has been added."""
+    return {
+        WAKE_ENV: mode,
+        WAKE_EMOJI_ENV: emoji or None,
+        COMMAND_PUBLIC_ENV: COMMAND_PUBLIC_ON if public else None,
+    }
+
+
+def wake_settings_of(agent) -> dict[str, str | None]:
+    return wake_settings(effective_wake(agent), ",".join(wake_emoji(agent)), command_public(agent))
+
+
 def wake_subscribes_channel_messages(mode: str) -> bool:
     """Whether a mode's manifest carries the two channel-message events.
     Moving across this line is the one change that needs the manifest
@@ -628,6 +643,38 @@ def deliver_slack_values(
         )
     else:
         kubectl.apply_secret(name, f"{name}-slack", values)
+
+
+def deliver_wake_settings(
+    kubectl: KubectlClient,
+    *,
+    name: str,
+    settings: dict[str, str | None],
+    sero: SeroClient | None = None,
+    acting_email: str | None = None,
+) -> None:
+    """How Slack wakes the agent, into `<name>-slack` beside the app's values,
+    which stay as they are. For an agent that runs its team's own code: the
+    room cannot commit to its repository, so a setting kept in its files is
+    a pull request each time it changes, and one kept here is a restart."""
+    values = {key: value for key, value in settings.items() if value is not None}
+    gone = [key for key, value in settings.items() if value is None]
+    if sero is not None:
+        deliver_secret(
+            sero,
+            acting_email=acting_email,
+            agent_name=name,
+            purpose="slack",
+            values=values,
+            secret_name=f"{name}-slack",
+            remove=gone or None,
+        )
+        return
+    # Written back whole, so a read that failed must stop this: taken for an
+    # empty Secret it would write away the app's own values.
+    existing = kubectl.secret_literals(name, f"{name}-slack", missing_ok=True)
+    kept = {key: value for key, value in existing.items() if key not in gone}
+    kubectl.apply_secret(name, f"{name}-slack", {**kept, **values})
 
 
 def wire_slack_values(

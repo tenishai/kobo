@@ -684,8 +684,7 @@ def store_bot_token(clients, *, agent_name: str, bot_token: str, acting_email: s
         )
         return
     kubectl = clients.kubectl
-    try:
-        existing = kubectl.secret_literals(agent_name, secret_name)
-    except ClientError:
-        existing = {}
+    # A failed read raises: written whole over it, the token would be the
+    # only value left.
+    existing = kubectl.secret_literals(agent_name, secret_name, missing_ok=True)
     kubectl.apply_secret(agent_name, secret_name, {**existing, "SLACK_BOT_TOKEN": bot_token})
