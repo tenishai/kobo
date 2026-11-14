@@ -126,6 +126,15 @@ RESERVED_KEYS = frozenset(
     }
 )
 
+# The Slack names are the room's only where the room made the Slack app. An
+# agent that runs its team's own code and brings its own app reads its
+# tokens under these very names, so its Secrets tab has to take them
+# (2026-11-13: the row told a team to save its tokens under Secrets and the
+# save refused the two names every Slack library reads). Released by the
+# secrets route for a connected agent with no room-made app, and held again
+# once it has one, when `<agent>-slack` carries them.
+TEAM_SLACK_KEYS = frozenset({"SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_SIGNING_SECRET"})
+
 # Names the RUNTIME owns, on both lists. Not the room's to set and not an
 # owner's either: each of these decides how the container finds something
 # it cannot run without.
@@ -275,8 +284,10 @@ def sync_unknown() -> dict[str, str | None]:
     return {"state": SYNCING, "message": SYNC_UNKNOWN}
 
 
-def key_refusal(key: str) -> str | None:
+def key_refusal(key: str, released: frozenset[str] = frozenset()) -> str | None:
     """The plain sentence refusing `key`, or None when it is allowed.
+    `released` is the reserved names this agent's team keeps for itself
+    (`TEAM_SLACK_KEYS`).
 
     Checked in the order a person would: is this a name at all, is it a
     reasonable length, is it one the room already fills in, and is it one
@@ -291,7 +302,7 @@ def key_refusal(key: str) -> str | None:
         )
     if len(key) > MAX_KEY_LENGTH:
         return f"{key}: keep a name to {MAX_KEY_LENGTH} characters or fewer"
-    if key in RESERVED_KEYS:
+    if key in RESERVED_KEYS and key not in released:
         return f"{key}: {ROOM_SETS_THIS_ONE}"
     if key in CONTAINER_KEYS:
         return f"{key}: {CONTAINER_SETS_THIS_ONE}"
@@ -305,6 +316,7 @@ def write_refusal(
     *,
     taken: Iterable[str] = (),
     taken_as: str = "",
+    released: frozenset[str] = frozenset(),
 ) -> str | None:
     """The plain sentence refusing one whole write, or None to go ahead.
 
@@ -323,7 +335,7 @@ def write_refusal(
     would leave more keys behind than a list may hold.
     """
     for key in list(values) + list(remove):
-        refusal = key_refusal(key)
+        refusal = key_refusal(key, released)
         if refusal is not None:
             return refusal
 

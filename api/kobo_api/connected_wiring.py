@@ -21,6 +21,14 @@ button; an agent that holds nothing is left alone.
 
 Both run from the worker's five-minute pass (`keep`), beside the gateway
 heal, and neither ever pushes to a team's branch.
+
+Slack. A connected agent that serves a port can have a Slack app the room
+makes (issue #484). The app's values go to the Secret `<agent>-slack` the
+moment the app exists; what the agent's repository owes is one reference to
+that Secret and the wake mode, and that is a pull request on `kobo/slack`
+(`propose_slack`), opened by the route that makes the app and again by the
+one that changes the wake mode. `slack_state` is what the Slack row reads:
+wired, waiting on the team, or owed because the request was closed.
 """
 
 from __future__ import annotations
@@ -35,10 +43,18 @@ from pathlib import Path
 
 import yaml
 
-from kobo_api.agent_env import GOJIRA_YAML, RepoBusy, _propose, parse_gojira_yaml
+from kobo_api.agent_env import (
+    GOJIRA_YAML,
+    RepoBusy,
+    RepoEdit,
+    _propose,
+    edit_gojira_yaml,
+    parse_gojira_yaml,
+)
 from kobo_api.clients import ClientError
 from kobo_api.kinds import KIND_CONNECTED
 from kobo_api.models import Agent, AgentStatus
+from kobo_api.slack_setup import WAKE_ENV, effective_wake
 from kobo_api.steps import (
     CONNECTED_GATEWAY_URL_ENV,
     CONNECTED_STORAGE_FILE,
@@ -195,6 +211,102 @@ def offer(session, clients, config, agent) -> str | None:
             files=_WIRE_FILES,
         )
     return edit.pull_request
+
+
+# --- a room-made Slack app (issue #484) ----------------------------------------
+#
+# For an agent the room builds, the app's wiring is a commit. Here it is one
+# pull request on its own branch: the Secret reference and the wake mode,
+# nothing else, since there is no bundle and no runtime pin. The Secret
+# itself is delivered before the request opens, so it exists by the time
+# anything can merge it.
+
+SLACK_BRANCH = "kobo/slack"
+SLACK_PR_TITLE = "kobo: Slack app made by the room"
+SLACK_PR_BODY = (
+    "The room made a Slack app for this agent. This lets the agent read the "
+    "app's values and says how Slack wakes it.\n\n"
+    "Files changed:\n"
+    "- gojira.yaml: `secrets_from` gains `{agent}-slack` (`SLACK_BOT_TOKEN` "
+    "once the app is installed, `SLACK_RELAY_SECRET`, `SLACK_SIGNING_SECRET`, "
+    "`SLACK_ICON_URL` and the app's ids), and `SLACK_WAKE_MODE` is set.\n\n"
+    "The room hands Slack's events to the agent at `POST /slack/events` with "
+    "the header `X-Kobo-Relay-Secret`. The guide section \"Running your own "
+    "code\" has the whole contract.\n\n"
+    "After this merges the room asks the deploy platform to regenerate the "
+    "deploy files, which arrives as a second pull request. The agent "
+    "restarts when that one is merged.\n\n"
+    "gojira.yaml is rewritten from its parsed form, so comments and key "
+    "order in that one file are not preserved.\n"
+)
+SLACK_PR_ALREADY_OPEN = (
+    "a pull request for this agent's Slack app is already open. Merge or "
+    "close it: "
+)
+
+
+def slack_wired(data: dict, agent_name: str) -> bool:
+    return f"{agent_name}-slack" in (data.get("secrets_from") or [])
+
+
+def add_slack_wiring(data: dict, agent_name: str, mode: str) -> bool:
+    """The Secret reference and the wake mode into a parsed gojira.yaml.
+    True when it changed."""
+    changed = False
+    secrets = data.get("secrets_from")
+    if not isinstance(secrets, list):
+        secrets = []
+        data["secrets_from"] = secrets
+    if f"{agent_name}-slack" not in secrets:
+        secrets.append(f"{agent_name}-slack")
+        changed = True
+    env = data.get("env")
+    if not isinstance(env, dict):
+        env = {}
+        data["env"] = env
+    if env.get(WAKE_ENV) != mode:
+        env[WAKE_ENV] = mode
+        changed = True
+    return changed
+
+
+def propose_slack(github, *, repo: str, agent_name: str, mode: str) -> RepoEdit:
+    """One pull request carrying the Slack wiring with `mode`, or the one
+    already open that carries exactly that; `unchanged` when the default
+    branch already does. Raises `RepoBusy` when a different request from
+    the room is open on the branch."""
+    def carries(data: dict) -> bool:
+        env = data.get("env")
+        return slack_wired(data, agent_name) and isinstance(env, dict) and env.get(WAKE_ENV) == mode
+
+    return edit_gojira_yaml(
+        github,
+        None,
+        repo=repo,
+        connected=True,
+        gojira_app_id=None,
+        edit=lambda data: add_slack_wiring(data, agent_name, mode),
+        message=SLACK_PR_TITLE,
+        branch=SLACK_BRANCH,
+        title=SLACK_PR_TITLE,
+        body=SLACK_PR_BODY.replace("{agent}", agent_name),
+        carries=carries,
+        already_open=SLACK_PR_ALREADY_OPEN,
+    )
+
+
+def slack_state(github, agent) -> dict:
+    """Where a connected agent's room-made Slack app stands in its
+    repository: `wired` (the default branch reads the Secret and wakes the
+    way the room's row says), `waiting` (the room's request is open) or
+    `owed` (neither: the request was closed, or never opened)."""
+    repo = agent.repo_full_name
+    data = parse_gojira_yaml(github.read_file(repo, GOJIRA_YAML) or "")
+    env = data.get("env")
+    if slack_wired(data, agent.name) and isinstance(env, dict) and env.get(WAKE_ENV) == effective_wake(agent):
+        return {"state": WIRED, "pull_request": None}
+    open_pr = github.find_pr(repo, branch=SLACK_BRANCH)
+    return {"state": WAITING if open_pr else OWED, "pull_request": open_pr}
 
 
 def keep(app) -> None:

@@ -67,15 +67,19 @@ export const CONTAINER_KEYS = [
  * The plain sentence refusing `key`, or null when it is allowed. Same
  * three checks in the same order as the server's `key_refusal`, so the
  * inline answer and the one that comes back from a save agree.
+ *
+ * `released` is the reserved names this agent's team keeps for itself, as
+ * the secrets read lists them: Slack's, for an agent that runs its team's
+ * own code on a Slack app of its own.
  */
-export function keyRefusal(key: string): string | null {
+export function keyRefusal(key: string, released: readonly string[] = []): string | null {
   if (!KEY_RE.test(key)) {
     return `${key || "that name"}: use capital letters, digits and underscores, starting with a letter`;
   }
   if (key.length > MAX_KEY_LENGTH) {
     return `${key}: keep a name to ${MAX_KEY_LENGTH} characters or fewer`;
   }
-  if (RESERVED_KEYS.includes(key)) {
+  if (RESERVED_KEYS.includes(key) && !released.includes(key)) {
     return `${key}: ${ROOM_SETS_THIS_ONE}`;
   }
   if (CONTAINER_KEYS.includes(key)) {
@@ -117,10 +121,11 @@ export type ParsedEnv = {
  * multi-line values are not something this box can carry, and the
  * sentence says to use the form instead.
  *
- * Every key is put through `keyRefusal`, so a reserved or malformed name
- * is a problem rather than something the save discovers.
+ * Every key is put through `keyRefusal` (with the same `released` names),
+ * so a reserved or malformed name is a problem rather than something the
+ * save discovers.
  */
-export function parseEnvPaste(text: string): ParsedEnv {
+export function parseEnvPaste(text: string, released: readonly string[] = []): ParsedEnv {
   const values: Record<string, string> = {};
   const problems: string[] = [];
 
@@ -137,7 +142,7 @@ export function parseEnvPaste(text: string): ParsedEnv {
       continue;
     }
     const key = withoutExport.slice(0, eq).trim();
-    const refusal = keyRefusal(key);
+    const refusal = keyRefusal(key, released);
     if (refusal !== null) {
       problems.push(`Line ${index + 1}: ${refusal}`);
       continue;

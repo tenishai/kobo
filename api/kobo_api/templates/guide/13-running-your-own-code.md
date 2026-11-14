@@ -32,6 +32,31 @@ A permission approved a minute ago shows up in the tool list without a restart, 
 
 The room replaces the pass when the agent's wiring is redone. The agent picks the new one up when it restarts, which the same change brings.
 
+## Taking Slack messages
+
+A connected agent that serves a port can use a Slack app the room makes, set up from the Slack row on the **Access** tab. See "Slack". The room receives Slack's events, checks each one really came from Slack, and hands it to your agent. Slack never calls your agent directly, and your code keeps no connection open to Slack.
+
+What your code does:
+
+1. Serve `POST /slack/events` on the port the agent already serves.
+2. Refuse a request unless its `X-Kobo-Relay-Secret` header equals `SLACK_RELAY_SECRET`. Answer 401 and do nothing else with it.
+3. Answer `200` with the JSON `{"accepted": true}` at once, and do the work after. The room waits ten seconds for that answer and no longer.
+4. Remember each `event_id` for a few minutes and drop one you have seen. When the agent is restarting the room tries again for about four minutes, so the same event can arrive twice.
+5. Post to Slack with `SLACK_BOT_TOKEN`, the usual way.
+
+The body is Slack's own event envelope, untouched: the same JSON Slack's Events API sends, with `event_id`, `team_id` and the `event` inside it.
+
+What arrives with the app, beside the names above:
+
+- `SLACK_BOT_TOKEN`. There once the app is installed in a workspace. The agent restarts to pick it up.
+- `SLACK_RELAY_SECRET`. The value the room sends in `X-Kobo-Relay-Secret`.
+- `SLACK_WAKE_MODE`. The **Wakes on** choice: `mention`, `thread` or `channel`. With `mention` Slack sends only mentions and direct messages. With the other two it sends every message in a channel the agent is in, and telling a thread the agent was mentioned in from the rest of the channel is your code's to do.
+- `SLACK_ICON_URL`. The agent's picture in the room. Pass it as `icon_url` when you post and each message carries the agent's face.
+
+Reactions arrive too, as `reaction_added` and `reaction_removed`, whichever **Wakes on** is picked.
+
+All of it reaches the agent through one pull request on your repository. The room opens it when the app is made, and again when **Wakes on** changes.
+
 ## What stays yours
 
 The room does not read or change your code, your image, or how the agent talks to people. Chat, teaching, skills and colleague modes belong to agents the room builds, and a connected agent has none of them. Your repository's own builds are where its build log lives.

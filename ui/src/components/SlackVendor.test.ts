@@ -265,12 +265,11 @@ describe("SlackVendor", () => {
     expect(await screen.findByText(/could not confirm the old app was removed/)).toBeTruthy();
   });
 
-  it("says a connected agent brings its own Slack app and offers no Create", async () => {
-    // Contract: the room's app is wired by commits to the agent's own
-    // repository, which the room never makes to a connected one, so Create
-    // is refused there. The row says where the team's own app's tokens go
-    // instead of offering a button that fails.
-    room({ ...NONE, own_app: true }, { ...AGENT, kind: "connected" });
+  it("says a connected agent with no port brings its own Slack app and offers no Create", async () => {
+    // Contract: the room hands Slack's messages to an agent over HTTP, so
+    // one that serves no port keeps its own app. The row says where that
+    // app's tokens go instead of offering a button that is refused.
+    room({ ...NONE, own_app: true, room_app: false }, { ...AGENT, kind: "connected" });
 
     expect(await screen.findByText(/it brings its own Slack app: the room does not make one for it/)).toBeTruthy();
     expect(screen.getByText(/save its tokens under Secrets on this page/)).toBeTruthy();
@@ -278,6 +277,37 @@ describe("SlackVendor", () => {
     expect(screen.queryByRole("button", { name: "Create Slack app" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add Slack" })).toBeNull();
     expect(screen.queryByRole("radio")).toBeNull();
+  });
+
+  it("offers a connected agent that serves a port the room's app, or its own", async () => {
+    // Contract (issue #484): the same Create, with the two things its team
+    // has to know first: the change arrives as a pull request, and an app
+    // of its own is still a choice.
+    room({ ...NONE, own_app: true, room_app: true }, { ...AGENT, kind: "connected" });
+
+    expect(await screen.findByRole("button", { name: "Create Slack app" })).toBeTruthy();
+    expect(screen.getByText(/arrives as a pull request for its team to merge/)).toBeTruthy();
+    expect(screen.getByText(/Already has a Slack app of its own\? Keep it/)).toBeTruthy();
+    expect(screen.getAllByRole("radio")).toHaveLength(3);
+  });
+
+  it("says a connected agent's Slack app waits on a pull request, and opens a closed one again", async () => {
+    const pull = "https://github.com/acme/agent-clio/pull/9";
+    const connected = { ...AGENT, kind: "connected" };
+    const first = room({ ...INSTALLED, wiring: { state: "waiting", pull_request: pull } }, connected);
+
+    expect((await screen.findByRole("status")).textContent?.trim()).toBe("Waiting for its team to merge a pull request");
+    expect(screen.getByRole("link", { name: "Open the pull request" }).getAttribute("href")).toBe(pull);
+    first.unmount();
+
+    room({ ...INSTALLED, wiring: { state: "owed", pull_request: null } }, connected);
+    const again = await screen.findByRole("button", { name: "Open it again" });
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ app_id: "A0MADE", install_url: null, pull_request: pull }), { status: 200 }),
+    );
+    await fireEvent.click(again);
+    const post = vi.mocked(fetch).mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST");
+    expect(String(post![0])).toContain("/api/agents/clio/slack/app");
   });
 
   it("renders nothing when the room does not make Slack apps", async () => {

@@ -447,6 +447,33 @@ def wire_slack(
     )
 
 
+def deliver_slack_values(
+    kubectl: KubectlClient,
+    *,
+    name: str,
+    values: dict[str, str],
+    sero: SeroClient | None = None,
+    acting_email: str | None = None,
+    remove_keys: Sequence[str] = (),
+) -> None:
+    """The Secret half of the wiring: the app's values into `<name>-slack`,
+    through the secrets lane when the room has one, else written whole. On
+    its own because a connected agent takes this half as it is and the
+    repository half as a pull request (`kobo_api.connected_wiring`)."""
+    if sero is not None:
+        deliver_secret(
+            sero,
+            acting_email=acting_email,
+            agent_name=name,
+            purpose="slack",
+            values=values,
+            secret_name=f"{name}-slack",
+            remove=list(remove_keys) or None,
+        )
+    else:
+        kubectl.apply_secret(name, f"{name}-slack", values)
+
+
 def wire_slack_values(
     github: GitHubClient,
     kubectl: KubectlClient,
@@ -480,18 +507,9 @@ def wire_slack_values(
     runtime takes the HTTP way in at its next start). Through the lane that
     is one `put` with `remove`; the direct write replaces the Secret's data
     with `values` whole, so anything not named is gone by construction."""
-    if sero is not None:
-        deliver_secret(
-            sero,
-            acting_email=acting_email,
-            agent_name=name,
-            purpose="slack",
-            values=values,
-            secret_name=f"{name}-slack",
-            remove=list(remove_keys) or None,
-        )
-    else:
-        kubectl.apply_secret(name, f"{name}-slack", values)
+    deliver_slack_values(
+        kubectl, name=name, values=values, sero=sero, acting_email=acting_email, remove_keys=remove_keys
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)

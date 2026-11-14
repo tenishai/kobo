@@ -1622,32 +1622,128 @@ def test_get_slack_app_view_carries_the_install_link_while_created_and_not_insta
     assert {k: v for k, v in view.items() if k != "install_url"} == {
         "enabled": True, "available": True, "state": "created", "app_id": "A0FAKE",
         "workspace": None, "app_name": None, "channels": [CHANNEL], "wake": "mention", "legacy": False,
-        "own_app": False, "rebuilding": False,
+        "own_app": False, "room_app": True, "wiring": None, "rebuilding": False,
     }
     detail = client.get(f"/api/agents/{AGENT_NAME}").json()
     assert (detail["slack"]["relay"], detail["slack"]["legacy"]) == (True, False)
 
 
-def test_a_connected_agents_slack_view_says_it_brings_its_own_app(session_factory__api_slack, config__api_slack):
-    """Wire shape: a connected agent's Slack view carries `own_app`, the word
-    the row reads to say the agent brings its own Slack app. The room's app is
-    wired by commits to the agent's repository, which the room never makes to a
-    connected one, so Create is refused and the view must not invite it."""
+def _connected__api_slack(session_factory__api_slack, *, run_mode):
     from kobo_api.kinds import KIND_CONNECTED
+
+    with session_factory__api_slack() as s:
+        agent = s.query(Agent).filter_by(name=AGENT_NAME).one()
+        agent.kind, agent.run_mode = KIND_CONNECTED, run_mode
+        s.commit()
+
+
+def test_a_connected_agent_with_no_port_keeps_its_own_slack_app(session_factory__api_slack, config__api_slack):
+    """Gate: the relay hands Slack's events to an agent over HTTP, so a connected
+    agent that serves no port is told it keeps its own app (`own_app`, and
+    `room_app` false so the row offers no Create) and Create is refused."""
+    from kobo_api.kinds import RUN_MODE_HEADLESS
 
     relay_config = config__api_slack.model_copy(update={"slack_relay": True})
     client = _make_client__api_slack(session_factory__api_slack, relay_config)
     _seed_agent__api_slack(session_factory__api_slack, relay_config)
-    with session_factory__api_slack() as s:
-        s.query(Agent).filter_by(name=AGENT_NAME).one().kind = KIND_CONNECTED
-        s.commit()
+    _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HEADLESS)
 
     view = client.get(f"/api/agents/{AGENT_NAME}/slack").json()
-    assert (view["own_app"], view["state"], view["install_url"]) == (True, "none", None)
+    assert (view["own_app"], view["room_app"], view["state"], view["install_url"]) == (True, False, "none", None)
 
     refused = client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"})
     assert refused.status_code == 409
-    assert "belongs to its team" in refused.json()["error"]
+    assert "serves no port" in refused.json()["error"]
+
+
+def test_the_room_makes_a_connected_agent_a_slack_app_through_a_pull_request(
+    session_factory__api_slack, config__api_slack
+):
+    """Wire shape (issue #484): a connected agent that serves a port gets the same
+    room-made app. Its values are delivered before anything names them, the
+    repository half is one pull request on the room's Slack branch (never a
+    commit), and the view says the request is waiting on the team. A wake change
+    is a pull request too, and nothing is set on a deployment the team builds."""
+    import yaml
+
+    from kobo_api.connected_wiring import SLACK_BRANCH
+    from kobo_api.kinds import RUN_MODE_HTTP
+
+    pr_url = "https://github.com/acme/agent-clio/pull/9"
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    contract = "name: clio\nenv:\n  TEAM_SETTING: kept\n"
+    github = FakeGitHub(pr_url=pr_url, repo_files={"gojira.yaml": contract}, clone_tree={"gojira.yaml": contract})
+    kubectl = FakeKubectl()
+    client = _make_client__api_slack(
+        session_factory__api_slack, relay_config, github=github, kubectl=kubectl, slack=FakeSlack(app_id="A0MADE")
+    )
+    _seed_agent__api_slack(session_factory__api_slack, relay_config)
+    _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HTTP)
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["room_app"] is True
+
+    made = client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"})
+
+    assert made.status_code == 200, made.text
+    assert (made.json()["app_id"], made.json()["pull_request"]) == ("A0MADE", pr_url)
+    assert made.json()["install_url"].startswith("https://slack.com/oauth/v2/authorize")
+    delivered = kubectl.secrets[(AGENT_NAME, f"{AGENT_NAME}-slack")]
+    assert {"SLACK_RELAY_SECRET", "SLACK_SIGNING_SECRET", "SLACK_APP_ID"} <= set(delivered)
+    assert [call["branch"] for call in github.open_pr_calls] == [SLACK_BRANCH]
+    proposed = yaml.safe_load(github.pushed_file("gojira.yaml"))
+    assert proposed["secrets_from"] == [f"{AGENT_NAME}-slack"]
+    assert proposed["env"] == {"TEAM_SETTING": "kept", "SLACK_WAKE_MODE": "thread"}
+    assert github.push_count == 0
+
+    view = client.get(f"/api/agents/{AGENT_NAME}/slack").json()
+    assert (view["state"], view["own_app"], view["wiring"]) == (
+        "created", False, {"state": "waiting", "pull_request": pr_url}
+    )
+
+    # The request open on the branch carries `thread`; `channel` is a different
+    # request, so the team is told to settle the open one first.
+    busy = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "channel"})
+    assert busy.status_code == 409 and pr_url in busy.json()["error"]
+
+    # Merged: the default branch reads the Secret, and a new choice is a new request.
+    del github._open_prs[f"{REPO}#{SLACK_BRANCH}"]
+    github._repo_files["gojira.yaml"] = github._clone_tree["gojira.yaml"] = yaml.safe_dump(proposed)
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["wiring"]["state"] == "wired"
+    woke = client.put(f"/api/agents/{AGENT_NAME}/slack/wake", json={"wake": "channel"})
+    assert woke.status_code == 200, woke.text
+    assert (woke.json()["pull_request"], woke.json()["applied_now"], woke.json()["wiring"]) == (
+        pr_url, False, "pull_request"
+    )
+    assert yaml.safe_load(github.pushed_file("gojira.yaml"))["env"]["SLACK_WAKE_MODE"] == "channel"
+    assert kubectl.env_sets == [] and github.push_count == 0
+
+
+def test_a_connected_agents_closed_slack_request_is_opened_again_without_a_second_app(
+    session_factory__api_slack, config__api_slack
+):
+    """Gate: a team that closed the room's Slack request unmerged asks again with
+    the same button. The app and its values exist, so Slack is not asked twice and
+    the Secret (which by then holds the bot token) is not written over."""
+    from kobo_api.kinds import RUN_MODE_HTTP
+
+    pr_url = "https://github.com/acme/agent-clio/pull/9"
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    github = FakeGitHub(pr_url=pr_url, repo_files={"gojira.yaml": "name: clio\n"}, clone_tree={"gojira.yaml": "name: clio\n"})
+    kubectl, slack = FakeKubectl(), FakeSlack(app_id="A0MADE")
+    client = _make_client__api_slack(session_factory__api_slack, relay_config, github=github, kubectl=kubectl, slack=slack)
+    _seed_agent__api_slack(session_factory__api_slack, relay_config)
+    _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HTTP)
+    from kobo_api.connected_wiring import SLACK_BRANCH
+
+    assert client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"}).status_code == 200
+    del github._open_prs[f"{REPO}#{SLACK_BRANCH}"]
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["wiring"]["state"] == "owed"
+    applied = len(kubectl.calls)
+
+    again = client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"})
+
+    assert (again.status_code, again.json()["pull_request"]) == (200, pr_url)
+    assert len(slack.manifests) == 1 and len(github.open_pr_calls) == 2
+    assert len(kubectl.calls) == applied
 
 
 def test_put_wake_writes_the_env_key_and_says_when_the_manifest_changed(session_factory__api_slack, config__api_slack):
