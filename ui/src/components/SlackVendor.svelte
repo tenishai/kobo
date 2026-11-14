@@ -57,6 +57,7 @@
     createSlackAppMutation,
     moveSlackAppMutation,
     removeSlackAppMutation,
+    setSlackWakeEmojiMutation,
     setSlackWakeMutation,
     slackAppQuery,
     updateSlackAppMutation,
@@ -98,6 +99,7 @@
   const remove = createMutation(() => removeSlackAppMutation(queryClient, agentName));
   const move = createMutation(() => moveSlackAppMutation(queryClient, agentName));
   const saveWake = createMutation(() => setSlackWakeMutation(queryClient, agentName));
+  const saveEmoji = createMutation(() => setSlackWakeEmojiMutation(queryClient, agentName));
   const update = createMutation(() => updateSlackAppMutation(agentName));
 
   const WAKE_OPTIONS: { value: SlackWake; label: string; help: string }[] = [
@@ -124,7 +126,7 @@
   let wakeApplying = $state(false);
   let wakeWaitsForRestart = $state(false);
   let stopWakeWatch: (() => void) | null = null;
-  const wakeLocked = $derived(frozen || saveWake.isPending || create.isPending || wakeApplying);
+  const wakeLocked = $derived(frozen || saveWake.isPending || saveEmoji.isPending || create.isPending || wakeApplying);
 
   function watchWake(result: SlackWakeResult): void {
     stopWakeWatch?.();
@@ -161,6 +163,33 @@
     } catch (err) {
       wake = null;
       wakeError = errorMessage(err, "Couldn't save how it wakes up. Try again.");
+    }
+  }
+
+  // --- Also wakes on these emoji: one field, saved with its own button --------
+  //
+  // The second way in, beside the mode and whatever the mode is: a reaction
+  // with one of these emoji wakes the agent about the message it was put on.
+  // Empty means no reaction wakes it. A save restarts the agent like a Wakes
+  // on pick does, so it shares that lock and that header.
+  let emojiDraft = $state<string | null>(null);
+  let emojiError = $state<string | null>(null);
+  const emojiSaved = $derived((view.data?.wake_emoji ?? []).join(", "));
+  const emojiShown = $derived(emojiDraft ?? emojiSaved);
+  const emojiDirty = $derived(emojiDraft !== null && emojiDraft.trim() !== emojiSaved);
+
+  async function handleEmoji(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (wakeLocked || !emojiDirty) return;
+    emojiError = null;
+    try {
+      const result = await saveEmoji.mutateAsync(emojiShown.split(/[\s,]+/).filter(Boolean));
+      // What the room kept: its own spelling of each name, each once.
+      emojiDraft = (result.wake_emoji ?? []).join(", ");
+      wakeWaitsForRestart = !result.applied_now && !result.pull_request;
+      if (result.applied_now) watchWake(result);
+    } catch (err) {
+      emojiError = errorMessage(err, "Couldn't save the emoji. Try again.");
     }
   }
 
@@ -460,6 +489,34 @@
         <div class="block">
           {@render wakeChoice()}
         </div>
+        <form class="field" onsubmit={handleEmoji}>
+          <label class="field__label" for="slack-vendor-emoji">Also wakes on these emoji</label>
+          <div class="field__row">
+            <input
+              id="slack-vendor-emoji"
+              class="field__input"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="ticket, rotating_light"
+              value={emojiShown}
+              disabled={wakeLocked}
+              oninput={(event) => (emojiDraft = event.currentTarget.value)}
+            />
+            <button type="submit" class="btn" disabled={wakeLocked || !emojiDirty}>
+              {saveEmoji.isPending ? "Saving…" : "Save"}
+            </button>
+          </div>
+          {#if emojiError}
+            <p class="copy copy--fail" role="alert">{emojiError}</p>
+          {:else}
+            <p class="help">
+              When someone adds one of these to a message in a channel the agent is in, it reads that message and
+              answers in its thread. Use the names Slack shows, with commas between them. Leave it empty and no
+              reaction wakes it.
+            </p>
+          {/if}
+        </form>
         {#if !removing}
           <div class="row">
             <button type="button" class="btn btn--quiet" disabled={frozen || remove.isPending} onclick={() => (removing = true)}>Remove</button>

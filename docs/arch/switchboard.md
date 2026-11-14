@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-switchboard
-updated: 2026-11-06
+updated: 2026-11-13
 anchor: api/kobo_api/pairs.py sha=eb157b8c569a630f78696023dd53dc00c532e634
-anchor: api/kobo_api/clients.py sha=30d6192f527043b11a634e87288a987ebcc435a9
+anchor: api/kobo_api/clients.py sha=549885a1173d1e53f25cc5e3f337a5ad64d7c861
 ---
 # switchboard — kobo ↔ cabal: directory, relay, colleague passes, dispatch policy
 

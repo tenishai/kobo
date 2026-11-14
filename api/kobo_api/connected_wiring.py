@@ -54,7 +54,7 @@ from kobo_api.agent_env import (
 from kobo_api.clients import ClientError
 from kobo_api.kinds import KIND_CONNECTED
 from kobo_api.models import Agent, AgentStatus
-from kobo_api.slack_setup import WAKE_ENV, effective_wake
+from kobo_api.slack_setup import WAKE_EMOJI_ENV, WAKE_ENV, effective_wake
 from kobo_api.steps import (
     CONNECTED_GATEWAY_URL_ENV,
     CONNECTED_STORAGE_FILE,
@@ -229,7 +229,8 @@ SLACK_PR_BODY = (
     "Files changed:\n"
     "- gojira.yaml: `secrets_from` gains `{agent}-slack` (`SLACK_BOT_TOKEN` "
     "once the app is installed, `SLACK_RELAY_SECRET`, `SLACK_SIGNING_SECRET`, "
-    "`SLACK_ICON_URL` and the app's ids), and `SLACK_WAKE_MODE` is set.\n\n"
+    "`SLACK_ICON_URL` and the app's ids), and `SLACK_WAKE_MODE` is set, with "
+    "`SLACK_WAKE_EMOJI` when its owner named emoji that wake it.\n\n"
     "The room hands Slack's events to the agent at `POST /slack/events` with "
     "the header `X-Kobo-Relay-Secret`. The guide section \"Running your own "
     "code\" has the whole contract.\n\n"
@@ -249,9 +250,15 @@ def slack_wired(data: dict, agent_name: str) -> bool:
     return f"{agent_name}-slack" in (data.get("secrets_from") or [])
 
 
-def add_slack_wiring(data: dict, agent_name: str, mode: str) -> bool:
-    """The Secret reference and the wake mode into a parsed gojira.yaml.
-    True when it changed."""
+def _emoji_in(data: dict) -> str:
+    env = data.get("env")
+    return str(env.get(WAKE_EMOJI_ENV) or "") if isinstance(env, dict) else ""
+
+
+def add_slack_wiring(data: dict, agent_name: str, mode: str, emoji: str | None = None) -> bool:
+    """The Secret reference and the wake mode into a parsed gojira.yaml, and
+    the emoji that wake the agent when `emoji` is given ("" takes the key
+    out; None leaves it as it is). True when it changed."""
     changed = False
     secrets = data.get("secrets_from")
     if not isinstance(secrets, list):
@@ -267,17 +274,28 @@ def add_slack_wiring(data: dict, agent_name: str, mode: str) -> bool:
     if env.get(WAKE_ENV) != mode:
         env[WAKE_ENV] = mode
         changed = True
+    if emoji is not None and _emoji_in(data) != emoji:
+        if emoji:
+            env[WAKE_EMOJI_ENV] = emoji
+        else:
+            env.pop(WAKE_EMOJI_ENV, None)
+        changed = True
     return changed
 
 
-def propose_slack(github, *, repo: str, agent_name: str, mode: str) -> RepoEdit:
-    """One pull request carrying the Slack wiring with `mode`, or the one
-    already open that carries exactly that; `unchanged` when the default
-    branch already does. Raises `RepoBusy` when a different request from
-    the room is open on the branch."""
+def propose_slack(github, *, repo: str, agent_name: str, mode: str, emoji: str | None = None) -> RepoEdit:
+    """One pull request carrying the Slack wiring with `mode` (and `emoji`,
+    as `add_slack_wiring` reads it), or the one already open that carries
+    exactly that; `unchanged` when the default branch already does. Raises
+    `RepoBusy` when a different request from the room is open on the branch."""
     def carries(data: dict) -> bool:
         env = data.get("env")
-        return slack_wired(data, agent_name) and isinstance(env, dict) and env.get(WAKE_ENV) == mode
+        return (
+            slack_wired(data, agent_name)
+            and isinstance(env, dict)
+            and env.get(WAKE_ENV) == mode
+            and (emoji is None or _emoji_in(data) == emoji)
+        )
 
     return edit_gojira_yaml(
         github,
@@ -285,7 +303,7 @@ def propose_slack(github, *, repo: str, agent_name: str, mode: str) -> RepoEdit:
         repo=repo,
         connected=True,
         gojira_app_id=None,
-        edit=lambda data: add_slack_wiring(data, agent_name, mode),
+        edit=lambda data: add_slack_wiring(data, agent_name, mode, emoji),
         message=SLACK_PR_TITLE,
         branch=SLACK_BRANCH,
         title=SLACK_PR_TITLE,
@@ -303,7 +321,12 @@ def slack_state(github, agent) -> dict:
     repo = agent.repo_full_name
     data = parse_gojira_yaml(github.read_file(repo, GOJIRA_YAML) or "")
     env = data.get("env")
-    if slack_wired(data, agent.name) and isinstance(env, dict) and env.get(WAKE_ENV) == effective_wake(agent):
+    if (
+        slack_wired(data, agent.name)
+        and isinstance(env, dict)
+        and env.get(WAKE_ENV) == effective_wake(agent)
+        and _emoji_in(data) == (agent.slack_wake_emoji or "")
+    ):
         return {"state": WIRED, "pull_request": None}
     open_pr = github.find_pr(repo, branch=SLACK_BRANCH)
     return {"state": WAITING if open_pr else OWED, "pull_request": open_pr}

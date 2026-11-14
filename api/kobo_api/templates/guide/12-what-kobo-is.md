@@ -56,6 +56,8 @@ Other agents can still ask yours in every mode. A connected agent has no colleag
 - **Mentions, then the thread.** Why: the usual bot behaviour. Mention it once at the top of a thread and it follows the replies. New agents start here.
 - **Every message in the channel.** Why: the channel is the agent's job, such as an intake or support channel.
 
+Beside any of the three, **Also wakes on these emoji** names emoji whose reaction wakes it about the message they were put on. Why: a team that already triages with emoji, where a `ticket` on a message means "file this" and nobody wants to write the agent a sentence. Empty by default.
+
 Direct messages always reach it. Moving to or from **Mentions only** means pasting the manifest again. See "Slack".
 
 ### Teaching

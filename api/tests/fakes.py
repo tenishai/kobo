@@ -1634,6 +1634,7 @@ class FakeKubectl:
         # cluster refusing, which the route reports as `applied_now: false`.
         self._set_env_error = set_env_error
         self.env_sets: list[tuple[str, str, str, str]] = []
+        self.env_unsets: list[tuple[str, str, str]] = []
         # The Secrets panel's lock: `{(namespace, name): status}` for
         # `external_secret_status`. A pair with no entry reads as None --
         # no such object -- which is the ordinary state of an agent
@@ -1721,6 +1722,11 @@ class FakeKubectl:
         if self._set_env_error is not None:
             raise ClientError(self._set_env_error)
         self.env_sets.append((namespace, deploy, name, value))
+
+    def unset_env(self, namespace: str, deploy: str, name: str) -> None:
+        if self._set_env_error is not None:
+            raise ClientError(self._set_env_error)
+        self.env_unsets.append((namespace, deploy, name))
 
     def external_secret_status(self, namespace: str, name: str) -> dict | None:
         if self._external_secret_error is not None:

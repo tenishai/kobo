@@ -37,7 +37,7 @@ Run it:
 - **set agent secrets**, **set agent env**, **restart agent**: the Secrets tab from chat. Changes reach the agent on restart.
 - **create slack app**: the room makes the agent a Slack app and answers with a link. You open the link and allow the app in Slack; that one step is yours.
 - **update slack app**: when the room asks Slack for more than an installed app was allowed, this refreshes the app and answers with the link to approve what is new.
-- **set slack wake**: mentions only, mentions then the thread, or every message in the channel.
+- **set slack wake**: mentions only, mentions then the thread, or every message in the channel. The same tool names the emoji whose reaction also wakes the agent.
 - **wire slack**: the older way, for a room that does not make Slack apps. Paste the tokens for an app you created from the manifest.
 - **chat**, **teach**: talk to the agent and file a note.
 - **list learnings**, **decide learning**, **decide learnings bulk**: the Learnings section from chat.

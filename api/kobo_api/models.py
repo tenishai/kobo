@@ -193,6 +193,10 @@ class Agent(Base):
     # agents are born "thread". The runtime enforces it from SLACK_WAKE_MODE
     # in the agent's deploy contract, written at birth and on every change.
     slack_wake: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The emoji whose reaction wakes the agent in Slack (2026-11-13), beside
+    # the mode above: Slack's names, comma-separated. NULL is none, which is
+    # what every agent did before. The runtime reads SLACK_WAKE_EMOJI.
+    slack_wake_emoji: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Colleague mode (issue #131), set by the owner: "default", "roster-only"
     # or "none" (`kobo_api.composer.COLLEAGUE_MODES`). NULL reads as
     # "default", which is what every agent had before the setting existed.

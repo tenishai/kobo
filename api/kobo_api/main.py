@@ -285,13 +285,16 @@ from kobo_api.skills import (
 )
 from kobo_api.slack_setup import (
     WAKE_DEFAULT_NEW,
+    WAKE_EMOJI_ENV,
     WAKE_ENV,
     WAKE_MODES,
+    clean_wake_emoji,
     deliver_slack_values,
     effective_wake,
     render_manifest,
     rewire_slack_channels,
     scopes_owed,
+    wake_emoji,
     wake_subscribes_channel_messages,
     wire_slack,
     wire_slack_values,
@@ -717,6 +720,16 @@ def _set_env_key(data: dict, key: str, value: str) -> bool:
     return True
 
 
+def _drop_env_key(data: dict, key: str) -> bool:
+    """Take one of the room's own environment keys out of a parsed deploy
+    contract. True when it was there."""
+    env = data.get("env")
+    if not isinstance(env, dict) or key not in env:
+        return False
+    del env[key]
+    return True
+
+
 
 class ConnectProjectsBody(BaseModel):
     """The projects an admin picked under a Google Cloud folder or organization (2026-11-09)."""
@@ -788,9 +801,13 @@ class AdminConnectIntegration(BaseModel):
     trust: str = Field(default="untrusted", pattern="^(trusted|untrusted)$")
 
 class SlackWakeRequest(BaseModel):
-    """PUT .../slack/wake body: one of `mention`, `thread`, `channel`."""
+    """PUT .../slack/wake body: `wake` is one of `mention`, `thread`,
+    `channel`; `emoji` is the emoji whose reaction also wakes the agent (an
+    empty list for none). Either may be left out, and what is left out stays
+    as it is."""
 
-    wake: str
+    wake: str | None = None
+    emoji: list[str] | None = Field(default=None, max_length=50)
 
 
 class ColleagueModeRequest(BaseModel):
@@ -6800,6 +6817,7 @@ def create_app(
             "channels": channels,
             "state": derive_state(channels, wired=agent.slack_wired),
             "wake": effective_wake(agent),
+            "wake_emoji": wake_emoji(agent),
             "available": room_credentials.slack_configured(slack_clients),
             "relay": bool(cfg.slack_relay),
             "legacy": agent.slack_app_id is not None and relay_row is None,
@@ -8955,6 +8973,7 @@ def create_app(
             "app_name": row.app_name if row is not None else None,
             "channels": channels,
             "wake": effective_wake(agent),
+            "wake_emoji": wake_emoji(agent),
             "legacy": agent.slack_app_id is not None and row is None,
             # A connected agent runs its team's own code. With no room-made app
             # it is on its own Slack app, or on none; the row says so.
@@ -9041,7 +9060,7 @@ def create_app(
         slack = room_credentials.slack_client(clients)
         if slack is None:
             return JSONResponse({"error": "Slack is not configured"}, status_code=503)
-        mode = payload.wake.strip().lower()
+        mode = (payload.wake or "").strip().lower()
         if mode not in WAKE_MODES:
             return JSONResponse({"error": "choose one of: mention, thread, channel"}, status_code=422)
 
@@ -9056,7 +9075,8 @@ def create_app(
                 # is missing (the team closed it). Open it again, nothing else.
                 try:
                     edit = connected_wiring.propose_slack(
-                        clients.github, repo=agent.repo_full_name, agent_name=agent.name, mode=effective_wake(agent)
+                        clients.github, repo=agent.repo_full_name, agent_name=agent.name,
+                        mode=effective_wake(agent), emoji=agent.slack_wake_emoji or "",
                     )
                 except RepoBusy as exc:
                     return JSONResponse({"error": str(exc)}, status_code=409)
@@ -9236,7 +9256,8 @@ def create_app(
                     acting_email=acting_email, remove_keys=remove_keys,
                 )
                 edit = connected_wiring.propose_slack(
-                    clients.github, repo=agent.repo_full_name, agent_name=agent.name, mode=mode
+                    clients.github, repo=agent.repo_full_name, agent_name=agent.name,
+                    mode=mode, emoji=agent.slack_wake_emoji or "",
                 )
             except RepoBusy as exc:
                 return JSONResponse({"error": str(exc)}, status_code=409)
@@ -9649,6 +9670,13 @@ def create_app(
         choice as a pull request its team merges (`pull_request`); nothing is
         set on its live deployment, which belongs to its own build. One on
         its own Slack app is refused: the room has no say in that app.
+
+        `emoji` (2026-11-13) rides the same lane as a second variable,
+        `SLACK_WAKE_EMOJI`: the emoji whose reaction also wakes the agent,
+        whatever the mode. An empty list takes the variable away. Either
+        field may be left out and stays as it is. A room-made app is handed
+        the current manifest when emoji are named, so one made before the
+        room subscribed to reactions hears them.
         """
         agent = _ready_agent_or_error(
             session, request, name, not_ready_message="agent is not ready for Slack changes yet"
@@ -9664,17 +9692,41 @@ def create_app(
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
-        mode = payload.wake.strip().lower()
+        if payload.wake is None and payload.emoji is None:
+            return JSONResponse({"error": "send wake, emoji, or both"}, status_code=422)
+        previous = effective_wake(agent)
+        mode = previous if payload.wake is None else payload.wake.strip().lower()
         if mode not in WAKE_MODES:
             return JSONResponse(
                 {"error": "choose one of: mention, thread, channel"}, status_code=422
             )
-        previous = effective_wake(agent)
+        # None: the emoji were not part of this save and stay as they are.
+        emoji: str | None = None
+        if payload.emoji is not None:
+            names, refusal = clean_wake_emoji(payload.emoji)
+            if refusal is not None:
+                return JSONResponse({"error": refusal}, status_code=422)
+            emoji = ",".join(names)
+        previous_emoji = wake_emoji(agent)
+
+        def edit(data: dict) -> bool:
+            # A save of the emoji alone leaves the mode's key as it is.
+            changed = payload.wake is not None and _set_env_key(data, WAKE_ENV, mode)
+            if emoji:
+                changed = _set_env_key(data, WAKE_EMOJI_ENV, emoji) or changed
+            elif emoji is not None:
+                changed = _drop_env_key(data, WAKE_EMOJI_ENV) or changed
+            return changed
+
+        if payload.wake is None and emoji is not None:
+            message = "kobo: in Slack, the emoji that wake it"
+        else:
+            message = f"kobo: in Slack, wake on {mode}"
         clients = app.state.clients
         try:
             if connected:
                 result = connected_wiring.propose_slack(
-                    clients.github, repo=agent.repo_full_name, agent_name=agent.name, mode=mode
+                    clients.github, repo=agent.repo_full_name, agent_name=agent.name, mode=mode, emoji=emoji
                 )
             else:
                 result = edit_gojira_yaml(
@@ -9683,8 +9735,8 @@ def create_app(
                     repo=agent.repo_full_name,
                     connected=False,
                     gojira_app_id=agent.gojira_app_id,
-                    edit=lambda data: _set_env_key(data, WAKE_ENV, mode),
-                    message=f"kobo: in Slack, wake on {mode}",
+                    edit=edit,
+                    message=message,
                 )
         except DeployTriggerFailed as exc:
             return _deploy_trigger_failed(agent, exc)
@@ -9692,7 +9744,10 @@ def create_app(
             return JSONResponse({"error": str(exc)}, status_code=409)
         except ClientError as exc:
             return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
-        agent.slack_wake = mode
+        if payload.wake is not None:
+            agent.slack_wake = mode
+        if emoji is not None:
+            agent.slack_wake_emoji = emoji or None
         # The commit above reaches the running agent only when the deploy
         # platform next rolls it, minutes later, and the page cannot see
         # when. So the same value is set on the live deployment now (which
@@ -9702,7 +9757,13 @@ def create_app(
         applied_now = not connected
         if not connected:
             try:
-                clients.kubectl.set_env(agent.name, agent.name, WAKE_ENV, mode)
+                # Only what this save carried: each call restarts the agent.
+                if payload.wake is not None:
+                    clients.kubectl.set_env(agent.name, agent.name, WAKE_ENV, mode)
+                if emoji:
+                    clients.kubectl.set_env(agent.name, agent.name, WAKE_EMOJI_ENV, emoji)
+                elif emoji is not None:
+                    clients.kubectl.unset_env(agent.name, agent.name, WAKE_EMOJI_ENV)
             except ClientError as exc:
                 applied_now = False
                 log.warning("slack wake: live apply for agent %s failed: %s", agent.name, exc)
@@ -9711,7 +9772,7 @@ def create_app(
         # paste a manifest: the room applies the new event list itself with
         # `apps.manifest.update`, so the answer says nothing changed FOR THE
         # PERSON. The paste flow keeps its sentence.
-        if manifest_changed and relay_row is not None and relay_row.app_id is not None:
+        if (manifest_changed or emoji) and relay_row is not None and relay_row.app_id is not None:
             slack = room_credentials.slack_client(clients)
             if slack is None:
                 return JSONResponse({"error": "Slack is not configured"}, status_code=503)
@@ -9733,8 +9794,16 @@ def create_app(
             manifest_changed = False
         audit.record(
             session, request=request, action="slack.wake", target_kind="agent", target_id=agent.name,
-            agent_name=agent.name, detail={"wake": mode, "previous": previous},
-            summary=f"{audit.who(request)} set agent {agent.name} to wake in Slack on {mode}",
+            agent_name=agent.name,
+            detail={
+                "wake": mode, "previous": previous,
+                "emoji": wake_emoji(agent), "previous_emoji": previous_emoji,
+            },
+            summary=(
+                f"{audit.who(request)} set the emoji that wake agent {agent.name} in Slack"
+                if payload.wake is None and emoji is not None
+                else f"{audit.who(request)} set agent {agent.name} to wake in Slack on {mode}"
+            ),
         )
         session.commit()
         log.info("agent %s wakes in Slack on %s (was %s)", agent.name, mode, previous)
@@ -9745,6 +9814,7 @@ def create_app(
             {
                 "wake": mode,
                 "previous_wake": previous,
+                "wake_emoji": wake_emoji(agent),
                 "manifest_changed": manifest_changed,
                 "applied_now": applied_now,
                 "applied_at": rfc3339(datetime.now(UTC)) if applied_now else None,

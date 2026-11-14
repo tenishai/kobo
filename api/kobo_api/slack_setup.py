@@ -37,6 +37,7 @@ Two independent responsibilities live here:
 
 from __future__ import annotations
 
+import re
 import tempfile
 import time
 from collections.abc import Callable, Sequence
@@ -161,6 +162,52 @@ WAKE_ENV = "SLACK_WAKE_MODE"
 # Delivery of unmentioned channel messages, which `thread` and `channel`
 # need and `mention` must not have (or the app hears every reply again).
 _CHANNEL_MESSAGE_EVENTS = ["message.channels", "message.groups"]
+
+
+# A reaction can wake the agent too (2026-11-13): the emoji an owner names,
+# beside the mode and whatever the mode is. The runtime reads them from this
+# variable, comma-separated; no value means a reaction never wakes the agent.
+WAKE_EMOJI_ENV = "SLACK_WAKE_EMOJI"
+WAKE_EMOJI_MAX = 10
+_EMOJI_NAME = re.compile(r"^[a-z0-9_+\-]{1,64}$")
+# Slack names the two thumbs `+1` and `-1` in its events; people type these.
+_EMOJI_ALIASES = {"thumbsup": "+1", "thumbsdown": "-1"}
+# The marks every agent leaves on a message it answers. As a wake emoji they
+# would wake this agent each time any other agent answered anything nearby.
+_STATUS_EMOJI = ("eyes", "white_check_mark", "x", "octagonal_sign")
+
+
+def wake_emoji(agent) -> list[str]:
+    """The emoji whose reaction wakes the agent, in the order they were given."""
+    return [name for name in (getattr(agent, "slack_wake_emoji", None) or "").split(",") if name]
+
+
+def clean_wake_emoji(given: list[str]) -> tuple[list[str], str | None]:
+    """What a person typed, as the names Slack's reaction events carry: no
+    colons, lower case, no skin tone, each once. The second value is the
+    sentence to show when the list cannot be taken."""
+    names: list[str] = []
+    for raw in given:
+        for piece in re.split(r"[,\s]+", raw):
+            name = piece.strip().strip(":").split("::", 1)[0].lower()
+            if not name:
+                continue
+            name = _EMOJI_ALIASES.get(name, name)
+            if not _EMOJI_NAME.match(name):
+                return [], (
+                    f"{piece.strip()!r} is not an emoji name. Use the name Slack shows "
+                    "for the emoji, like ticket or rotating_light."
+                )
+            if name in _STATUS_EMOJI:
+                return [], (
+                    "Agents leave eyes, white_check_mark, x and octagonal_sign on the "
+                    "messages they answer, so those cannot wake one. Pick another emoji."
+                )
+            if name not in names:
+                names.append(name)
+    if len(names) > WAKE_EMOJI_MAX:
+        return [], f"Pick at most {WAKE_EMOJI_MAX} emoji."
+    return names, None
 
 
 def effective_wake(agent) -> str:

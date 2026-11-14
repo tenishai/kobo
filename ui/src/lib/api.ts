@@ -113,6 +113,8 @@ export type AgentSlack = {
   channels: string[];
   state: "idle" | "waiting" | "connected";
   wake: SlackWake;
+  /** The emoji whose reaction also wakes the agent. Older rooms omit it. */
+  wake_emoji?: string[];
   /** False when the room has no Slack config-token store, so no app can
    * be created or reconnected from here (issue #262). */
   available: boolean;
@@ -137,6 +139,9 @@ export type SlackAppView = {
   app_name: string | null;
   channels: string[];
   wake: SlackWake;
+  /** The emoji whose reaction also wakes the agent, under Slack's own
+   * names. Empty when no reaction wakes it. Older rooms omit it. */
+  wake_emoji?: string[];
   legacy: boolean;
   /** A connected agent with no room-made app: it is on its team's own
    * Slack app (tokens under Secrets), or on none yet. */
@@ -2659,6 +2664,8 @@ export async function saveSlackChannels(
 export type SlackWakeResult = {
   wake: SlackWake;
   previous_wake: SlackWake;
+  /** The emoji now in force, as the room cleaned them. */
+  wake_emoji?: string[];
   manifest_changed: boolean;
   applied_now?: boolean;
   /** The room's own clock at the save (when `applied_now`), so a later
@@ -2674,6 +2681,17 @@ export async function setSlackWake(name: string, wake: SlackWake): Promise<Slack
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ wake }),
+  });
+  return parse<SlackWakeResult>(res);
+}
+
+/** The same route with `emoji` alone: the emoji whose reaction also wakes
+ * the agent (an empty list for none). The mode stays as it is. */
+export async function setSlackWakeEmoji(name: string, emoji: string[]): Promise<SlackWakeResult> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/slack/wake`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ emoji }),
   });
   return parse<SlackWakeResult>(res);
 }
