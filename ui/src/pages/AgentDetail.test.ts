@@ -545,19 +545,47 @@ describe("AgentDetail tabs", () => {
     expect(within(dialog).getByRole("button", { name: "Destroy" })).not.toBeNull();
   });
 
-  it("keeps a connected agent's destroy at the foot of Secrets, since it has no Edit details", async () => {
+  it("gives a connected agent the same Edit details: its one line, and the destroy at the foot", async () => {
     stubFetch({
+      // First, so the save is not answered by the agent's own route.
+      "/api/agents/warden/metadata": {
+        team: "shared",
+        purpose_tags: [],
+        capability: "Answers questions about the billing export.",
+        group: "shared",
+        sha: null,
+      },
       ...BASE_ROUTES,
       "/api/agents/warden": { ...READY_AGENT, kind: "connected", destroy_visible: true },
     });
     renderWithClient(AgentDetail);
     await screen.findByRole("heading", { name: "warden" });
-    expect(screen.queryByRole("button", { name: /Edit details/ })).toBeNull();
 
-    await fireEvent.click(screen.getByRole("tab", { name: "Secrets" }));
-    const secrets = document.getElementById("panel-secrets") as HTMLElement;
-    expect(within(secrets).getByText("Destroy this agent")).not.toBeNull();
-    expect(within(secrets).getByRole("button", { name: "Destroy" })).not.toBeNull();
+    await fireEvent.click(await screen.findByRole("button", { name: /Edit details/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit details" });
+    // What the room composed is not drawn for one.
+    expect(within(dialog).queryByLabelText("Persona source")).toBeNull();
+    expect(within(dialog).queryByLabelText("Purpose tags")).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Regenerate" })).toBeNull();
+    expect(within(dialog).getByText("Destroy this agent")).not.toBeNull();
+    expect(document.getElementById("panel-secrets")?.textContent ?? "").not.toContain(
+      "Destroy this agent",
+    );
+
+    await fireEvent.input(within(dialog).getByLabelText("What it does"), {
+      target: { value: "Answers questions about the billing export." },
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      const call = vi
+        .mocked(fetch)
+        .mock.calls.find(([url]) => String(url).includes("/metadata"));
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+        capability: "Answers questions about the billing export.",
+      });
+    });
+    // Nothing was delivered anywhere, so there is no chip to wait on.
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit details" })).toBeNull());
   });
 
   it('shows a "Download the portrait" link, with the per-agent filename, when has_avatar is true', async () => {
@@ -1020,9 +1048,20 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     expect(
       screen.queryByText("Not written yet. It arrives after first contact."),
     ).toBeNull();
-    // Not merely closed behind the menu: open it and there is no such item.
-    await openHeaderMenu();
-    expect(screen.queryByRole("button", { name: /Edit details/ })).toBeNull();
+  });
+
+  it("shows the line its owner wrote under its name", async () => {
+    stubFetch({
+      ...BASE_ROUTES,
+      "/api/agents/warden": { ...CONNECTED_AGENT, capability: "Cuts the weekly release." },
+    });
+    renderWithClient(AgentDetail);
+
+    const header = (await screen.findByRole("heading", { name: "warden" }))
+      .closest(".agent-detail__header") as HTMLElement;
+    expect(header.querySelector(".agent-detail__capability")?.textContent).toContain(
+      "Cuts the weekly release.",
+    );
   });
 
   it("keeps purpose chips off the page, since nothing here can edit them", async () => {
@@ -1144,8 +1183,9 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
     renderWithClient(AgentDetail);
 
     await screen.findByRole("heading", { name: "warden" });
-    // No editor at all for one, and the text is nowhere on the page.
-    expect(screen.queryByRole("button", { name: /Edit details/ })).toBeNull();
+    // Its editor has no such row, and the text is nowhere on the page.
+    await fireEvent.click(await screen.findByRole("button", { name: /Edit details/ }));
+    await screen.findByRole("dialog", { name: "Edit details" });
     expect(screen.queryByText("Convert to connected")).toBeNull();
   });
 

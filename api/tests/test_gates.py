@@ -1130,6 +1130,28 @@ def test_a_connected_agents_picture_changes_in_the_room_and_never_in_its_reposit
     assert shown.content == PNG_BYTES
 
 
+def test_a_connected_agents_one_line_is_kept_in_the_room_and_never_in_its_repository(
+    client__web_connected_guard, session_factory__web_connected_guard, github
+):
+    """Gate (ownership): A connected agent's one line is kept in the room and never in its repository.
+
+    Its owner writes what it does in Edit details. Team and purpose tags
+    ride a card the room does not hold for one, so a save that carries
+    either is still refused (the guarded list above)."""
+    _seed(session_factory__web_connected_guard, kind=KIND_CONNECTED)
+
+    response = client__web_connected_guard.patch(
+        f"/api/agents/{AGENT_NAME}/metadata", json={"capability": "Answers questions about the billing export."}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["capability"] == "Answers questions about the billing export."
+    assert response.json()["sha"] is None
+    assert _touched_the_repo(github) == []
+    shown = client__web_connected_guard.get(f"/api/agents/{AGENT_NAME}").json()
+    assert shown["capability"] == "Answers questions about the billing export."
+
+
 @pytest.mark.parametrize("path", READ_ROUTES)
 def test_reading_a_connected_agent_is_never_refused(client__web_connected_guard, session_factory__web_connected_guard, path):
     """Gate (ownership): Reading a connected agent is never refused."""

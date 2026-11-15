@@ -11225,7 +11225,18 @@ def create_app(
         # not edit for a connected agent. The group is the room's own filing
         # and touches no file, so a move alone goes through for either kind.
         move_only = payload.team is None and payload.purpose_tags is None and payload.capability is None
-        if not (move_only and payload.group is not None):
+        # Nor does a connected agent's one line on what it does. Nothing in
+        # its repository says it, so its owner writes it here and the room
+        # keeps it beside the agent's row. Team and purpose tags are still a
+        # card's to carry, and a connected agent has no card.
+        own_line_only = (
+            is_connected(agent)
+            and payload.team is None
+            and payload.purpose_tags is None
+            and payload.capability is not None
+        )
+        room_only = move_only or own_line_only
+        if not (own_line_only or (move_only and payload.group is not None)):
             blocked = _room_edits_this_agent_or_409(agent)
             if blocked is not None:
                 return blocked
@@ -11299,10 +11310,10 @@ def create_app(
         moved = group_name != agent.group_name
         agent.group_name = group_name
         group = group_name or SHARED_GROUP
-        if move_only:
-            # A move alone. The group is the room's own filing, not something
-            # the bundle's card carries, so there is nothing to commit and no
-            # directory detail to resync.
+        if room_only:
+            # A move alone, or a connected agent's own line. Both are the
+            # room's own filing, not something a bundle's card carries, so
+            # there is nothing to commit and no directory detail to resync.
             session.commit()
             if moved:
                 _sync_dispatch_pairs(session)

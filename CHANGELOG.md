@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- A connected agent has **Edit details**, like an agent the room built. It holds one line on what the agent does, written by its owner and shown under its name, and **Destroy this agent** at its bottom. Destroy used to sit at the bottom of the **Secrets** tab for a connected agent. The room keeps the line itself and writes nothing to the team's repository.
+
 ### Fixed
 - A connected agent's page opens on a tab. It has no Chat, and the page used to open on nothing, so the space under its tab bar was blank until a tab was picked. It now opens on **Access** for a person who may manage the agent and on **Harness** for anyone else.
 

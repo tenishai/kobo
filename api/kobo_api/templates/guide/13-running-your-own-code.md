@@ -92,7 +92,9 @@ An agent connected before the room did this gets one pull request the first time
 
 ## What its page tells you
 
-Under a connected agent's name, its page keeps three lines in the order they have to come true. Each is one sentence with a dot beside it: green when it holds, amber when it waits on someone, red when something is missing, a ring when there is nothing to report.
+A connected agent's page has the same **Edit details** button as any other. For one it holds a single line on what the agent does, in your words, which the page then shows under its name, and **Destroy this agent** at its bottom. The room keeps that line itself and writes nothing to your repository.
+
+Under the name, the page keeps three lines in the order they have to come true. Each is one sentence with a dot beside it: green when it holds, amber when it waits on someone, red when something is missing, a ring when there is nothing to report.
 
 - **Deployed.** Whether the agent is running now, looked at once a minute, and why not when it is not.
 - **Tools.** Whether your repository carries the room's setup for the tool gateway, and when the gateway last heard from the agent. A line that waits on a pull request links to it. Left out in a room with no tool gateway.

@@ -37,11 +37,18 @@
   // (ConvertRow) and Destroy this agent (DangerZone), each behind its own
   // confirm, each only when the page says the caller may make it. They were
   // rows of the Settings tab until that tab became Secrets.
+  //
+  // A connected agent gets the same dialog with less in it: one line on
+  // what it does, which its owner writes because nothing the room can read
+  // says it, and the destroy row. Team, purpose tags and Regenerate describe
+  // a bundle the room composed, so they are not drawn for one. Its line is
+  // kept by the room and delivered nowhere, so a save closes the dialog
+  // rather than waiting on a delivery chip.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import ConvertRow from "./ConvertRow.svelte";
   import DangerZone from "./DangerZone.svelte";
   import Modal from "./Modal.svelte";
-  import { errorMessage, KIND_COMPOSED } from "../lib/api";
+  import { errorMessage, KIND_COMPOSED, KIND_CONNECTED } from "../lib/api";
   import {
     deliveryQuery,
     patchMetadataMutation,
@@ -99,6 +106,7 @@
   const regenerateMutation = createMutation(() => (regenerateMetadataMutation(queryClient, agentName)));
 
   let open = $state(false);
+  const connected = $derived(kind === KIND_CONNECTED);
 
   // --- Team-options query, gated on `open` (lazy) --------------------------
 
@@ -142,7 +150,7 @@
     if (frozen) {
       return;
     }
-    teamOptionsOpen = true;
+    teamOptionsOpen = !connected;
     teamMode = "select";
     teamValue = team;
     teamOther = "";
@@ -195,8 +203,8 @@
   const canSave = $derived(
     !frozen &&
       !patchMutation.isPending &&
-      effectiveTeam.length > 0 &&
-      !capabilityOverCap,
+      !capabilityOverCap &&
+      (connected ? capabilityDraft.trim().length > 0 : effectiveTeam.length > 0),
   );
 
   // --- Delivery chip (copied pattern from MemoryPanel/SlackPanel) ----------
@@ -208,7 +216,12 @@
 
   let clearTimer: ReturnType<typeof setTimeout> | undefined;
 
-  function beginDelivery(sha: string): void {
+  function beginDelivery(sha: string | null): void {
+    // Nothing was delivered anywhere (a connected agent's line is the
+    // room's own note), so there is no delivery to watch.
+    if (sha === null) {
+      return;
+    }
     if (clearTimer !== undefined) {
       clearTimeout(clearTimer);
       clearTimer = undefined;
@@ -267,10 +280,9 @@
       return;
     }
     saveError = null;
-    const body: { team?: string; purpose_tags?: string[]; capability?: string } = {
-      team: effectiveTeam,
-      purpose_tags: tagsDraft,
-    };
+    const body: { team?: string; purpose_tags?: string[]; capability?: string } = connected
+      ? {}
+      : { team: effectiveTeam, purpose_tags: tagsDraft };
     // The server has no way to distinguish "field omitted" from "field
     // explicitly cleared" (both arrive as `None` server-side) — an empty
     // capability is never sent, so it's treated as "leave unchanged" rather
@@ -286,6 +298,9 @@
         tagsDraft = [...result.purpose_tags];
         capabilityDraft = result.capability ?? "";
         beginDelivery(result.sha);
+        if (connected) {
+          closeEditor();
+        }
       },
       onError: (err: unknown) => {
         saveError = errorMessage(err, "Couldn't save. Try again.");
@@ -363,6 +378,7 @@
       handleSave();
     }}
   >
+    {#if !connected}
     <div class="field">
       <label class="field__label" for="metadata-team">Persona source</label>
       <select
@@ -444,9 +460,12 @@
       </div>
       <p class="field__help">Up to 8 tags.</p>
     </div>
+    {/if}
 
     <div class="field">
-      <label class="field__label" for="metadata-capability">Capability</label>
+      <label class="field__label" for="metadata-capability">
+        {connected ? "What it does" : "Capability"}
+      </label>
       <textarea
         id="metadata-capability"
         class="field__input"
@@ -458,15 +477,20 @@
         <p class="field__help" class:field__help--error={capabilityOverCap}>
           {capabilityCount}/{CAPABILITY_MAX}
         </p>
-        <button
-          type="button"
-          class="btn"
-          disabled={frozen || regenerateMutation.isPending}
-          onclick={handleRegenerate}
-        >
-          {regenerateMutation.isPending ? "Regenerating…" : "Regenerate"}
-        </button>
+        {#if !connected}
+          <button
+            type="button"
+            class="btn"
+            disabled={frozen || regenerateMutation.isPending}
+            onclick={handleRegenerate}
+          >
+            {regenerateMutation.isPending ? "Regenerating…" : "Regenerate"}
+          </button>
+        {/if}
       </div>
+      {#if connected}
+        <p class="field__help">One line, in your words. It shows under the agent's name.</p>
+      {/if}
       {#if regenerateError}
         <p class="field__status field__status--error" role="alert">
           {regenerateError}
