@@ -956,8 +956,6 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
   it("renders no chat or slack, and keeps Harness and Secrets", async () => {
     renderWithClient(AgentDetail);
 
-    // The header renders for every kind, so it is the wait point here --
-    // there is no tab selected on this page.
     await screen.findByRole("heading", { name: "warden" });
     expect(screen.queryByRole("tab", { name: "Chat" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Slack" })).toBeNull();
@@ -989,6 +987,16 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
         "This agent brings its own harness. The room shows what it runs on and nothing more.",
       ),
     ).not.toBeNull();
+  });
+
+  it("opens on a tab, so the page is never blank under its tab bar", async () => {
+    // It has no Chat to land on. A caller who may administer it lands on
+    // Access, where what it may reach and its Slack row are.
+    renderWithClient(AgentDetail);
+
+    const access = await screen.findByRole("tab", { name: "Access" });
+    await waitFor(() => expect(access.getAttribute("aria-selected")).toBe("true"));
+    expect(location.hash).toBe("#/agents/warden/access");
   });
 
   it("shows the connected marker and the repository itself as the link", async () => {
@@ -1108,9 +1116,12 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
     await screen.findByRole("tab", { name: "Access" });
 
     expect(screen.queryByRole("tab", { name: "Chat" })).toBeNull();
-    for (const tab of screen.getAllByRole("tab")) {
-      expect(tab.getAttribute("aria-selected")).toBe("false");
-    }
+    // ...and the page moves to a tab the agent still has, never to none.
+    const selected = screen
+      .getAllByRole("tab")
+      .filter((tab) => tab.getAttribute("aria-selected") === "true")
+      .map((tab) => tab.textContent?.trim());
+    expect(selected).toEqual(["Access"]);
   });
 
   // The three refusals below open the editor and read its text: the row

@@ -191,12 +191,22 @@ describe("defaultTab", () => {
     },
   );
 
-  it.each(["ready", "pending", "provisioning", "failed"])(
-    "is null at every status for a connected agent (%s): the checklist is its page",
+  it.each(["pending", "provisioning", "failed"])(
+    "is null for a connected agent that is not ready (%s): the checklist is its page",
     (status) => {
       expect(defaultTab(status, "connected")).toBeNull();
+      expect(defaultTab(status, "connected", true)).toBeNull();
     },
   );
+
+  it("lands a ready connected agent on a tab it has, never on none", () => {
+    // No Chat to land on. Access for the caller who is offered it, Harness
+    // for everyone else: both are in `primaryTabs` for the same arguments.
+    expect(defaultTab("ready", "connected", true)).toBe("access");
+    expect(primaryTabs(true, "connected")).toContain("access");
+    expect(defaultTab("ready", "connected")).toBe("harness");
+    expect(primaryTabs(false, "connected")).toContain("harness");
+  });
 
   it("is still chat for a ready composed agent when the kind is named", () => {
     expect(defaultTab("ready", "composed")).toBe("chat");

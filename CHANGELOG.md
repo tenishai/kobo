@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- A connected agent's page opens on a tab. It has no Chat, and the page used to open on nothing, so the space under its tab bar was blank until a tab was picked. It now opens on **Access** for a person who may manage the agent and on **Harness** for anyone else.
+
 ## [0.3.67] - 2026-11-14
 
 ### Added
