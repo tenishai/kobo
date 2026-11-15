@@ -165,13 +165,22 @@ export function isHarnessSection(value: unknown): value is HarnessSectionId {
  * for every other status -- pre-ready the header carries the checklist and
  * every tab is disabled, so selecting one would light up an empty panel.
  *
- * A connected agent never lands on a tab at any status: it has no Chat, and
- * what its page is for is the status, the checklist and the build log, all
- * of which render above the tab bar.
+ * A ready connected agent has no Chat to land on, and landing on nothing
+ * left the page blank under its tab bar. It lands on Access when the caller
+ * is offered it (`showAccess`, the same probe `primaryTabs` takes): what the
+ * agent may reach, and its Slack row, are what an owner comes here to
+ * change. Anyone else lands on Harness, which every caller has.
  */
-export function defaultTab(status: string, kind: string = KIND_COMPOSED): TabId | null {
-  if (kind === KIND_CONNECTED) {
+export function defaultTab(
+  status: string,
+  kind: string = KIND_COMPOSED,
+  showAccess = false,
+): TabId | null {
+  if (status !== "ready") {
     return null;
   }
-  return status === "ready" ? "chat" : null;
+  if (kind === KIND_CONNECTED) {
+    return showAccess ? "access" : "harness";
+  }
+  return "chat";
 }

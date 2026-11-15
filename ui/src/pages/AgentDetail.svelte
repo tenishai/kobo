@@ -300,7 +300,14 @@
       return;
     }
     if (activeTab === null || !visible.includes(activeTab)) {
-      activeTab = defaultTab(data.status, data.kind);
+      // A connected agent lands on Access or on Harness by what the probe
+      // says, so the pick waits for the probe's answer: choosing while it
+      // is still out would settle on Harness for an owner a moment before
+      // their Access tab appeared.
+      if (data.kind === KIND_CONNECTED && invites.isPending) {
+        return;
+      }
+      activeTab = defaultTab(data.status, data.kind, invites.isSuccess);
     }
   });
 
