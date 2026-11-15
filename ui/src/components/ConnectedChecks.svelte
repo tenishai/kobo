@@ -1,7 +1,7 @@
 <script lang="ts">
   // Where a connected agent stands, in the order things have to come true:
   // it is running, it is set up for the tool gateway, it takes messages
-  // from Slack. The room builds every part of an agent it composes, so that
+  // from Slack, it answers chat. The room builds every part of an agent it composes, so that
   // agent works or its checklist says why not; one that runs its team's own
   // code can be deployed and still be half in the room, and this is where
   // the page says which half. One sentence each, written by the server
@@ -20,6 +20,7 @@
     running: "Deployed",
     gateway: "Tools",
     slack: "Slack",
+    chat: "Chat",
   };
 </script>
 

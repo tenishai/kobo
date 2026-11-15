@@ -33,7 +33,7 @@ A connected agent's wiring arrives as a pull request on your repository, and som
 
 ## The tabs
 
-- **Chat.** Talk to the agent. See "Talk to it and teach it".
+- **Chat.** Talk to the agent. See "Talk to it and teach it". A connected agent has the tab too: it holds the box to type in once the agent's code answers, and one line on what is missing until then. See "Running your own code".
 - **Slack.** Put it in Slack. See "Slack".
 - **Access.** What this agent can reach: the vendors, what it holds at each, and asking for more. Shown when you own the agent or operate the room. See "Access and groups".
 - **Harness.** Everything the agent runs on, and which agents it may talk to. See "The harness".

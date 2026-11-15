@@ -1,5 +1,5 @@
 # Running your own code
-<!-- summary: For a team whose agent is its own code: what the room gives a connected agent, the names it arrives under, and how the agent reaches what it was granted. -->
+<!-- summary: For a team whose agent is its own code: what the room gives a connected agent, the names it arrives under, how it reaches what it was granted, and what it serves for Slack and chat. -->
 
 A connected agent is your team's code in your team's repository. The room gives it the same things it gives an agent it builds: storage that outlives a restart, an identity, model access, secrets, and a way to reach whatever it has been granted on the **Access** tab. Your code finds each of them in its environment. This section is the contract: the names, what each one holds, and what your code does with it.
 
@@ -90,15 +90,31 @@ All of it reaches the agent with no further pull request. The pull request you m
 
 An agent connected before the room did this gets one pull request the first time, which lets it read the app's values and takes `SLACK_WAKE_MODE`, `SLACK_WAKE_EMOJI` and `SLACK_COMMAND_PUBLIC` out of your deploy contract's own variables. A value you set there yourself hides the room's, so leave them out.
 
+## Answering chat
+
+The **Chat** tab on a connected agent's page asks the agent through the switchboard, the same way one agent asks another. Nothing is set up on the page and no pull request is involved. The tab holds the box to type in once your code answers, and until then it says in one line what is missing.
+
+What your code does, on the port the agent already serves:
+
+1. Serve `GET /.well-known/agent-card.json` and answer `200` with a JSON object. The room looks for it every five minutes and lists the agent on the switchboard once it is there. What the object says is yours to choose. The room copies nothing from it: what it lists is the agent's name and the line you wrote in **Edit details**.
+2. Serve `POST /a2a/tasks`. The body is one task as JSON. The message to answer is `status.message`, with its text in `parts`, and the earlier turns of the conversation are in `history`, oldest first.
+3. Check the caller before doing anything. The request carries `Authorization: Bearer` and a token the switchboard signed. Its keys are at `KOBO_SWITCHBOARD_URL` with `/.well-known/jwks.json` on the end, its issuer is `cabal-core`, and its audience is the agent's name. Answer `401` to anything else.
+4. Answer `200` with the task as JSON: the same `id`, `status.state` set to `completed`, and your reply as `status.message`, with `role` set to `agent` and the text in `parts` as `{"kind": "text", "text": "..."}`.
+
+The switchboard is the only caller, and it waits for the answer, so reply in one response. Only people in the room reach a connected agent this way for now. Other agents cannot ask it yet, and it has no shared thread.
+
+A room with no switchboard has no chat for a connected agent, and neither does an agent that serves no port. The tab says which.
+
 ## What its page tells you
 
 A connected agent's page has the same **Edit details** button as any other. For one it holds a single line on what the agent does, in your words, which the page then shows under its name, and **Destroy this agent** at its bottom. The room keeps that line itself and writes nothing to your repository.
 
-Under the name, the page keeps three lines in the order they have to come true. Each is one sentence with a dot beside it: green when it holds, amber when it waits on someone, red when something is missing, a ring when there is nothing to report.
+Under the name, the page keeps four lines in the order they have to come true. Each is one sentence with a dot beside it: green when it holds, amber when it waits on someone, red when something is missing, a ring when there is nothing to report.
 
 - **Deployed.** Whether the agent is running now, looked at once a minute, and why not when it is not.
 - **Tools.** Whether your repository carries the room's setup for the tool gateway, and when the gateway last heard from the agent. A line that waits on a pull request links to it. Left out in a room with no tool gateway.
 - **Slack.** Where the room-made app stands: none yet, made and waiting to be installed, waiting on a pull request, or installed. Once it is installed, the line says what became of the last message the room handed your agent. Left out for an agent that serves no port.
+- **Chat.** Whether the **Chat** tab can reach the agent: its code answers and the switchboard lists it. Amber for the few minutes between the two. The **Chat** tab shows this same line until it turns green.
 
 Three of the Slack sentences point at your code. **It refused the last message from Slack** means your code answered with an error: check that it compares `X-Kobo-Relay-Secret` with `SLACK_RELAY_SECRET` and answers `200`. **It did not answer the last message from Slack in time** means your code took the message and kept the room waiting past its ten seconds: answer `200` first and do the work after. **The last message from Slack did not reach it** means nothing took the message at `/slack/events` for about four minutes: the agent was not running, or your code does not serve that address.
 
@@ -106,4 +122,4 @@ The lines only report. What one asks for is done where it always was, in a pull 
 
 ## What stays yours
 
-The room does not read or change your code, your image, or how the agent talks to people. Chat, teaching, skills and colleague modes belong to agents the room builds, and a connected agent has none of them. Your repository's own builds are where its build log lives.
+The room does not read or change your code, your image, or how the agent talks to people. Teaching, skills and colleague modes belong to agents the room builds, and a connected agent has none of them. Your repository's own builds are where its build log lives.

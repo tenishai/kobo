@@ -962,14 +962,15 @@ GUARDED_ROUTES = [
     ("POST", f"/api/agents/{AGENT_NAME}/metadata/regenerate", {"json": {}}),
     # The picture is not here: a connected agent's lives in the room alone
     # (the test below), so changing it never reaches the team's repository.
-    # Not a repo write, but the same rule: registering a connected agent in
-    # the switchboard would create a directory entry destroy then declines
-    # to retire, because a connected agent is never listed there.
+    # Not a repo write, but the same rule: this files the card a bundle
+    # carries, and a connected agent has no bundle. The worker lists it from
+    # what its own code answers (`directory.keep_connected`).
     ("POST", f"/api/agents/{AGENT_NAME}/directory/sync", {"json": {}}),
-    # Folded 2026-10-29 from their own files: the colleague document and a
-    # chat relay are the room's hand on a bundle it does not own.
+    # Folded 2026-10-29 from its own file: the colleague document is the
+    # room's hand on a bundle it does not own. Chat left this list on
+    # 2026-11-15 (the test below): a message through the switchboard changes
+    # nothing in anybody's repository.
     ("PUT", f"/api/agents/{AGENT_NAME}/colleague-mode", {"json": {"mode": "roster-only"}}),
-    ("POST", f"/api/agents/{AGENT_NAME}/chat", {"json": {"messages": [{"role": "user", "text": "hi"}]}}),
     # Making a Slack app is not here since issue #484: for a connected agent it
     # proposes a pull request (tests/test_wire_shapes.py), never a push.
     ("POST", f"/api/agents/{AGENT_NAME}/slack/move", {}),
@@ -1106,6 +1107,31 @@ def test_no_repo_writing_route_refuses_a_composed_agent_with_this_message(
 
     if response.status_code == 409:
         assert response.json().get("error") != REFUSAL
+
+
+def test_chat_reaches_a_connected_agent_through_the_switchboard_and_no_other_way(
+    client__web_connected_guard, session_factory__web_connected_guard, clients, github, monkeypatch
+):
+    """Gate (ownership, 2026-11-15): Chat asks a connected agent through the switchboard.
+
+    The switchboard hands the message to the agent's own code, the same way
+    another agent's question arrives. A room with no switchboard refuses
+    rather than reaching for the agent directly: that path is the room's
+    hand on a bundle it composed."""
+    _seed(session_factory__web_connected_guard, kind=KIND_CONNECTED)
+    clients.cabal._relay_result = {"status": {"state": "completed", "message": {"parts": [{"text": "hello back"}]}}}
+    said = {"json": {"messages": [{"role": "user", "text": "hi"}]}}
+
+    answered = client__web_connected_guard.post(f"/api/agents/{AGENT_NAME}/chat", **said)
+
+    assert (answered.status_code, answered.json()) == (200, {"reply": "hello back"})
+    assert [call["name"] for call in clients.cabal.relay_calls] == [AGENT_NAME]
+
+    monkeypatch.delenv("CABAL_OPERATOR_TOKEN")
+    refused = client__web_connected_guard.post(f"/api/agents/{AGENT_NAME}/chat", **said)
+
+    assert refused.status_code == 409 and "no switchboard" in refused.json()["error"]
+    assert clients.agent.converse_calls == [] and _touched_the_repo(github) == []
 
 
 def test_a_connected_agents_picture_changes_in_the_room_and_never_in_its_repository(

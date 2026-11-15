@@ -981,20 +981,40 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     stubFetch({ ...BASE_ROUTES, "/api/agents/warden": CONNECTED_AGENT });
   });
 
-  it("renders no chat or slack, and keeps Harness and Secrets", async () => {
+  it("has the same tabs as any agent, less the Slack tab", async () => {
     renderWithClient(AgentDetail);
 
     await screen.findByRole("heading", { name: "warden" });
-    expect(screen.queryByRole("tab", { name: "Chat" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Slack" })).toBeNull();
     // Harness survives because a connected agent still runs on something,
     // and Secrets because a team's own service has exactly as many of them.
     const row = document.querySelector(".detail-tabs__list") as HTMLElement;
     expect(within(row).getAllByRole("tab").map((t) => t.textContent?.trim())).toEqual([
+      "Chat",
       "Access",
       "Harness",
       "Secrets",
     ]);
+  });
+
+  it("says on its Chat tab what is missing until its code answers, then offers the box", async () => {
+    const standing = (state: string, text: string) => ({
+      checks: [{ id: "chat", state, line: text, at: null, pull_request: null }],
+    });
+    stubFetch({
+      "/api/agents/warden/checks": standing("idle", "Its code does not answer chat yet."),
+      ...BASE_ROUTES,
+      "/api/agents/warden": CONNECTED_AGENT,
+    });
+    const { client } = renderWithClient(AgentDetail);
+
+    await fireEvent.click(await screen.findByRole("tab", { name: "Chat" }));
+    const panel = document.getElementById("panel-chat") as HTMLElement;
+    await waitFor(() => expect(within(panel).getByText("Its code does not answer chat yet.")).not.toBeNull());
+    expect(within(panel).queryByRole("textbox")).toBeNull();
+
+    client.setQueryData(["agents", "warden", "checks"], standing("ok", "Answering chat."));
+    expect(await within(panel).findByRole("textbox", { name: "Your message" })).not.toBeNull();
   });
 
   it("reduces its Harness to what it runs on, and says why", async () => {
@@ -1018,8 +1038,9 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
   });
 
   it("opens on a tab, so the page is never blank under its tab bar", async () => {
-    // It has no Chat to land on. A caller who may administer it lands on
-    // Access, where what it may reach and its Slack row are.
+    // Not on Chat, which may hold one line and no box yet. A caller who may
+    // administer it lands on Access, where what it may reach and its Slack
+    // row are.
     renderWithClient(AgentDetail);
 
     const access = await screen.findByRole("tab", { name: "Access" });
@@ -1086,7 +1107,6 @@ describe("AgentDetail for a connected agent (design 2026-09-21)", () => {
     renderWithClient(AgentDetail);
 
     expect(await screen.findByRole("tab", { name: "Access" })).not.toBeNull();
-    expect(screen.queryByRole("tab", { name: "Chat" })).toBeNull();
   });
 });
 
@@ -1141,20 +1161,19 @@ describe("AgentDetail convert to connected (design 2026-09-21)", () => {
   });
 
   it("drops the selected tab when the convert takes its tab away", async () => {
-    // The poll right after a convert brings back a kind with no Chat tab.
-    // Before this was handled, "chat" stayed selected against a tab bar
+    // The poll right after a convert brings back a kind with no Slack tab.
+    // Before this was handled, the tab stayed selected against a tab bar
     // that no longer offered it, and the panel area under it was empty.
     const { client } = renderWithClient(AgentDetail);
-    const chatTab = await screen.findByRole("tab", { name: "Chat" });
-    expect(chatTab.getAttribute("aria-selected")).toBe("true");
+    const slackTab = await screen.findByRole("tab", { name: "Slack" });
+    await fireEvent.click(slackTab);
+    expect(slackTab.getAttribute("aria-selected")).toBe("true");
 
     client.setQueryData(["agents", "warden"], {
       ...OPERATOR_VIEW,
       kind: "connected",
     });
-    await screen.findByRole("tab", { name: "Access" });
-
-    expect(screen.queryByRole("tab", { name: "Chat" })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("tab", { name: "Slack" })).toBeNull());
     // ...and the page moves to a tab the agent still has, never to none.
     const selected = screen
       .getAllByRole("tab")

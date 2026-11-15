@@ -6,7 +6,7 @@ code can be deployed and still be half in the room: its files may not carry
 the room's setup yet, or its code may not take the messages the room hands
 it. Each of those used to be found by reading logs.
 
-So the page says three things, each one sentence, in the order they have to
+So the page says four things, each one sentence, in the order they have to
 come true:
 
 - `running`: the cluster's own word (`kobo_api.health`), and nothing when
@@ -18,6 +18,10 @@ come true:
   message the room handed it (`slack_relay.record_outcome`). Left out when
   the room makes no Slack apps, or the agent serves no address to hand a
   message to.
+- `chat`: whether the room's Chat tab, and other agents, can ask it
+  (`kobo_api.directory`): its code answers and the switchboard lists it.
+  Always there, because the Chat tab shows this sentence in place of a box
+  to type in until it holds.
 
 Each is `{"id", "state", "line", "at", "pull_request"}`. `state` is one of
 four words the page turns into a dot: `ok`, `waiting` (on a person, or on a
@@ -139,13 +143,46 @@ def slack(app_state: str, wiring: object, *, outcome: str | None, at: str | None
     return _check("slack", STATE_IDLE, "In Slack. No message has come for it yet.")
 
 
+# The room has no switchboard, or the agent serves no address: the two ways
+# chat cannot come true whatever the agent's code does. `chat` words them.
+NO_SWITCHBOARD = "no-switchboard"
+NO_ADDRESS = "no-address"
+
+
+def chat(listed: object, *, answers: bool = False) -> dict:
+    """`listed` is whether the switchboard lists the agent (a bool), `UNREAD`
+    when it could not be asked, or one of `NO_SWITCHBOARD` and `NO_ADDRESS`.
+    `answers` is whether its own code answered the room just now, asked only
+    when it is not listed."""
+    if listed == NO_SWITCHBOARD:
+        return _check("chat", STATE_IDLE, "This room has no switchboard, so nothing here can ask it.")
+    if listed == NO_ADDRESS:
+        return _check("chat", STATE_IDLE, "It serves no address, so there is nowhere to send it a message.")
+    if listed is UNREAD:
+        return _check("chat", STATE_IDLE, "The room could not ask the switchboard just now.")
+    if listed:
+        return _check("chat", STATE_OK, "Answering chat.")
+    if answers:
+        return _check(
+            "chat", STATE_WAITING,
+            "Its code answers. The room adds it to the switchboard within five minutes.",
+        )
+    return _check(
+        "chat", STATE_IDLE,
+        "Its code does not answer chat yet. The guide says what it has to serve, under Running your own code.",
+    )
+
+
 __all__ = [
     "LAST_CALL_DAYS",
+    "NO_ADDRESS",
+    "NO_SWITCHBOARD",
     "STATE_IDLE",
     "STATE_MISSING",
     "STATE_OK",
     "STATE_WAITING",
     "UNREAD",
+    "chat",
     "gateway",
     "running",
     "slack",
