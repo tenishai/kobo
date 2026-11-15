@@ -57,6 +57,7 @@
   } from "phosphor-svelte";
   import AccessPanel from "../components/AccessPanel.svelte";
   import BuildLogCard from "../components/BuildLogCard.svelte";
+  import ConnectedChat from "../components/ConnectedChat.svelte";
   import ConnectedChecks from "../components/ConnectedChecks.svelte";
   import DangerZone from "../components/DangerZone.svelte";
   import ChatPanel from "../components/ChatPanel.svelte";
@@ -274,9 +275,9 @@
   // The hash decides, when it names a tab this agent actually has; otherwise
   // the smart default does, exactly as before. Also re-picks when the
   // selected tab stops existing: a convert is the case that made that
-  // necessary -- the poll after it brings back a kind with no Chat, and the
-  // page was left with "chat" still selected and an empty panel area under a
-  // tab bar that no longer offers it.
+  // necessary -- the poll after it brings back a kind with no Slack tab, and
+  // the page was left with that tab still selected and an empty panel area
+  // under a tab bar that no longer offers it.
   $effect(() => {
     const data = agent.data;
     if (!data) {
@@ -1039,7 +1040,12 @@
           hidden={activeTab !== tab}
           tabindex="0"
         >
-          {#if tab === "chat"}
+          {#if tab === "chat" && connected}
+            <!-- The room asks a connected agent through the switchboard, so
+                 the box is here once its code answers and one line on what
+                 is missing is here until then. -->
+            <ConnectedChat agentName={data.name} frozen={frozen} />
+          {:else if tab === "chat"}
             <!-- The agent's first reply opens the conversation, as its first
                  message, rather than sitting in a card of its own. -->
             <ChatPanel agentName={data.name} frozen={frozen} firstReply={data.first_reply} />

@@ -15,16 +15,19 @@
 // sit at the bottom of Edit details. `tabFromHash` still reads the old
 // `settings` segment, so a bookmark from before lands on Secrets.
 //
-// Connected agents (design 2026-09-21) are the thing here that hides tabs by
-// what an agent IS rather than by what the caller may do: the room did not
-// compose a connected agent, so there is no bundle behind Chat or behind
-// most of the Harness sections, and it made no chat app for Slack. An
-// absent tab is the honest answer; a disabled one would promise something
-// that is never coming. Harness survives for one, reduced to Model and
-// runtime -- a connected agent still runs on an image, and which one is the
-// question this tab exists to answer. Access is the other exception and
-// stays exactly as it is for a composed agent -- who may administer an agent
-// is a question about the caller, and it has the same answer for both kinds.
+// Connected agents (design 2026-09-21) are the thing here that changes tabs
+// by what an agent IS rather than by what the caller may do: the room did
+// not compose a connected agent, so there is no bundle behind most of the
+// Harness sections. Harness survives for one, reduced to Model and runtime
+// -- a connected agent still runs on an image, and which one is the
+// question this tab exists to answer. Access stays exactly as it is for a
+// composed agent -- who may administer an agent is a question about the
+// caller, and it has the same answer for both kinds. Chat is there for
+// both kinds too (2026-11-15): the room asks a connected agent through the
+// switchboard once its code answers, and until then the tab says in one
+// line what is missing (ConnectedChat) rather than not being there. The
+// Slack tab is the one a connected agent never has: its Slack row lives on
+// Access.
 import { KIND_COMPOSED, KIND_CONNECTED } from "./api";
 
 export type TabId = "chat" | "slack" | "access" | "harness" | "secrets";
@@ -55,10 +58,9 @@ const RETIRED_TAB_IDS: Record<string, TabId> = {
  * answered 200 for them.
  *
  * `kind` is the agent's own `kind` off either read route. A connected agent
- * keeps Harness (Model and runtime only, see `harnessSections`) and
- * Secrets, plus Access when the caller may administer it: no Chat (the room
- * has no way to talk to it) and no Slack (the room did not make its chat
- * app).
+ * keeps Chat, Harness (Model and runtime only, see `harnessSections`) and
+ * Secrets, plus Access when the caller may administer it. It has no Slack
+ * tab whatever the room's Slack setup: that tab is the paste flow's.
  */
 export function primaryTabs(
   showAccess = false,
@@ -70,7 +72,7 @@ export function primaryTabs(
   // tab shows only for an agent whose app came from the paste flow
   // (`slackLegacy`), which keeps its tab exactly as it was.
   const slack: TabId[] = opts.slackRelay && !opts.slackLegacy ? [] : ["slack"];
-  const talk: TabId[] = kind === KIND_CONNECTED ? [] : ["chat", ...slack];
+  const talk: TabId[] = kind === KIND_CONNECTED ? ["chat"] : ["chat", ...slack];
   const access: TabId[] = showAccess ? ["access"] : [];
   return [...talk, ...access, "harness", "secrets"];
 }
@@ -165,8 +167,9 @@ export function isHarnessSection(value: unknown): value is HarnessSectionId {
  * for every other status -- pre-ready the header carries the checklist and
  * every tab is disabled, so selecting one would light up an empty panel.
  *
- * A ready connected agent has no Chat to land on, and landing on nothing
- * left the page blank under its tab bar. It lands on Access when the caller
+ * A ready connected agent does not land on Chat: its Chat tab holds a box
+ * to type in only once its code answers, and a page should open on
+ * something that works. It lands on Access when the caller
  * is offered it (`showAccess`, the same probe `primaryTabs` takes): what the
  * agent may reach, and its Slack row, are what an owner comes here to
  * change. Anyone else lands on Harness, which every caller has.

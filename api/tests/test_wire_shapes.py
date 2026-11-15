@@ -1803,9 +1803,10 @@ def test_a_connected_agents_page_says_what_is_missing(session_factory__api_slack
     """Wire shape (2026-11-14): `GET /api/agents/{name}/checks` is what a connected
     agent's page says about where it stands, one sentence each and in order: is
     it running, and does it take Slack's messages (the gateway line is left out
-    of a room with no gateway). The Slack line follows the app from none, to made,
-    to installed, to what became of the last message the room handed it. An agent
-    the room builds has nothing to say here."""
+    of a room with no gateway), and can chat reach it (the test below). The Slack
+    line follows the app from none, to made, to installed, to what became of the
+    last message the room handed it. An agent the room builds has nothing to say
+    here."""
     from kobo_api.kinds import RUN_MODE_HTTP
     from kobo_api.models import SlackRelayApp
 
@@ -1825,7 +1826,7 @@ def test_a_connected_agents_page_says_what_is_missing(session_factory__api_slack
     assert lines() == {}
 
     _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HTTP)
-    assert list(lines()) == ["running", "slack"]
+    assert list(lines()) == ["running", "slack", "chat"]
     assert lines()["running"][0] == "idle"
     assert lines()["slack"] == ("idle", "No Slack app from the room. Add one under Access.")
 
@@ -1839,7 +1840,7 @@ def test_a_connected_agents_page_says_what_is_missing(session_factory__api_slack
         row = s.query(SlackRelayApp).filter_by(agent_name=AGENT_NAME).one()
         row.last_event_outcome, row.last_event_at = "refused", datetime(2026, 11, 14, 12, 0)
         s.commit()
-    refused = client.get(f"/api/agents/{AGENT_NAME}/checks").json()["checks"][-1]
+    refused = client.get(f"/api/agents/{AGENT_NAME}/checks").json()["checks"][1]
     assert (refused["state"], refused["at"]) == ("missing", "2026-11-14T12:00:00Z")
     assert refused["line"].startswith("It refused the last message from Slack.")
 
@@ -1884,6 +1885,123 @@ def test_a_connected_agents_page_claims_nothing_it_could_not_see(
     assert called["gateway"] == ("ok", "Reaching the tool gateway.")
 
 
+def test_a_connected_agents_page_says_whether_chat_can_reach_it(
+    session_factory__api_slack, config__api_slack, monkeypatch
+):
+    """Wire shape (2026-11-15): the chat line is what the Chat tab shows in place
+    of a box to type in, so it is always there and says which of the things chat
+    needs is missing: a switchboard, an address, code that answers, or the
+    switchboard's entry (which the worker files once the code answers). Only an
+    active entry this room filed counts as listed."""
+    from kobo_api import directory
+    from kobo_api.kinds import RUN_MODE_HEADLESS, RUN_MODE_HTTP
+
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    switchboard_config = config__api_slack.model_copy(update={
+        "cabal_url": "http://switchboard.internal",
+        "agent_endpoint_template": "http://agent-{name}.internal",
+    })
+    client = _make_client__api_slack(session_factory__api_slack, switchboard_config)
+    _seed_agent__api_slack(session_factory__api_slack, switchboard_config)
+    _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HTTP)
+    asked, served = [], {"status": 404}
+
+    def answer(url: str) -> httpx.Response:
+        asked.append(url)
+        return httpx.Response(served["status"], json={"name": AGENT_NAME})
+
+    monkeypatch.setattr(directory, "_get", answer)
+
+    def chat(cabal) -> tuple[str, str]:
+        client.app.state.clients.cabal = cabal
+        line = client.get(f"/api/agents/{AGENT_NAME}/checks").json()["checks"][-1]
+        return line["id"], line["state"], line["line"]
+
+    entry = {"name": AGENT_NAME, "status": "active", "kind": "federated", "endpoint": f"http://agent-{AGENT_NAME}.internal"}
+    assert chat(None) == ("chat", "idle", "This room has no switchboard, so nothing here can ask it.")
+    assert chat(FakeCabal(agents_error="down")) == ("chat", "idle", "The room could not ask the switchboard just now.")
+    assert chat(FakeCabal())[1:] == (
+        "idle",
+        "Its code does not answer chat yet. The guide says what it has to serve, under Running your own code.",
+    )
+    assert asked == [f"http://agent-{AGENT_NAME}.internal/.well-known/agent-card.json"]
+
+    served["status"] = 200
+    waiting = ("waiting", "Its code answers. The room adds it to the switchboard within five minutes.")
+    assert chat(FakeCabal())[1:] == waiting
+    assert chat(FakeCabal(agents_result=[{**entry, "status": "retired"}]))[1:] == waiting
+    assert chat(FakeCabal(agents_result=[{**entry, "endpoint": "http://elsewhere.internal"}]))[1:] == waiting
+    assert chat(FakeCabal(agents_result=[entry]))[1:] == ("ok", "Answering chat.")
+
+    _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HEADLESS)
+    assert chat(FakeCabal(agents_result=[entry]))[1:] == (
+        "idle", "It serves no address, so there is nowhere to send it a message.",
+    )
+
+
+def test_the_worker_lists_a_connected_agent_once_its_code_answers(session_factory__api_slack, config__api_slack, monkeypatch):
+    """Gate (2026-11-15): every five minutes the worker files a switchboard entry
+    for each ready connected agent whose own code answers and that is not listed
+    yet. What it files is the room's own facts (the owner's line from Edit
+    details), never what the team's code said about itself. An agent that is
+    silent, already listed, serves no address, or was built by the room is left
+    alone."""
+    from types import SimpleNamespace
+
+    from kobo_api import directory
+    from kobo_api.kinds import KIND_CONNECTED, RUN_MODE_HEADLESS, RUN_MODE_HTTP
+    from kobo_api.purpose_tags import encode_tags
+
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = config__api_slack.model_copy(update={
+        "cabal_url": "http://switchboard.internal",
+        "agent_endpoint_template": "http://agent-{name}.internal",
+    })
+
+    def agent(name: str, **fields) -> Agent:
+        fields = {"kind": KIND_CONNECTED, "run_mode": RUN_MODE_HTTP, "status": AgentStatus.READY, **fields}
+        return Agent(name=name, persona="connected", model_id=cfg.models[0].id, repo_full_name=f"example-org/{name}", **fields)
+
+    with session_factory__api_slack() as s:
+        s.add_all([
+            agent("answers", capability="Answers billing questions.", team="billing", purpose_tags=encode_tags(["billing"])),
+            agent("listed"),
+            agent("silent"),
+            agent("no-address", run_mode=RUN_MODE_HEADLESS),
+            agent("building", status=AgentStatus.WAITING),
+            agent("room-built", kind="composed"),
+        ])
+        s.commit()
+    asked = []
+
+    def answer(url: str) -> httpx.Response:
+        asked.append(url.removeprefix("http://agent-").split(".internal")[0])
+        return httpx.Response(404 if "silent" in url else 200, json={"name": "x", "description": "the team's own words"})
+
+    monkeypatch.setattr(directory, "_get", answer)
+    cabal = FakeCabal(agents_result=[
+        {"name": "listed", "status": "active", "kind": "federated", "endpoint": "http://agent-listed.internal"},
+    ])
+    app = SimpleNamespace(state=SimpleNamespace(
+        clients=SimpleNamespace(cabal=cabal), config=cfg, session_factory=session_factory__api_slack,
+    ))
+
+    directory.keep_connected(app)
+
+    assert sorted(asked) == ["answers", "silent"]
+    assert cabal.graduate_calls == [{
+        "name": "answers",
+        "endpoint": "http://agent-answers.internal",
+        "audience": "answers",
+        "card": {
+            "name": "answers", "description": "Answers billing questions.", "version": "", "capabilities": {}, "skills": [],
+            "metadata": {
+                "team": "billing", "purpose_tags": ["billing"], "capability": "Answers billing questions.", "runtime_image": "",
+            },
+        },
+    }]
+
+
 def test_every_line_a_connected_agents_page_can_say_follows_the_house_rules():
     """House rule: the sentences are the room's own copy, so no em dashes and
     none of the words its pages avoid. Each state gets a sentence of its own, a
@@ -1917,6 +2035,12 @@ def test_every_line_a_connected_agents_page_can_say_follows_the_house_rules():
         cc.slack("installed", {"state": "wired", "pull_request": None}, outcome="lost", at=None),
         cc.slack("installed", {"state": "wired", "pull_request": None}, outcome="slow", at=None),
         cc.slack("installed", cc.UNREAD, outcome=None, at=None),
+        cc.chat(cc.NO_SWITCHBOARD),
+        cc.chat(cc.NO_ADDRESS),
+        cc.chat(cc.UNREAD),
+        cc.chat(True),
+        cc.chat(False, answers=True),
+        cc.chat(False),
     ]
 
     forbidden = re.compile(r"\b(kubernetes|kubectl|pods?|yaml|namespace|secrets?|deployment|container)\b", re.IGNORECASE)
@@ -1927,6 +2051,7 @@ def test_every_line_a_connected_agents_page_can_say_follows_the_house_rules():
         "idle", "ok", "waiting", "waiting", "missing", "idle",
         "idle", "waiting", "missing", "ok", "idle", "ok",
         "idle", "waiting", "waiting", "missing", "idle", "ok", "missing", "missing", "missing", "idle",
+        "idle", "idle", "idle", "ok", "waiting", "idle",
     ]
     assert len({c["line"] for c in said}) == len(said) - 1  # only "could not read its files" is said twice
     assert [c["pull_request"] for c in said if c["pull_request"]] == [request, request]

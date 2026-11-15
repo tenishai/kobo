@@ -25,12 +25,15 @@
 
   // `firstReply`: what the agent said at first contact. It opens the log as
   // the agent's first message, but it is never part of `transcript`, so it
-  // is not replayed to the agent on every turn.
+  // is not replayed to the agent on every turn. `teach`: whether a bubble
+  // offers "Teach this". Off for an agent that runs its team's own code,
+  // which keeps no learnings in the room.
   let {
     agentName,
     frozen = false,
     firstReply = null,
-  }: { agentName: string; frozen?: boolean; firstReply?: string | null } = $props();
+    teach = true,
+  }: { agentName: string; frozen?: boolean; firstReply?: string | null; teach?: boolean } = $props();
 
   // Client-side cap: keeps the transcript (and the payload re-sent on every
   // turn) bounded. Not a protocol limit — just a quiet trim once the
@@ -193,7 +196,7 @@
           >{message.role === "user" ? "You" : agentName}:</span
         >
         <p class="chat-bubble__text">{message.text}</p>
-        {#if !frozen}
+        {#if !frozen && teach}
           <button
             type="button"
             class="chat-bubble__teach"

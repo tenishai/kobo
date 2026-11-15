@@ -402,14 +402,13 @@ def _cabal_enabled_config(config):
     )
 
 
-def test_destroy_directory_says_a_connected_agent_was_never_listed(
+def test_destroy_directory_retires_a_connected_agent_like_any_other(
     session_factory, config, monkeypatch
 ):
-    """A connected agent has no switchboard identity to retire: an agent
-    connected from the start never had one (its pipeline has no directory
-    step), and a converted one had its entry retired at the moment it was
-    converted. The note says what is true of both, rather than claiming
-    the converted one was never listed."""
+    """A connected agent whose code answers is listed by the worker's pass
+    (2026-11-15), and the room's row does not say whether that happened. So
+    destroy asks the switchboard to drop it, as it does for every agent,
+    rather than assuming there is nothing to drop."""
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
     cfg = _cabal_enabled_config(config)
     session, agent = _make_ctx_agent(session_factory, kind=KIND_CONNECTED)
@@ -418,8 +417,8 @@ def test_destroy_directory_says_a_connected_agent_was_never_listed(
 
     detail = _destroy_directory(ctx)
 
-    assert detail == "no directory entry to retire"
-    assert fake_cabal.absorb_calls == []
+    assert detail == "removed from the directory"
+    assert fake_cabal.absorb_calls == [agent.name]
     session.close()
 
 
@@ -611,8 +610,9 @@ def test_run_destroy_of_a_connected_agent_tears_down_everything_but_the_reposito
     session_factory, config, monkeypatch
 ):
     """Engine-level: the whole ledger runs to forget, the row is gone, and
-    the team still has its repository and its directory untouched. Platform,
-    namespace and model access come down exactly as for a composed agent."""
+    the team still has its repository untouched. Platform, namespace, model
+    access and its switchboard entry (it has one once its code answers)
+    come down exactly as for a composed agent."""
     monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
     cfg = _cabal_enabled_config(config)
     repo = f"{OWNER}/team-chatbot"
@@ -644,7 +644,7 @@ def test_run_destroy_of_a_connected_agent_tears_down_everything_but_the_reposito
     assert email not in fake_cloud.gsas
     assert (email, cfg.model_group) not in fake_cloud.group_members
     assert fake_github.calls == []
-    assert fake_cabal.absorb_calls == []
+    assert fake_cabal.absorb_calls == [AGENT_NAME]
 
     session = session_factory()
     assert session.get(Agent, agent_id) is None

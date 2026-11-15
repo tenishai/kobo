@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- A connected agent has a **Chat** tab. The room asks it through the switchboard, the way one agent asks another, so the tab works once the agent's own code answers: it serves `GET /.well-known/agent-card.json` and `POST /a2a/tasks`, and checks the switchboard's token. The room looks every five minutes and lists an agent that has started answering; what it lists is the agent's name and its owner's **Edit details** line, never what the team's code said about itself. Until then the tab holds one line on what is missing instead of a box that could only fail, and the page's standing lines gain a fourth, **Chat**, with the same sentence (`GET /api/agents/{name}/checks`, and `checks` on `kobo_get_agent`). `POST /api/agents/{name}/chat` and `kobo_chat` no longer refuse a connected agent; in a room with no switchboard they answer 409. Destroy now asks the switchboard to drop a connected agent's entry like any other. Other agents cannot ask a connected agent yet. The guide's "Running your own code" has the contract under **Answering chat**.
+
 ### Changed
 - A connected agent has **Edit details**, like an agent the room built. It holds one line on what the agent does, written by its owner and shown under its name, and **Destroy this agent** at its bottom. Destroy used to sit at the bottom of the **Secrets** tab for a connected agent. The room keeps the line itself and writes nothing to the team's repository.
 

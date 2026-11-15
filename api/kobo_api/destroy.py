@@ -673,20 +673,12 @@ def _destroy_directory(ctx: DestroyCtx) -> str:
     by destroys that ran before this change are the directory sweep's job
     (`kobo_api.directory.sweep_directory`, Admin > Services, issue #274).
 
-    A connected agent is the one case where "nothing to retire" IS knowable
-    from the row (connected-agents design 2026-09-21), so the switchboard
-    is not asked. Two ways an agent gets here and the note has to be true
-    of both: one connected from the start never had an entry (its pipeline
-    has no directory step), and one converted from composed had its entry
-    retired at the moment it was converted. Hence the note below says there
-    is nothing to retire rather than that the agent was never listed, which
-    would be false for the converted half. Asking anyway would do no harm
-    -- absorb is 404-tolerant -- but it would put a switchboard call on the
-    ledger for an agent that has no business with it.
+    A connected agent is asked about like any other since 2026-11-15: one
+    whose code answers is listed (`kobo_api.directory.keep_connected`), so
+    "nothing to retire" is no longer knowable from the row. One that was
+    never listed costs a call the switchboard answers 404, which absorb
+    tolerates.
     """
-    if is_connected(ctx.agent):
-        return "no directory entry to retire"
-
     if not cabal_enabled(ctx.config):
         return "The directory entry stays until the switchboard returns."
 

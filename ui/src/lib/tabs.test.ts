@@ -34,16 +34,18 @@ describe("the tab model by kind (connected-agents design 2026-09-21)", () => {
     ]);
   });
 
-  it("drops chat and slack from a connected agent's row, and keeps harness and secrets", () => {
+  it("gives a connected agent the same row less the Slack tab", () => {
+    // Chat is there for both kinds: the room asks a connected agent through
+    // the switchboard, and the tab says why not until its code answers.
     // Harness survives because a connected agent still runs on something,
     // and Secrets because a team's own service has exactly as many of
-    // them. Chat and Slack do not: the room has no way to talk to it and
-    // never made its chat app.
-    expect(primaryTabs(false, "connected")).toEqual(["harness", "secrets"]);
+    // them. The Slack tab is the paste flow's, which it never had.
+    expect(primaryTabs(false, "connected")).toEqual(["chat", "harness", "secrets"]);
+    expect(primaryTabs(false, "connected", { slackLegacy: true })).not.toContain("slack");
   });
 
   it("keeps access for a connected agent, exactly as for a composed one", () => {
-    expect(primaryTabs(true, "connected")).toEqual(["access", "harness", "secrets"]);
+    expect(primaryTabs(true, "connected")).toEqual(["chat", "access", "harness", "secrets"]);
   });
 
   it("treats an unknown kind as composed, rather than hiding everything", () => {
@@ -200,8 +202,9 @@ describe("defaultTab", () => {
   );
 
   it("lands a ready connected agent on a tab it has, never on none", () => {
-    // No Chat to land on. Access for the caller who is offered it, Harness
-    // for everyone else: both are in `primaryTabs` for the same arguments.
+    // Not on Chat, which may hold one line and no box yet. Access for the
+    // caller who is offered it, Harness for everyone else: both are in
+    // `primaryTabs` for the same arguments.
     expect(defaultTab("ready", "connected", true)).toBe("access");
     expect(primaryTabs(true, "connected")).toContain("access");
     expect(defaultTab("ready", "connected")).toBe("harness");

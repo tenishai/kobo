@@ -131,7 +131,8 @@ from kobo_api.config import SHARED_GROUP, Config, ModelChoice, vertex_location_f
 from kobo_api.connect_scan import NAME_TAKEN, Finding, ScanReport, scan_repo
 from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
-from kobo_api.directory import retire_directory, sync_directory
+from kobo_api.directory import listed as directory_lists
+from kobo_api.directory import retire_directory, served_card, sync_directory
 from kobo_api.guide import find_section, load_guide
 from kobo_api.health import AgentHealth, health_sweep_loop
 from kobo_api.iap import HttpsOnlyMiddleware, IapMiddleware, IapVerifier
@@ -6910,19 +6911,21 @@ def create_app(
         if isinstance(agent, JSONResponse):
             return agent
 
-        # Chat is the one surface the connected-agents design left open by
-        # oversight rather than on purpose. The room never made a connected
-        # agent's chat wiring (no colleague pass, no directory entry, and
-        # the relay has no inbound route to it), so every attempt walked all
-        # the way to a 502 plus a warning and a kubectl probe, for as long
-        # as anyone kept asking. It is refused with the same sentence and
-        # the same 409 as every other room-edits-it surface: the caller is
-        # allowed to ask, and it is the agent that has no such thing. This
-        # also covers `kobo_chat`, which delegates to this route rather than
-        # holding a gate of its own.
-        blocked = _room_edits_this_agent_or_409(agent)
-        if blocked is not None:
-            return blocked
+        # A message through the switchboard asks an agent's code a question
+        # and changes nothing in anybody's repository, so an agent that runs
+        # its team's own code is asked like any other once the switchboard
+        # lists it (2026-11-15, `kobo_api.directory.keep_connected`). Its
+        # page shows the box to type in only then; a caller that asks
+        # earlier (`kobo_chat` delegates here) gets the 502 below. The way
+        # around the switchboard, further down, is the room's hand on a
+        # bundle it composed and stays closed to one it did not.
+        clients = app.state.clients
+        cfg: Config = app.state.config
+        if is_connected(agent) and not (cabal_enabled(cfg) and clients.cabal is not None):
+            return JSONResponse(
+                {"error": "This room has no switchboard, so it cannot reach an agent that runs its own code."},
+                status_code=409,
+            )
 
         if agent.status != AgentStatus.READY:
             return JSONResponse({"error": "agent is not ready to chat"}, status_code=409)
@@ -6957,8 +6960,6 @@ def create_app(
 
         # Same namespace/service derivation as HelloStep (kobo_api.steps)
         # for this same agent's a2a endpoint — both are just the agent's name.
-        clients = app.state.clients
-        cfg: Config = app.state.config
         converse_messages = [{"role": m.role, "text": m.text} for m in messages]
 
         # Switchboard relay (colleagues switchboard plan, Task 3): same
@@ -8433,7 +8434,7 @@ def create_app(
     ) -> JSONResponse:
         """What a connected agent's page says is missing, one sentence each
         (`kobo_api.connected_checks`): running, set up for the tool gateway,
-        taking Slack's messages. Empty for an agent the room builds, whose
+        taking Slack's messages, answering chat. Empty for an agent the room builds, whose
         parts the room made, and for one that is not ready yet, whose steps
         already tell the story."""
         agent = _visible_agent_or_404(session, request, name)
@@ -8474,6 +8475,20 @@ def create_app(
             if app_state == "installed":
                 slack_wiring = _slack_wiring(agent) or connected_checks.UNREAD
             lines.append(connected_checks.slack(app_state, slack_wiring, outcome=outcome, at=outcome_at))
+        cabal = app.state.clients.cabal
+        if not (cabal_enabled(cfg) and cabal is not None):
+            lines.append(connected_checks.chat(connected_checks.NO_SWITCHBOARD))
+        elif agent.run_mode != RUN_MODE_HTTP:
+            lines.append(connected_checks.chat(connected_checks.NO_ADDRESS))
+        else:
+            on_board: object = connected_checks.UNREAD
+            try:
+                on_board = directory_lists(cfg, cabal.list_agents(), agent.name)
+            except (ClientError, httpx.HTTPError) as exc:
+                log.warning("the switchboard could not say whether it lists %s: %s", agent.name, exc)
+            lines.append(connected_checks.chat(
+                on_board, answers=on_board is False and served_card(cfg, agent.name) is not None
+            ))
         return JSONResponse({"checks": lines})
 
     @app.get("/api/agents/{name}/learnings")

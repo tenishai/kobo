@@ -476,6 +476,17 @@ async def heal_loop(app, *, interval_s: float = HEAL_INTERVAL_S) -> None:
             raise
         except Exception:
             log.exception("connected wiring pass failed")
+        # And lists the ones whose code has started answering the
+        # switchboard (`kobo_api.directory.keep_connected`), so Chat and
+        # other agents can ask them.
+        try:
+            from . import directory
+
+            await asyncio.to_thread(directory.keep_connected, app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("connected directory pass failed")
 
 
 def tally(sentence: str) -> str:

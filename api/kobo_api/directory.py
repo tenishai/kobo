@@ -18,6 +18,13 @@ read verbatim from the clone, never recomposed from `BundleSpec`/
 `kobo_api.composer`: the switchboard must see exactly what the agent's own
 runtime serves at `/.well-known/agent-card.json`, not kobo's memory of what
 it once baked.
+
+An agent that runs its team's own code has no bundle to read a card from
+(2026-11-15). It is listed once its own code answers the way the switchboard
+will ask it: `served_card` looks, `connected_card` is what the room files for
+it (the room's own facts and nothing the team's code said about itself), and
+`keep_connected` is the worker's pass that lists the ones that have started
+answering.
 """
 
 from __future__ import annotations
@@ -28,8 +35,18 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kobo_api.clients import CabalClient, ClientError, GitHubClient, KubectlClient
+import httpx
+
+from kobo_api.clients import (
+    CabalClient,
+    ClientError,
+    GitHubClient,
+    KubectlClient,
+    cabal_enabled,
+)
 from kobo_api.config import Config
+from kobo_api.kinds import KIND_CONNECTED, RUN_MODE_HTTP
+from kobo_api.purpose_tags import decode_tags
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -87,16 +104,117 @@ def sync_directory_from_path(cabal: CabalClient, cfg: Config, agent: Agent, bund
     register_card(cabal, cfg, agent, card)
 
 
-def register_card(cabal: CabalClient, cfg: Config, agent: Agent, card: dict) -> None:
-    """The registration itself: the endpoint from `agent_endpoint_template`,
-    the agent's name as its a2a audience, the card verbatim."""
+def _endpoint(cfg: Config, name: str) -> str:
     try:
-        endpoint = cfg.agent_endpoint_template.format(name=agent.name)
+        return cfg.agent_endpoint_template.format(name=name)
     except (KeyError, IndexError) as exc:
         raise ClientError(
             f"agent endpoint template is malformed: {cfg.agent_endpoint_template!r}"
         ) from exc
-    cabal.graduate(agent.name, endpoint=endpoint, audience=agent.name, card=card)
+
+
+def register_card(cabal: CabalClient, cfg: Config, agent: Agent, card: dict) -> None:
+    """The registration itself: the endpoint from `agent_endpoint_template`,
+    the agent's name as its a2a audience, the card verbatim."""
+    cabal.graduate(agent.name, endpoint=_endpoint(cfg, agent.name), audience=agent.name, card=card)
+
+
+# Where an agent's code says it takes tasks, and how long the room waits to
+# hear. The agent is a neighbour inside the cluster; one that has not
+# answered in this long is not going to.
+CARD_PATH = "/.well-known/agent-card.json"
+CARD_TIMEOUT_S = 3.0
+
+
+def _get(url: str) -> httpx.Response:
+    return httpx.get(url, timeout=httpx.Timeout(CARD_TIMEOUT_S, connect=2.0))
+
+
+def served_card(cfg: Config, name: str) -> dict | None:
+    """The card agent `name`'s own code serves at its address, or None when
+    it serves none (no address template, nothing listening, any answer but a
+    200 with a JSON object in it). For an agent that runs its team's code
+    this is the whole test of "can the switchboard ask it": the code that
+    serves the card is the code that takes the task."""
+    if not cfg.agent_endpoint_template:
+        return None
+    try:
+        resp = _get(_endpoint(cfg, name).rstrip("/") + CARD_PATH)
+        body = resp.json() if resp.status_code == 200 else None
+    except (ClientError, httpx.HTTPError, ValueError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def connected_card(agent: Agent) -> dict:
+    """What the room files with the switchboard for an agent that runs its
+    team's own code: the same shape as a composed agent's card, holding only
+    what the room itself knows. The description is the line its owner wrote
+    in Edit details. Nothing is copied from the card the team's code serves:
+    that text would be read by every agent allowed to ask this one, and the
+    room has not read it."""
+    line = agent.capability or ""
+    return {
+        "name": agent.name,
+        "description": line,
+        "version": "",
+        "capabilities": {},
+        "skills": [],
+        "metadata": {
+            "team": agent.team or "",
+            "purpose_tags": decode_tags(agent.purpose_tags),
+            "capability": line,
+            "runtime_image": "",
+        },
+    }
+
+
+def listed(cfg: Config, entries: list[dict], name: str) -> bool:
+    """Whether the switchboard rows `entries` (`CabalClient.list_agents`)
+    hold an active entry for `name` that this room registered."""
+    return any(
+        entry.get("name") == name and entry.get("status") == "active" and room_registered(cfg, entry)
+        for entry in entries
+    )
+
+
+def keep_connected(app) -> None:
+    """One pass over every ready agent that runs its team's own code and
+    serves an address: list the ones whose code has started answering. An
+    agent already listed is left alone, and so is one that stopped
+    answering (a restart looks the same from here; a chat to it says so).
+    Best effort, one agent at a time. Runs on the worker's five-minute beat."""
+    from kobo_api.models import Agent, AgentStatus
+
+    clients, cfg = app.state.clients, app.state.config
+    cabal = getattr(clients, "cabal", None)
+    if cabal is None or not cabal_enabled(cfg) or not cfg.agent_endpoint_template:
+        return
+    with app.state.session_factory() as session:
+        cards = {
+            agent.name: connected_card(agent)
+            for agent in session.query(Agent).filter(
+                Agent.status == AgentStatus.READY,
+                Agent.kind == KIND_CONNECTED,
+                Agent.run_mode == RUN_MODE_HTTP,
+            )
+        }
+    if not cards:
+        return
+    try:
+        entries = cabal.list_agents()
+    except (ClientError, httpx.HTTPError) as exc:
+        log.warning("the switchboard could not be asked what it lists: %s", exc)
+        return
+    for name, card in cards.items():
+        if listed(cfg, entries, name) or served_card(cfg, name) is None:
+            continue
+        try:
+            cabal.graduate(name, endpoint=_endpoint(cfg, name), audience=name, card=card)
+        except ClientError as exc:
+            log.warning("could not list %s on the switchboard: %s", name, exc)
+            continue
+        log.info("listed %s on the switchboard: its code answers", name)
 
 
 def retire_directory(cabal: CabalClient, agent: Agent) -> None:
