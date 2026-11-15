@@ -2807,18 +2807,20 @@ export type AgentMetadata = {
  * (`MetadataDetails`) simply never sends an empty string. 422 on a bad team
  * slug ("that doesn't look like a team name"), an over-cap tag list ("Eight
  * tags at most."), or an over-160/unusable capability string; 502 if the
- * card commit itself fails (delivery is the caller's to retry).
+ * card commit itself fails (delivery is the caller's to retry). `sha` is
+ * null when nothing was delivered: a connected agent's line is kept by the
+ * room and written to no repository.
  */
 export async function patchAgentMetadata(
   name: string,
   body: { team?: string; purpose_tags?: string[]; capability?: string },
-): Promise<AgentMetadata & { sha: string }> {
+): Promise<AgentMetadata & { sha: string | null }> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/metadata`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return parse<AgentMetadata & { sha: string }>(res);
+  return parse<AgentMetadata & { sha: string | null }>(res);
 }
 
 /**

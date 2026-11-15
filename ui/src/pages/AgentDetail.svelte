@@ -599,12 +599,17 @@
             </div>
             <!-- The capability sentence is earned at first contact, and the
                  room never makes first contact with a connected agent, so for
-                 one it would be a promise that never arrives. -->
+                 one it would be a promise that never arrives. Its owner
+                 writes the line instead, in Edit details, and it shows here
+                 once there is one. -->
             {#if !connected}
               <p class="agent-detail__capability">
                 {data.capability ?? "Not written yet. It arrives after first contact."}
               </p>
-            {:else if data.status === "ready"}
+            {:else if data.capability}
+              <p class="agent-detail__capability">{data.capability}</p>
+            {/if}
+            {#if connected && data.status === "ready"}
               <!-- In its place, what the room does know about one: whether
                    it is running, set up for the tools, and taking Slack's
                    messages. Only once setup is done; before that the
@@ -669,17 +674,23 @@
               {/if}
             </button>
           {/if}
-          {#if !connected}
+          {#if !connected || invites.isSuccess}
             <!-- The editor lives in the Harness tab's Persona section, so
                  this brings the page there before opening it: a modal
-                 inside a hidden panel is a modal nobody can see. -->
+                 inside a hidden panel is a modal nobody can see. A connected
+                 agent has no Persona section; its editor sits under this
+                 header and opens where the page is. Its one line is the
+                 owner's to write, so the button is drawn for the callers
+                 who may administer it (the probe that shows Access). -->
             <button
               type="button"
               class="agent-detail__action"
               disabled={frozen}
               onclick={() => {
-                activeTab = "harness";
-                harnessSection = "persona";
+                if (!connected) {
+                  activeTab = "harness";
+                  harnessSection = "persona";
+                }
                 metadata?.openEditor();
               }}
             >
@@ -783,6 +794,25 @@
         open={ownersOpen}
         onclose={() => (ownersOpen = false)}
         frozen={frozen}
+      />
+    {/if}
+    {#if connected && invites.isSuccess}
+      <!-- A connected agent's Edit details: its one line and, at the foot,
+           its destroy. A composed agent's editor is in its Persona section,
+           which a connected agent does not have, so this one sits here. -->
+      <MetadataDetails
+        bind:this={metadata}
+        agentName={data.name}
+        team={data.team}
+        purposeTags={data.purpose_tags}
+        capability={data.capability}
+        frozen={frozen}
+        showTrigger={false}
+        status={data.status}
+        error={data.error}
+        kind={data.kind}
+        canDestroy={data.destroy_visible &&
+          (data.status === "ready" || data.status === "destroying")}
       />
     {/if}
 
@@ -1055,19 +1085,6 @@
               active={activeTab === "secrets"}
               deployed={data.status === "ready"}
             />
-            {#if connected && data.destroy_visible && (data.status === "ready" || data.status === "destroying")}
-              <!-- A connected agent has no Edit details (nothing the room
-                   composed to edit), so its destroy keeps a row here at the
-                   foot of its last tab. -->
-              <section class="panel agent-detail__oneway" aria-label="No way back">
-                <DangerZone
-                  agentName={data.name}
-                  status={data.status}
-                  error={data.error}
-                  kind={data.kind}
-                />
-              </section>
-            {/if}
           {:else if tab === "slack"}
             <SlackPanel
               agentName={data.name}
@@ -1442,10 +1459,6 @@
     font-family: var(--font-display-mono);
     font-size: 0.65rem;
     font-weight: 600;
-  }
-
-  .agent-detail__oneway {
-    margin-top: var(--space-lg);
   }
 
   .agent-detail__menu-list {
