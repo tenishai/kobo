@@ -42,7 +42,12 @@
         added under Owners can see it.
       </p>
     {/if}
-    {#if identity}
+    {#if identity?.own}
+      <p class="access-panel__identity">
+        Runs as its team's own account, <code>{identity.service_account}</code>. The room grants
+        that account nothing, and what it reaches on its own is not listed here.
+      </p>
+    {:else if identity}
       <p class="access-panel__identity">Runs as <code>{identity.gsa_email}</code>.</p>
     {/if}
   </div>

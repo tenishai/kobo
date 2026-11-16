@@ -95,7 +95,7 @@ GOJIRA_YAML = "gojira.yaml"
 # names have to agree before anything is written (see `_scan_identity`).
 BASE_DEPLOYMENT = "k8s/base/deployment.yaml"
 REPO_NAME_MISMATCH = "repo_name_mismatch"
-SERVICE_ACCOUNT_CHANGES = "service_account_changes"
+SERVICE_ACCOUNT_KEPT = "service_account_kept"
 ENV_FILE = ".env"
 BUNDLE_DIR = "bundle"
 
@@ -422,24 +422,26 @@ def _scan_identity(
     service_account = pod.get("serviceAccountName") if isinstance(pod, dict) else None
     if isinstance(service_account, str) and service_account:
         report.repo_service_account = service_account
-        # 1:1 naming (ruling 2026-09-30): the agent, its service account and
-        # everything derived from the name follow the repository's name. The
-        # setup pull request writes `service_account: agent-<name>` into
-        # gojira.yaml, and the deploy platform reads the old deployment's
-        # account only when there is no gojira.yaml, so the regenerated base
-        # runs as the room's account. That is right, and it is a change the
-        # team should see coming: anything granted to the old account by
-        # hand does not follow it.
+        # A repository that already runs as an account of its own keeps it
+        # (2026-11-15). The deploy platform reads the account off this same
+        # Deployment into the gojira.yaml it proposes, and the room's wiring
+        # leaves it there (`steps._own_service_account`). Until then the
+        # room said here that the setup pull request would move the agent
+        # onto `agent-<name>`, and then refused the repository at the wiring
+        # step. What the team should see coming is the other half: the room
+        # grants that account nothing, and what it already reaches is not
+        # something the room shows or takes away.
         expected_account = f"agent-{repo_name}"
         if service_account != expected_account:
             report.warnings.append(
                 Finding(
-                    SERVICE_ACCOUNT_CHANGES,
+                    SERVICE_ACCOUNT_KEPT,
                     f"This repository deploys as service account {service_account} "
-                    f"({BASE_DEPLOYMENT}). The setup pull request moves it to "
-                    f"{expected_account}, the account the room grants model and "
-                    f"cloud access to. Anything granted to {service_account} by "
-                    "hand does not follow; review that line before merging.",
+                    f"({BASE_DEPLOYMENT}) and keeps it. The room grants "
+                    f"{service_account} nothing: what the agent is given in the "
+                    "room reaches it through the room's own addresses. What "
+                    f"{service_account} already reaches stays as it is, and is "
+                    "not listed on the Access tab.",
                 )
             )
     containers = pod.get("containers") if isinstance(pod, dict) else None

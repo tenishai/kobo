@@ -10,6 +10,8 @@ All of it is added to your repository's deploy contract when you connect, in a p
 - **A repository with no deploy files yet gets one pull request.** The deploy service's setup pull request carries the room's part too, and lists which lines and files the room asked for. Merge it and the agent starts with everything above. Nothing from the room follows.
 - **A repository that already has deploy files gets two.** The deploy service's setup pull request comes first and leaves your files as you wrote them; the room's wiring pull request follows with its part, so that nothing is laid over a person's work unseen.
 
+A repository that already names the service account its code runs as keeps it. The room's pull request leaves that line alone and adds no account of its own, the **Access** tab says the agent runs as its team's own account, and whatever that account reaches on its own stays as it was. Everything on the Access tab reaches the agent through the room's addresses below, whichever account it runs as.
+
 A room whose deploy service predates the single pull request sends two in both cases. An agent connected before the room wired anything is offered the wiring pull request within a few minutes of its first approved permission, and its **Access** tab says it is waiting on that merge. The room never merges that later one for you.
 
 Merging a pull request from the room is followed, a few minutes later, by a second one from the deploy service that regenerates the deployment files. Your repository's build refuses to deploy in between; that is expected. Merge the second and the agent restarts with the change. You do not have to ask for it.

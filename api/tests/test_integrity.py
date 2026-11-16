@@ -1920,14 +1920,18 @@ def test_onboard_step_never_asks_the_platform_to_merge_a_connected_repos_setup_p
     assert _onboard_create_call(session, agent, config)["auto_merge_setup_pr"] is False
 
 
-def test_connected_wire_step_refuses_to_take_over_a_service_account_in_gojira_yaml(
+def test_connected_wire_step_keeps_the_service_account_a_repository_names(
     session_factory, config
 ):
-    """Data integrity: Connected wire step refuses to take over a service account in gojira yaml.
+    """Data integrity: Connected wire step keeps the service account a repository names.
 
-    A repository that already names its own service account is telling
-    the room something. Overwriting it would move the agent onto an
-    identity its owner did not choose, silently."""
+    A repository that names its own service account is telling the room
+    something, and the room takes it at its word: the wiring lands beside
+    that account, never over it, and the row records which account the
+    agent really runs as. Until 2026-11-15 the step refused such a
+    repository, so a team's working agent had no way into the room."""
+    from kobo_api.steps import DeployStep, connected_seed
+
     github = FakeGitHub(
         pr_url=WIRE_PR_URL,
         extra_clone_files={
@@ -1936,13 +1940,51 @@ def test_connected_wire_step_refuses_to_take_over_a_service_account_in_gojira_ya
     )
     wiring = _wire_ctx(session_factory, config, github=github)
 
+    note = ConnectedWireStep().run(wiring.ctx)
+
+    assert "active" in note
+    assert wiring.agent.service_account == "team-runner"
+    proposed = wiring.github.open_pr_calls[0]
+    written = yaml.safe_load((proposed["workdir"] / "gojira.yaml").read_text())
+    assert written["service_account"] == "team-runner"
+    assert not (proposed["workdir"] / "k8s" / "base" / "serviceaccount.yaml").exists()
+    assert "serviceaccount.yaml" not in proposed["body"]
+    assert "keeps the service account this repository already names" in proposed["body"]
+    assert "{" not in proposed["body"]
+    # What the room would ask the deploy platform for next time: no account.
+    seed = connected_seed(wiring.agent, config)
+    assert "service_account" not in seed["needs"]
+    assert "serviceaccount.yaml" not in seed["base_files"]
+    # And the Deploy step expects the account the agent really has.
+    kubectl = FakeKubectl(service_accounts={(AGENT_NAME, AGENT_NAME): "team-runner"})
+    deploy_ctx = _make_ctx(wiring.session, wiring.agent, config, _clients(kubectl=kubectl))
+    assert DeployStep().run(deploy_ctx).startswith("rollout ok")
+
+
+def test_connected_wire_step_refuses_to_write_over_a_service_account_manifest_it_did_not_write(
+    session_factory, config
+):
+    """Data integrity: Connected wire step refuses to write over a service account manifest it did not write.
+
+    The one identity case left to refuse: the repository has a service
+    account manifest of its own and its contract does not name it, so the
+    room's manifest would replace a person's. The step says how to keep it."""
+    github = FakeGitHub(
+        pr_url=WIRE_PR_URL,
+        extra_clone_files={
+            "k8s/base/serviceaccount.yaml": "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: team-runner\n"
+        },
+    )
+    wiring = _wire_ctx(session_factory, config, github=github)
+
     with pytest.raises(RuntimeError) as exc_info:
         ConnectedWireStep().run(wiring.ctx)
 
     assert str(exc_info.value) == (
-        "this repository already sets its own service account. Remove it from "
-        "gojira.yaml and k8s/base/serviceaccount.yaml, or ask an operator, "
-        "then press Retry"
+        "this repository has its own k8s/base/serviceaccount.yaml, and gojira.yaml "
+        "does not say the agent runs as it. Name that account under "
+        "service_account in gojira.yaml to keep it, or remove the file, then "
+        "press Retry"
     )
     assert wiring.github.open_pr_calls == []
     assert _repo_mutations(wiring.github) == []
