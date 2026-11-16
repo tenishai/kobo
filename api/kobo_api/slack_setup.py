@@ -492,24 +492,23 @@ def _update_agent_yaml_transports(agent_yaml_path: Path, channels: list[str], *,
     before any channel is picked, so its events route exists from the first
     start; picking channels later narrows it as usual.
 
+    Every entry is written `optional: true`: the runtime serves Slack only once
+    a token is in the pod's environment, and starts without it otherwise. The
+    room-made app is wired at Create and its bot token arrives only when someone
+    installs it, so a required entry restarted the agent into a crash loop until
+    then (an agent built as an image, born without the dormant block below).
+
     `yaml.safe_load`/`safe_dump` round-tripping (not comment-preserving) is
     fine here, same reasoning as `kobo_api.steps._update_gojira_yaml`:
     nothing reads this file's comments, and gojira composes the runtime
     contract from parsed values, not prose.
     """
     data = yaml.safe_load(agent_yaml_path.read_text()) or {}
-    old_slack = [t for t in data.get("transports", []) if t.get("kind") == "slack"]
-    # A block born dormant (`optional: true`, tenishai/kobo#434) stays dormant in shape:
-    # the runtime serves it only with a token, which is exactly when it is wired.
-    dormant = any(t.get("optional") for t in old_slack)
     transports = [t for t in data.get("transports", []) if t.get("kind") != "slack"]
     for channel in channels:
-        entry: dict = {"kind": "slack", "channel": channel}
-        if dormant:
-            entry["optional"] = True
-        transports.append(entry)
+        transports.append({"kind": "slack", "channel": channel, "optional": True})
     if not channels and every_channel:
-        transports.append({"kind": "slack", "optional": True} if dormant else {"kind": "slack"})
+        transports.append({"kind": "slack", "optional": True})
     data["transports"] = transports
     agent_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
 

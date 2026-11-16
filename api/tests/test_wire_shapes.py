@@ -1550,7 +1550,9 @@ def test_connect_slack_wires_secret_transport_and_secrets_from_returns_sha(
 
     # transport + secrets_from wired into the repo, commit message exact
     agent_yaml = yaml.safe_load(github.captured_agent_yaml)
-    assert {"kind": "slack", "channel": CHANNEL} in agent_yaml["transports"]
+    # Optional: the runtime starts without Slack until a token is in the pod, so a
+    # Slack app made and not yet installed never crash-loops the agent.
+    assert {"kind": "slack", "channel": CHANNEL, "optional": True} in agent_yaml["transports"]
     gojira_yaml = yaml.safe_load(github.captured_gojira_yaml)
     assert gojira_yaml["secrets_from"] == [f"{AGENT_NAME}-slack"]
     subject, _, note = github.pushes[-1][1].partition("\n\n")

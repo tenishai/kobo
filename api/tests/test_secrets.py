@@ -1609,7 +1609,7 @@ def test_create_slack_app_writes_the_five_values_through_the_lane_and_returns_th
     # No channel picked yet: one open slack block, so the agent's events route
     # exists from its first start and it answers wherever it is invited.
     written = yaml.safe_load(github.captured_agent_yaml)["transports"]
-    assert [t for t in written if t.get("kind") == "slack"] == [{"kind": "slack"}]
+    assert [t for t in written if t.get("kind") == "slack"] == [{"kind": "slack", "optional": True}]
 
 
 def test_move_to_the_new_slack_setup_drops_the_old_tokens_as_the_five_values_land(
@@ -1664,7 +1664,7 @@ def test_move_to_the_new_slack_setup_drops_the_old_tokens_as_the_five_values_lan
     assert "slack.move" in actions
     # The saved channel stays and still narrows the agent.
     written = yaml.safe_load(github.captured_agent_yaml)["transports"]
-    assert [t for t in written if t.get("kind") == "slack"] == [{"kind": "slack", "channel": CHANNEL}]
+    assert [t for t in written if t.get("kind") == "slack"] == [{"kind": "slack", "channel": CHANNEL, "optional": True}]
 
 
 def test_install_callback_stores_the_bot_token_through_the_lane_and_redirects(
