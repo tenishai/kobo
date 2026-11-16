@@ -2,7 +2,7 @@
 card: arch-card:kobo-provisioning
 updated: 2026-11-16
 anchor: api/kobo_api/provisioner.py sha=e93aa29269d9ef3e9ba48928e2ce3f9dbc594315
-anchor: api/kobo_api/steps.py sha=5f417bf2eafffc32be32144452711b3bb764a370
+anchor: api/kobo_api/steps.py sha=93b504492852209a0b12a7930f377c1510add635
 ---
 # provisioning — the Create → running-agent step engine
 
@@ -20,7 +20,7 @@ INVARIANTS:
 - Retry = `reset_failed_steps`: FAILED → PENDING, DONE/SKIPPED are skipped on re-run. If build or deploy failed (composed), wire and build are reset too (`REWIRE_AFTER_FAILED`/`REWIRE_RESETS`) so the rebuild is watched.
 - WireStep: writing a manifest and registering it in kustomization.yaml are one act (gojira's generator preserves listed entries, it does not discover files; P0 lost a rollout to this). WireStep never completes without confirming gojira `active`, including the no-change resume path.
 - repo/onboard steps re-check the outside world and refuse to adopt a same-named repo/app the row did not record (steps.py module docstring).
-- BuildStep polls `runs_for_commit(head)` re-resolved each poll (gojira's setup PR auto-merges mid-provision), with one auto-rerun per watched sha for any non-success conclusion. A successful run whose `updated_at` is before `Agent.created_at` (`_ended_before`) is rerun once and waited for: a reconnect after a destroy commits nothing, so the old run's deploy went to the removed namespace (2026-11-16). The run judged is the platform's (`PLATFORM_WORKFLOW` = "Gojira CI") when the commit has one, else the newest; a rerun GitHub refuses (over 30 days) asks for a commit.
+- BuildStep polls `runs_for_commit(head)` re-resolved each poll (gojira's setup PR auto-merges mid-provision), with one auto-rerun per watched sha for any non-success conclusion. A successful run whose `updated_at` is before `Agent.created_at` (`_ended_before`) is rerun once and waited for: a reconnect after a destroy commits nothing, so the old run's deploy went to the removed namespace (2026-11-16). The run judged is the platform's (`PLATFORM_WORKFLOW` = "Gojira CI") when the commit has one, else the newest; a rerun GitHub refuses (over 30 days) asks for a commit; a team's own workflow is never rerun.
 - A connected agent's build is not judged while its setup PR is open (kobo#475, 2026-11-13): gojira answers a provision call before its run marks the app `provisioning`, so `ConnectedWireStep` waits up to `CONNECTED_REPROVISION_GRACE_POLLS` reads for the row to leave the stale `active` before trusting it, and `BuildStep`, on a completed non-success run, asks the platform first (`_setup_pr_standing`): `awaiting_pr` raises the same `StepWaiting` as the wire step (`_setup_pr_waiting`, no rerun spent), `provisioning` keeps polling. WHY: the room's wiring commit fails gojira's manifest check until a person merges the setup PR, and every connect showed a failed build once.
 - AvatarStep never fails the pipeline (raises `StepSkipped`).
 - How Slack wakes a composed agent rides the room's own env keys in gojira.yaml and the row wins on a reprovision: `SLACK_WAKE_MODE` from `agents.slack_wake`, and (2026-11-13) `SLACK_WAKE_EMOJI` from `agents.slack_wake_emoji`, the emoji whose reaction also wakes it, and (2026-11-14) `SLACK_COMMAND_PUBLIC=on` from `agents.slack_command_public`, whether its slash command is answered in public channels it is not in. A NULL or false column writes no key. The wake route in `main.py` is what changes either after birth.

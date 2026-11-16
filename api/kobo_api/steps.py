@@ -2904,7 +2904,8 @@ class BuildStep:
                 if run.get("status") == "completed":
                     run_id = run.get("id")
                     conclusion = run.get("conclusion")
-                    if conclusion == "success" and _ended_before(run, agent.created_at):
+                    if (conclusion == "success" and run.get("workflow") in (PLATFORM_WORKFLOW, None)
+                            and _ended_before(run, agent.created_at)):
                         # Point 6: this commit was built and deployed before the
                         # agent existed, so its deploy went to a namespace a
                         # destroy has since removed. Run it again, once.
@@ -2921,9 +2922,8 @@ class BuildStep:
                                 log.warning("build run %s could not be run again: %s", run_id, exc)
                                 raise RuntimeError(
                                     f"the last build of commit {sha[:8]} was for an agent since "
-                                    "destroyed, and GitHub would not run it again (it does not "
-                                    "for a run over 30 days old): push a commit to the "
-                                    "repository, then Retry"
+                                    "destroyed, and GitHub did not run it again (it refuses a run "
+                                    "over 30 days old): push a commit to the repository, then Retry"
                                 ) from None
                             polls_remaining = max_polls
                         if polls_remaining > 0:
@@ -2995,8 +2995,8 @@ class BuildStep:
 
         if redeploy_asked:
             standing = (
-                "the build from before this agent existed was asked to run again "
-                "so it deploys, and it had not finished"
+                "a build was asked to run again so it deploys, and it had not "
+                "finished"
             )
         else:
             standing = (

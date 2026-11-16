@@ -2702,6 +2702,14 @@ def test_build_step_runs_a_build_from_before_the_agent_existed_again_so_it_deplo
     stale.rerun = refuse
     with pytest.raises(RuntimeError, match="push a commit to the repository, then Retry"):
         BuildStep().run(_make_ctx(session, agent, config, _clients__steps_wire(github=stale)))
+    # A team's own workflow is never run again, even with no platform build on the commit.
+    theirs = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 9, "status": "completed", "conclusion": "success",
+                                    "updated_at": "2020-01-01T00:00:00Z", "workflow": "Release"}]]},
+    )
+    BuildStep().run(_make_ctx(session, agent, config, _clients__steps_wire(github=theirs)))
+    assert theirs.rerun_calls == []
 
 
 def test_build_step_does_not_settle_for_a_stale_sha_success_once_head_has_advanced(
