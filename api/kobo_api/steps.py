@@ -2768,6 +2768,13 @@ class BuildStep:
        the merge commit), `provisioning` means the pull request is still
        being written and the run is left alone for now. A platform that
        cannot be read changes nothing: the run is judged as before.
+
+    6. A successful run that ended before the agent was created is run again,
+       once, and the step waits for that. Reconnecting a repository after a
+       destroy finds a head the room and the platform already wired, so no
+       commit lands and no run starts; the old run's deploy went to the
+       namespace the destroy removed, and Deploy waited for a rollout nobody
+       was doing (2026-11-16).
     """
 
     name = "build"
@@ -2776,6 +2783,10 @@ class BuildStep:
     def run(self, ctx: Ctx) -> str:
         agent = ctx.agent
         github = ctx.clients.github
+        # Set once the step has asked for a build that ended before the agent
+        # existed to run again (point 6), and how many polls have read it back
+        # unchanged since.
+        redeploy_asked = False
 
         # Watched sha: re-resolved at the top of every iteration below
         # (never cached across polls) — `sha` starts as None purely so the
@@ -2883,8 +2894,26 @@ class BuildStep:
                 if run.get("status") == "completed":
                     run_id = run.get("id")
                     conclusion = run.get("conclusion")
+                    if conclusion == "success" and _ended_before(run, agent.created_at):
+                        # Point 6: this commit was built and deployed before the
+                        # agent existed, so its deploy went to a namespace a
+                        # destroy has since removed. Run it again, once.
+                        if not redeploy_asked:
+                            redeploy_asked = True
+                            log.info(
+                                "build run %s for commit %s ended before %s was created; "
+                                "running it again so it deploys",
+                                run_id, sha, agent.name,
+                            )
+                            github.rerun(agent.repo_full_name, run_id)
+                            polls_remaining = max_polls
+                        if polls_remaining > 0:
+                            _sleep(BUILD_POLL_INTERVAL_S)
+                        continue
                     if conclusion == "success":
                         notes = []
+                        if redeploy_asked:
+                            notes.append("ran again: its first deploy was for an agent since destroyed")
                         if healed_conclusion is not None:
                             notes.append(f"healed a {healed_conclusion} run")
                         if advance_note is not None:
@@ -2954,6 +2983,20 @@ class BuildStep:
             f"timed out waiting for build run to complete after "
             f"{BUILD_POLL_TIMEOUT_S}s for commit {sha}: {standing}"
         )
+
+
+def _ended_before(run: dict, created_at: datetime | None) -> bool:
+    """Whether a completed run last changed before `created_at`. A run with no
+    time on it (a client that does not report one) counts as fresh."""
+    stamp = run.get("updated_at")
+    if not stamp or created_at is None:
+        return False
+    try:
+        ended = datetime.fromisoformat(str(stamp))  # Python 3.11+ reads the trailing Z
+    except ValueError:
+        return False
+    created = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    return ended < created
 
 
 def _setup_pr_standing(ctx: Ctx) -> dict | None:

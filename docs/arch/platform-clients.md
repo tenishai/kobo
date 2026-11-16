@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-platform-clients
 updated: 2026-11-16
-anchor: api/kobo_api/clients.py sha=1f0991803ae2739effc224bb8341b6031a7dd22d
+anchor: api/kobo_api/clients.py sha=b59e134c0e883b3646b797905d23b9f662a01e90
 anchor: api/tests/fakes.py sha=a96f0c287128eaa78a35b67aef12d9aed35afe1e
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
@@ -31,6 +31,8 @@ INVARIANTS:
 - `GojiraClient.create_app(..., handed_over=False)` and `reprovision(app_id, *, handed_over=False)` (2026-11-16): the room's statement that a connected repository's deploy files were handed to the platform, which then merges its own setup pull request, seed included. Sent only when true (reprovision sends no body otherwise), so an older platform sees what it always did: it ignores the field on create, still answers 422 to a seed beside auto-merge (asked again without the seed), and its status carries no `handed_over` key. `FakeGojira.handed_over_calls` records the app ids; `FakeGitHub.merge_pr` closes the request it merged.
 CONSUMERS: api/kobo_api/steps.py, provisioner.py, health.py (ready agents probed once a minute; verdict kept in memory per replica), destroy.py, main.py (routes), directory.py, colleagues.py, pairs.py, learnings.py, knowledge.py, slack_setup.py, agent_env.py, mcp/tools/*.py; api/tests/* via tests/fakes.py.
 API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provider(config)`; `probe_slack_token_store(clients)` (boot write-probe of the Slack token Secret); `gsa_email(name, project)`; errors `ClientError`, `GojiraConflict`, `SlackApiError`, `StorageNotFound`, `CabalError`; value type `SlackAppCredentials`.
+
+2026-11-16: `GitHubClient.runs_for_commit` carries each run's `updated_at` (gh `updatedAt`), which `BuildStep` compares with the agent's creation; `FakeGitHub` runs without it count as fresh.
 
 2026-10-12: `GhCLI.repo_exists` reads `gh api repos/{repo}` and compares the `full_name` GitHub answers with; a name GitHub only redirects (a destroyed agent's repo, renamed to `archived-agent-<name>-<id>`) counts as free.
 - `CabalClient.mint_service` (2026-10-24): the generic switchboard mint behind the room's own gateway admin token (`kobo_api.liminal_admin.RoomAdminToken`: sub and persona `kobo-room`, aud `liminal`, `admin:*`). `Clients.liminal_admin` is that admin-plane client, typed loosely to keep `liminal_admin` importing this module and not the reverse.
