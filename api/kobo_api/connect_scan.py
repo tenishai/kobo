@@ -95,7 +95,7 @@ GOJIRA_YAML = "gojira.yaml"
 # names have to agree before anything is written (see `_scan_identity`).
 BASE_DEPLOYMENT = "k8s/base/deployment.yaml"
 REPO_NAME_MISMATCH = "repo_name_mismatch"
-SERVICE_ACCOUNT_KEPT = "service_account_kept"
+SERVICE_ACCOUNT_MOVES = "service_account_moves"
 ENV_FILE = ".env"
 BUNDLE_DIR = "bundle"
 
@@ -422,26 +422,28 @@ def _scan_identity(
     service_account = pod.get("serviceAccountName") if isinstance(pod, dict) else None
     if isinstance(service_account, str) and service_account:
         report.repo_service_account = service_account
-        # A repository that already runs as an account of its own keeps it
-        # (2026-11-15). The deploy platform reads the account off this same
-        # Deployment into the gojira.yaml it proposes, and the room's wiring
-        # leaves it there (`steps._own_service_account`). Until then the
-        # room said here that the setup pull request would move the agent
-        # onto `agent-<name>`, and then refused the repository at the wiring
-        # step. What the team should see coming is the other half: the room
-        # grants that account nothing, and what it already reaches is not
-        # something the room shows or takes away.
+        # Every agent in the room runs as the room's account (ruling
+        # 2026-11-16): what it reaches is granted on its Access tab and
+        # recorded there. The deploy platform reads this account off the
+        # Deployment into the gojira.yaml it proposes, and the room's
+        # wiring pull request then writes `agent-<name>` over it
+        # (`steps.own_account`). That is a change the team should see
+        # coming, before it connects: anything granted to the old account
+        # does not follow it. For one day (2026-11-15) the repository kept
+        # the account instead, and before that this warning promised a
+        # move the wiring step then refused to make.
         expected_account = f"agent-{repo_name}"
         if service_account != expected_account:
             report.warnings.append(
                 Finding(
-                    SERVICE_ACCOUNT_KEPT,
+                    SERVICE_ACCOUNT_MOVES,
                     f"This repository deploys as service account {service_account} "
-                    f"({BASE_DEPLOYMENT}) and keeps it. The room grants "
-                    f"{service_account} nothing: what the agent is given in the "
-                    "room reaches it through the room's own addresses. What "
-                    f"{service_account} already reaches stays as it is, and is "
-                    "not listed on the Access tab.",
+                    f"({BASE_DEPLOYMENT}). Connecting moves the agent onto "
+                    f"{expected_account}: every agent in the room runs as the "
+                    "room's account, so that what it reaches is granted and "
+                    "recorded on its Access tab. Nothing granted to "
+                    f"{service_account} follows. Ask for what the agent needs on "
+                    "the Access tab once it is connected.",
                 )
             )
     containers = pod.get("containers") if isinstance(pod, dict) else None

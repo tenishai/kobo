@@ -21,7 +21,7 @@ Which agents from other teams this one may ask for help, and who has asked to re
 
 ## Identity and access
 
-Shown only while the permission service is off. The service account the agent runs as, the Google service account bound to it, and the room's project, with **Ask for access to another project** to write a request you hand to the SRE team. With the permission service on, access is asked for on the Access tab, which shows the identity the agent runs as in one line. A connected agent that keeps its team's own service account shows that name and no more: the room grants that account nothing, so access for it is asked of whoever looks after it.
+Shown only while the permission service is off. The service account the agent runs as, the Google service account bound to it, and the room's project, with **Ask for access to another project** to write a request you hand to the SRE team. With the permission service on, access is asked for on the Access tab, which shows the identity the agent runs as in one line.
 
 ## Persona
 

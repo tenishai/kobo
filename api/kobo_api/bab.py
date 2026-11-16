@@ -327,12 +327,14 @@ def actor_for(email: str | None) -> str:
 
 def topology_agent(agent) -> dict:
     """One agent as bab's topology names it: the team it belongs to and the pod
-    identity that is it. A composed agent runs as `agent-<name>` in namespace
-    `<name>`; a connected agent runs as the deployment name itself, which is
-    the agent's name (connected-repo identity ruling, 2026-09-30)."""
-    kind = getattr(agent, "kind", None)
-    sa = agent.name if kind == KIND_CONNECTED else f"agent-{agent.name}"
-    return {"name": agent.name, "team": agent.team or "shared", "namespace": agent.name, "service_account": sa}
+    identity that is it. Every agent runs as `agent-<name>` in namespace
+    `<name>`, a connected one included: its wiring puts it on the room's
+    account (ruling 2026-11-16). Until then this named a connected agent's
+    identity as the bare name, an account no connected agent ran as."""
+    return {
+        "name": agent.name, "team": agent.team or "shared",
+        "namespace": agent.name, "service_account": f"agent-{agent.name}",
+    }
 
 
 def push_topology(bab: BabClient, agents, actor: str) -> dict | None:

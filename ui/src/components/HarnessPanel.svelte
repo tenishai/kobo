@@ -167,7 +167,7 @@
   });
   const accessRequest = $derived.by(() => {
     const project = accessProject.trim();
-    if (!identity?.gsa_email || !project || accessRoleList.length === 0 || accessRefusal !== null) {
+    if (!identity || !project || accessRoleList.length === 0 || accessRefusal !== null) {
       return null;
     }
     return [
@@ -487,16 +487,7 @@
         {:else if id === "identity"}
           <section class="panel">
             <h2 class="panel__heading">Identity and access</h2>
-            {#if identity?.own}
-              <dl class="harness__facts">
-                <dt>Service account</dt>
-                <dd class="harness__ref">{identity.service_account}</dd>
-              </dl>
-              <p class="panel__note">
-                This agent keeps its team's own account. The room grants that account
-                nothing, so access to another project is asked of whoever looks after it.
-              </p>
-            {:else if identity}
+            {#if identity}
               <dl class="harness__facts">
                 <dt>Service account</dt>
                 <dd class="harness__ref">{identity.service_account}</dd>
