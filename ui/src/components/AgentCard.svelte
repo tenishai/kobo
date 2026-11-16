@@ -50,8 +50,8 @@
   let description = $derived(agentDescription(agent));
   let connected = $derived(agent.kind === KIND_CONNECTED);
   let failed = $derived(agentTone(agent.status) === "fail");
-  // Only one thing parks an agent: its setup pull request waiting on a
-  // person (`StepWaiting`). A bare "waiting" chip didn't say on what
+  // Only one thing parks an agent: a setup pull request GitHub would not
+  // let the platform merge (`StepWaiting`). A bare "waiting" chip didn't say on what
   // (issue #123).
   let waiting = $derived(agent.status === "waiting");
   // Issue #142: the nightly learnings pass failing night after night.

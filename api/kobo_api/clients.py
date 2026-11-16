@@ -1294,6 +1294,7 @@ class GojiraClient(Protocol):
         namespace: str,
         workload_class: str = "agent",
         auto_merge_setup_pr: bool = True,
+        handed_over: bool = False,
         seed: dict | None = None,
     ) -> int:
         """POST /api/v1/apps; returns the new app id. Raises GojiraConflict on 409.
@@ -1302,9 +1303,10 @@ class GojiraClient(Protocol):
         to carry beside its own render, for a repository with no deploy files
         yet: `{"needs": {...contract keys...}, "base_files": {name: text},
         "note": "..."}` (`kobo_api.steps.connected_seed`). The platform reads
-        it only for such a repository and refuses it together with
-        `auto_merge_setup_pr`; one that predates the field ignores it, and the
-        room's own wiring pull request follows as before.
+        it only for such a repository. One that predates the field ignores
+        it, one that predates `handed_over` refuses it beside
+        `auto_merge_setup_pr`, and either way the room's own wiring pull
+        request follows as before.
 
         `workload_class` chooses how the platform runs and probes the
         workload. It defaults to the one every composed agent has always
@@ -1312,13 +1314,19 @@ class GojiraClient(Protocol):
         class this deployment names for that (connected-agents design
         2026-09-21), since the ordinary class probes a port over HTTP.
 
-        `auto_merge_setup_pr` is the room waiving review of the platform's
-        setup pull request. That waiver belongs only to a repository the
-        room itself authored, where there is no human content to protect;
-        a connected repository is a team's own, and its owner merges the
-        wiring (Ember's review, 2026-09-29). The platform refuses the flag
-        for a repository it recognises as hand-built anyway, but the room
-        should not ask for what it must not have.
+        `auto_merge_setup_pr` asks the platform to merge its own setup pull
+        request. For a repository the room authored that is the whole
+        waiver: there is no human content to protect.
+
+        `handed_over` is the room saying a repository it did NOT author was
+        handed to it: connecting an agent gives its deploy files to the room
+        and the deploy platform (owner ruling 2026-11-16, replacing "its
+        owner merges" from 2026-09-29). With it the platform merges every
+        setup pull request for that repository itself, a hand-built one
+        included. A platform that predates the flag ignores it and keeps a
+        hand-built repository's first pull request open for a person, and
+        GitHub's own branch rules outrank it everywhere: both leave the app
+        in `awaiting_pr`, which the room waits on.
         """
         ...
 
@@ -1343,8 +1351,14 @@ class GojiraClient(Protocol):
         already current."""
         ...
 
-    def reprovision(self, app_id: int) -> None:
-        """POST /apps/{id}/provision to re-run the provisioner."""
+    def reprovision(self, app_id: int, *, handed_over: bool = False) -> None:
+        """POST /apps/{id}/provision to re-run the provisioner.
+
+        `handed_over` says the same thing it says on `create_app`, for an
+        app the platform already holds: sent with every re-run of a
+        connected agent's app, so one connected before the ruling is merged
+        without a person from its next run on. One way only on the
+        platform's side, and ignored by a platform that predates it."""
         ...
 
     def ping(self) -> bool:
@@ -1407,6 +1421,7 @@ class HttpxGojiraClient:
         namespace,
         workload_class="agent",
         auto_merge_setup_pr=True,
+        handed_over=False,
         seed=None,
     ) -> int:
         body = {
@@ -1416,14 +1431,18 @@ class HttpxGojiraClient:
             "environments": [{"name": "dev", "cluster": cluster, "namespace": namespace}],
             "auto_merge_setup_pr": auto_merge_setup_pr,
         }
+        if handed_over:
+            body["handed_over"] = True
         if seed is not None:
             body["seed"] = seed
         resp = self._client.post(f"{self._base_url}/api/v1/apps", json=body, headers=self._headers())
         if resp.status_code == 422 and seed is not None:
-            # The seed saves the repository's team a pull request; it is never
-            # a condition of connecting. A deploy service that will not take
-            # this one (a name its contract cannot hold, say) is asked again
-            # without it, and the room's own wiring request follows as before.
+            # The seed saves the repository a pull request; it is never a
+            # condition of connecting. A deploy service that will not take
+            # this one (a name its contract cannot hold, or a service from
+            # before `handed_over` that refuses a seed it is asked to merge)
+            # is asked again without it, and the room's own wiring request
+            # follows as before.
             log.warning("gojira refused the seed for %s; connecting without it", repo_full_name)
             del body["seed"]
             resp = self._client.post(f"{self._base_url}/api/v1/apps", json=body, headers=self._headers())
@@ -1458,12 +1477,15 @@ class HttpxGojiraClient:
             raise ClientError(f"sync_app({app_id}) failed ({resp.status_code}): {resp.text}")
         return resp.json()
 
-    def reprovision(self, app_id: int) -> None:
+    def reprovision(self, app_id: int, *, handed_over: bool = False) -> None:
         # Rides /api/v1 (not the UI's form route, which sits behind gojira's
         # IAP-identity gate that no server-to-server caller can satisfy).
+        # No body unless there is something to say: a platform from before
+        # `handed_over` takes none.
         resp = self._client.post(
             f"{self._base_url}/api/v1/apps/{app_id}/provision",
             headers=self._headers(),
+            **({"json": {"handed_over": True}} if handed_over else {}),
         )
         if resp.status_code != 202:
             raise ClientError(f"reprovision({app_id}) failed ({resp.status_code}): {resp.text}")

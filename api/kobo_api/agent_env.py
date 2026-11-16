@@ -547,10 +547,22 @@ DEFAULT_BRANCH_REF = "HEAD"
 ENV_PR_TITLE = "kobo: environment variables"
 SECRETS_WIRING_PR_TITLE = "kobo: read the agent's own secrets"
 
+# Who merges, said in every body the room writes: a person who finds one of
+# these in their repository should not have to wonder whether it is waiting
+# on them.
+ROOM_MERGES = (
+    "The room merges this itself: connecting this repository handed its "
+    "deploy files to the room. It then asks the deploy platform to "
+    "regenerate the deploy files, which arrive as a second pull request the "
+    "platform merges, and the agent restarts once that one is in. A branch "
+    "rule that refuses either merge leaves it open for someone who can "
+    "merge here.\n\n"
+)
+
 # The sentence both bodies end on, because it is the one thing about
-# either change that is not a plain addition and the one thing an owner
-# reviewing it cannot see from the diff alone until it is too late.
-_REWRITTEN_FROM_PARSED = (
+# either change that is not a plain addition and the one thing somebody
+# reading it cannot see from the diff alone.
+_REWRITTEN_FROM_PARSED = ROOM_MERGES + (
     "gojira.yaml is rewritten from its parsed form, so comments, blank "
     "lines and key order in that one file are NOT preserved. Nothing else "
     "in the repository is touched.\n"
@@ -580,13 +592,14 @@ SECRETS_UNWIRE_PR_BODY = (
     "no longer needs the line that names one.\n\n"
     "Files changed:\n"
     "- gojira.yaml: one entry removed from `secrets_from`.\n\n"
-    "Merging this is what finishes the removal. The stored secret is kept "
-    "until then, on purpose: taking it away while this file still names it "
-    "would stop the agent from starting.\n\n" + _REWRITTEN_FROM_PARSED
+    "The stored secret is kept until this is merged, on purpose: taking it "
+    "away while this file still names it would stop the agent from "
+    "starting.\n\n" + _REWRITTEN_FROM_PARSED
 )
 
 # What the room says when a pull request it opened before is still open on
-# the same branch and this save is not the same change. Pushing the branch
+# the same branch (GitHub would not let the room merge it, or a person has
+# worked on it since) and this save is not the same change. Pushing the branch
 # again would fail non fast-forward, and reusing the open pull request
 # would report a change as proposed that is not in it.
 #
@@ -611,8 +624,11 @@ def branch_not_ours(branch: str) -> str:
         "it. Rename or delete it, then try again."
     )
 
-# How a change reached the agent's repository. `unchanged` means the file
-# already said this, which is what a retried save answers.
+# How a change reached the agent's repository. `committed` is on the default
+# branch, by a push to the room's own repository or by a pull request the
+# room merged in a connected one; `pull_request` is one GitHub would not let
+# the room merge. `unchanged` means the file already said this, which is
+# what a retried save answers.
 COMMITTED = "committed"
 PULL_REQUEST = "pull_request"
 UNCHANGED = "unchanged"
@@ -647,7 +663,9 @@ class RepoBusy(ClientError):
     catches it, and its own type so a route can tell "say this sentence to
     the person" from "the platform was unreachable, say the house line".
     Nothing here is retryable by the room; all of it is retryable by a
-    person who merges, closes or fixes something.
+    person who merges, closes or fixes something. The room merges its own
+    pull requests, so one that is in the way is one GitHub would not let it
+    merge, or one a person has worked on since.
 
     A leftover BRANCH is deliberately not one of these any more: a branch
     the room named itself, with no pull request open from it, is the
@@ -743,7 +761,7 @@ def _skip_ci(message: str) -> str:
 
 def edit_gojira_yaml(
     github: GitHubClient,
-    gojira: GojiraClient,
+    gojira: GojiraClient | None,
     *,
     repo: str,
     connected: bool,
@@ -777,14 +795,20 @@ def edit_gojira_yaml(
     is that the change reaches the agent the next time it starts, which is
     true the moment the push lands.
 
-    A CONNECTED agent's repository belongs to its team, and the room never
+    A CONNECTED agent's repository is its team's, and the room never
     pushes to its branches (design 2026-09-21). The change is proposed on
-    `branch` instead and the pull request's link comes back for the owner
-    to merge. `carries`, when given, is asked of the gojira.yaml AT THAT
-    BRANCH's head: a pull request whose branch already holds this exact
-    change is the answer rather than a refusal, and one that does not is
-    in the way. Without it, any open pull request on the branch is in the
-    way.
+    `branch` instead, and the room merges its own pull request: connecting
+    handed the repository's deploy files to the room (owner ruling
+    2026-11-16). Merged, the answer is `committed` and the platform is
+    asked to regenerate, as a hand-over, so its pull request needs nobody
+    either; that ask is best effort, because the five-minute pass
+    (`kobo_api.connected_wiring.follow_through`) makes it again. When
+    GitHub will not let the room merge (a branch rule), the answer is
+    `pull_request` with the link, for someone who can. `carries`, when
+    given, is asked of the gojira.yaml AT THAT BRANCH's head: a pull request
+    whose branch already holds this exact change is the answer rather than a
+    refusal, and one that does not is in the way. Without it, any open pull
+    request on the branch is in the way.
 
     Raises `ClientError` for anything the repository or the platform
     refuses; no secret value passes through here at all.
@@ -807,7 +831,7 @@ def edit_gojira_yaml(
             if not changed_here:
                 return RepoEdit(how=UNCHANGED)
             gojira_yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
-            return _propose(
+            proposed = _propose(
                 github,
                 workdir,
                 repo,
@@ -817,6 +841,9 @@ def edit_gojira_yaml(
                 carries=carries,
                 already_open=already_open,
             )
+            if proposed.how == COMMITTED and reprovision:
+                regenerate_handed_over(gojira, gojira_app_id, repo)
+            return proposed
 
         pushed = False
         if changed_here:
@@ -860,10 +887,12 @@ def _propose(
     files: frozenset[str] | None = None,
 ) -> RepoEdit:
     """The connected half of `edit_gojira_yaml`: one pull request on
-    `branch`, or a plain sentence saying what is in the way. `files` is what
-    a leftover branch may touch and still be the room's to recycle, for the
-    one caller whose request writes more than gojira.yaml
-    (`kobo_api.connected_wiring.offer`)."""
+    `branch`, merged by the room, or a plain sentence saying what is in the
+    way. `committed` when it merged; `pull_request` with its link when
+    GitHub would not let the room. `files` is what the branch may touch and
+    still be the room's own, for the one caller whose request writes more
+    than gojira.yaml (`kobo_api.connected_wiring.offer`)."""
+    ours = frozenset({GOJIRA_YAML}) if files is None else files
     open_pr = github.find_pr(repo, branch=branch)
     if open_pr is not None:
         # An open pull request is only "already carrying this" if its own
@@ -873,7 +902,7 @@ def _propose(
         if carries is not None and carries(
             parse_gojira_yaml(github.read_file(repo, "gojira.yaml", ref=branch))
         ):
-            return RepoEdit(how=PULL_REQUEST, pull_request=open_pr)
+            return merge_ours(github, repo, open_pr, branch=branch, files=ours)
         raise RepoBusy(f"{already_open}{open_pr}")
 
     # No pull request, but the branch may still be there: a closed one
@@ -883,15 +912,70 @@ def _propose(
     # panel permanently unable to save on a repository whose owner merged
     # the room's last pull request without ticking delete-branch.
     if github.branch_exists(repo, branch):
-        if files is None:
-            require_our_branch(github, repo, branch)
-        else:
-            require_our_branch(github, repo, branch, files)
+        require_our_branch(github, repo, branch, ours)
         log.info("recycling the room's own leftover branch %s in %s", branch, repo)
         github.delete_branch(repo, branch)
 
     url = github.open_pr(workdir, repo=repo, branch=branch, title=title, body=body)
-    return RepoEdit(how=PULL_REQUEST, pull_request=url)
+    return merge_ours(github, repo, url)
+
+
+def merge_ours(
+    github: GitHubClient,
+    repo: str,
+    pull_request: str,
+    *,
+    branch: str | None = None,
+    files: frozenset[str] = frozenset({GOJIRA_YAML}),
+) -> RepoEdit:
+    """Merge a pull request the room opened in a connected repository:
+    `committed` when it is in, `pull_request` with its link when it is left
+    for a person.
+
+    Connecting a repository hands its deploy files to the room (owner
+    ruling 2026-11-16), so the room does not wait on anybody to merge what
+    it proposes there. Two things still leave one open:
+
+    - GitHub says no. A branch rule (a required review, a required check)
+      is the repository's own and outranks the hand-over. So does a GitHub
+      that cannot be reached: the request is open either way, and the next
+      save or the next pass finds it and tries again.
+    - It is not only the room's any more. `branch` is given for a pull
+      request found open rather than opened by this call, and it has to
+      prove itself the way a leftover branch does (`require_our_branch`):
+      a person's commit on it, or a file the room does not write, is
+      somebody's work and theirs to merge.
+    """
+    try:
+        if branch is not None:
+            require_our_branch(github, repo, branch, files)
+        if github.merge_pr(repo, pull_request):
+            return RepoEdit(how=COMMITTED)
+    except RepoBusy:
+        log.info("%s in %s carries more than the room's own work; left for a person", pull_request, repo)
+    except ClientError as exc:
+        log.warning("could not merge %s in %s (%s); left open", pull_request, repo, type(exc).__name__)
+    return RepoEdit(how=PULL_REQUEST, pull_request=pull_request)
+
+
+def regenerate_handed_over(gojira: GojiraClient | None, gojira_app_id: int | None, repo: str) -> bool:
+    """Ask the platform to regenerate a connected repository's deploy files
+    after the room merged a change to its gojira.yaml, as a hand-over so the
+    platform merges its own pull request too. True when it was asked.
+
+    Best effort, unlike a composed agent's (`DeployTriggerFailed`): the
+    five-minute pass asks again for any repository whose deploy files are
+    behind its gojira.yaml, so a platform that is down for a moment costs
+    minutes and never a save.
+    """
+    if gojira is None or gojira_app_id is None:
+        return False
+    try:
+        gojira.reprovision(gojira_app_id, handed_over=True)
+    except ClientError as exc:
+        log.warning("could not ask the platform to regenerate %s (%s); the next pass asks again", repo, type(exc).__name__)
+        return False
+    return True
 
 
 def require_our_branch(github: GitHubClient, repo: str, branch: str, files: frozenset[str] = frozenset({GOJIRA_YAML})) -> None:

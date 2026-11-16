@@ -48,8 +48,8 @@
     }
   }
 
-  // A waiting step's reason ends with the link a person needs (the setup
-  // pull request). The one URL in it becomes a real link; the rest stays
+  // A waiting step's reason carries the link a person needs (the setup
+  // pull request nobody could merge for them). The one URL in it becomes a real link; the rest stays
   // text. Anything without a URL renders as plain text, unchanged.
   const URL_RE = /https?:\/\/\S+?(?=[.,;:)]*(?:\s|$))/;
 

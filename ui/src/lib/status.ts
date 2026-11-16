@@ -83,8 +83,8 @@ export function stepTone(
       return "skipped";
     case "failed":
       return "fail";
-    // Parked on a person (a connected repo's setup pull request awaiting
-    // its owner's merge): not running, not failed, not done. Its own tone,
+    // Parked on a person (a connected repo's setup pull request nobody
+    // could merge for them): not running, not failed, not done. Its own tone,
     // so the row can show what it waits for and the page can offer Resume.
     case "waiting":
       return "waiting";

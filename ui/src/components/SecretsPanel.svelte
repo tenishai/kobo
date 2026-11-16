@@ -29,10 +29,11 @@
   //
   // Both halves render for a composed agent and a connected one alike. The
   // difference shows up only in what a save reports: the room commits to a
-  // repository it owns, and proposes a pull request against one it does
-  // not. `wiring` says which, and the line below prints the link when there
-  // is one, because a change waiting in a pull request has not reached the
-  // agent and saying otherwise would be a lie.
+  // repository it owns, and opens and merges a pull request in one it was
+  // handed. `wiring` says "pull_request" only when GitHub refused that
+  // merge, and the line below prints the link then, because a change
+  // waiting in a pull request has not reached the agent and saying
+  // otherwise would be a lie.
   //
   // A room with no secrets platform configured (`platform: false`), or one
   // with nobody to read this agent's secrets as (`unreadable`), keeps the
@@ -413,16 +414,17 @@
     }
     if (landing.pendingUnwire) {
       // The one outcome where the save is NOT the whole story: the
-      // agent's files still name the secret, so it has to stay until
-      // somebody merges. Saying "removed" here would be a lie somebody
-      // only finds out about when they look at the platform.
-      return "The secret stays until that pull request merges. Save again after it merges to finish removing it.";
+      // agent's files still name the secret and GitHub refused the room's
+      // merge, so it has to stay until somebody merges. Saying "removed"
+      // here would be a lie somebody only finds out about when they look
+      // at the platform.
+      return "The room could not merge its pull request, so the secret stays. Save again after it merges to finish removing it.";
     }
     if (landing.emptied) {
       return "Removed. That was this agent's last secret, so the line naming it is gone too.";
     }
     if (landing.wiring === "pull_request") {
-      return "Saved. The agent's files belong to its team, so the change is waiting in a pull request.";
+      return "Saved, but the room could not merge its pull request. Someone who can merge in this repository has to.";
     }
     if (landing.wiring === "unchanged") {
       return "Saved. The agent's files already said this.";

@@ -42,9 +42,10 @@
   // when it serves a port (`room_app`): the copy says what its code has to
   // serve and that it may keep an app of its own instead. Its files already
   // read the app's values when it was connected since the room wrote that at
-  // connect; one connected before owes that as a pull request its team merges
-  // (`wiring`), so the row carries the link while it waits and a button to
-  // open it again if it was closed. A Wakes on pick is delivered and the room
+  // connect; one connected before owes that as a pull request the room opens
+  // and merges (`wiring`), so the row carries the link only when GitHub
+  // refused that merge and a button to open it again if it was closed. A
+  // Wakes on pick is delivered and the room
   // restarts the agent a minute or two later (`restart_pending`).
   //
   // What the room asks Slack to let an app do grows with releases, and Slack
@@ -317,7 +318,7 @@
         : { text: "App made; install it to finish", tone: "ink" };
     }
     if (data.state !== "installed") return { text: "Not connected for this agent", tone: "ink" };
-    if (data.wiring?.state === "waiting") return { text: "Waiting for its team to merge a pull request", tone: "warn" };
+    if (data.wiring?.state === "waiting") return { text: "The room could not merge its pull request", tone: "warn" };
     if (data.wiring?.state === "owed") return { text: "Its pull request was closed", tone: "warn" };
     if (wakeApplying) return { text: "Applying your change. Give it a minute.", tone: "warn" };
     if (wakeWaitsForRestart) return { text: "Saved. Takes effect when the agent next restarts.", tone: "warn" };
@@ -428,8 +429,8 @@
 
       {#if data.wiring?.state === "waiting"}
         <p class="copy">
-          The change to this agent's files is waiting in a pull request. Its team merges it, then the one the deploy
-          platform sends after it; the agent restarts with its Slack app.
+          The room could not merge the change to this agent's files. Someone who can merge in this repository
+          has to; the agent restarts with its Slack app after that.
           {#if data.wiring.pull_request}<a href={data.wiring.pull_request} target="_blank" rel="noreferrer">Open the pull request</a>{/if}
         </p>
       {:else if data.wiring?.state === "owed"}
@@ -470,9 +471,8 @@
         {#if data.own_app}
           <p class="copy">
             This agent runs its team's own code. The room can make it a Slack app: you install it once and the room
-            hands Slack's messages to the agent. If the agent's files do not read the app's values yet, its team
-            merges one pull request first. The agent has to take those messages; "Running your own code" in the guide
-            says how.
+            hands Slack's messages to the agent. If the agent's files do not read the app's values yet, the room
+            adds that itself. The agent has to take those messages; "Running your own code" in the guide says how.
           </p>
           <p class="copy">
             Already has a Slack app of its own? Keep it: save its tokens under Secrets on this page and skip this.

@@ -598,8 +598,8 @@
       {/if}
       <p class="field__help">
         Start typing to search the repositories the room's GitHub App can
-        reach. The room proposes its setup by pull request and never pushes to
-        your branches.
+        reach. Connecting hands its deploy files to the room, which merges its
+        own pull requests there.
       </p>
     </div>
 
@@ -732,7 +732,7 @@
 
         <div class="connect-report__group">
           <p class="field__help">{report.adds_preamble}</p>
-          <p class="field__label">What the room will add, by pull request</p>
+          <p class="field__label">What the room will add and merge</p>
           <ul class="connect-report__list">
             {#each report.adds as entry (entry)}
               <li class="connect-report__add">{entry}</li>

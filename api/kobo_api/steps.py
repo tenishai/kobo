@@ -123,11 +123,13 @@ class StepWaiting(Exception):
     nothing is retried or aborted. `kobo_api.provisioner.sweep_waiting`
     resumes the run when the wait is over; Retry does the same by hand.
 
-    One raiser today: `_wait_active`, when the deploy platform reports
-    `awaiting_pr` for a connected agent (Ember's review, 2026-09-29, point
-    2). Before this, the same state was polled to the timeout and then
-    recorded as a failure, which is what a person merging a pull request
-    at their own pace looked like from the agent's page.
+    Raised when the deploy platform reports `awaiting_pr` for a connected
+    agent (`_wait_active`, and the build step's point 5). The platform
+    merges a connected repository's setup pull request itself (owner ruling
+    2026-11-16), so this is the wait for a merge it could not make: a
+    branch rule on the repository, or a platform from before the ruling
+    looking at deploy files a person wrote. A person merges at their own
+    pace, which a poll budget would have recorded as a failure.
     """
 
 
@@ -1367,15 +1369,15 @@ class AvatarStep:
 
 
 def _setup_pr_waiting(status_payload: dict) -> StepWaiting:
-    """The sentence a connected agent parks on while the platform's setup
-    pull request waits for a person, its link included when the platform
+    """The sentence a connected agent parks on when the platform's setup
+    pull request is left for a person, its link included when the platform
     names one. One wording for every step that can find the agent there."""
     url = status_payload.get("setup_pr_url") or ""
-    where = f": {url}" if url else "."
+    where = f": {url}." if url else "."
     return StepWaiting(
-        "Waiting for someone on your team to review and merge the "
-        f"setup pull request{where} The room resumes on its own once "
-        "it is merged."
+        "The deploy service could not merge its setup pull request"
+        f"{where} Someone who can merge in this repository has to. The "
+        "room resumes on its own once it is merged."
     )
 
 
@@ -1400,12 +1402,14 @@ def _wait_active(ctx: Ctx, app_id: int) -> str:
             return f"gojira app {app_id} active"
 
         if status == "awaiting_pr" and is_connected(ctx.agent):
-            # The platform opened the setup pull request and a person on
-            # the team merges it. That is the design for a connected
-            # repository, not a failure, and not something a poll budget
-            # should decide. A composed agent never parks here: the room
-            # merges its own repositories' setup PR, so `awaiting_pr` is a
-            # moment on the way to `active` and the loop keeps polling.
+            # The platform ended its run with the setup pull request still
+            # open: GitHub refused the merge (a branch rule), or the
+            # platform predates the hand-over and found deploy files a
+            # person wrote. Somebody merges it at their own pace, which is
+            # not a failure and not something a poll budget should decide.
+            # A composed agent never parks here: for the room's own
+            # repositories `awaiting_pr` is only ever a moment on the way
+            # to `active`, and the loop keeps polling.
             raise _setup_pr_waiting(status_payload)
 
         if status == "failed":
@@ -1477,11 +1481,14 @@ class OnboardStep:
                 cluster=config.gojira_cluster,
                 namespace=agent.name,
                 workload_class=workload_class,
-                # The room merges its own repositories' setup PR without a
-                # person; a team's repository is the team's to merge.
-                auto_merge_setup_pr=not is_connected(agent),
-                # And a team is asked once: what the room would otherwise
-                # propose afterwards rides in that same pull request.
+                # Nobody is asked to merge the setup PR, for either kind.
+                # The room's own repository has nothing to review; a
+                # connected one was handed over when it was connected
+                # (owner ruling 2026-11-16), and the room says so.
+                auto_merge_setup_pr=True,
+                handed_over=is_connected(agent),
+                # One pull request, not two: what the room would otherwise
+                # propose afterwards rides in that same one.
                 seed=connected_seed(agent, config) if is_connected(agent) else None,
             )
         except GojiraConflict as exc:
@@ -1532,7 +1539,7 @@ class OnboardStep:
             # already converging or done on its own; keep today's behavior
             # and just wait.
             if gojira.app_status(app_id).get("status") == "failed":
-                gojira.reprovision(app_id)
+                gojira.reprovision(app_id, handed_over=is_connected(agent))
                 # Live-incident fix #2: reprovision() being *accepted* is not
                 # the same thing as the platform's status row having been
                 # *updated* yet — live, gojira started the new run ~2s later,
@@ -1575,12 +1582,12 @@ class OnboardStep:
         try:
             return _wait_active(ctx, app_id)
         except StepWaiting:
-            # Parked on the team's merge of the setup pull request. With the
+            # Parked on a merge the platform could not make itself. With the
             # seed that request names the Secrets the room delivers, so they
             # are delivered now and a merge starts an agent that finds them.
             # Only what is missing: a Retry while parked takes nothing back.
             # A delivery that fails must not turn this wait into a failure
-            # (nothing resumes a failed agent when its team merges): the
+            # (nothing resumes a failed agent when somebody merges): the
             # wiring step runs after the merge and delivers what is missing.
             try:
                 deliver_connected_identity(ctx.session, ctx.clients, config, agent, only_missing=True)
@@ -2358,10 +2365,10 @@ class ConnectedWireStep:
 
     That is the rule the whole connected pipeline rests on -- the room never
     pushes to a connected repo's branches. What it wants arrives as a pull
-    request, and it tries to merge its own; when GitHub says no (a protected
-    branch is the owner's own opt-out), the step fails with the link and one
-    instruction. The pipeline already resumes from a failed step, so nobody
-    has to hold a thread open waiting for a person.
+    request, and it merges its own; when GitHub says no (a branch rule is
+    the one thing that outranks the hand-over), the step fails with the link
+    and one instruction. The pipeline already resumes from a failed step, so
+    nobody has to hold a thread open waiting for a person.
 
     The same things land here as in WireStep (2026-11-13; until then a
     connected agent got an identity and model access and nothing else): a
@@ -2471,7 +2478,10 @@ class ConnectedWireStep:
         with _sanitized(
             "reprovision", ctx.agent.name, CONNECTED_WIRE_PLATFORM_UNAVAILABLE
         ):
-            gojira.reprovision(app_id)
+            # Handed over every time: an app connected before the ruling is
+            # one from this run on, and the pull request this run opens is
+            # merged by the platform.
+            gojira.reprovision(app_id, handed_over=True)
         with _sanitized(
             "wait_active", ctx.agent.name, CONNECTED_WIRE_PLATFORM_UNAVAILABLE
         ):
@@ -2748,9 +2758,10 @@ class BuildStep:
     5. On a connected repository a failed run is not judged while the
        platform's setup pull request is open (kobo#475, live 2026-11-13).
        The room's wiring changes `gojira.yaml`; the manifests that match it
-       arrive in a setup pull request a person on the team merges, and until
-       then the commit under watch fails its own manifest check, rerun or
-       not. Every connect showed a failed build once for it. So before a
+       arrive in a setup pull request the platform merges (or leaves for a
+       person, when GitHub refuses it), and until then the commit under
+       watch fails its own manifest check, rerun or not. Every connect
+       showed a failed build once for it. So before a
        non-success run is rerun or raised, the step asks the platform where
        the app stands: `awaiting_pr` parks the agent on that pull request
        (the waiting sweep resumes it at the merge, and the watch moves to
@@ -2884,8 +2895,9 @@ class BuildStep:
                         )
                     standing = _setup_pr_standing(ctx)
                     if standing is not None and standing.get("status") == "awaiting_pr":
-                        # Point 5: this commit cannot build until a person
-                        # merges the setup pull request. Park on it.
+                        # Point 5: this commit cannot build until the setup
+                        # pull request is in, and the platform left it for a
+                        # person. Park on it.
                         raise _setup_pr_waiting(standing)
                     if standing is not None and standing.get("status") == "provisioning":
                         # The platform is still writing that pull request.
@@ -2946,9 +2958,9 @@ class BuildStep:
 
 def _setup_pr_standing(ctx: Ctx) -> dict | None:
     """The platform's status for a connected agent's app, for BuildStep's
-    point 5; None for a composed agent (the room merges its own setup pull
-    request, so there is nobody to wait for), an agent with no app, or a
-    platform that could not be read."""
+    point 5; None for a composed agent (its setup pull request is never
+    left for a person, so there is nobody to wait for), an agent with no
+    app, or a platform that could not be read."""
     agent = ctx.agent
     gojira = getattr(ctx.clients, "gojira", None)
     if not is_connected(agent) or gojira is None or agent.gojira_app_id is None:

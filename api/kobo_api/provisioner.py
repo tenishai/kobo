@@ -926,7 +926,11 @@ def sweep_waiting(
     default; a test passes a recorder). `failed` means the platform gave up
     on its side while nobody was watching, and the agent should say so
     instead of waiting forever. Anything else (still `awaiting_pr`, or a
-    re-run in progress) is left exactly as it is.
+    re-run in progress) is left exactly as it is, with one exception: a
+    connected agent whose app the platform says was never handed over is
+    handed over (`_hand_over`), so an agent parked before the platform
+    learned to merge for itself does not wait on a person it no longer
+    needs.
 
     Idempotent across replicas the way `sweep_interrupted` is: resuming
     flips the agent to PROVISIONING before the pipeline starts, so a second
@@ -977,6 +981,8 @@ def sweep_waiting(
                     steps=pipeline_for(agent),
                 )
                 touched += 1
+            elif status == "awaiting_pr" and is_connected(agent):
+                _hand_over(clients, agent, status_payload)
             elif status == "failed":
                 names = ", ".join(
                     step["name"]
@@ -1002,6 +1008,26 @@ def sweep_waiting(
         return touched
     finally:
         session.close()
+
+
+def _hand_over(clients: Clients, agent: Agent, status_payload: dict) -> None:
+    """Tell the platform a parked connected agent's repository was handed
+    over, once: it runs again and merges the pull request the agent is
+    waiting on (owner ruling 2026-11-16).
+
+    Asked only when the platform itself answers `handed_over: false`. A
+    platform from before the flag does not send it and is not asked for
+    what it cannot do; one that has it answers true from then on, so a pull
+    request GitHub will not let it merge is not asked for again every pass.
+    """
+    if status_payload.get("handed_over") is not False:
+        return
+    try:
+        clients.gojira.reprovision(agent.gojira_app_id, handed_over=True)
+    except Exception:
+        log.warning("sweep_waiting: could not hand agent %s's app over", agent.name, exc_info=True)
+        return
+    log.info("sweep_waiting: handed agent %s's app over; the platform merges its setup pull request", agent.name)
 
 
 REWIRE_AFTER_FAILED = frozenset({"build", "deploy"})

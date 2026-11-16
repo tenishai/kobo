@@ -4,14 +4,18 @@ The wire step gives a connected agent everything the room has for it, once,
 at connect. Two things happen later and in somebody else's repository, so
 no step can do them:
 
-Follow-through. Every change the room proposes to a connected agent is a
-pull request on its `gojira.yaml`. When the team merges one, the file on the
-default branch no longer matches the deploy files that were rendered from
-it, and the repository's own build refuses to deploy until the platform
-regenerates them. Nothing asked the platform to (found 2026-11-13, before
-it bit: a secrets wiring request was waiting on a team, and merging it
-would have left their build red with nobody to turn to). `follow_through`
-asks, once per version of the file.
+Follow-through. Every change the room makes to a connected agent is a
+pull request on its `gojira.yaml`, which the room merges itself (owner
+ruling 2026-11-16: connecting a repository hands its deploy files to the
+room and the deploy platform). Once one is merged, the file on the default
+branch no longer matches the deploy files that were rendered from it, and
+the repository's own build refuses to deploy until the platform regenerates
+them. The save that merged it asks the platform to; `follow_through` asks
+for every repository found behind anyway, once per version of the file: a
+request GitHub would not let the room merge is merged later by a person,
+and a platform that was down when the save asked still owes the answer
+(found 2026-11-13, before it bit). Every ask is a hand-over, so the
+platform merges its own pull request too.
 
 Catch-up. An agent connected before the room gave connected agents storage
 and a gateway identity has neither. It is offered both, as one pull
@@ -20,17 +24,19 @@ moment its team has asked for something that cannot work without it. No
 button; an agent that holds nothing is left alone.
 
 Both run from the worker's five-minute pass (`keep`), beside the gateway
-heal, and neither ever pushes to a team's branch.
+heal. Neither pushes to a team's branch: what the room writes there is a
+pull request it merges.
 
 Slack. A connected agent that serves a port can have a Slack app the room
 makes (issue #484). The app's values and how Slack wakes the agent go to the
 Secret `<agent>-slack`; what the agent's repository owes is one reference to
 that Secret, which its connect wrote (2026-11-14), so the app and every
 later change reach it by a restart. A repository that lacks the reference,
-or still sets a wake setting itself that the room has since changed, is
-asked once, as a pull request on `kobo/slack` (`propose_slack`).
-`slack_state` is what the Slack row reads: wired, waiting on the team, or
-owed because the request was closed.
+or still sets a wake setting itself that the room has since changed, gets
+it as one pull request on `kobo/slack` that the room merges
+(`propose_slack`). `slack_state` is what the Slack row reads: wired,
+waiting on a merge the room could not make, or owed because the request
+was closed.
 """
 
 from __future__ import annotations
@@ -47,11 +53,13 @@ import yaml
 
 from kobo_api.agent_env import (
     GOJIRA_YAML,
+    ROOM_MERGES,
     UNCHANGED,
     RepoBusy,
     RepoEdit,
     _propose,
     edit_gojira_yaml,
+    merge_ours,
     parse_gojira_yaml,
 )
 from kobo_api.clients import ClientError
@@ -91,10 +99,7 @@ CATCH_UP_BODY = (
     "things an agent it builds gets. This adds them to this agent. Nothing "
     "already in gojira.yaml is changed or removed.\n\n"
     "Files changed:\n"
-    "{room_wiring}"
-    "After this merges the room asks the deploy platform to regenerate the "
-    "deploy files, which arrives as a second pull request. The agent "
-    "restarts when that one is merged.\n\n"
+    "{room_wiring}" + ROOM_MERGES +
     "gojira.yaml is rewritten from its parsed form, so comments and key "
     "order in that one file are not preserved.\n"
 )
@@ -147,15 +152,16 @@ def stale_contract(github, repo: str) -> str | None:
 
 def follow_through(github, gojira, *, repo: str, gojira_app_id: int | None, asked: dict[str, str]) -> bool:
     """Ask the platform to regenerate when `repo`'s deploy files are behind
-    its gojira.yaml. Once per version of the file: `asked` remembers the
-    fingerprint last asked for, since the platform's own pull request can
-    wait on the team for days and asking again changes nothing."""
+    its gojira.yaml, as a hand-over, so it merges its own pull request.
+    Once per version of the file: `asked` remembers the fingerprint last
+    asked for, since a pull request GitHub will not let the platform merge
+    can wait on a person for days and asking again changes nothing."""
     if gojira_app_id is None:
         return False
     stale = stale_contract(github, repo)
     if stale is None or asked.get(repo) == stale:
         return False
-    gojira.reprovision(gojira_app_id)
+    gojira.reprovision(gojira_app_id, handed_over=True)
     asked[repo] = stale
     log.info("deploy files of %s were behind its gojira.yaml; asked the platform to regenerate", repo)
     return True
@@ -184,11 +190,13 @@ def state(github, agent, config) -> dict | None:
     return {"state": WAITING if open_pr else OWED, "pull_request": open_pr}
 
 
-def offer(session, clients, config, agent) -> str | None:
-    """Propose what `add_room_wiring` would add to this agent's repository,
-    as one pull request, and return its link; None when the file already
-    carries all of it. A request already open on the branch is the answer,
-    whatever it carries: the team has something from the room to look at.
+def offer(session, clients, config, agent) -> RepoEdit | None:
+    """Add what `add_room_wiring` would add to this agent's repository, as
+    one pull request the room merges: `committed` once it is in,
+    `pull_request` with its link when GitHub would not let the room merge
+    it, None when the file already carries all of it. A request already
+    open on the branch is the answer, whatever it carries, and is merged
+    when it is still only the room's own work.
 
     The Secrets are delivered before the request is opened, so they exist
     by the time anything can merge it, and only then: delivering takes back
@@ -197,7 +205,7 @@ def offer(session, clients, config, agent) -> str | None:
     repo = agent.repo_full_name
     open_pr = github.find_pr(repo, branch=CONNECTED_WIRE_BRANCH)
     if open_pr is not None:
-        return open_pr
+        return merge_ours(github, repo, open_pr, branch=CONNECTED_WIRE_BRANCH, files=_WIRE_FILES)
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
@@ -212,7 +220,7 @@ def offer(session, clients, config, agent) -> str | None:
         path.write_text(yaml.safe_dump(data, sort_keys=False))
         write_connected_storage(workdir, agent)
         deliver_connected_identity(session, clients, config, agent)
-        edit = _propose(
+        return _propose(
             github, workdir, repo,
             branch=CONNECTED_WIRE_BRANCH,
             title=CATCH_UP_TITLE,
@@ -221,19 +229,18 @@ def offer(session, clients, config, agent) -> str | None:
             already_open=CATCH_UP_ALREADY_OPEN,
             files=_WIRE_FILES,
         )
-    return edit.pull_request
 
 
 # --- a room-made Slack app (issue #484) ----------------------------------------
 #
 # For an agent the room builds, the app's wiring is a commit. Here the room
-# cannot commit, so everything the app needs travels in the Secret
+# does not push, so everything the app needs travels in the Secret
 # `<agent>-slack`, how Slack wakes the agent included, and the repository
 # owes one line: that it reads the Secret when it exists. An agent connected
 # since 2026-11-14 has that line from its connect (`steps.name_slack_secret`),
 # so making its app and changing how it wakes are a delivery and a restart.
 # One connected before gets the line as a single pull request on its own
-# branch, the last one Slack asks of it.
+# branch, which the room merges: the last one Slack needs there.
 
 SLACK_BRANCH = "kobo/slack"
 SLACK_PR_TITLE = "kobo: Slack app made by the room"
@@ -253,15 +260,12 @@ SLACK_PR_BODY = (
     "`SLACK_COMMAND_PUBLIC` are taken out of `env` where they are set. A "
     "value there hides the one in the Secret, so the agent would keep "
     "waking the old way.\n\n"
-    "This is the last pull request Slack asks of this repository: from here "
+    "This is the last pull request Slack needs in this repository: from here "
     "a change to how Slack wakes the agent is delivered to the Secret and "
     "the agent is restarted.\n\n"
     "The room hands Slack's events to the agent at `POST /slack/events` with "
     "the header `X-Kobo-Relay-Secret`. The guide section \"Running your own "
-    "code\" has the whole contract.\n\n"
-    "After this merges the room asks the deploy platform to regenerate the "
-    "deploy files, which arrives as a second pull request. The agent "
-    "restarts when that one is merged.\n\n"
+    "code\" has the whole contract.\n\n" + ROOM_MERGES +
     "gojira.yaml is rewritten from its parsed form, so comments and key "
     "order in that one file are not preserved.\n"
 )
@@ -315,10 +319,13 @@ def hand_slack_to_room(data: dict, agent_name: str) -> bool:
     return changed
 
 
-def propose_slack(github, *, repo: str, agent_name: str) -> RepoEdit:
+def propose_slack(github, *, repo: str, agent_name: str, gojira=None, gojira_app_id: int | None = None) -> RepoEdit:
     """One pull request that leaves the agent reading `<agent>-slack` and
     setting none of the wake settings itself, or the one already open that
-    does exactly that; `unchanged` when the default branch already does.
+    does exactly that, merged by the room (`committed`; `pull_request` with
+    its link when GitHub would not let it); `unchanged` when the default
+    branch already does. With `gojira` and the agent's app id, a merged one
+    is followed through at once instead of at the next pass.
     Raises `RepoBusy` when a different request from the room is open on the
     branch, which includes the case where the default branch already reads
     this way: merging what is open would hide what the room delivers."""
@@ -327,10 +334,10 @@ def propose_slack(github, *, repo: str, agent_name: str) -> RepoEdit:
 
     result = edit_gojira_yaml(
         github,
-        None,
+        gojira,
         repo=repo,
         connected=True,
-        gojira_app_id=None,
+        gojira_app_id=gojira_app_id,
         edit=lambda data: hand_slack_to_room(data, agent_name),
         message=SLACK_PR_TITLE,
         branch=SLACK_BRANCH,
@@ -371,12 +378,10 @@ def slack_state(github, agent) -> dict:
 
 
 def keep(app) -> None:
-    """One pass over every ready connected agent: follow a merged request
-    through, and offer the room's wiring to one that now needs it. Best
-    effort, one agent at a time; nothing here is allowed to stop the rest."""
-    from .bab import ROOM_ACTOR
-    from .gateway_lane import held_lanes
-
+    """One pass over every ready connected agent: give the room's wiring to
+    one that now needs it, and follow a merged request through (the one
+    this pass merged included). Best effort, one agent at a time; nothing
+    here is allowed to stop the rest."""
     clients = app.state.clients
     config = app.state.config
     github = getattr(clients, "github", None)
@@ -393,28 +398,37 @@ def keep(app) -> None:
             for a in session.query(Agent).filter(Agent.status == AgentStatus.READY, Agent.kind == KIND_CONNECTED).all()
         ]
     for name, repo, app_id in rows:
+        if name not in settled and bab is not None and gateway_identity_on(config):
+            _offer_once(app, name, settled)
         if gojira is not None:
             try:
                 follow_through(github, gojira, repo=repo, gojira_app_id=app_id, asked=asked)
             except ClientError as exc:
                 log.warning("could not follow %s's merged wiring through: %s", name, exc)
-        if name in settled or bab is None or not gateway_identity_on(config):
-            continue
-        try:
-            if not held_lanes(bab, name, ROOM_ACTOR):
-                continue
-            with app.state.session_factory() as session:
-                agent = session.query(Agent).filter_by(name=name).one()
-                url = offer(session, clients, config, agent)
-                session.commit()
-        except RepoBusy as exc:
-            # Something a team can clear is in the way; said once, not every pass.
-            log.warning("wiring for %s is waiting on its repository: %s", name, exc)
-            settled.add(name)
-            continue
-        except ClientError as exc:
-            log.warning("wiring for %s could not be offered: %s", name, exc)
-            continue
+
+
+def _offer_once(app, name: str, settled: set[str]) -> None:
+    """`offer` for one agent that holds a permission, remembered in
+    `settled` once it has an answer a later pass would only repeat."""
+    from .bab import ROOM_ACTOR
+    from .gateway_lane import held_lanes
+
+    clients = app.state.clients
+    try:
+        if not held_lanes(clients.bab, name, ROOM_ACTOR):
+            return
+        with app.state.session_factory() as session:
+            agent = session.query(Agent).filter_by(name=name).one()
+            edit = offer(session, clients, app.state.config, agent)
+            session.commit()
+    except RepoBusy as exc:
+        # Something a person can clear is in the way; said once, not every pass.
+        log.warning("wiring for %s is waiting on its repository: %s", name, exc)
         settled.add(name)
-        if url:
-            log.info("offered %s the room's wiring: %s", name, url)
+        return
+    except ClientError as exc:
+        log.warning("wiring for %s could not be added: %s", name, exc)
+        return
+    settled.add(name)
+    if edit is not None:
+        log.info("added the room's wiring to %s: %s", name, edit.pull_request or "merged")

@@ -606,7 +606,7 @@ describe("SecretsPanel", () => {
     await waitFor(() => {
       expect(
         screen.getByText(
-          "The secret stays until that pull request merges. Save again after it merges to finish removing it.",
+          "The room could not merge its pull request, so the secret stays. Save again after it merges to finish removing it.",
         ),
       ).not.toBeNull();
     });

@@ -32,11 +32,12 @@ class AgentStatus(enum.StrEnum):
     READY = "ready"
     FAILED = "failed"
     # Parked on a person, not broken: a connected agent whose setup pull
-    # request the platform has opened and its owner has not merged. Nothing
-    # runs; the waiting sweep (kobo_api.provisioner.sweep_waiting) resumes
-    # the pipeline when the platform reports the merge, and Retry is a
-    # Resume. Only connected agents ever hold it: a composed agent's setup
-    # PR is merged by the room itself.
+    # request the platform opened and could not merge (a branch rule in
+    # the repository refused it). Nothing runs; the waiting sweep
+    # (kobo_api.provisioner.sweep_waiting) resumes the pipeline when the
+    # platform reports the merge, and Retry is a Resume. Only connected
+    # agents ever hold it: nothing refuses a merge in a repository the
+    # room made.
     WAITING = "waiting"
     # Agent destruction (Task 4): the mirror of PROVISIONING/FAILED for the
     # destroy ledger (kobo_api.destroy.run_destroy) — DESTROYING while the

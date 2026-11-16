@@ -20,7 +20,7 @@ Kobo is one piece of a set of sibling projects. Each owns one job, and the room 
 ## What it can do for you
 
 - **Build an agent from a persona.** Press **New agent**, then **Build an agent**. See "Create your first agent".
-- **Deploy an agent your team already wrote.** **Connect a repository you already have**: the room scans it and proposes its setup as a pull request. It gets the same storage, identity and gateway access as an agent the room builds. See "Before you start" and "Running your own code".
+- **Deploy an agent your team already wrote.** **Connect a repository you already have**: the room scans it and sets it up through pull requests it merges itself. It gets the same storage, identity and gateway access as an agent the room builds. See "Before you start" and "Running your own code".
 - **Teach it facts in seconds.** Press **Teach this** on any chat message, or upload documents under **Harness, Memory**. See "Talk to it and teach it".
 - **Review what it learned.** Each night it proposes one-line learnings; nothing is kept until you press **Remember**.
 - **Put it in Slack.** The room writes the Slack app manifest; you paste back three values. See "Slack".
@@ -33,7 +33,7 @@ Kobo is one piece of a set of sibling projects. Each owns one job, and the room 
 
 ### Creating an agent
 
-- **Build or connect.** Build when you want the room to own the agent and its repository; you get chat, Slack, teaching and the whole Harness. Connect when your team already has an agent in its own repository; the room deploys it and never pushes to your branches. It can use a Slack app the room makes, and its page says whether it is running, set up for the tools and taking Slack's messages; chat, teaching and most of the Harness do not apply.
+- **Build or connect.** Build when you want the room to own the agent and its repository; you get chat, Slack, teaching and the whole Harness. Connect when your team already has an agent in its own repository; the room deploys it, and connecting hands its deploy files to the room. It can use a Slack app the room makes, and its page says whether it is running, set up for the tools and taking Slack's messages; chat, teaching and most of the Harness do not apply.
 - **Persona.** A built-in persona (a helpful generalist, a billing analyst, an identity admin, a code reviewer, a cloud operator) gets you started at once. Your group's own personas carry your team's way of working. **Build your own persona** when nothing fits: paste one you have, or describe the job and edit the draft. See "Personas".
 - **Group.** Decides who sees the agent and which agents it talks to without asking. Pick your own team. Pick **shared** only when the whole company should see it; a shared agent is not paired with anyone automatically.
 - **Model tier.** **Best** when the work needs the hardest thinking and cost matters less; **Balanced** for everyday work; **Fast** when the job is simple and cost or speed matters most. You can change it later on the Harness tab; the agent rebuilds.

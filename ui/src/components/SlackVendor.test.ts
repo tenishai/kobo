@@ -330,22 +330,22 @@ describe("SlackVendor", () => {
 
   it("offers a connected agent that serves a port the room's app, or its own", async () => {
     // Contract (issue #484): the same Create, with the two things its team
-    // has to know first: files that do not read the app yet mean one pull
-    // request, and an app of its own is still a choice.
+    // has to know first: the room adds what its files do not read yet,
+    // and an app of its own is still a choice.
     room({ ...NONE, own_app: true, room_app: true }, { ...AGENT, kind: "connected" });
 
     expect(await screen.findByRole("button", { name: "Create Slack app" })).toBeTruthy();
-    expect(screen.getByText(/its team\s+merges one pull request first/)).toBeTruthy();
+    expect(screen.getByText(/the room\s+adds that itself/)).toBeTruthy();
     expect(screen.getByText(/Already has a Slack app of its own\? Keep it/)).toBeTruthy();
     expect(screen.getAllByRole("radio")).toHaveLength(3);
   });
 
-  it("says a connected agent's Slack app waits on a pull request, and opens a closed one again", async () => {
+  it("says a connected agent's Slack app waits on a merge the room could not make, and opens a closed one again", async () => {
     const pull = "https://github.com/acme/agent-clio/pull/9";
     const connected = { ...AGENT, kind: "connected" };
     const first = room({ ...INSTALLED, wiring: { state: "waiting", pull_request: pull } }, connected);
 
-    expect((await screen.findByRole("status")).textContent?.trim()).toBe("Waiting for its team to merge a pull request");
+    expect((await screen.findByRole("status")).textContent?.trim()).toBe("The room could not merge its pull request");
     expect(screen.getByRole("link", { name: "Open the pull request" }).getAttribute("href")).toBe(pull);
     first.unmount();
 

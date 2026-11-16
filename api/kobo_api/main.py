@@ -47,6 +47,7 @@ from kobo_api import (
 )
 from kobo_api.admin_addons import addon_cards
 from kobo_api.agent_env import (
+    COMMITTED,
     MANAGED_PURPOSES,
     MAX_ENV_VALUE_LENGTH,
     MAX_KEYS,
@@ -74,6 +75,7 @@ from kobo_api.agent_env import (
     read_env,
     read_repo_env,
     read_room_env,
+    regenerate_handed_over,
     require_our_branch,
     secret_path,
     sync_state,
@@ -9083,8 +9085,9 @@ def create_app(
             # events to the agent over HTTP, so an agent that serves no port
             # has nowhere to take them and keeps its own app.
             "room_app": not is_connected(agent) or agent.run_mode == RUN_MODE_HTTP,
-            # A connected agent's room-made app is wired by a pull request its
-            # team merges: wired, waiting, or owed (closed, or never opened).
+            # A connected agent's room-made app is wired by a pull request the
+            # room merges: wired, waiting (GitHub refused the merge), or owed
+            # (closed, or never opened).
             "wiring": _slack_wiring(agent) if is_connected(agent) and row is not None and row.app_id else None,
             # The build the wiring started has not rolled yet (2026-11-03).
             "rebuilding": state == "installed" and _slack_rebuilding(agent),
@@ -9136,10 +9139,11 @@ def create_app(
         A connected agent (issue #484) gets the same app, relay and Secret.
         That asks nothing of a repository that already reads the Secret,
         which every agent connected since 2026-11-14 does: the app reaches it
-        by a restart at install. One connected before is asked once, as a
-        pull request its team merges (`connected_wiring.propose_slack`), and
-        the answer carries its link. Calling this again for an app whose
-        request was closed opens it again.
+        by a restart at install. One connected before gets the line as one
+        pull request the room merges (`connected_wiring.propose_slack`); the
+        answer carries its link only when GitHub would not let the room.
+        Calling this again for an app whose request was closed opens it
+        again.
         """
         cfg: Config = app.state.config
         if not cfg.slack_relay:
@@ -9195,6 +9199,7 @@ def create_app(
                 try:
                     edit = connected_wiring.propose_slack(
                         clients.github, repo=agent.repo_full_name, agent_name=agent.name,
+                        gojira=clients.gojira, gojira_app_id=agent.gojira_app_id,
                     )
                 except RepoBusy as exc:
                     return JSONResponse({"error": str(exc)}, status_code=409)
@@ -9386,6 +9391,7 @@ def create_app(
                 ):
                     pull_request = connected_wiring.propose_slack(
                         clients.github, repo=agent.repo_full_name, agent_name=agent.name,
+                        gojira=clients.gojira, gojira_app_id=agent.gojira_app_id,
                     ).pull_request
             except RepoBusy as exc:
                 return JSONResponse({"error": str(exc)}, status_code=409)
@@ -9918,6 +9924,7 @@ def create_app(
                     return JSONResponse({"error": "couldn't save how it wakes up. Try again."}, status_code=502)
                 result = RepoEdit(how=UNCHANGED) if follows else connected_wiring.propose_slack(
                     clients.github, repo=agent.repo_full_name, agent_name=agent.name,
+                    gojira=clients.gojira, gojira_app_id=agent.gojira_app_id,
                 )
                 # A restart is owed only to a running app whose choice really
                 # changed: one not installed yet restarts at install, and a
@@ -10315,17 +10322,19 @@ def create_app(
           without its line is one the pod cannot see yet, which the next
           save fixes.
         - REMOVING THE LAST ONE: take the line away FIRST, then delete the
-          Secret. For a composed agent that is one commit and then the
-          deletes, with the deploy asked for at the end. For a connected
-          agent the room cannot merge its own pull request, so it deletes
-          NOTHING and answers `pending_unwire`: the stored secret stays
-          until somebody merges, and the next save finishes the job.
+          Secret, with the deploy asked for at the end. For a composed
+          agent the line goes in one commit; for a connected agent in one
+          pull request the room merges (owner ruling 2026-11-16). When
+          GitHub will not let the room merge it, the room deletes NOTHING
+          and answers `pending_unwire`: the stored secret stays until
+          somebody merges, and the next save finishes the job.
 
         Before either, the wiring branch is reconciled against what this
         save wants (`_reconcile_wiring`): an unmerged pull request of the
         room's own proposing the OPPOSITE change is closed and its branch
         removed, because merging it later would undo what is being done
-        here.
+        here. One proposing the SAME change is left for the edit below,
+        which merges it.
         """
         agent = _secrets_agent_or_error(session, request, name)
         if isinstance(agent, JSONResponse):
@@ -10372,13 +10381,13 @@ def create_app(
         remaining = merged_names(held.keys, payload.set, payload.remove)
         target = bool(remaining)
 
-        # Whatever the room proposed before and nobody has merged. Settled
+        # Whatever the room proposed before and could not merge. Settled
         # before any write, because a stale OPPOSITE request is a change
         # waiting to undo this one and has to be closed rather than merely
         # ignored.
-        pending = _reconcile_wiring(agent, target=target)
-        if isinstance(pending, JSONResponse):
-            return pending
+        refused = _reconcile_wiring(agent, target=target)
+        if refused is not None:
+            return refused
 
         if not remaining:
             return _empty_the_secrets(
@@ -10388,7 +10397,6 @@ def create_app(
                 path=path,
                 exists=held.exists,
                 on_default=on_default,
-                pending=pending,
             )
 
         try:
@@ -10400,8 +10408,8 @@ def create_app(
         except ClientError as exc:
             return _lane_failed("write", agent, exc, SECRETS_WRITE_FAILED)
 
-        wiring = pending
-        if wiring is None and not on_default:
+        wiring = None
+        if not on_default:
             wiring = _edit_wiring(agent, wire=True)
             if isinstance(wiring, JSONResponse):
                 return wiring
@@ -10439,17 +10447,17 @@ def create_app(
         path: str,
         exists: bool,
         on_default: bool,
-        pending,
     ) -> JSONResponse:
         """Remove an agent's last secret: the line first, then the Secret.
 
         Three states, and a retry of any of them lands in the right one:
 
-        - the line is still on the default branch, and the room may commit
-          (composed): commit it away, delete, then ask for a deploy;
-        - the line is still there and the room may NOT commit (connected):
-          propose it and delete nothing, so the stored Secret outlives the
-          pull request that has to merge first;
+        - the line is still on the default branch, and the room takes it
+          away (a commit for a composed agent, a pull request it merges for
+          a connected one): then delete, then ask for a deploy;
+        - the line is still there and GitHub would not let the room merge
+          its pull request: delete nothing, so the stored Secret outlives
+          the pull request that has to merge first;
         - the line is already gone: delete, or (if the path is gone too)
           answer that it is already done, without writing anything back.
 
@@ -10460,13 +10468,15 @@ def create_app(
         Secret nothing wants.
         """
         clients = app.state.clients
-        wiring = pending
+        wiring = None
 
         if on_default:
-            if is_connected(agent):
-                proposed = wiring or _edit_wiring(agent, wire=False)
-                if isinstance(proposed, JSONResponse):
-                    return proposed
+            # The line goes now and the deploy waits until the Secret is
+            # gone too.
+            wiring = _edit_wiring(agent, wire=False, reprovision=False)
+            if isinstance(wiring, JSONResponse):
+                return wiring
+            if wiring.how == PULL_REQUEST:
                 # Nothing deleted, deliberately: the file still names the
                 # Secret until somebody merges, and taking it away now
                 # would stop the agent.
@@ -10475,21 +10485,12 @@ def create_app(
                         "keys": [],
                         "platform": True,
                         "secret_name": env_secret_name(agent.name),
-                        "wiring": proposed.how,
+                        "wiring": wiring.how,
                         "emptied": False,
                         "pending_unwire": True,
-                        **(
-                            {"pull_request": proposed.pull_request}
-                            if proposed.pull_request
-                            else {}
-                        ),
+                        "pull_request": wiring.pull_request,
                     }
                 )
-            # Composed: the room owns this file, so the line goes now and
-            # the deploy waits until the Secret is gone too.
-            wiring = _edit_wiring(agent, wire=False, reprovision=False)
-            if isinstance(wiring, JSONResponse):
-                return wiring
 
         if exists:
             try:
@@ -10499,7 +10500,12 @@ def create_app(
                 # Never "couldn't store that": nothing was being stored.
                 return _lane_failed("removal", agent, exc, SECRETS_REMOVE_FAILED)
 
-        if agent.gojira_app_id is not None and not is_connected(agent):
+        if is_connected(agent):
+            # Best effort: the five-minute pass asks again for a repository
+            # whose deploy files are behind (`connected_wiring.follow_through`).
+            if wiring is not None and wiring.how == COMMITTED:
+                regenerate_handed_over(clients.gojira, agent.gojira_app_id, agent.repo_full_name)
+        elif agent.gojira_app_id is not None:
             try:
                 clients.gojira.reprovision(agent.gojira_app_id)
             except ClientError as exc:
@@ -10520,13 +10526,14 @@ def create_app(
     def _reconcile_wiring(agent: Agent, *, target: bool):
         """Settle the wiring branch against what this save wants.
 
-        Returns the `RepoEdit` for a pull request that already proposes
-        `target` (so the caller reuses it and proposes nothing new), None
-        when there is nothing open, or a `JSONResponse` to return.
+        Returns None when the branch is clear for this save, or a
+        `JSONResponse` to return. A pull request that already proposes
+        `target` is left where it is: the edit that follows finds it and
+        merges it (`agent_env._propose`).
 
         A request proposing the OPPOSITE is the case this exists for. The
-        room opened it, nobody merged it, and a later save has made it
-        wrong: an unwire request merged after somebody adds a secret back
+        room opened it, GitHub would not let the room merge it, and a
+        later save has made it wrong: an unwire request merged after somebody adds a secret back
         would take the line away from an agent that needs it, and a wire
         request merged after the last secret is gone would name a Secret
         that no longer exists. Either way the file ends up lying about the
@@ -10535,7 +10542,8 @@ def create_app(
         removed so the next proposal has somewhere to go.
 
         Composed agents never get here with anything open: the room
-        commits to its own repository and opens no request at all.
+        commits to its own repository and opens no request at all. A
+        connected agent has one open only when a merge was refused.
         """
         if not is_connected(agent):
             return None
@@ -10553,7 +10561,7 @@ def create_app(
                 agent.name,
             )
             if proposes == target:
-                return RepoEdit(how=PULL_REQUEST, pull_request=open_pr)
+                return None
 
             log.info(
                 "closing the room's stale wiring request for %s (it proposes %s)",

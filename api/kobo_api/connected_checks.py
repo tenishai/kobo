@@ -83,14 +83,14 @@ def gateway(wiring: object, *, last_call_at: object = UNREAD) -> dict:
     if wiring.get("state") == WAITING:
         return _check(
             "gateway", STATE_WAITING,
-            "Waiting on your team to merge the room's setup pull request.",
+            "The room could not merge its setup pull request. Someone who can merge in this repository has to.",
             pull_request=wiring.get("pull_request"),
         )
     if wiring.get("state") == OWED:
         return _check(
             "gateway", STATE_MISSING,
             "Its files do not carry the room's setup for the tool gateway. "
-            "The room asks with a pull request once the agent is granted something.",
+            "The room adds it once the agent is granted something.",
         )
     if last_call_at is UNREAD:
         return _check("gateway", STATE_OK, "Set up to reach the tool gateway.")
@@ -113,7 +113,7 @@ def slack(app_state: str, wiring: object, *, outcome: str | None, at: str | None
     if isinstance(wiring, dict) and wiring.get("state") == WAITING:
         return _check(
             "slack", STATE_WAITING,
-            "Waiting on your team to merge the room's Slack pull request.",
+            "The room could not merge its Slack pull request. Someone who can merge in this repository has to.",
             pull_request=wiring.get("pull_request"),
         )
     if isinstance(wiring, dict) and wiring.get("state") == OWED:

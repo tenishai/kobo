@@ -577,7 +577,7 @@ describe("PermissionsPanel: GitHub (issue #365)", () => {
     expect(screen.getByRole("button", { name: "Choose the level" })).not.toBeNull();
   });
 
-  it("says a connected agent is waiting on its team's merge before it can use what it holds", async () => {
+  it("says a connected agent is waiting on a merge the room could not make", async () => {
     // An agent that runs its team's own code reaches the gateway only once
     // its repository carries the room's wiring; a granted permission that
     // silently does nothing was the alternative.
@@ -585,7 +585,7 @@ describe("PermissionsPanel: GitHub (issue #365)", () => {
     stubFetch({ "/api/agents/ledger/access": { ...ACCESS, wiring: { state: "waiting", pull_request: pull } } });
     renderWithClient(PermissionsPanel, { agentName: "ledger" });
 
-    const note = await screen.findByText(/Waiting for your team to merge/);
+    const note = await screen.findByText(/The room could not merge its wiring pull request/);
     expect(within(note).getByRole("link", { name: "Open the pull request" }).getAttribute("href")).toBe(pull);
   });
 });

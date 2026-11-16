@@ -155,9 +155,9 @@ export type SlackAppView = {
    * connected agent that serves no port: the room hands Slack's messages
    * over HTTP, so it keeps its own app. Older rooms omit it. */
   room_app?: boolean;
-  /** A connected agent's room-made app is wired by a pull request its team
-   * merges: `wired`, `waiting` (open, with its link) or `owed` (closed, or
-   * never opened). Null for every other agent, and when the room could not
+  /** A connected agent's room-made app is wired by a pull request the room
+   * opens and merges: `wired`, `waiting` (GitHub refused the merge; open,
+   * with its link) or `owed` (closed, or never opened). Null for every other agent, and when the room could not
    * read the agent's files. */
   wiring?: { state: "wired" | "waiting" | "owed"; pull_request: string | null } | null;
   /** The build the Slack wiring started has not rolled yet: a mention cannot reach the agent. */
@@ -2698,8 +2698,8 @@ export type SlackWakeResult = {
   /** A connected agent: the choice was delivered and the room restarts the
    * agent once it has landed, a minute or two later. */
   restart_pending?: boolean;
-  /** A connected agent whose files do not read the app's values yet: a
-   * pull request its team merges. */
+  /** A connected agent whose files do not read the app's values yet, and
+   * a pull request the room could not merge for itself: its link. */
   pull_request?: string | null;
 };
 

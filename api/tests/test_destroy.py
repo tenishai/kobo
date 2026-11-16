@@ -2752,6 +2752,42 @@ def test_a_composed_agent_commits_the_line_away_before_deleting_the_secret(
     assert clients.gojira.reprovision_calls
 
 
+def test_a_connected_agents_last_secret_is_deleted_only_after_the_line_is_merged_away(
+    session_factory__web_secrets, config__web_secrets, fake_storage, _key
+):
+    """Destruction safety: A connected agents last secret is deleted only after the line is merged away.
+
+    The room merges the pull request that takes the line out (2026-11-16)
+    and only then deletes, asking the platform to regenerate as a hand-over
+    at the end. A merge GitHub refuses deletes NOTHING: the file still
+    names the Secret, so the stored value outlives the open request."""
+    wired = BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"
+
+    def remove(**github_kwargs):
+        sero = FakeSero()
+        sero.stored[f"apps/{AGENT}/env"] = {"API_KEY": VALUE}
+        github = _github(repo_files={"gojira.yaml": wired}, **github_kwargs)
+        client, clients = _client__web_secrets(
+            session_factory__web_secrets, config__web_secrets, fake_storage, _key,
+            kind=KIND_CONNECTED, sero=sero, github=github,
+        )
+        body = client.put(f"/api/agents/{AGENT}/secrets", json={"remove": ["API_KEY"]}, headers=_as(_key)).json()
+        with session_factory__web_secrets() as session:
+            session.query(Agent).filter_by(name=AGENT).delete()
+            session.commit()
+        return body, sero, github, clients.gojira
+
+    body, sero, github, gojira = remove(merge_pr_results=[False])
+    assert (body["pending_unwire"], body["emptied"], body["pull_request"]) == (True, False, PR_URL)
+    assert sero.stored[f"apps/{AGENT}/env"] == {"API_KEY": VALUE} and gojira.reprovision_calls == []
+
+    body, sero, github, gojira = remove()
+    assert (body["pending_unwire"], body["emptied"]) == (False, True) and "pull_request" not in body
+    assert f"apps/{AGENT}/env" not in sero.stored
+    assert github.merge_pr_calls == [(REPO__web_secrets, PR_URL)] and github.pushes == []
+    assert gojira.handed_over_calls == gojira.reprovision_calls != []
+
+
 def test_a_branch_the_room_did_not_make_is_never_deleted(
     session_factory__web_secrets, config__web_secrets, fake_storage, _key
 ):

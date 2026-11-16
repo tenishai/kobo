@@ -12,9 +12,9 @@ A name can appear in the table once. A second row with the same name, whether a 
 
 ## Where secrets live
 
-Secrets are stored in the room's secrets service, never in the agent's repository, and reach the agent as environment variables. A room with no secrets service keeps the table and the variables but cannot store a new secret, so the controls that add one are not there. Variables are written into the agent's own files. For a connected agent the room proposes that change as a pull request, because it never pushes to your branches.
+Secrets are stored in the room's secrets service, never in the agent's repository, and reach the agent as environment variables. A room with no secrets service keeps the table and the variables but cannot store a new secret, so the controls that add one are not there. Variables are written into the agent's own files. For a connected agent the room makes that change as a pull request it merges itself.
 
-A connected agent's variables live in its own repository, and only a room operator can read or change them here. Its owner still sees the secrets, adds one and removes one; the first secret arrives with a pull request that tells the agent's deployment where to read them, and the secret reaches the agent once your team has merged it and the setup pull request that follows it.
+A connected agent's variables live in its own repository, and only a room operator can read or change them here. Its owner still sees the secrets, adds one and removes one; the first secret arrives with a pull request that tells the agent's deployment where to read them, and the room merges it. The deploy service follows with a pull request of its own, merges that, and the secret reaches the agent a few minutes later. When the repository's rules stop either merge, the line under the table links to the pull request someone has to merge.
 
 ## The lock
 

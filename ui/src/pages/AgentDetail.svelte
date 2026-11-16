@@ -329,7 +329,7 @@
   });
 
   function handleRetry(): void {
-    // The same request resumes a WAITING agent (its owner merged the setup
+    // The same request resumes a WAITING agent (somebody merged the setup
     // pull request and does not want to wait for the room's sweep) and
     // retries a FAILED one; only the words differ.
     const resuming = agent.data?.status === "waiting";
@@ -911,13 +911,14 @@
         </button>
       </div>
     {:else if data.status === "waiting"}
-      <!-- Parked on a person, not broken: a connected repository's setup
-           pull request is open and its owner merges it. The room resumes on
-           its own once the deploy service reports the merge; Resume is for the
-           person who just merged it and does not want to wait a minute. -->
+      <!-- Parked on a person, not broken: GitHub would not let the deploy
+           platform merge a connected repository's setup pull request, so
+           somebody who can has to. The room resumes on its own once the
+           platform reports the merge; Resume is for the person who just
+           merged it and does not want to wait a minute. -->
       <div class="waiting-banner" role="status">
         <p class="waiting-banner__message">
-          {data.error ?? "Waiting for someone on your team to merge the setup pull request."}
+          {data.error ?? "The deploy service could not merge its setup pull request. Someone who can merge in this repository has to."}
         </p>
         <button
           type="button"
