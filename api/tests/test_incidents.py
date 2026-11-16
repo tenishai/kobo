@@ -2647,6 +2647,71 @@ def test_build_step_failure_triggers_one_automatic_rerun_and_self_heals(session_
     assert github.rerun_calls == [(repo, 42)]
 
 
+def test_build_step_runs_a_build_from_before_the_agent_existed_again_so_it_deploys(session_factory, config):
+    """Production bug: a reconnect after a destroy never deployed.
+
+    The repository's head was already wired and built, so nothing pushed and no
+    run started; the step accepted the old run, whose deploy went to the
+    namespace the destroy removed, and Deploy timed out. The old run is run
+    again once and the step returns only when that run succeeds."""
+    repo = _repo_full_name(config)
+    session, agent = _make_agent__steps_wire(session_factory, repo_full_name=repo)
+    github = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 42, "status": "completed", "conclusion": "success",
+                                    "updated_at": "2020-01-01T00:00:00Z"}]]},
+        rerun_followup=[{"status": "in_progress", "conclusion": None, "updated_at": "2099-01-01T00:00:00Z"},
+                        {"status": "completed", "conclusion": "success", "updated_at": "2099-01-01T00:00:00Z"}],
+    )
+    ctx = _make_ctx(session, agent, config, _clients__steps_wire(github=github))
+
+    detail = BuildStep().run(ctx)
+
+    assert github.rerun_calls == [(repo, 42)]
+    assert "ran again" in detail
+    # A run that ended after the agent was created is taken as it is.
+    fresh = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 43, "status": "completed", "conclusion": "success",
+                                    "updated_at": "2099-01-01T00:00:00Z"}]]},
+    )
+    BuildStep().run(_make_ctx(session, agent, config, _clients__steps_wire(github=fresh)))
+    assert fresh.rerun_calls == []
+    # Beside a team's own workflow on the same commit, only the platform's build runs again.
+    team = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 7, "status": "completed", "conclusion": "success",
+                                    "updated_at": "2020-01-01T00:00:00Z", "workflow": "Release"},
+                                   {"id": 42, "status": "completed", "conclusion": "success",
+                                    "updated_at": "2020-01-01T00:00:00Z", "workflow": "Gojira CI"}]]},
+        rerun_followup=[{"status": "completed", "conclusion": "success", "updated_at": "2099-01-01T00:00:00Z",
+                         "workflow": "Gojira CI"}],
+    )
+    BuildStep().run(_make_ctx(session, agent, config, _clients__steps_wire(github=team)))
+    assert team.rerun_calls == [(repo, 42)]
+    # GitHub will not run again a run over 30 days old: the card asks for a commit.
+    stale = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 44, "status": "completed", "conclusion": "success",
+                                    "updated_at": "2020-01-01T00:00:00Z"}]]},
+    )
+
+    def refuse(repo, run_id):
+        raise ClientError("gh run rerun failed", stderr="run is too old to be retried")
+
+    stale.rerun = refuse
+    with pytest.raises(RuntimeError, match="push a commit to the repository, then Retry"):
+        BuildStep().run(_make_ctx(session, agent, config, _clients__steps_wire(github=stale)))
+    # A team's own workflow is never run again, even with no platform build on the commit.
+    theirs = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 9, "status": "completed", "conclusion": "success",
+                                    "updated_at": "2020-01-01T00:00:00Z", "workflow": "Release"}]]},
+    )
+    BuildStep().run(_make_ctx(session, agent, config, _clients__steps_wire(github=theirs)))
+    assert theirs.rerun_calls == []
+
+
 def test_build_step_does_not_settle_for_a_stale_sha_success_once_head_has_advanced(
     session_factory, config
 ):

@@ -168,6 +168,10 @@ POLL_TIMEOUT_S = 300
 # below can name the job and step that failed.
 BUILD_POLL_INTERVAL_S = 10
 BUILD_POLL_TIMEOUT_S = 900
+# The name of the workflow the platform generates in every repository it deploys
+# (`.github/workflows/gojira-ci.yaml`): the build the step watches, when a commit
+# has other runs beside it.
+PLATFORM_WORKFLOW = "Gojira CI"
 
 # Cap on how many times `head_sha` can advance (change between polls) during a
 # single BuildStep invocation. The pipeline pushes at most twice per provision
@@ -2768,6 +2772,16 @@ class BuildStep:
        the merge commit), `provisioning` means the pull request is still
        being written and the run is left alone for now. A platform that
        cannot be read changes nothing: the run is judged as before.
+
+    6. A successful run that ended before the agent was created is run again,
+       once, and the step waits for that. Only the platform's own workflow is
+       run again: a team's repository has runs of its own on the same commit.
+       GitHub refuses to run again a run more than 30 days old; the step then
+       asks for a commit. Reconnecting a repository after a
+       destroy finds a head the room and the platform already wired, so no
+       commit lands and no run starts; the old run's deploy went to the
+       namespace the destroy removed, and Deploy waited for a rollout nobody
+       was doing (2026-11-16).
     """
 
     name = "build"
@@ -2776,6 +2790,10 @@ class BuildStep:
     def run(self, ctx: Ctx) -> str:
         agent = ctx.agent
         github = ctx.clients.github
+        # Set once the step has asked for a build that ended before the agent
+        # existed to run again (point 6), and how many polls have read it back
+        # unchanged since.
+        redeploy_asked = False
 
         # Watched sha: re-resolved at the top of every iteration below
         # (never cached across polls) — `sha` starts as None purely so the
@@ -2857,6 +2875,7 @@ class BuildStep:
                 healed_conclusion = None
                 reran_run_id = None
                 stale_grace_polls_remaining = 0
+                redeploy_asked = False
             sha = new_sha
 
             runs = github.runs_for_commit(agent.repo_full_name, sha)
@@ -2878,13 +2897,42 @@ class BuildStep:
                 # Newest-first; a commit normally has exactly one CI run,
                 # but if more than one somehow exists (e.g. a manual
                 # workflow_dispatch alongside the push-triggered run) the
-                # most recent is the relevant one.
-                run = runs[0]
+                # most recent is the relevant one. On a team's repository the
+                # commit also carries the team's own workflows: the platform's
+                # build is the one watched when it is there.
+                run = next((r for r in runs if r.get("workflow") == PLATFORM_WORKFLOW), runs[0])
                 if run.get("status") == "completed":
                     run_id = run.get("id")
                     conclusion = run.get("conclusion")
+                    if (conclusion == "success" and run.get("workflow") in (PLATFORM_WORKFLOW, None)
+                            and _ended_before(run, agent.created_at)):
+                        # Point 6: this commit was built and deployed before the
+                        # agent existed, so its deploy went to a namespace a
+                        # destroy has since removed. Run it again, once.
+                        if not redeploy_asked:
+                            redeploy_asked = True
+                            log.info(
+                                "build run %s for commit %s ended before %s was created; "
+                                "running it again so it deploys",
+                                run_id, sha, agent.name,
+                            )
+                            try:
+                                github.rerun(agent.repo_full_name, run_id)
+                            except ClientError as exc:
+                                log.warning("build run %s could not be run again: %s", run_id, exc)
+                                raise RuntimeError(
+                                    f"the last build of commit {sha[:8]} was for an agent since "
+                                    "destroyed, and GitHub did not run it again (it refuses a run "
+                                    "over 30 days old): push a commit to the repository, then Retry"
+                                ) from None
+                            polls_remaining = max_polls
+                        if polls_remaining > 0:
+                            _sleep(BUILD_POLL_INTERVAL_S)
+                        continue
                     if conclusion == "success":
                         notes = []
+                        if redeploy_asked:
+                            notes.append("ran again: its first deploy was for an agent since destroyed")
                         if healed_conclusion is not None:
                             notes.append(f"healed a {healed_conclusion} run")
                         if advance_note is not None:
@@ -2945,15 +2993,35 @@ class BuildStep:
             if polls_remaining > 0:
                 _sleep(BUILD_POLL_INTERVAL_S)
 
-        standing = (
-            _where_the_run_stands(github, agent.repo_full_name, runs[0])
-            if runs
-            else "no CI run has registered for this commit yet"
-        )
+        if redeploy_asked:
+            standing = (
+                "a build was asked to run again so it deploys, and it had not "
+                "finished"
+            )
+        else:
+            standing = (
+                _where_the_run_stands(github, agent.repo_full_name, runs[0])
+                if runs
+                else "no CI run has registered for this commit yet"
+            )
         raise RuntimeError(
             f"timed out waiting for build run to complete after "
             f"{BUILD_POLL_TIMEOUT_S}s for commit {sha}: {standing}"
         )
+
+
+def _ended_before(run: dict, created_at: datetime | None) -> bool:
+    """Whether a completed run last changed before `created_at`. A run with no
+    time on it (a client that does not report one) counts as fresh."""
+    stamp = run.get("updated_at")
+    if not stamp or created_at is None:
+        return False
+    try:
+        ended = datetime.fromisoformat(str(stamp))  # Python 3.11+ reads the trailing Z
+    except ValueError:
+        return False
+    created = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    return ended < created
 
 
 def _setup_pr_standing(ctx: Ctx) -> dict | None:

@@ -545,7 +545,9 @@ class GitHubClient(Protocol):
 
     def runs_for_commit(self, repo: str, sha: str) -> list[dict]:
         """Workflow runs triggered by commit `sha`, newest first — each a
-        {"id": int, "status": str, "conclusion": str | None} dict.
+        {"id": int, "status": str, "conclusion": str | None, "updated_at": str,
+        "workflow": str} dict (`updated_at` RFC 3339, when the run last changed:
+        its end, once completed; `workflow` the workflow's name).
 
         Keyed by commit rather than "latest across the whole repo" (the old
         `latest_run`'s mistake): a run for some other commit — a regeneration
@@ -1156,7 +1158,7 @@ class GhCLI:
         out = self._runner.run(
             [
                 self._gh, "run", "list", "--repo", repo, "--commit", sha,
-                "--json", "databaseId,status,conclusion",
+                "--json", "databaseId,status,conclusion,updatedAt,workflowName",
             ],
             env=self._env(),
         )
@@ -1166,6 +1168,8 @@ class GhCLI:
                 "id": run["databaseId"],
                 "status": run["status"],
                 "conclusion": run.get("conclusion"),
+                "updated_at": run.get("updatedAt"),
+                "workflow": run.get("workflowName"),
             }
             for run in runs
         ]
