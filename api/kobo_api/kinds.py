@@ -3,7 +3,10 @@
 A `composed` agent is one the room built: it owns the repo, writes the
 bundle into it, and keeps editing it. A `connected` agent is a team's own
 repo with the team's own code in it; the room deploys it, gives it an
-identity and model access, and never pushes to its branches.
+identity and model access, and never pushes to its branches. Connecting
+hands the repository's deploy files to the room and the deploy platform
+(owner ruling 2026-11-16): what they change there is a pull request they
+merge themselves.
 
 The marker lives on the agent row (`Agent.kind`) rather than being
 inferred from anything else on it, because four separate readers consult

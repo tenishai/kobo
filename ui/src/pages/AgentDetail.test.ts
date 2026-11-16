@@ -243,7 +243,8 @@ describe("AgentDetail tabs", () => {
   });
 
   it("shows a parked connected agent as waiting, with Resume instead of Retry", async () => {
-    // Its setup pull request is open and a person merges it. The banner is
+    // Its setup pull request is open and GitHub would not let the platform
+    // merge it, so a person does. The banner is
     // not an alert, it carries the reason, and Resume is the same request
     // Retry makes (the route treats waiting as a resume).
     stubFetch({
@@ -253,7 +254,7 @@ describe("AgentDetail tabs", () => {
         status: "waiting",
         kind: "connected",
         error:
-          "Waiting for someone on your team to review and merge the setup pull request: https://github.com/o/r/pull/9. The room resumes on its own once it is merged.",
+          "The deploy service could not merge its setup pull request: https://github.com/o/r/pull/9. Someone who can merge in this repository has to. The room resumes on its own once it is merged.",
       },
     });
     renderWithClient(AgentDetail);

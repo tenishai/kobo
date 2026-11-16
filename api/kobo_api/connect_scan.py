@@ -13,8 +13,9 @@ thing, so Connect stays disabled and the route refuses. A WARNING is
 something true about the repository that its owner should know and may
 still choose. Nothing here is a policy the room invents; every warning is
 either a fact about what will happen next (a protected branch means a
-person merges the wiring) or a fact about the repository the owner can
-check for themselves.
+person merges what the room and the deploy platform would otherwise merge
+themselves) or a fact about the repository the owner can check for
+themselves.
 
 Each finding carries a code and a sentence. The code is what the UI keys
 on; the sentence is what a person reads, and it is the same text whether it
@@ -80,6 +81,8 @@ ADDS = [
 # this does not do" says the same thing at length; this is the sentence the
 # form shows above the list of what will be added.
 ADDS_PREAMBLE = (
+    "Connecting hands this repository's deploy files to the room and its "
+    "deploy service: they open and merge their own pull requests there. "
     "The room cannot check who owns this repository, so connect it only if "
     "it is yours or its owner agrees; whoever connects it is recorded."
 )
@@ -305,8 +308,9 @@ def _scan_the_repository(
             Finding(
                 BRANCH_PROTECTED,
                 f"The default branch ({access.default_branch}) is protected, "
-                "so someone on your team will have to merge the setup pull "
-                "request.",
+                "so the room may not be able to merge its own pull requests "
+                "there. Someone on your team will have to merge the ones it "
+                "cannot.",
             )
         )
 

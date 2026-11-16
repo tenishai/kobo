@@ -3,7 +3,7 @@
 
 - **Agent.** A running assistant with a persona, a model, skills and tooling, built and kept by the room.
 - **Built by the room.** An agent the room composed from a persona. It runs on the room's shared runtime.
-- **Connected.** An agent from a repository your team already owns. The room deploys and watches it and never pushes to your branches. It gets the same storage, identity and gateway access as an agent the room builds.
+- **Connected.** An agent from a repository your team already owns. The room deploys and watches it, and owns its deploy files from then on: it opens and merges its own pull requests for them. It gets the same storage, identity and gateway access as an agent the room builds.
 - **Group.** A team from your company directory. An agent belongs to one, and its members see it.
 - **Shared.** The group everyone is in. Agents and personas filed there are visible to the whole company.
 - **Operator.** A person who runs the room. Sees everything, moves agents, decides repository access, destroys agents.

@@ -17,7 +17,7 @@ describe("ConnectedChecks", () => {
           {
             id: "gateway",
             state: "waiting",
-            line: "Waiting on your team to merge the room's setup pull request.",
+            line: "The room could not merge its setup pull request. Someone who can merge in this repository has to.",
             at: null,
             pull_request: "https://github.test/acme/clio/pull/7",
           },

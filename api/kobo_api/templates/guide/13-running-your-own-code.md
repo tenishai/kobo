@@ -5,16 +5,18 @@ A connected agent is your team's code in your team's repository. The room gives 
 
 ## How it arrives
 
-All of it is added to your repository's deploy contract when you connect, in a pull request your team merges.
+All of it is added to your repository's deploy contract when you connect. Connecting hands the repository's deploy files to the room and the deploy service: the deploy contract, the deployment files and the build workflow. They open a pull request for each change and merge it themselves, so nothing waits on your team. Your code stays yours.
 
-- **A repository with no deploy files yet gets one pull request.** The deploy service's setup pull request carries the room's part too, and lists which lines and files the room asked for. Merge it and the agent starts with everything above. Nothing from the room follows.
-- **A repository that already has deploy files gets two.** The deploy service's setup pull request comes first and leaves your files as you wrote them; the room's wiring pull request follows with its part, so that nothing is laid over a person's work unseen.
+- **A repository with no deploy files yet gets one pull request.** The deploy service's setup pull request carries the room's part too, and lists which lines and files the room asked for. It is merged as it is opened and the agent starts with everything above. Nothing from the room follows.
+- **A repository that already has deploy files gets two.** The deploy service's setup pull request comes first, and the room's wiring pull request follows with its part. Both are merged for you. Deployment files written by hand are regenerated in the deploy service's own layout, so read what the scan found before you connect.
 
 One thing in your files does change. Every agent in the room runs as the room's own service account, `agent-<name>`, and uses the room's access: what it reaches is granted on its **Access** tab and recorded there. A repository that named another account, or carries a service account file of its own, is moved onto the room's by the wiring pull request, which says so in its first lines. Nothing granted to the old account follows. Ask for what the agent needs on the **Access** tab; when the room does not offer it yet, a kobo admin adds it there.
 
-A room whose deploy service predates the single pull request sends two in both cases. An agent connected before the room wired anything is offered the wiring pull request within a few minutes of its first approved permission, and its **Access** tab says it is waiting on that merge. The room never merges that later one for you.
+One thing can still stop a merge: the repository's own rules, a protected branch that requires a review for one. The pull request then stays open, the agent's page links to it, and someone who can merge there does. The room picks up from there on its own.
 
-Merging a pull request from the room is followed, a few minutes later, by a second one from the deploy service that regenerates the deployment files. Your repository's build refuses to deploy in between; that is expected. Merge the second and the agent restarts with the change. You do not have to ask for it.
+A room whose deploy service predates this sends two pull requests in both cases and leaves the deploy service's own for your team to merge. An agent connected before the room wired anything gets the wiring pull request within a few minutes of its first approved permission, merged the same way.
+
+A pull request from the room is followed, a few minutes later, by a second one from the deploy service that regenerates the deployment files. Your repository's build refuses to deploy in between; that is expected. The deploy service merges the second and the agent restarts with the change. You do not have to ask for it.
 
 ## What your code reads
 
@@ -88,9 +90,9 @@ So does `member_joined_channel`, when someone joins a channel the agent is in.
 
 The app's token may also post files (`files:write`), list the workspace's custom emoji (`emoji:read`), read its user groups (`usergroups:read`), post in a public channel the agent was not invited to (`chat:write.public`), pin and unpin messages (`pins:read`, `pins:write`) and keep a channel's bookmarks (`bookmarks:read`, `bookmarks:write`). An app installed before the room asked for these gets them when its owner presses **Update in Slack** on the Slack row; the token keeps its name and the agent restarts once.
 
-All of it reaches the agent with no further pull request. The pull request you merged at connect lets the agent read the app's values when there are some, and every name above is one of them, the three choices included. Making the app, or changing **Wakes on**, the emoji or the slash command choice, is a delivery and a restart the room does a minute or two later.
+All of it reaches the agent with no further pull request. The pull request merged at connect lets the agent read the app's values when there are some, and every name above is one of them, the three choices included. Making the app, or changing **Wakes on**, the emoji or the slash command choice, is a delivery and a restart the room does a minute or two later.
 
-An agent connected before the room did this gets one pull request the first time, which lets it read the app's values and takes `SLACK_WAKE_MODE`, `SLACK_WAKE_EMOJI` and `SLACK_COMMAND_PUBLIC` out of your deploy contract's own variables. A value you set there yourself hides the room's, so leave them out.
+An agent connected before the room did this gets one pull request the first time, merged by the room, which lets it read the app's values and takes `SLACK_WAKE_MODE`, `SLACK_WAKE_EMOJI` and `SLACK_COMMAND_PUBLIC` out of your deploy contract's own variables. A value you set there yourself hides the room's, so leave them out.
 
 ## Answering chat
 
@@ -120,7 +122,7 @@ Under the name, the page keeps four lines in the order they have to come true. E
 
 Three of the Slack sentences point at your code. **It refused the last message from Slack** means your code answered with an error: check that it compares `X-Kobo-Relay-Secret` with `SLACK_RELAY_SECRET` and answers `200`. **It did not answer the last message from Slack in time** means your code took the message and kept the room waiting past its ten seconds: answer `200` first and do the work after. **The last message from Slack did not reach it** means nothing took the message at `/slack/events` for about four minutes: the agent was not running, or your code does not serve that address.
 
-The lines only report. What one asks for is done where it always was, in a pull request your team merges or on the **Access** tab. From your own assistant, **get agent** carries the same lines as `checks`.
+The lines only report. What one asks for is done where it always was, in a pull request or on the **Access** tab. From your own assistant, **get agent** carries the same lines as `checks`.
 
 ## What stays yours
 

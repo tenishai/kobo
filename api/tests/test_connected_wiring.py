@@ -105,8 +105,9 @@ def test_connect_gives_a_connected_agent_storage_a_pass_and_a_models_key(session
 def test_a_repository_with_no_deploy_files_is_asked_for_one_pull_request(session_factory, gateway_config):
     """Contract (2026-11-14): connecting a repository used to ask its team twice, once for the
     deploy service's setup request and once for the room's wiring. The room now hands the
-    deploy service its wiring as a seed for that first request, which is never merged
-    unreviewed; both Secrets it names are delivered while it waits, and a delivery that
+    deploy service its wiring as a seed for that first request, and hands the repository
+    over so the deploy service merges it (2026-11-16). When that merge is refused, both
+    Secrets the request names are delivered while it waits, and a delivery that
     fails leaves the agent waiting, not failed; and once it is merged the wiring step finds
     the repository already reads the way it would write it, opens nothing, and takes back
     nothing the agent holds."""
@@ -128,7 +129,7 @@ def test_a_repository_with_no_deploy_files_is_asked_for_one_pull_request(session
 
     asked = gojira.create_app_calls[-1]
     seed = asked["seed"]
-    assert asked["auto_merge_setup_pr"] is False
+    assert (asked["auto_merge_setup_pr"], asked["handed_over"]) == (True, True)
     assert seed["needs"] == {
         "service_account": f"agent-{NAME}",
         "env": {
@@ -269,6 +270,8 @@ def test_a_merged_request_is_followed_through_once_per_version_of_the_file():
     assert gojira.reprovision_calls == [1]
     assert follow({"gojira.yaml": merged + "env: {A: b}\n", workflow: _workflow(SAMPLE_FINGERPRINT)}) is True
     assert gojira.reprovision_calls == [1, 1]
+    # Every ask is a hand-over: the platform merges what it regenerates.
+    assert gojira.handed_over_calls == [1, 1]
 
 
 def _holding(agent: str = NAME) -> FakeBab:
@@ -281,9 +284,10 @@ def _holding(agent: str = NAME) -> FakeBab:
 
 
 def test_an_agent_connected_earlier_is_offered_the_wiring_when_it_first_holds_a_permission(session_factory, gateway_config):
-    """Gate: an agent connected before this holds a permission it cannot use. The pass offers
-    the wiring once, as a request the TEAM merges (the room never merges a later request of
-    its own), with the pass delivered first; an agent holding nothing is left alone."""
+    """Gate: an agent connected before this holds a permission it cannot use. The pass adds
+    the wiring once, as a request the room merges (connecting handed the repository's deploy
+    files over, 2026-11-16), with the pass delivered first; an agent holding nothing is left
+    alone. A merge GitHub refuses leaves the request open and is not asked for every pass."""
     idle = _room(session_factory, gateway_config, status=AgentStatus.READY, bab=FakeBab(integrations=[]))
     connected_wiring.keep(idle.app)
     assert idle.github.open_pr_calls == [] and idle.clients.cabal.mint_colleague_calls == []
@@ -295,11 +299,43 @@ def test_an_agent_connected_earlier_is_offered_the_wiring_when_it_first_holds_a_
     connected_wiring.keep(room.app)
 
     assert [(c["repo"], c["branch"]) for c in room.github.open_pr_calls] == [(REPO, CONNECTED_WIRE_BRANCH)]
-    assert room.github.merge_pr_calls == []
+    assert room.github.merge_pr_calls == [(REPO, PR_URL)]
+    assert room.github.find_pr(REPO, branch=CONNECTED_WIRE_BRANCH) is None
     assert f"{NAME}-cabal" in _proposed(room.github)["secrets_from"]
     assert room.clients.cabal.mint_colleague_calls == [NAME]
     with session_factory() as session:
-        assert session.query(Agent).filter_by(name=NAME).one().pass_minted_at is not None
+        agent = session.query(Agent).filter_by(name=NAME).one()
+        assert agent.pass_minted_at is not None
+        session.delete(agent)
+        session.commit()
+
+    protected = FakeGitHub(pr_url=PR_URL, merge_pr_results=[False])
+    held = _room(session_factory, gateway_config, github=protected, status=AgentStatus.READY, bab=_holding())
+    connected_wiring.keep(held.app)
+    connected_wiring.keep(held.app)
+
+    assert len(protected.open_pr_calls) == 1 and protected.merge_pr_calls == [(REPO, PR_URL)]
+    assert protected.find_pr(REPO, branch=CONNECTED_WIRE_BRANCH) == PR_URL
+
+
+def test_a_request_somebody_else_added_to_is_never_merged_by_the_room():
+    """Gate (2026-11-16): the room merges what it opened and only that. A request found open
+    whose branch carries a person's commit, or a file the room does not write, is somebody's
+    work: it is left open with its link. One still only the room's is merged."""
+    from kobo_api.agent_env import COMMITTED, PULL_REQUEST, merge_ours
+    from kobo_api.clients import BranchComparison
+
+    branch = "kobo/env"
+    theirs = FakeGitHub(
+        open_prs={f"{REPO}#{branch}": PR_URL},
+        comparisons={branch: BranchComparison(found=True, files=("gojira.yaml", "src/main.py"), authors=("someone@example.com",))},
+    )
+    left = merge_ours(theirs, REPO, PR_URL, branch=branch)
+    assert (left.how, left.pull_request, theirs.merge_pr_calls) == (PULL_REQUEST, PR_URL, [])
+
+    ours = FakeGitHub(open_prs={f"{REPO}#{branch}": PR_URL}, existing_branches={f"{REPO}#{branch}"})
+    merged = merge_ours(ours, REPO, PR_URL, branch=branch)
+    assert (merged.how, merged.pull_request, ours.merge_pr_calls) == (COMMITTED, None, [(REPO, PR_URL)])
 
 
 def test_the_access_tab_is_told_where_the_wiring_stands(session_factory, gateway_config, config):

@@ -19,7 +19,7 @@ While an agent builds, a checklist sits at the top of its page and clears on its
 8. **Joins the agent directory.** Other agents can now find it.
 9. **First contact.** The room says hello. The agent answers and writes its own capability sentence.
 
-A connected agent has a shorter list: no directory, no first contact, and its wiring arrives as a pull request you merge rather than a push.
+A connected agent has a shorter list: no directory, no first contact, and its wiring arrives as a pull request the room merges rather than a push.
 
 ## When a step fails
 
@@ -29,7 +29,7 @@ A failed step shows a red mark and a **Why it failed** line with the reason the 
 
 ## When a step waits on you
 
-A connected agent's wiring arrives as a pull request on your repository, and someone on your team merges it. While that pull request is open the agent shows **Waiting**, not Failed (its dashboard card reads "Waiting on a pull request" over its age and author): the step it stopped at, usually **Deployment setup**, carries a **What it is waiting for** line with the link, and the banner at the top offers **Resume**. A repository can get two pull requests in a row, the room's wiring and then the deployment setup that follows from it; the agent waits on each, and **Image build** does not start judging a build until the second is merged. You do not have to press it. The room checks once a minute and picks the setup back up on its own when the merge lands. Resume is for when you have just merged and do not want to wait.
+A connected agent's setup arrives as pull requests on its repository, and the room and the deploy service merge their own, so most agents never wait. The exception is a repository whose own rules stop them, a protected branch that requires a review for one. Then the pull request stays open for someone who can merge there, and the agent shows **Waiting**, not Failed (its dashboard card reads "Waiting on a pull request" over its age and author): the step it stopped at, usually **Deployment setup**, carries a **What it is waiting for** line with the link, and the banner at the top offers **Resume**. A repository can get two pull requests in a row, the room's wiring and then the deployment setup that follows from it; **Image build** does not start judging a build until the second is merged. You do not have to press Resume. The room checks once a minute and picks the setup back up on its own when the merge lands. Resume is for when you have just merged and do not want to wait.
 
 ## The tabs
 

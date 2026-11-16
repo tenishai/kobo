@@ -77,7 +77,7 @@ describe("StepChecklist -- per-step tone", () => {
           label: "Platform onboarding",
           status: "waiting",
           error:
-            "Waiting for someone on your team to review and merge the setup pull request: https://github.com/o/r/pull/9. The room resumes on its own once it is merged.",
+            "The deploy service could not merge its setup pull request: https://github.com/o/r/pull/9. Someone who can merge in this repository has to. The room resumes on its own once it is merged.",
         }),
       ],
     });

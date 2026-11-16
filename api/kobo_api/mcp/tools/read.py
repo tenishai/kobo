@@ -208,7 +208,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         whether it takes messages from `slack`. Each has a `state` (`ok`,
         `waiting`, `missing`, `idle`), one sentence in `line` to tell the
         person as written, `at` (when that was last seen, or null) and
-        `pull_request` (the one its team merges, when it waits on one).
+        `pull_request` (one the room could not merge, when it waits on one).
         Empty for every other agent. Answers "agent not
         found" both for a name that does not exist and for one you are not
         allowed to see; the two are never told apart.

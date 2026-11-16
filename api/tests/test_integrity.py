@@ -843,6 +843,26 @@ def test_sweep_waiting_resumes_an_agent_whose_setup_pr_was_merged(session_factor
     assert rows["onboard"].status == StepStatus.PENDING
 
 
+def test_sweep_waiting_hands_over_an_app_parked_before_the_platform_merged_for_itself(session_factory, config):
+    """Gate (2026-11-16): an agent parked on a setup pull request from before the platform
+    merged for itself is handed over by the sweep, once: the platform's own answer
+    (`handed_over` false, then true) is the memory, and the next sweep resumes the agent
+    the platform merged for. A platform too old to say is never asked."""
+    older = FakeGojira()
+    older.seed_app(7)
+    del older._apps[7]["handed_over"]
+    _park(session_factory, "agent-parked", 7)
+    sweep = lambda gojira: sweep_waiting(
+        session_factory, config=config, clients=_gojira_clients(gojira), runner=lambda *a, **k: None)
+
+    assert sweep(older) == 0 and older.reprovision_calls == []
+
+    gojira = FakeGojira(status_sequence=["awaiting_pr", "awaiting_pr", "active"])
+    gojira.seed_app(7)
+    assert (sweep(gojira), sweep(gojira), sweep(gojira)) == (0, 0, 1)
+    assert gojira.handed_over_calls == [7]
+
+
 def test_sweep_interrupted_flips_a_dead_destroy_to_destroy_failed(session_factory, config):
     """Data integrity: Sweep interrupted flips a dead destroy to destroy failed.
 
@@ -1906,18 +1926,27 @@ def test_connect_step_refuses_anything_that_is_not_one_owner_and_one_name(
     assert github.calls == []
 
 
-def test_onboard_step_never_asks_the_platform_to_merge_a_connected_repos_setup_pr(
+def test_onboard_step_hands_a_connected_repository_over_to_the_platform(
     session_factory, config
 ):
-    """Data integrity: Onboard step never asks the platform to merge a connected repos setup pr.
+    """Data integrity: Onboard step hands a connected repository over to the platform.
 
-    A connected repository is a team's own; its owner merges the wiring
-    (Ember's review, 2026-09-29). The room's waiver of that review belongs
-    only to repositories the room authored. The platform refuses the flag
-    for hand-built repositories anyway; the room does not ask for it."""
+    Connecting a repository hands its deploy files to the room and the
+    platform (owner ruling 2026-11-16, replacing "its owner merges" from
+    2026-09-29), so the platform is asked to merge its own setup pull
+    request and told the repository was handed over, which is what lets
+    it merge one over deploy files a team wrote by hand. Only a connect
+    says so: a repository the room authored has nothing to hand over."""
     session, agent = _make_agent__connected_pipeline(session_factory, config, kind=KIND_CONNECTED)
 
-    assert _onboard_create_call(session, agent, config)["auto_merge_setup_pr"] is False
+    asked = _onboard_create_call(session, agent, config)
+    assert (asked["auto_merge_setup_pr"], asked["handed_over"]) == (True, True)
+
+    session.delete(agent)
+    session.commit()
+    session, composed = _make_agent__connected_pipeline(session_factory, config, kind=KIND_COMPOSED)
+    asked = _onboard_create_call(session, composed, config)
+    assert (asked["auto_merge_setup_pr"], asked["handed_over"]) == (True, False)
 
 
 def test_connected_wire_step_moves_a_repository_onto_the_rooms_account(
@@ -5461,13 +5490,17 @@ def _clear_restart_window():
     rate_limit.reset()
 
 
-def test_a_connected_agents_first_secret_is_proposed_not_pushed(
+def test_a_connected_agents_first_secret_is_merged_by_the_room_not_pushed(
     session_factory__web_secrets, config__web_secrets, fake_storage, _key
 ):
-    """Data integrity: A connected agents first secret is proposed not pushed."""
+    """Data integrity: A connected agents first secret is merged by the room not pushed.
+
+    The line is one pull request on the room's own branch, never a push to
+    the team's default branch, and the room merges it and asks the platform
+    to regenerate as a hand-over (2026-11-16), so nobody is waited on."""
     sero = FakeSero()
     github = _github()
-    client, _ = _client(
+    client, clients = _client(
         session_factory__web_secrets,
         config__web_secrets,
         fake_storage,
@@ -5483,16 +5516,41 @@ def test_a_connected_agents_first_secret_is_proposed_not_pushed(
         headers=_as(_key),
     ).json()
 
-    assert body["wiring"] == "pull_request"
-    assert body["pull_request"] == PR_URL
-    assert github.pushes == []
+    assert body["wiring"] == "committed" and "pull_request" not in body
+    assert github.pushes == [] and github.merge_pr_calls == [(REPO__web_secrets, PR_URL)]
+    assert clients.gojira.handed_over_calls == clients.gojira.reprovision_calls != []
     # Its own branch, not the environment one: the line it proposes is
     # always the same, and a pending environment request is a different
     # change entirely.
     assert github.open_pr_calls[0]["branch"] == SECRETS_WIRING_BRANCH
-    # Stored all the same: the value is on the platform whether or not
-    # anybody has merged the one line that names it yet.
+    # Stored before the line that names it was merged.
     assert sero.puts[0][2] == {"API_KEY": VALUE}
+
+
+def test_a_merge_github_refuses_leaves_the_first_secrets_request_open_with_its_link(
+    session_factory__web_secrets, config__web_secrets, fake_storage, _key
+):
+    """Data integrity: A merge GitHub refuses leaves the first secrets request open with its link.
+
+    A branch rule is the repository's own and outranks the hand-over: the
+    answer carries the link for someone who can merge, nothing is asked of
+    the platform yet, and the next save finds the request and tries again
+    without opening a second one."""
+    github = _github(merge_pr_results=[False, True])
+    client, clients = _client(
+        session_factory__web_secrets, config__web_secrets, fake_storage, _key,
+        kind=KIND_CONNECTED, sero=FakeSero(), github=github,
+    )
+    save = lambda: client.put(f"/api/agents/{AGENT}/secrets", json={"set": {"API_KEY": VALUE}}, headers=_as(_key)).json()
+
+    body = save()
+    assert (body["wiring"], body["pull_request"]) == ("pull_request", PR_URL)
+    assert clients.gojira.reprovision_calls == []
+
+    github._branch_files[SECRETS_WIRING_BRANCH] = {"gojira.yaml": BASE_GOJIRA_YAML + f"secrets_from:\n  - {AGENT}-env\n"}
+    again = save()
+    assert again["wiring"] == "committed" and len(github.open_pr_calls) == 1
+    assert clients.gojira.handed_over_calls != []
 
 
 def test_retrying_a_finished_removal_never_recreates_the_path(

@@ -980,7 +980,8 @@ class FakeGitHub:
         """Records `(repo, pr_url)` into `merge_pr_calls` and replays
         `merge_pr_results` (holding at the last entry once exhausted, same
         convention as `commit_push_results`). Default True: the room's own
-        wiring pull request merges, which is the wired happy path. False is
+        wiring pull request merges (and `find_pr` stops reporting it open),
+        which is the wired happy path. False is
         how a test models GitHub declining (a protected branch, a required
         review) -- never an exception, since the real client answers False
         there rather than raising.
@@ -992,6 +993,9 @@ class FakeGitHub:
         ]
         if self._merge_pr_index < len(self._merge_pr_results) - 1:
             self._merge_pr_index += 1
+        if result:
+            # A merged pull request is no longer open.
+            self._open_prs = {key: url for key, url in self._open_prs.items() if url != pr_url}
         return result
 
     def local_head(self, workdir: Path) -> str:
@@ -1176,6 +1180,8 @@ class FakeGojira:
         self._apps: dict[int, dict] = {}
         self._next_id = 1
         self.reprovision_calls: list[int] = []
+        # The app ids a re-run was asked to hand over (`handed_over=True`).
+        self.handed_over_calls: list[int] = []
         self.reprovision_error: str | None = None
         # One dict per `create_app`, every keyword it was given -- the seam
         # for asserting which workload class an agent was onboarded under,
@@ -1192,6 +1198,7 @@ class FakeGojira:
         namespace,
         workload_class="agent",
         auto_merge_setup_pr=True,
+        handed_over=False,
         seed=None,
     ) -> int:
         self.calls.append(f"create_app:{repo_full_name}")
@@ -1203,6 +1210,7 @@ class FakeGojira:
                 "namespace": namespace,
                 "workload_class": workload_class,
                 "auto_merge_setup_pr": auto_merge_setup_pr,
+                "handed_over": handed_over,
                 "seed": seed,
             }
         )
@@ -1221,6 +1229,7 @@ class FakeGojira:
             "polls": 0,
             "setup_pr_url": None,
             "auto_merge_setup_pr": auto_merge_setup_pr,
+            "handed_over": handed_over,
             "steps": [],
         }
         return app_id
@@ -1264,6 +1273,7 @@ class FakeGojira:
             "polls": 0,
             "setup_pr_url": self._setup_pr_url if status == "awaiting_pr" else None,
             "auto_merge_setup_pr": False,
+            "handed_over": False,
             "steps": [],
         }
         self._next_id = max(self._next_id, app_id + 1)
@@ -1285,7 +1295,7 @@ class FakeGojira:
             app["status"] = "active"
         return {"id": app_id, "status": app["status"], "changed": changed}
 
-    def reprovision(self, app_id: int) -> None:
+    def reprovision(self, app_id: int, *, handed_over: bool = False) -> None:
         self.calls.append(f"reprovision:{app_id}")
         # Set by a test to model a platform that took the push but will
         # not regenerate: the one failure whose right sentence depends on
@@ -1294,6 +1304,10 @@ class FakeGojira:
             raise ClientError(self.reprovision_error)
         self.reprovision_calls.append(app_id)
         app = self._apps[app_id]
+        if handed_over:
+            # One way, as on the platform: both flags, and it stays.
+            self.handed_over_calls.append(app_id)
+            app["auto_merge_setup_pr"] = app["handed_over"] = True
         app["status"] = "pending"
         app["polls"] = 0
 

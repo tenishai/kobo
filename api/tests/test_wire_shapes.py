@@ -1748,7 +1748,10 @@ def test_a_connected_wake_save_that_cannot_finish_leaves_the_agent_as_it_was(
     pr_url = "https://github.com/acme/agent-clio/pull/9"
     relay_config = config__api_slack.model_copy(update={"slack_relay": True})
     contract = f"name: clio\nsecrets_from_optional:\n  - {AGENT_NAME}-slack\n"
-    github = FakeGitHub(pr_url=pr_url, repo_files={"gojira.yaml": contract}, clone_tree={"gojira.yaml": contract})
+    # A branch rule keeps the room from merging here, so the last save's request stays open.
+    github = FakeGitHub(
+        pr_url=pr_url, repo_files={"gojira.yaml": contract}, clone_tree={"gojira.yaml": contract}, merge_pr_results=[False]
+    )
     kubectl, slack = FakeKubectl(), FakeSlack(app_id="A0MADE")
     client = _make_client__api_slack(session_factory__api_slack, relay_config, github=github, kubectl=kubectl, slack=slack)
     _seed_agent__api_slack(session_factory__api_slack, relay_config)
@@ -2062,8 +2065,9 @@ def test_a_connected_agent_wired_before_gets_one_last_slack_pull_request(
     session_factory__api_slack, config__api_slack
 ):
     """Wire shape (issue #484): a repository that does not read the Secret gets
-    one pull request on the room's Slack branch (never a commit), and the view
-    says it is waiting on the team. One wired the older way, with the wake
+    one pull request on the room's Slack branch (never a commit). The room merges
+    it (2026-11-16, the test below); here a branch rule refuses, so the answer
+    carries the link and the view says it is waiting. One wired the older way, with the wake
     setting in its own file, needs nothing while that file agrees with the room;
     a choice it disagrees with is one request that takes the setting out, after
     which nothing asks again."""
@@ -2076,7 +2080,9 @@ def test_a_connected_agent_wired_before_gets_one_last_slack_pull_request(
     pr_url = "https://github.com/acme/agent-clio/pull/9"
     relay_config = config__api_slack.model_copy(update={"slack_relay": True})
     contract = "name: clio\nenv:\n  TEAM_SETTING: kept\n"
-    github = FakeGitHub(pr_url=pr_url, repo_files={"gojira.yaml": contract}, clone_tree={"gojira.yaml": contract})
+    github = FakeGitHub(
+        pr_url=pr_url, repo_files={"gojira.yaml": contract}, clone_tree={"gojira.yaml": contract}, merge_pr_results=[False]
+    )
     kubectl = FakeKubectl()
     client = _make_client__api_slack(
         session_factory__api_slack, relay_config, github=github, kubectl=kubectl, slack=FakeSlack(app_id="A0MADE")
@@ -2134,17 +2140,47 @@ def test_a_connected_agent_wired_before_gets_one_last_slack_pull_request(
     assert len(github.open_pr_calls) == 2
 
 
-def test_a_connected_agents_closed_slack_request_is_opened_again_without_a_second_app(
-    session_factory__api_slack, config__api_slack
-):
-    """Gate: a team that closed the room's Slack request unmerged asks again with
-    the same button. The app and its values exist, so Slack is not asked twice and
-    what the Secret holds by then (the bot token) is kept."""
+def test_the_room_merges_a_connected_agents_slack_pull_request(session_factory__api_slack, config__api_slack):
+    """Wire shape (2026-11-16): connecting handed the repository's deploy files to the
+    room, so the Slack request is merged by the room and followed through with the deploy
+    platform as a hand-over. The answer carries no link, because nobody is waited on."""
+    from kobo_api.connected_wiring import SLACK_BRANCH
     from kobo_api.kinds import RUN_MODE_HTTP
 
     pr_url = "https://github.com/acme/agent-clio/pull/9"
     relay_config = config__api_slack.model_copy(update={"slack_relay": True})
     github = FakeGitHub(pr_url=pr_url, repo_files={"gojira.yaml": "name: clio\n"}, clone_tree={"gojira.yaml": "name: clio\n"})
+    gojira, app_id = _onboarded_gojira()
+    client = _make_client__api_slack(
+        session_factory__api_slack, relay_config, github=github, gojira=gojira, kubectl=FakeKubectl(),
+        slack=FakeSlack(app_id="A0MADE"),
+    )
+    _seed_agent__api_slack(session_factory__api_slack, relay_config, gojira_app_id=app_id)
+    _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HTTP)
+
+    made = client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"})
+
+    assert (made.status_code, made.json()["pull_request"]) == (200, None)
+    assert [call["branch"] for call in github.open_pr_calls] == [SLACK_BRANCH]
+    assert github.merge_pr_calls == [(REPO, pr_url)] and github.push_count == 0
+    assert gojira.handed_over_calls == [app_id]
+
+
+def test_a_connected_agents_closed_slack_request_is_opened_again_without_a_second_app(
+    session_factory__api_slack, config__api_slack
+):
+    """Gate: a team that closed the room's Slack request unmerged (one a branch rule
+    kept the room from merging) asks again with the same button. The app and its
+    values exist, so Slack is not asked twice and what the Secret holds by then
+    (the bot token) is kept."""
+    from kobo_api.kinds import RUN_MODE_HTTP
+
+    pr_url = "https://github.com/acme/agent-clio/pull/9"
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    github = FakeGitHub(
+        pr_url=pr_url, repo_files={"gojira.yaml": "name: clio\n"}, clone_tree={"gojira.yaml": "name: clio\n"},
+        merge_pr_results=[False],
+    )
     kubectl, slack = FakeKubectl(), FakeSlack(app_id="A0MADE")
     client = _make_client__api_slack(session_factory__api_slack, relay_config, github=github, kubectl=kubectl, slack=slack)
     _seed_agent__api_slack(session_factory__api_slack, relay_config)

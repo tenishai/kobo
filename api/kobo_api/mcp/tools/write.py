@@ -1081,8 +1081,10 @@ def register(mcp: FastMCP, app: Any) -> None:
         new choice already. For an agent that runs its team's own code,
         `restart_pending` true means the room restarts it with the choice in
         a minute or two. If its repository does not read the app's values
-        yet, the change waits on one pull request instead: `pull_request`
-        carries the link, and nothing changes until its team merges it.
+        yet, the change is one pull request the room merges, and the agent
+        restarts with it a few minutes later. `pull_request` carries a
+        link only when the repository would not let the room merge: tell
+        the person someone who can merge there has to.
 
         `manifest_changed` true means the Slack app's event list changed.
         For an app the room made there is nothing to do: the room updates it.
@@ -1745,11 +1747,12 @@ def register(mcp: FastMCP, app: Any) -> None:
 
         The first secret an agent ever gets also adds a line to its own
         files so the running agent can read it. `wiring` says what
-        happened: "committed" for an agent the room composed,
-        "pull_request" (with `pull_request`, a link to merge) for one
-        whose repository belongs to its team, "unchanged" when the line
-        was already there. Changes reach the agent the next time it
-        starts.
+        happened: "committed" when the line is in (for an agent that
+        runs its team's own code, the room opened a pull request and
+        merged it), "pull_request" (with `pull_request`, a link) when
+        that repository would not let the room merge and someone who can
+        has to, "unchanged" when the line was already there. Changes
+        reach the agent the next time it starts.
 
         Marked destructive because `remove` takes a credential away from a
         running agent. You must own `agent` or be a room operator, and
@@ -1795,8 +1798,9 @@ def register(mcp: FastMCP, app: Any) -> None:
 
         `env` comes back as what the agent's files now hold, and `wiring`
         says how the change got there: "committed", "pull_request" (with a
-        link to merge), or "unchanged". Changes reach the agent the next
-        time it starts.
+        link, when the repository of an agent that runs its team's own
+        code would not let the room merge and someone who can has to), or
+        "unchanged". Changes reach the agent the next time it starts.
 
         For an agent that runs its team's own code the variables live in
         its repository and are a room operator's to read or change here;
@@ -2054,9 +2058,10 @@ def register(mcp: FastMCP, app: Any) -> None:
         restarts with Slack on. For an agent that runs its team's own code,
         `pull_request` is null when its repository already reads the app's
         values, which every agent connected since the room wrote that at
-        connect does; otherwise it is the one change its team merges first.
-        Calling this again for an app whose pull request was closed opens it
-        again.
+        connect does, and when the room merged the one change that makes
+        it; a link there means the repository would not let the room
+        merge and someone who can has to. Calling this again for an app
+        whose pull request was closed opens it again.
 
         You must own `agent` or be a room operator, and `agent` must be READY.
         """

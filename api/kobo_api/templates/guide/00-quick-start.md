@@ -8,4 +8,4 @@
 
 No repository to set up, no cluster, no pipeline. The room does that part.
 
-Already have an agent in a repository of your own? Choose **Connect a repository you already have** instead: the room scans it, tells you what it found, and proposes its setup as a pull request your team merges.
+Already have an agent in a repository of your own? Choose **Connect a repository you already have** instead: the room scans it, tells you what it found, and sets it up through pull requests it merges itself.
