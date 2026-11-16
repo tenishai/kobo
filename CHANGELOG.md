@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.69] - 2026-11-15
+
 ### Changed
 - A connected repository keeps the service account it already names. The room used to say at connect that the setup pull request would move the agent onto `agent-<name>`, and then refuse the repository at **Deploy wiring** with "this repository already sets its own service account". It now leaves that account in place: the wiring adds no account and no manifest for one, the **Deploy** step expects the account the repository names, and the **Access** tab reads "Runs as its team's own account" with that name. The room grants such an account nothing and does not list what it reaches on its own; everything granted on the Access tab reaches the agent the same way, whichever account its code runs as. A repository that names none still runs as `agent-<name>`. One case is still refused, with how to settle it: a service account file the room did not write, in a repository whose deploy contract names no account of its own.
 
