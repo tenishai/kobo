@@ -168,6 +168,10 @@ POLL_TIMEOUT_S = 300
 # below can name the job and step that failed.
 BUILD_POLL_INTERVAL_S = 10
 BUILD_POLL_TIMEOUT_S = 900
+# The name of the workflow the platform generates in every repository it deploys
+# (`.github/workflows/gojira-ci.yaml`): the build the step watches, when a commit
+# has other runs beside it.
+PLATFORM_WORKFLOW = "Gojira CI"
 
 # Cap on how many times `head_sha` can advance (change between polls) during a
 # single BuildStep invocation. The pipeline pushes at most twice per provision
@@ -2770,7 +2774,10 @@ class BuildStep:
        cannot be read changes nothing: the run is judged as before.
 
     6. A successful run that ended before the agent was created is run again,
-       once, and the step waits for that. Reconnecting a repository after a
+       once, and the step waits for that. Only the platform's own workflow is
+       run again: a team's repository has runs of its own on the same commit.
+       GitHub refuses to run again a run more than 30 days old; the step then
+       asks for a commit. Reconnecting a repository after a
        destroy finds a head the room and the platform already wired, so no
        commit lands and no run starts; the old run's deploy went to the
        namespace the destroy removed, and Deploy waited for a rollout nobody
@@ -2868,6 +2875,7 @@ class BuildStep:
                 healed_conclusion = None
                 reran_run_id = None
                 stale_grace_polls_remaining = 0
+                redeploy_asked = False
             sha = new_sha
 
             runs = github.runs_for_commit(agent.repo_full_name, sha)
@@ -2889,8 +2897,10 @@ class BuildStep:
                 # Newest-first; a commit normally has exactly one CI run,
                 # but if more than one somehow exists (e.g. a manual
                 # workflow_dispatch alongside the push-triggered run) the
-                # most recent is the relevant one.
-                run = runs[0]
+                # most recent is the relevant one. On a team's repository the
+                # commit also carries the team's own workflows: the platform's
+                # build is the one watched when it is there.
+                run = next((r for r in runs if r.get("workflow") == PLATFORM_WORKFLOW), runs[0])
                 if run.get("status") == "completed":
                     run_id = run.get("id")
                     conclusion = run.get("conclusion")
@@ -2905,7 +2915,16 @@ class BuildStep:
                                 "running it again so it deploys",
                                 run_id, sha, agent.name,
                             )
-                            github.rerun(agent.repo_full_name, run_id)
+                            try:
+                                github.rerun(agent.repo_full_name, run_id)
+                            except ClientError as exc:
+                                log.warning("build run %s could not be run again: %s", run_id, exc)
+                                raise RuntimeError(
+                                    f"the last build of commit {sha[:8]} was for an agent since "
+                                    "destroyed, and GitHub would not run it again (it does not "
+                                    "for a run over 30 days old): push a commit to the "
+                                    "repository, then Retry"
+                                ) from None
                             polls_remaining = max_polls
                         if polls_remaining > 0:
                             _sleep(BUILD_POLL_INTERVAL_S)
@@ -2974,11 +2993,17 @@ class BuildStep:
             if polls_remaining > 0:
                 _sleep(BUILD_POLL_INTERVAL_S)
 
-        standing = (
-            _where_the_run_stands(github, agent.repo_full_name, runs[0])
-            if runs
-            else "no CI run has registered for this commit yet"
-        )
+        if redeploy_asked:
+            standing = (
+                "the build from before this agent existed was asked to run again "
+                "so it deploys, and it had not finished"
+            )
+        else:
+            standing = (
+                _where_the_run_stands(github, agent.repo_full_name, runs[0])
+                if runs
+                else "no CI run has registered for this commit yet"
+            )
         raise RuntimeError(
             f"timed out waiting for build run to complete after "
             f"{BUILD_POLL_TIMEOUT_S}s for commit {sha}: {standing}"

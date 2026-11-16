@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-platform-clients
 updated: 2026-11-16
-anchor: api/kobo_api/clients.py sha=b59e134c0e883b3646b797905d23b9f662a01e90
+anchor: api/kobo_api/clients.py sha=616f161ea5d904165df0581cad29d3cd956ba361
 anchor: api/tests/fakes.py sha=a96f0c287128eaa78a35b67aef12d9aed35afe1e
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
@@ -32,7 +32,7 @@ INVARIANTS:
 CONSUMERS: api/kobo_api/steps.py, provisioner.py, health.py (ready agents probed once a minute; verdict kept in memory per replica), destroy.py, main.py (routes), directory.py, colleagues.py, pairs.py, learnings.py, knowledge.py, slack_setup.py, agent_env.py, mcp/tools/*.py; api/tests/* via tests/fakes.py.
 API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provider(config)`; `probe_slack_token_store(clients)` (boot write-probe of the Slack token Secret); `gsa_email(name, project)`; errors `ClientError`, `GojiraConflict`, `SlackApiError`, `StorageNotFound`, `CabalError`; value type `SlackAppCredentials`.
 
-2026-11-16: `GitHubClient.runs_for_commit` carries each run's `updated_at` (gh `updatedAt`), which `BuildStep` compares with the agent's creation; `FakeGitHub` runs without it count as fresh.
+2026-11-16: `GitHubClient.runs_for_commit` carries each run's `updated_at` (gh `updatedAt`) and `workflow` (gh `workflowName`), which `BuildStep` compares with the agent's creation; `FakeGitHub` runs without it count as fresh.
 
 2026-10-12: `GhCLI.repo_exists` reads `gh api repos/{repo}` and compares the `full_name` GitHub answers with; a name GitHub only redirects (a destroyed agent's repo, renamed to `archived-agent-<name>-<id>`) counts as free.
 - `CabalClient.mint_service` (2026-10-24): the generic switchboard mint behind the room's own gateway admin token (`kobo_api.liminal_admin.RoomAdminToken`: sub and persona `kobo-room`, aud `liminal`, `admin:*`). `Clients.liminal_admin` is that admin-plane client, typed loosely to keep `liminal_admin` importing this module and not the reverse.

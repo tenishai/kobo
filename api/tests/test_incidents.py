@@ -2677,6 +2677,31 @@ def test_build_step_runs_a_build_from_before_the_agent_existed_again_so_it_deplo
     )
     BuildStep().run(_make_ctx(session, agent, config, _clients__steps_wire(github=fresh)))
     assert fresh.rerun_calls == []
+    # Beside a team's own workflow on the same commit, only the platform's build runs again.
+    team = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 7, "status": "completed", "conclusion": "success",
+                                    "updated_at": "2020-01-01T00:00:00Z", "workflow": "Release"},
+                                   {"id": 42, "status": "completed", "conclusion": "success",
+                                    "updated_at": "2020-01-01T00:00:00Z", "workflow": "Gojira CI"}]]},
+        rerun_followup=[{"status": "completed", "conclusion": "success", "updated_at": "2099-01-01T00:00:00Z",
+                         "workflow": "Gojira CI"}],
+    )
+    BuildStep().run(_make_ctx(session, agent, config, _clients__steps_wire(github=team)))
+    assert team.rerun_calls == [(repo, 42)]
+    # GitHub will not run again a run over 30 days old: the card asks for a commit.
+    stale = FakeGitHub(
+        head_sha="deadbeef",
+        runs_by_sha={"deadbeef": [[{"id": 44, "status": "completed", "conclusion": "success",
+                                    "updated_at": "2020-01-01T00:00:00Z"}]]},
+    )
+
+    def refuse(repo, run_id):
+        raise ClientError("gh run rerun failed", stderr="run is too old to be retried")
+
+    stale.rerun = refuse
+    with pytest.raises(RuntimeError, match="push a commit to the repository, then Retry"):
+        BuildStep().run(_make_ctx(session, agent, config, _clients__steps_wire(github=stale)))
 
 
 def test_build_step_does_not_settle_for_a_stale_sha_success_once_head_has_advanced(
