@@ -88,6 +88,16 @@ service assumes it once); the permission service has no Bedrock read yet,
 so the models are registered on the gateway and the first call an agent
 makes is the check with AWS. An organization's hub row never carries it:
 Bedrock is per account.
+
+Okta (`okta_token`) is the vendor the gateway serves from a handler of its
+own, with no vendor MCP server behind it: the room checks the API token with
+the organization (`GET /api/v1/users?limit=1`), stores the token and the
+domain together in the secrets service, synced to the gateway's namespace as
+the Secret `integration-okta` that the handler reads on every call, and
+holds the connection in the permission service with the read ceiling (or
+both levels, for "read and write"). Nothing is leased and no target is
+written: the token is one shared credential, and its admin role in Okta is
+the outer wall of what any agent can do with it.
 """
 
 from __future__ import annotations
@@ -212,6 +222,9 @@ AUTH_KINDS = {
     # Slack (kobo#377): the app-configuration token pair the room creates agents' Slack
     # apps with. The room's own; never leased, never a gateway target.
     "slack_config_token": "the app-configuration token pair the room makes agents' Slack apps with",
+    # Okta (2026-11-16): an API token and the organization's domain. The gateway's own
+    # `okta` handler reads the pair from a Secret; no vendor MCP server, nothing leased.
+    "okta_token": "an Okta API token and the organization's domain, read by the gateway's own Okta tools",
 }
 DATADOG_AUTH = "datadog_service_account"
 GITHUB_AUTH = room_credentials.GITHUB_AUTH
@@ -301,6 +314,15 @@ VERTEX_DEFAULT_LOCATION = VERTEX_GLOBAL
 SELF_HOSTED_AUTH = self_hosted.AUTH
 # Bedrock through an AWS account (kobo#390): the kinds that may carry it (per
 # account, never the organization's hub) and what a region looks like.
+# Okta: the kind, the vendor (also the row id, so the synced Secret is the one the gateway
+# mounts), the key the domain is stored under beside the token, and what a domain looks
+# like. The gateway's handler holds the same pattern and calls no other host.
+OKTA_AUTH = "okta_token"
+OKTA_VENDOR = "okta"
+OKTA_DOMAIN_KEY = "DOMAIN"
+_OKTA_DOMAIN = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}\.(?:okta|oktapreview|okta-emea)\.com$")
+# Kinds the gateway serves from a handler built into it: no target to write or remove.
+HANDLER_AUTHS = frozenset({OKTA_AUTH})
 MODELS_PROVIDER_BEDROCK = model_providers.PROVIDER_BEDROCK
 BEDROCK_DEFAULT_REGION = cloud_access.BEDROCK_DEFAULT_REGION
 BEDROCK_AUTHS = frozenset({"aws_role", "aws_spoke"})
@@ -381,6 +403,12 @@ def check_auth(auth: str, identity: dict[str, str], secrets: dict[str, str]) -> 
             raise ConnectRefused("the GitHub App id and installation id are numbers")
         if given[2] and not given[2].startswith("-----BEGIN"):
             raise ConnectRefused("the GitHub App private key is the PEM text, starting with -----BEGIN")
+    if auth == OKTA_AUTH:
+        if not _OKTA_DOMAIN.match(okta_domain(identity.get("domain", ""))):
+            raise ConnectRefused("Okta needs the organization's domain, such as example.okta.com "
+                                 "(okta.com, oktapreview.com or okta-emea.com; not the -admin address, not a custom domain)")
+        if not secrets.get(SECRET_KEY, "").strip():
+            raise ConnectRefused("Okta needs an API token, made in its admin console under Security, API, Tokens")
     if auth == SLACK_AUTH:
         try:
             room_credentials.values_from_form(room_credentials.SLACK_VENDOR, identity, secrets)
@@ -565,6 +593,35 @@ _bearer_probe = probe_bearer_mcp
 # Token vendors whose MCP server is asked before a Bearer key is kept (the others have no
 # server to ask, or their own connect path).
 PROBED_TOKEN_VENDORS: frozenset[str] = frozenset(TARGET_EXTRAS)
+
+
+def okta_domain(pasted: str) -> str:
+    """The organization's domain as the gateway takes it: lowercase, without
+    the scheme or a path a pasted address carries."""
+    domain = pasted.strip().lower().removeprefix("https://").removeprefix("http://")
+    return domain.split("/", 1)[0]
+
+
+def probe_okta(name: str, domain: str, token: str) -> None:
+    """Ask the organization for one user with the token, the way the gateway's
+    handler will send it. Anything but 200 refuses the connect with one
+    sentence; a redirect is never followed, so the token goes to the domain
+    named and nowhere else. The token is never logged."""
+    try:
+        resp = httpx.get(f"https://{domain}/api/v1/users", params={"limit": "1"}, timeout=BASIC_PROBE_TIMEOUT_S,
+                         headers={"Authorization": f"SSWS {token}", "Accept": "application/json"}, follow_redirects=False)
+    except httpx.HTTPError as exc:
+        raise ConnectRefused(f"{name} at {domain} could not be reached from the room "
+                             f"({exc.__class__.__name__}); nothing was connected") from exc
+    if resp.status_code in (401, 403):
+        raise ConnectRefused(f"{name} did not accept the API token (HTTP {resp.status_code}); check it is active, belongs "
+                             f"to {domain}, and that its admin may read users; nothing was connected")
+    if resp.status_code != 200:
+        raise ConnectRefused(f"{name} at {domain} answered HTTP {resp.status_code} to a read of one user; "
+                             "check the domain; nothing was connected")
+
+
+_okta_probe = probe_okta
 
 
 def datadog_target_spec(row: AdminIntegration) -> dict[str, Any]:
@@ -1754,6 +1811,60 @@ def _fill_models_gateway(session: Session, clients: Clients | None, config: Conf
     )
 
 
+def _connect_okta(
+    session: Session, clients: Clients | None, config: Config, bab, *, name: str, base_access: str, trust: str,
+    actor: str, identity: dict[str, str], secrets: dict[str, str],
+) -> AdminIntegration:
+    """Okta: check the token with the organization, store it beside the domain
+    where the gateway's handler reads them, and hold the connection in the
+    permission service. One row, id `okta`: its synced Secret is the one the
+    gateway mounts. A token Okta refuses is stored nowhere."""
+    if bab is None:
+        raise ConnectRefused("Okta needs the permission service, which decides what each agent may do there; turn Access on first")
+    sero = clients.sero if clients is not None else None
+    if sero is None or not config.sero_url:
+        raise ConnectRefused("the Secrets add-on is off, so the room has nowhere to hold the credential; turn it on first")
+    domain = okta_domain(identity["domain"])
+    token = secrets[SECRET_KEY].strip()
+    _okta_probe(name, domain, token)
+    stored = {SECRET_KEY: token, OKTA_DOMAIN_KEY: domain}
+    spec: dict[str, Any] = {
+        "address": "",
+        "trust": trust if trust in ("trusted", "untrusted") else "untrusted",
+        "auth": OKTA_AUTH,
+        "identity": {"domain": domain},
+        "secret_keys": sorted(stored),
+    }
+    row = admin_store.put_integration(session, vendor=OKTA_VENDOR, name=name, base_access=base_access, spec=spec,
+                                      credential_ref=None, actor=actor)
+    path = credential_path(row.id)
+    try:
+        sero.put_secret(actor, path, stored)
+        if config.gateway_namespace:
+            sero.ensure_synced(actor, ROOM_APP, path, config.gateway_namespace, secret_name(row.id))
+        row.credential_ref = path
+    except ClientError as exc:
+        admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED, detail=f"the secrets add-on refused: {exc}")
+        return row
+    detail = f"{name} accepted the API token for {domain}; credential stored"
+    if not config.gateway_namespace:
+        detail += "; no gateway namespace is set, so it is not synced to the gateway yet"
+    # "Agents may read and write" lifts the ceiling to the level that changes things; the
+    # token's own admin role in Okta is the outer wall either way.
+    writes = base_access == "write"
+    try:
+        ceiling = bab_mod.all_permissions(bab, OKTA_VENDOR, actor) if writes else bab_mod.read_permissions(bab, OKTA_VENDOR, actor)
+        bab.put_integration(row.id, OKTA_VENDOR, {"domain": domain, "name": name}, ceiling, actor)
+    except ClientError as exc:
+        admin_store.set_integration_state(session, row.id, state=admin_store.STATE_FAILED,
+                                          detail=f"{detail}; the permission service refused: {exc}")
+        return row
+    detail += ("; connected in the permission service, agents may ask to look people and groups up"
+               + (" and to change group membership and assignments" if writes else ""))
+    admin_store.set_integration_state(session, row.id, state=admin_store.STATE_APPLIED, detail=detail)
+    return row
+
+
 def connect(
     session: Session,
     clients: Clients | None,
@@ -1782,6 +1893,9 @@ def connect(
     if auth == SLACK_AUTH:
         return _connect_slack(session, clients, vendor=vendor, name=name, base_access=base_access, trust=trust,
                               actor=actor, identity=identity, secrets=secrets)
+    if auth == OKTA_AUTH:
+        return _connect_okta(session, clients, config, bab, name=name, base_access=base_access, trust=trust,
+                             actor=actor, identity=identity, secrets=secrets)
     if auth == DATADOG_AUTH:
         return _connect_datadog(session, clients, config, bab, vendor=vendor, name=name, base_access=base_access,
                                 address=address, trust=trust, actor=actor, identity=identity, secrets=secrets)
@@ -2247,7 +2361,10 @@ def disconnect(session: Session, clients: Clients | None, config: Config, *, int
             except ClientError as exc:
                 outcome["secret"] = f"left: {exc}"
     # The gateway's target goes the way it came: off the admin plane, or by pull request.
-    outcome["gateway"] = "nothing to remove" if room_only else _remove_from_gateway(clients, config, row, actor=actor)
+    # A kind the gateway serves from its own handler never had a target: its tools stop
+    # answering when the Secret above is gone.
+    nothing_there = room_only or auth in HANDLER_AUTHS
+    outcome["gateway"] = "nothing to remove" if nothing_there else _remove_from_gateway(clients, config, row, actor=actor)
     went_wrong = any(str(v).startswith("left:") for v in outcome.values())
     served_models = bool((row.spec or {}).get("models"))
     admin_store.remove_integration(

@@ -15,8 +15,10 @@
 // Self-hosted models (kobo#390) is the one kind that is only models: an OpenAI-compatible
 // endpoint the person runs, named by them, one row per endpoint; the room probes it and
 // serves its models through the model gateway. Nothing is leased.
+// Okta (2026-11-16) is an API token and the organization's domain; the gateway serves it
+// from tools of its own (no vendor MCP server), all agents sharing the one token.
 // A vendor not on this list is still connectable as "Other" with a token.
-export type AuthKind = "token" | "basic_token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "gcp_parent" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token" | "self_hosted_endpoint";
+export type AuthKind = "token" | "basic_token" | "api_keys" | "aws_role" | "aws_hub" | "aws_spoke" | "gcp_identity" | "gcp_parent" | "azure_federated" | "datadog_service_account" | "github_app" | "slack_config_token" | "self_hosted_endpoint" | "okta_token";
 
 export type CatalogField = {
   key: string;
@@ -125,7 +127,14 @@ export const CATALOG: CatalogEntry[] = [
     ],
   },
   { id: "fastly", name: "Fastly", summary: "Services, configs and purges.", auth: "token", fields: TOKEN },
-  { id: "okta", name: "Okta", summary: "Users, groups and apps.", auth: "token", fields: TOKEN },
+  {
+    id: "okta", name: "Okta", summary: "People, groups and app assignments.", auth: "okta_token",
+    fields: [
+      { key: "domain", label: "Okta domain", secret: false, placeholder: "example.okta.com" },
+      { key: "TOKEN", label: "API token", secret: true },
+    ],
+    note: "Make the token in Okta's admin console under Security, API, Tokens, signed in as a dedicated admin account rather than a person. A token can do whatever the admin who made it can, and every agent shares it, so give that admin the narrowest role that fits: a read-only admin for lookups, a group membership admin over the groups agents may fill for changes. Okta retires a token nobody has used for 30 days.",
+  },
   {
     id: SELF_HOSTED, name: "Self-hosted models", summary: SELF_HOSTED_SUMMARY, auth: "self_hosted_endpoint",
     fields: [
