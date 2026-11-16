@@ -1920,17 +1920,16 @@ def test_onboard_step_never_asks_the_platform_to_merge_a_connected_repos_setup_p
     assert _onboard_create_call(session, agent, config)["auto_merge_setup_pr"] is False
 
 
-def test_connected_wire_step_keeps_the_service_account_a_repository_names(
+def test_connected_wire_step_moves_a_repository_onto_the_rooms_account(
     session_factory, config
 ):
-    """Data integrity: Connected wire step keeps the service account a repository names.
+    """Data integrity: Connected wire step moves a repository onto the rooms account.
 
-    A repository that names its own service account is telling the room
-    something, and the room takes it at its word: the wiring lands beside
-    that account, never over it, and the row records which account the
-    agent really runs as. Until 2026-11-15 the step refused such a
-    repository, so a team's working agent had no way into the room."""
-    from kobo_api.steps import DeployStep, connected_seed
+    Every agent in the room runs as the room's account, so that what it
+    reaches is granted and recorded in one place (ruling 2026-11-16). A
+    repository that names its own is moved, in the one pull request its
+    team reviews, and the request says what does not follow."""
+    from kobo_api.steps import SERVICEACCOUNT_YAML_TEMPLATE, DeployStep
 
     github = FakeGitHub(
         pr_url=WIRE_PR_URL,
@@ -1943,32 +1942,35 @@ def test_connected_wire_step_keeps_the_service_account_a_repository_names(
     note = ConnectedWireStep().run(wiring.ctx)
 
     assert "active" in note
-    assert wiring.agent.service_account == "team-runner"
     proposed = wiring.github.open_pr_calls[0]
     written = yaml.safe_load((proposed["workdir"] / "gojira.yaml").read_text())
-    assert written["service_account"] == "team-runner"
-    assert not (proposed["workdir"] / "k8s" / "base" / "serviceaccount.yaml").exists()
-    assert "serviceaccount.yaml" not in proposed["body"]
-    assert "keeps the service account this repository already names" in proposed["body"]
+    assert written["service_account"] == f"agent-{AGENT_NAME}"
+    sa_email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    assert (proposed["workdir"] / "k8s" / "base" / "serviceaccount.yaml").read_text() == (
+        SERVICEACCOUNT_YAML_TEMPLATE.format(name=AGENT_NAME, gsa_email=sa_email)
+    )
+    assert "moves the agent onto the room's account" in proposed["body"]
+    assert "ran it as team-runner" in proposed["body"]
+    assert f"runs as agent-{AGENT_NAME}" in proposed["body"]
+    assert "Nothing granted to the old account follows it" in proposed["body"]
     assert "{" not in proposed["body"]
-    # What the room would ask the deploy platform for next time: no account.
-    seed = connected_seed(wiring.agent, config)
-    assert "service_account" not in seed["needs"]
-    assert "serviceaccount.yaml" not in seed["base_files"]
-    # And the Deploy step expects the account the agent really has.
+    # And the Deploy step holds the agent to the room's account.
     kubectl = FakeKubectl(service_accounts={(AGENT_NAME, AGENT_NAME): "team-runner"})
     deploy_ctx = _make_ctx(wiring.session, wiring.agent, config, _clients(kubectl=kubectl))
-    assert DeployStep().run(deploy_ctx).startswith("rollout ok")
+    with pytest.raises(RuntimeError, match=f"expected 'agent-{AGENT_NAME}'"):
+        DeployStep().run(deploy_ctx)
 
 
-def test_connected_wire_step_refuses_to_write_over_a_service_account_manifest_it_did_not_write(
+def test_connected_wire_step_replaces_a_service_account_manifest_it_did_not_write(
     session_factory, config
 ):
-    """Data integrity: Connected wire step refuses to write over a service account manifest it did not write.
+    """Data integrity: Connected wire step replaces a service account manifest it did not write.
 
-    The one identity case left to refuse: the repository has a service
-    account manifest of its own and its contract does not name it, so the
-    room's manifest would replace a person's. The step says how to keep it."""
+    A service account file a team wrote is identity wiring the room does
+    not record. The room's own goes over it, never silently: the pull
+    request names the file as replaced."""
+    from kobo_api.steps import SERVICEACCOUNT_YAML_TEMPLATE
+
     github = FakeGitHub(
         pr_url=WIRE_PR_URL,
         extra_clone_files={
@@ -1977,17 +1979,16 @@ def test_connected_wire_step_refuses_to_write_over_a_service_account_manifest_it
     )
     wiring = _wire_ctx(session_factory, config, github=github)
 
-    with pytest.raises(RuntimeError) as exc_info:
-        ConnectedWireStep().run(wiring.ctx)
+    ConnectedWireStep().run(wiring.ctx)
 
-    assert str(exc_info.value) == (
-        "this repository has its own k8s/base/serviceaccount.yaml, and gojira.yaml "
-        "does not say the agent runs as it. Name that account under "
-        "service_account in gojira.yaml to keep it, or remove the file, then "
-        "press Retry"
+    proposed = wiring.github.open_pr_calls[0]
+    sa_email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"
+    assert (proposed["workdir"] / "k8s" / "base" / "serviceaccount.yaml").read_text() == (
+        SERVICEACCOUNT_YAML_TEMPLATE.format(name=AGENT_NAME, gsa_email=sa_email)
     )
-    assert wiring.github.open_pr_calls == []
-    assert _repo_mutations(wiring.github) == []
+    assert "replaces the k8s/base/serviceaccount.yaml this repository had" in proposed["body"]
+    assert "k8s/base/serviceaccount.yaml: replaced with the room's" in proposed["body"]
+    assert "{" not in proposed["body"]
 
 
 def test_connected_wire_step_accepts_its_own_manifest_from_a_prior_attempt(
@@ -1995,8 +1996,8 @@ def test_connected_wire_step_accepts_its_own_manifest_from_a_prior_attempt(
 ):
     """Data integrity: Connected wire step accepts its own manifest from a prior attempt.
 
-    The takeover check must not fire on the room's OWN wiring: byte-equal
-    content is a retry, not a team's choice."""
+    The room's OWN wiring is not a team's account: byte-equal content is a
+    retry, and there is nothing left to propose."""
     from kobo_api.steps import SERVICEACCOUNT_YAML_TEMPLATE
 
     sa_email = f"agent-{AGENT_NAME}@{config.gcp_project}.iam.gserviceaccount.com"

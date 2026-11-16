@@ -6,6 +6,12 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Every agent in the room runs as the room's own account, a connected one included. A connected repository that names its own service account no longer keeps it (0.3.69 let it): the room's wiring pull request moves the agent onto `agent-<name>` and replaces a service account file the room did not write, and says so in its first lines, including that nothing granted to the old account follows. The scan says the same before you connect. What the agent reaches is asked for on its **Access** tab, where it is granted and recorded; when the room does not offer something yet, an admin adds it as an integration. The **Access** and **Harness** tabs no longer have a "team's own account" reading. No agent connected so far kept an account of its own, so nothing running changes; the column that recorded one is no longer used and is removed in a later release.
+
+### Fixed
+- The permission service is told the account a connected agent really runs as, `agent-<name>`. It was told the bare agent name, an account no connected agent ran as.
+
 ## [0.3.70] - 2026-11-16
 
 ### Added
