@@ -87,6 +87,9 @@ GATEWAY_LANES: dict[str, Lane] = {
     # AWS itself narrows that session to the permissions held, so one handler serves every
     # permission in the catalogue, the ones that change things included, and every account.
     "aws": Lane(scopes=("aws:read",), handlers=("aws",), allow=("aws.*",)),
+    # Okta (2026-11-16): any Okta permission opens the gateway's `okta` handler with the scope
+    # its lookups need. One shared token read from the gateway's own Secret; nothing is leased.
+    "okta": Lane(scopes=("okta:read",), handlers=("okta",), allow=("okta.*",)),
 }
 # (vendor, permission) -> the lane that one permission needs; wins over the
 # vendor table for its vendor (kobo#365: GitHub's three levels).
@@ -110,6 +113,11 @@ PERMISSION_LANES: dict[tuple[str, str], Lane] = {
     ("atlassian", "atlassian_jira_issues_write"): Lane(scopes=("atlassian:read", "atlassian:jira-write"),
                                                        handlers=("atlassian", "jira-write"),
                                                        allow=("atlassian.*", "jira-write.*")),
+    # Okta's one changing level (2026-11-16): the handler's three tools that change things (add a
+    # person to a group, assign a person to an app, set an allowed profile attribute) each sit
+    # behind `okta:write` on the handler's card; the lookups keep the vendor lane above. A
+    # connection made for reading never offers this permission (its ceiling is the read tier).
+    ("okta", "okta_access_write"): Lane(scopes=("okta:read", "okta:write"), handlers=("okta",), allow=("okta.*",)),
 }
 # (vendor, permission) -> what that permission opens ON TOP of its lane for an agent that runs
 # its team's own code (kobo#483). Its code shells out to `git`, which the tools above cannot

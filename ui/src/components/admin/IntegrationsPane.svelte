@@ -114,6 +114,8 @@
   const DATADOG_AUTH = "datadog_service_account";
   const GITHUB_AUTH = "github_app";
   const SLACK_AUTH = "slack_config_token";
+  // Okta: the gateway serves it from tools of its own, so the sheet has no MCP address.
+  const OKTA_AUTH = "okta_token";
   // Connections through the permission service: the keys go to it alone, the
   // vendor's MCP server becomes a gateway target, and the read/write choice does
   // not apply (the ceiling is the read permissions agents are granted).
@@ -408,6 +410,7 @@
                   <div class="who__text">
                     <span class="name">{i.name}</span>
                     {#if i.spec.address}<span class="quiet addr">{i.spec.address}</span>{/if}
+                    {#if i.spec.auth === OKTA_AUTH && i.spec.identity?.domain}<span class="quiet addr">{i.spec.identity.domain}</span>{/if}
                     {#if i.spec.project}<span class="quiet addr">{i.spec.project}</span>{/if}
                     {#if i.spec.parent_resource}<span class="quiet addr">{i.spec.parent_resource}</span>{/if}
                     {#if servesModelsLine(i)}<span class="addr">{servesModelsLine(i)}</span>{/if}
@@ -649,10 +652,12 @@
         </label>
         <p class="page__foot">Agents reach it with their own leased token, read-only; leave this blank for GitHub.com.</p>
       {:else}
-        <label class="field">
-          <span>Vendor's MCP address <span class="quiet">(optional)</span></span>
-          <input id="integration-address" type="url" bind:value={form.address} placeholder="https://" />
-        </label>
+        {#if form.entry.auth !== OKTA_AUTH}
+          <label class="field">
+            <span>Vendor's MCP address <span class="quiet">(optional)</span></span>
+            <input id="integration-address" type="url" bind:value={form.address} placeholder="https://" />
+          </label>
+        {/if}
         <!-- A connection through the permission service has its ceiling in the read
              permissions agents are granted; the read/write choice does not apply. -->
         <fieldset class="field">
@@ -668,6 +673,7 @@
           {:else if form.entry.auth === SELF_HOSTED_AUTH}Listing the models at the address, then asking each one you named for a short answer.
           {:else if form.entry.auth === GITHUB_AUTH && !accessOn}Saving the app for the room.
           {:else if SERVICE_AUTHS.has(form.entry.auth)}Checking with {VENDOR_OF_AUTH[form.entry.auth]}, then adding its MCP server to the gateway. This can take up to a minute.
+          {:else if form.entry.auth === OKTA_AUTH}Checking the token with Okta, then saving it.
           {:else if form.vendor === "aws"}Checking the role with AWS.
           {:else}Storing the credential and adding the target to the gateway. This can take a moment.{/if}
         </p>

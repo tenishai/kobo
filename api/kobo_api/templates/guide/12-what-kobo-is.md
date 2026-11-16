@@ -92,7 +92,7 @@ People with a role: **operators** run the room, see everything, move agents betw
 
 The admin panel, when the room has it turned on, holds the choices an agent's owner cannot make alone.
 
-- **Integrations.** One credential per vendor, in the form that vendor uses: AWS is a role the gateway assumes, so no key is stored; Google Cloud is workload identity; Azure is a federated app registration; Datadog and Wiz are key pairs; Atlassian is a service account's API key, or an account's email with its API token; Fastly and Okta are API tokens. For AWS the page gives you the role three ways (a Terraform module, a CloudFormation template, or the trust policy alone), and the room checks the role with AWS before it saves.
+- **Integrations.** One credential per vendor, in the form that vendor uses: AWS is a role the gateway assumes, so no key is stored; Google Cloud is workload identity; Azure is a federated app registration; Datadog and Wiz are key pairs; Atlassian is a service account's API key, or an account's email with its API token; Fastly is an API token; Okta is an API token with your organization's domain. For AWS the page gives you the role three ways (a Terraform module, a CloudFormation template, or the trust policy alone), and the room checks the role with AWS before it saves.
 - **Connections.** Each agent's lane to an integration, `read` or `write`, never wider than the integration allows. Why: every agent gets only the access its job needs.
 - **Roles.** Four built-ins (Admin, Operator, Member, Reader) plus your own. The room records and shows them but does not enforce them yet, so giving a group a role changes nothing it can do today.
 

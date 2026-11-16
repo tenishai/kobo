@@ -2512,6 +2512,34 @@ def test_disconnecting_datadog_removes_the_permission_services_secret_and_row(tm
     assert client.get("/api/admin/integrations", headers=headers).json() == {"integrations": []}
 
 
+def test_disconnecting_okta_takes_the_token_back_from_the_gateway_and_the_secrets_service(tmp_path, fake_storage, monkeypatch):
+    """Destruction safety: removing Okta deletes the stored token and the Secret the gateway's
+    handler reads it from, and the connection held in the permission service, so the shared admin
+    token is left nowhere; there was never a gateway target, so nothing is opened there."""
+    from kobo_api import admin_integrations
+    monkeypatch.setattr(admin_integrations, "_okta_probe", lambda name, domain, token: None)
+    bab = FakeBab(integrations=[])
+    bab._catalogue["okta"] = {"vendor": "okta", "groups": [{"name": "Directory", "permissions": [
+        {"name": "okta_directory_read", "tier": "read", "description": "Find people and groups"}]}],
+        "tiers": [{"name": "read", "lease_seconds": 3600, "validity_days": None}]}
+    github = FakeGitHub(existing_repos={GATEWAY_REPO})
+    sero = FakeSero()
+    client, headers = _client__api_admin_integrations(tmp_path, fake_storage, _config(tmp_path, bab_url="http://bab.bab.svc:8080"),
+                                                       github=github, sero=sero)
+    client.app.state.clients.bab = bab
+    body = {"vendor": "okta", "name": "Okta", "base_access": "read", "auth": "okta_token",
+            "identity": {"domain": "example.okta.com"}, "secrets": {"TOKEN": "00-okta-token"}}
+    assert client.post("/api/admin/integrations", json=body, headers=headers).status_code == 201
+
+    out = client.delete("/api/admin/integrations/okta", headers=headers).json()
+
+    assert out["secret"] == "removed" and out["access"].startswith("removed") and out["gateway"] == "nothing to remove", out
+    assert [d[-1] for d in sero.deletes] == ["apps/kobo/integrations/okta"]
+    assert [(u[2], u[3]) for u in sero.unsyncs] == [("liminal", "integration-okta")]
+    assert bab.integrations("x") == [] and not github.open_pr_calls
+    assert client.get("/api/admin/integrations", headers=headers).json() == {"integrations": []}
+
+
 # --- from test_web_secrets.py ---
 
 

@@ -6357,6 +6357,96 @@ def test_an_atlassian_connection_for_read_and_write_offers_write_issues_and_its_
     assert "atlassian:jira-write" in gateway_lane.MANAGED_SCOPES
 
 
+OKTA_CATALOGUE = {"okta": {"vendor": "okta", "groups": [
+    {"name": "Directory", "permissions": [
+        {"name": "okta_directory_read", "tier": "read", "label": "Look up people and groups", "description": "Find people and groups"}]},
+    {"name": "Access", "permissions": [
+        {"name": "okta_access_write", "tier": "mutate", "label": "Change group membership and assignments",
+         "description": "Add a person to a group, assign a person to an app"}]}],
+    "tiers": [{"name": "read", "lease_seconds": 3600, "validity_days": None}, {"name": "mutate", "lease_seconds": 3600, "validity_days": 30}]}}
+
+
+def test_okta_connects_with_a_checked_token_the_gateway_reads_and_its_two_levels_open_one_handler(tmp_path, fake_storage, monkeypatch):
+    """Gate (authorization, secrets): Okta is one admin API token every agent shares, so the room
+    checks it with the organization before anything is stored, keeps it beside the domain in the one
+    Secret the gateway's `okta` handler mounts (`integration-okta`, keys TOKEN and DOMAIN), never
+    echoes it, writes no gateway target, and holds the connection with the read ceiling: the level
+    that changes things is offered only on a connection made for reading and writing, and only that
+    level earns the `okta:write` scope the handler's changing tools ask for."""
+    from kobo_api import admin_integrations, gateway_lane
+    probes: list[tuple] = []
+    monkeypatch.setattr(admin_integrations, "_okta_probe", lambda name, domain, token: probes.append((name, domain, token)))
+    bab = FakeBab(integrations=[], catalogue=OKTA_CATALOGUE)
+    github = FakeGitHub(existing_repos={GATEWAY_REPO}, extra_clone_files={"registry.toml": REGISTRY}, track_pushed_content=True)
+    client, headers = _access_client(tmp_path, fake_storage, bab=bab, github=github)
+    admin = FakeLiminalAdmin()
+    client.app.state.clients.liminal_admin = admin
+    sero = client.app.state.clients.sero
+    body = {"vendor": "okta", "name": "Okta", "base_access": "read", "auth": "okta_token",
+            "identity": {"domain": "https://Example.okta.com/"}, "secrets": {"TOKEN": "00-okta-token"}}
+
+    response = client.post("/api/admin/integrations", json=body, headers=headers)
+
+    row = response.json()
+    assert row["id"] == "okta" and row["state"] == "applied", row
+    assert "Okta accepted the API token for example.okta.com" in row["state_detail"]
+    assert probes == [("Okta", "example.okta.com", "00-okta-token")]
+    (put,) = [p for p in sero.puts if p[1] == "apps/kobo/integrations/okta"]
+    assert put[2] == {"TOKEN": "00-okta-token", "DOMAIN": "example.okta.com"}
+    assert [(s[2], s[3], s[4]) for s in sero.syncs] == [("apps/kobo/integrations/okta", "liminal", "integration-okta")]
+    assert row["spec"]["identity"] == {"domain": "example.okta.com"} and row["spec"]["secret_keys"] == ["DOMAIN", "TOKEN"]
+    assert "00-okta-token" not in response.text
+    # The gateway serves Okta from a handler of its own: no target, no pull request.
+    assert admin.targets == {} and not github.open_pr_calls
+    (integ,) = bab.integrations("x")
+    assert integ["vendor"] == "okta" and integ["ceiling"] == ["okta_directory_read"]
+    # Connected for reading and writing, the ceiling carries the level that changes things.
+    row = client.post("/api/admin/integrations", json={**body, "base_access": "write"}, headers=headers).json()
+    assert row["id"] == "okta" and row["state"] == "applied", row
+    (integ,) = bab.integrations("x")
+    assert sorted(integ["ceiling"]) == ["okta_access_write", "okta_directory_read"]
+    read = gateway_lane.lane_for("okta", "okta_directory_read")
+    write = gateway_lane.lane_for("okta", "okta_access_write")
+    assert read.scopes == ("okta:read",) and write.scopes == ("okta:read", "okta:write")
+    assert read.handlers == write.handlers == ("okta",) and read.allow == write.allow == ("okta.*",)
+    assert gateway_lane.opens_tool("okta", "okta_directory_read") and "okta:write" in gateway_lane.MANAGED_SCOPES
+
+    # A token Okta refuses is stored nowhere, and a domain that is not Okta's is refused before it is asked.
+    def refuse(name, domain, token):
+        raise admin_integrations.ConnectRefused(f"{name} did not accept the API token (HTTP 401)")
+    monkeypatch.setattr(admin_integrations, "_okta_probe", refuse)
+    stored = len(sero.puts)
+    r = client.post("/api/admin/integrations", json=body, headers=headers)
+    assert r.status_code == 409 and "did not accept" in r.json()["error"] and len(sero.puts) == stored
+    for domain in ("example.com", "example.okta.com.evil.test", "okta.com"):
+        r = client.post("/api/admin/integrations", json={**body, "identity": {"domain": domain}}, headers=headers)
+        assert r.status_code == 409 and "organization's domain" in r.json()["error"], domain
+    r = client.post("/api/admin/integrations", json={**body, "secrets": {}}, headers=headers)
+    assert r.status_code == 409 and "API token" in r.json()["error"]
+    assert len(sero.puts) == stored
+
+
+def test_the_okta_probe_sends_the_token_only_to_the_named_domain_and_never_follows_a_redirect(monkeypatch):
+    """Gate (secrets): the connect check reads one user at the organization's own address with the
+    token as Okta takes it; a redirect is an answer, not a place to send the token next, and a
+    refusal never repeats the token."""
+    from kobo_api import admin_integrations
+    calls: list[dict] = []
+    answer = {"status": 200}
+
+    def fake_get(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return httpx.Response(answer["status"], headers={"Location": "https://elsewhere.test/"})
+    monkeypatch.setattr(admin_integrations.httpx, "get", fake_get)
+    admin_integrations.probe_okta("Okta", "example.okta.com", "00-okta-token")
+    assert calls[0]["url"] == "https://example.okta.com/api/v1/users" and calls[0]["follow_redirects"] is False
+    assert calls[0]["headers"]["Authorization"] == "SSWS 00-okta-token"
+    for answer["status"] in (302, 401, 403, 404):
+        with pytest.raises(admin_integrations.ConnectRefused) as refused:
+            admin_integrations.probe_okta("Okta", "example.okta.com", "00-okta-token")
+        assert "00-okta-token" not in str(refused.value) and "nothing was connected" in str(refused.value)
+
+
 def test_an_atlassian_service_account_key_is_checked_as_a_bearer_then_served_as_one(tmp_path, fake_storage, monkeypatch):
     """Gate (integrity): a service account's API key is the credential shape that belongs to no
     person; Atlassian's server takes it only as a Bearer (a user's token only as Basic). The room

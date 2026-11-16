@@ -6,6 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Okta is an integration agents can use. On **Admin**, **Integrations**, pick Okta, give the organization's domain and an API token, and choose whether agents may read, or read and write; the room checks the token with Okta before anything is saved. An agent's Access tab then offers two levels: **Look up people and groups** (find a person or a group, list a person's groups and a group's members, check an app assignment), which stands until revoked, and **Change group membership and assignments** (add a person to a group, assign a person to an app, set the profile attributes the room allows), offered only on a connection made for reading and writing and granted for thirty days. Every agent shares the one token, so the role of the admin who made it is the most any agent can do in Okta. Needs a gateway that carries the `okta` handler and a permission service whose catalogue has the two Okta rows; without them the levels are listed and open nothing.
+
 ## [0.3.69] - 2026-11-15
 
 ### Changed
