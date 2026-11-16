@@ -33,6 +33,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -1808,6 +1809,17 @@ def _prepare_wire_clone(ctx: Ctx) -> Path:
     return clone_dir
 
 
+def service_account_of(agent) -> str:
+    """The service account the agent's code runs as: the room's own,
+    `agent-<name>`, for every agent but one kind. A connected repository
+    that already names an account of its own keeps it
+    (`Agent.service_account`, 2026-11-15). The room made that account
+    nothing and grants it nothing; what the room gives such an agent (its
+    pass, its keys) travels by the agent's name, not by the account its
+    code runs as."""
+    return getattr(agent, "service_account", None) or f"agent-{agent.name}"
+
+
 def _write_service_account(k8s_base: Path, agent, config) -> None:
     """Write the agent's KSA manifest. Shared by both wiring steps: the
     identity a connected agent runs under is exactly the identity a composed
@@ -1864,7 +1876,7 @@ def _set_service_account_and_model_env(data: dict, agent, config) -> None:
     logged rather than raised because the wiring is still correct and the
     file was already broken before the room read it.
     """
-    data["service_account"] = f"agent-{agent.name}"
+    data["service_account"] = service_account_of(agent)
     through_gateway = gateway_on(config)
     model_env: dict[str, str] = {}
     if not through_gateway:
@@ -2088,14 +2100,11 @@ CONNECTED_WIRE_TITLE = "kobo: service account and model access"
 # is not a plain addition: gojira.yaml is parsed and written back, so
 # comments and key order in that file do not survive.
 CONNECTED_WIRE_BODY = (
-    "This adds the service account the agent runs as, and the two "
-    "environment variables its model access needs.\n\n"
+    "This adds {account}the two environment variables its model access "
+    "needs.{account_kept}\n\n"
     "Files changed:\n"
-    "- k8s/base/serviceaccount.yaml: added, the agent's Kubernetes service "
-    "account.\n"
-    "- k8s/base/kustomization.yaml: that manifest added to the resources "
-    "list.\n"
-    "- gojira.yaml: service_account, the two VERTEXAI_ environment "
+    "{account_files}"
+    "- gojira.yaml: {account_key}the two VERTEXAI_ environment "
     "variables, and any secret names given when the agent was connected. "
     "Existing environment variables are kept.\n"
     + "{room_wiring}"
@@ -2106,20 +2115,32 @@ CONNECTED_WIRE_BODY = (
 # The same pull request when the room's model gateway is on: the model
 # access is a Secret the room delivers, not two environment variables.
 CONNECTED_WIRE_BODY_GATEWAY = (
-    "This adds the service account the agent runs as, and names the Secret "
-    "that carries the agent's key for the room's model gateway.\n\n"
+    "This {account_adds}names the Secret that carries the agent's key for "
+    "the room's model gateway.{account_kept}\n\n"
     "Files changed:\n"
-    "- k8s/base/serviceaccount.yaml: added, the agent's Kubernetes service "
-    "account.\n"
-    "- k8s/base/kustomization.yaml: that manifest added to the resources "
-    "list.\n"
-    "- gojira.yaml: service_account, the agent's models Secret under "
+    "{account_files}"
+    "- gojira.yaml: {account_key}the agent's models Secret under "
     "secrets_from, and any secret names given when the agent was connected. "
     "Existing environment variables are kept; VERTEXAI_PROJECT and "
     "VERTEXAI_LOCATION, if an earlier wiring set them, are removed.\n"
     + "{room_wiring}"
     "gojira.yaml is rewritten from its parsed form, so comments and key "
     "order in that one file are not preserved.\n"
+)
+
+# The service account's share of the two bodies above, and what stands in
+# its place for a repository that keeps its own (`service_account_of`): the
+# request must not claim an account it did not add.
+CONNECTED_WIRE_ACCOUNT = "the service account the agent runs as, and "
+CONNECTED_WIRE_ACCOUNT_FILES = (
+    "- k8s/base/serviceaccount.yaml: added, the agent's Kubernetes service "
+    "account.\n"
+    "- k8s/base/kustomization.yaml: that manifest added to the resources "
+    "list.\n"
+)
+CONNECTED_WIRE_ACCOUNT_KEPT = (
+    " The agent keeps the service account this repository already names; "
+    "nothing here changes it."
 )
 
 # What the room gives the agent beyond identity and models, said in both
@@ -2160,11 +2181,14 @@ CONNECTED_WIRE_SLACK = (
 CONNECTED_SEED_NOTE = (
     "The room this agent was connected from asked for these, so that this is "
     "the only pull request connecting it needs:\n\n"
-    "- k8s/base/serviceaccount.yaml and service_account in gojira.yaml: the "
-    "service account the agent runs as.\n"
+    "{account}"
     "{models}"
     "{secrets}"
     "{room_wiring}"
+)
+CONNECTED_SEED_ACCOUNT = (
+    "- k8s/base/serviceaccount.yaml and service_account in gojira.yaml: the "
+    "service account the agent runs as.\n"
 )
 CONNECTED_SEED_SECRETS = (
     "- gojira.yaml: the secret names given when the agent was connected, "
@@ -2195,6 +2219,11 @@ def connected_seed(agent, config) -> dict:
     that step proposes the wiring as it always did."""
     needs: dict = {}
     _set_service_account_and_model_env(needs, agent, config)
+    # A repository the scan found running as its own account keeps it: the
+    # room asks for none, and sends no manifest for one.
+    keeps_account = bool(getattr(agent, "service_account", None))
+    if keeps_account:
+        del needs["service_account"]
     for secret_name in agent.secret_names or []:
         _append_secrets_from(needs, secret_name)
     add_room_wiring(needs, agent, config)
@@ -2203,16 +2232,20 @@ def connected_seed(agent, config) -> dict:
     lines = connected_room_wiring_lines(config)
     if slack_app_possible(config, agent):
         lines = lines[:-1] + CONNECTED_WIRE_SLACK + "\n"
-    return {
-        # The platform refuses a key with nothing under it.
-        "needs": {key: value for key, value in needs.items() if value not in ({}, [], None, "")},
-        "base_files": {
+    base_files = {CONNECTED_STORAGE_FILE: CONNECTED_STORAGE_YAML_TEMPLATE.format(name=agent.name)}
+    if not keeps_account:
+        base_files = {
             "serviceaccount.yaml": SERVICEACCOUNT_YAML_TEMPLATE.format(
                 name=agent.name, gsa_email=gsa_email(f"agent-{agent.name}", config.gcp_project)
             ),
-            CONNECTED_STORAGE_FILE: CONNECTED_STORAGE_YAML_TEMPLATE.format(name=agent.name),
-        },
+            **base_files,
+        }
+    return {
+        # The platform refuses a key with nothing under it.
+        "needs": {key: value for key, value in needs.items() if value not in ({}, [], None, "")},
+        "base_files": base_files,
         "note": CONNECTED_SEED_NOTE.format(
+            account="" if keeps_account else CONNECTED_SEED_ACCOUNT,
             models=CONNECTED_SEED_MODELS_GATEWAY if gateway_on(config) else CONNECTED_SEED_MODELS,
             secrets=CONNECTED_SEED_SECRETS if agent.secret_names else "",
             room_wiring=lines,
@@ -2231,19 +2264,41 @@ def connected_room_wiring_lines(config) -> str:
 
 def connected_wire_body(config, agent=None) -> str:
     body = CONNECTED_WIRE_BODY_GATEWAY if gateway_on(config) else CONNECTED_WIRE_BODY
+    keeps_account = agent is not None and bool(getattr(agent, "service_account", None))
+    fills = {
+        "{account}": CONNECTED_WIRE_ACCOUNT,
+        "{account_adds}": "adds " + CONNECTED_WIRE_ACCOUNT,
+        "{account_files}": CONNECTED_WIRE_ACCOUNT_FILES,
+        "{account_key}": "service_account, ",
+        "{account_kept}": "",
+    }
+    if keeps_account:
+        fills = dict.fromkeys(fills, "") | {"{account_kept}": CONNECTED_WIRE_ACCOUNT_KEPT}
+    for slot, text in fills.items():
+        body = body.replace(slot, text)
     lines = connected_room_wiring_lines(config)
     if agent is not None and slack_app_possible(config, agent):
         lines = lines[:-1] + CONNECTED_WIRE_SLACK + "\n"
     return body.replace("{room_wiring}", lines)
 
 
-# What the room says rather than taking over identity wiring a team already
-# set for itself. Named once because two different checks raise it.
+# What the room says rather than writing over a service account manifest a
+# team wrote. A repository whose gojira.yaml names its own account keeps it
+# and never gets here (`_own_service_account`); this is the one that has the
+# file and does not say the agent runs as it.
 CONNECTED_WIRE_TAKEOVER = (
-    "this repository already sets its own service account. Remove it from "
-    "gojira.yaml and k8s/base/serviceaccount.yaml, or ask an operator, then "
+    "this repository has its own k8s/base/serviceaccount.yaml, and gojira.yaml "
+    "does not say the agent runs as it. Name that account under "
+    "service_account in gojira.yaml to keep it, or remove the file, then "
     "press Retry"
 )
+# A name the room will store and show, so it has to be one the cluster would
+# take: lowercase letters, digits, dots and dashes.
+CONNECTED_WIRE_ACCOUNT_UNREADABLE = (
+    "gojira.yaml names a service account the room cannot use. Fix "
+    "service_account there, then press Retry"
+)
+_SERVICE_ACCOUNT_NAME = re.compile(r"[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?")
 
 # A branch with no pull request behind it: pushing it again fails non
 # fast-forward, and git's own stderr on the step is something no Retry can
@@ -2278,16 +2333,30 @@ def _sanitized(what: str, agent_name: str, message: str):
         raise RuntimeError(message) from exc
 
 
-def _refuse_service_account_takeover(clone_dir: Path, agent, config) -> None:
-    """Refuse to overwrite identity wiring the repository already carries.
+def _own_service_account(clone_dir: Path, agent, config) -> str | None:
+    """The service account this repository names for itself, or None when
+    the agent runs as the room's `agent-<name>`.
 
-    A repository that names its own service account, in either file, is
-    telling the room something; moving the agent onto an identity its owner
-    did not choose, silently, is not the room's to do. Byte-equal content
-    is the room's OWN wiring from a prior attempt, which is a retry, not a
-    choice, and passes.
+    A repository that names its own account in gojira.yaml is telling the
+    room something, and the room takes it at its word: the agent keeps that
+    account, and this step writes nothing about identity (2026-11-15; until
+    then it refused such a repository outright, which left a team's working
+    agent no way into the room short of giving up what its account already
+    reached). Moving an agent onto an identity its owner did not choose is
+    still not the room's to do, so the one case left to refuse is a service
+    account manifest the room did not write in a repository whose contract
+    does not name it: writing the room's own would replace it. Byte-equal
+    content is the room's OWN wiring from a prior attempt, which is a
+    retry, not a choice, and passes.
     """
     expected_name = f"agent-{agent.name}"
+    data = yaml.safe_load((clone_dir / "gojira.yaml").read_text()) or {}
+    declared = data.get("service_account") if isinstance(data, dict) else None
+    if declared and declared != expected_name:
+        if not isinstance(declared, str) or not _SERVICE_ACCOUNT_NAME.fullmatch(declared):
+            raise RuntimeError(CONNECTED_WIRE_ACCOUNT_UNREADABLE)
+        return declared
+
     sa_path = clone_dir / "k8s" / "base" / "serviceaccount.yaml"
     if sa_path.exists():
         ours = SERVICEACCOUNT_YAML_TEMPLATE.format(
@@ -2295,11 +2364,7 @@ def _refuse_service_account_takeover(clone_dir: Path, agent, config) -> None:
         )
         if sa_path.read_text() != ours:
             raise RuntimeError(CONNECTED_WIRE_TAKEOVER)
-
-    data = yaml.safe_load((clone_dir / "gojira.yaml").read_text()) or {}
-    declared = data.get("service_account")
-    if declared and declared != expected_name:
-        raise RuntimeError(CONNECTED_WIRE_TAKEOVER)
+    return None
 
 
 class ConnectedWireStep:
@@ -2319,6 +2384,10 @@ class ConnectedWireStep:
     pass the agent trades for a gateway token. See `add_room_wiring` for
     what each one is and when it is left out. The one thing a connected
     agent still does not get is the bundle: its code is its team's.
+
+    One thing a repository may keep for itself is the account its code runs
+    as (`_own_service_account`). The row records which, so the Deploy step
+    and the page name the account the agent really has.
 
     Idempotent on retry in both of the ways this can be re-entered. If a
     pull request from the branch is already open, it is merged rather than
@@ -2350,11 +2419,17 @@ class ConnectedWireStep:
             gojira_yaml_path,
         ]
 
-        _refuse_service_account_takeover(clone_dir, agent, config)
+        own_account = _own_service_account(clone_dir, agent, config)
+        if agent.service_account != own_account:
+            # Recorded before anything is written: every writer below asks
+            # `service_account_of` which account to name.
+            agent.service_account = own_account
+            ctx.session.commit()
 
         before = _snapshot(wire_paths)
-        _write_service_account(k8s_base, agent, config)
-        _register_resources(k8s_base / "kustomization.yaml", ["serviceaccount.yaml"])
+        if own_account is None:
+            _write_service_account(k8s_base, agent, config)
+            _register_resources(k8s_base / "kustomization.yaml", ["serviceaccount.yaml"])
         _update_connected_gojira_yaml(gojira_yaml_path, agent, config)
         write_connected_storage(clone_dir, agent)
 
@@ -3028,7 +3103,7 @@ class DeployStep:
                     "older tree; retry after the latest run completes"
                 )
 
-        expected_sa = f"agent-{agent.name}"
+        expected_sa = service_account_of(agent)
         actual_sa = kubectl.deploy_service_account(namespace=agent.name, deploy=agent.name)
         if actual_sa != expected_sa:
             raise RuntimeError(

@@ -136,6 +136,12 @@ class Agent(Base):
     # answer -- it is always the room's one runtime, which always serves
     # HTTP -- so NULL here means "not asked", never "unknown".
     run_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Connected agents only: the service account the repository names for
+    # itself, when that is not the room's `agent-<name>`. NULL means the
+    # agent runs as the room's account, which is every composed agent and
+    # every connected one that named none. Read through
+    # `steps.service_account_of`, never on its own.
+    service_account: Mapped[str | None] = mapped_column(String(253), nullable=True)
     # Connected agents only: the names of Kubernetes Secrets the owner
     # creates in the agent's own namespace, passed through to the deploy
     # platform so the pod mounts them. The room never holds their contents.

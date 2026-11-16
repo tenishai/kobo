@@ -51,6 +51,19 @@ describe("AccessPanel", () => {
     expect(urls.every((u) => u.includes("/access"))).toBe(true);
   });
 
+  it("says whose account a connected agent keeps, and names no account of the room's", async () => {
+    stubFetch({ "/api/agents/warden/access": ACCESS });
+    renderWithClient(AccessPanel, {
+      agentName: "warden",
+      groupName: "growth",
+      identity: { service_account: "team-runner", gsa_email: null, project: "example-project", own: true },
+    });
+
+    expect(await screen.findByText("team-runner")).not.toBeNull();
+    expect(screen.getByText(/Runs as its team's own account/)).not.toBeNull();
+    expect(screen.queryByText(/iam\.gserviceaccount\.com/)).toBeNull();
+  });
+
   it("says who can see an agent that is in no group, pointing at Owners", async () => {
     stubFetch({ "/api/agents/warden/access": ACCESS });
     renderWithClient(AccessPanel, { agentName: "warden", groupName: null });

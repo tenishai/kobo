@@ -322,6 +322,7 @@ from kobo_api.steps import (
     refresh_after_capability_distill,
     refresh_colleague_rosters,
     resolve_persona_body,
+    service_account_of,
 )
 from kobo_api.teach import format_note, note_filename
 from kobo_api.timefmt import rfc3339, rfc3339_str
@@ -6492,6 +6493,15 @@ def create_app(
             skills=[],
             kind=KIND_CONNECTED,
             run_mode=report.run_mode,
+            # A repository that already runs as an account of its own keeps
+            # it (2026-11-15). The scan's reading, so the setup pull request
+            # asks for none; the wiring step reads it again from the file
+            # that is merged and has the last word.
+            service_account=(
+                report.repo_service_account
+                if report.repo_service_account not in (None, f"agent-{payload.name}")
+                else None
+            ),
             secret_names=secret_names,
             # The route records the repository; `ConnectStep` checks it and
             # creates nothing.
@@ -6863,12 +6873,19 @@ def create_app(
                 "kind": agent.kind,
                 # The identity the agent runs as (2026-09-29): the Kubernetes
                 # service account in its namespace and the Google service
-                # account bound to it (AccessStep), the same for both kinds.
-                # What an access request to another project names.
+                # account bound to it (AccessStep). What an access request
+                # to another project names. A connected repository that
+                # keeps its own account (`own`) has no Google account the
+                # room knows of: what that account is bound to is its
+                # team's, so the page says whose it is and names none.
                 "identity": {
-                    "service_account": f"agent-{agent.name}",
-                    "gsa_email": gsa_email(f"agent-{agent.name}", cfg.gcp_project),
+                    "service_account": service_account_of(agent),
+                    "gsa_email": (
+                        None if agent.service_account
+                        else gsa_email(f"agent-{agent.name}", cfg.gcp_project)
+                    ),
                     "project": cfg.gcp_project,
+                    "own": bool(agent.service_account),
                 },
                 # What this agent runs on, and what the room builds on today
                 # (harness wave, 2026-09-23). Both, because the page's whole

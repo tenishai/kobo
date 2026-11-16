@@ -234,8 +234,13 @@ export type AgentDetail = AgentSummary & {
 
 export type AgentIdentity = {
   service_account: string;
-  gsa_email: string;
+  /** Null when the agent keeps its team's own account (`own`): what that
+   * account is bound to is not the room's to know. */
+  gsa_email: string | null;
   project: string;
+  /** A connected repository that names its own service account keeps it.
+   * Absent on an older server, which means the room's own. */
+  own?: boolean;
 };
 
 /** One catalog search result — a skill or a persona, both served by the
