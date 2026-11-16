@@ -3309,7 +3309,7 @@ def test_put_channels_rewire_failure_returns_502_and_leaves_original_channels_st
 
 @pytest.mark.parametrize(
     ("room_made", "expected_slack_entries"),
-    [(True, [{"kind": "slack"}]), (False, [])],
+    [(True, [{"kind": "slack", "optional": True}]), (False, [])],
     ids=["room-made app stays open", "pasted app disconnects"],
 )
 def test_put_empty_channels_on_room_made_app_writes_the_open_transport(
@@ -3522,7 +3522,7 @@ def test_wire_slack_idempotently_replaces_existing_slack_transport():
     data = yaml.safe_load(github.captured_agent_yaml)
     assert data["transports"] == [
         {"kind": "a2a", "host": "0.0.0.0", "port": 8080},
-        {"kind": "slack", "channel": "CNEWNEW1"},
+        {"kind": "slack", "channel": "CNEWNEW1", "optional": True},
     ]
 
 
