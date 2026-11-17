@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.72] - 2026-11-17
+
 ### Changed
 - Adding Slack to an agent is one press. **Create Slack app** on the **Access** tab makes the app and goes straight on to Slack's install page, where it used to stop on the row for a second press of **Install to Slack**. **Move to the new Slack setup** does the same, unless the room could not confirm the old app was removed, when it stays on the row to say so. **Install to Slack** is still there for an app someone left uninstalled.
 
