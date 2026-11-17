@@ -42,6 +42,6 @@ A persona name is one or two words, three at most, like `sentinel`, `ledger-keep
 
 At the bottom of the full persona, its maker, a member of its group, or an operator can **Edit** it, **Move to** another group or to Everyone, and **Archive** it. A persona shared with everyone is edited and moved only by its maker or an operator.
 
-**Edit** opens the same form with the persona's text in it. You can change who they are, what they do and the rules; a persona keeps its name. An agent copies its persona when it is made, so an edit reaches agents made from then on and an agent already made keeps the persona it was made with.
+**Edit** opens the same form with the persona's text in it. You can change who they are, what they do and the rules; a persona keeps its name. The persona of a team's informational guide has no Edit: the room wrote it whole, not in the form's four parts. An agent copies its persona when it is made, so an edit reaches agents made from then on and an agent already made keeps the persona it was made with.
 
 Archiving takes a persona out of every list without deleting it; agents already built from it keep running. Ask an operator to bring an archived persona back. Built-in personas stay shared, and are never edited or moved.

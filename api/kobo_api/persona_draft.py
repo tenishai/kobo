@@ -83,9 +83,9 @@ _CLAUSE_END_RE = re.compile(r"[.!?;\n]")
 
 def _slugify_name_candidate(words: list[str]) -> str:
     """Shared tail of every deterministic name fallback in this module
-    (`_fallback_name` below, `_fallback_distilled_name` further down):
-    hyphen-join `words` (already lowercase alphanumeric — both callers
-    extract via `_WORD_RE`) into a slug, validate it against `persona_id()`
+    (`_fallback_name` below):
+    hyphen-join `words` (already lowercase alphanumeric — the caller
+    extracts via `_WORD_RE`) into a slug, validate it against `persona_id()`
     — retrying with a "the-" prefix when the plain slug is digit-led
     (`persona_id()` rejects that) — and fall back to
     `_FALLBACK_NAME_DEFAULT` when neither passes. The accepted slug is
@@ -305,6 +305,9 @@ def finalize_draft(raw: dict | None, *, job: str) -> dict:
         "what_they_do": final_what,
         "rules": _draft_rules(raw.get("rules")),
         "purpose_tags": tags,
+        # False when who-they-are or what-they-do is the room's stand-in,
+        # which is the source handed back, not a persona in the house shape.
+        "generated": who is not None and what is not None,
     }
 
 

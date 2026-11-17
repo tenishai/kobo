@@ -73,7 +73,7 @@ from kobo_api.pairs import (
     sync_dispatch_pairs,
     sync_dispatch_pairs_best_effort,
 )
-from kobo_api.personas import seed_default_personas
+from kobo_api.personas import PersonaFields, render_persona, seed_default_personas
 from kobo_api.provisioner import Ctx, run_pipeline
 from kobo_api.purpose_tags import encode_tags
 from kobo_api.repo_search import RepoIndex
@@ -2818,10 +2818,22 @@ def test_edit_persona_is_for_the_people_who_may_move_it(gate_config, fake_storag
     One rule for Move and Edit: a member of the group it is filed under,
     the person who made it, or an operator. A shared persona has no group,
     so it is its maker's or an operator's. A built-in is nobody's: the
-    boot-time seed would write the packaged text back."""
+    boot-time seed would write the packaged text back. Nor is a team guide,
+    whose text the form cannot read back: the read says so (`editable`), so
+    the room offers no Edit, and the route refuses whoever asks."""
+    guide = {"id": "sre-team-guide", "name": "sre team guide", "description": "d",
+             "team": "sre", "tags": ["team-guide"], "builtin": False}
     client__api_personas, key = _move_client(
-        gate_config, fake_storage__api_personas, tmp_path, {MEMBER_EMAIL: ["sre"], STRANGER_EMAIL: ["qa"]}
+        gate_config, fake_storage__api_personas, tmp_path, {MEMBER_EMAIL: ["sre"], STRANGER_EMAIL: ["qa"]},
+        entries=[MOVE_SHARED, MOVE_TEAM, MOVE_BUILTIN, guide],
     )
+    house = render_persona(
+        PersonaFields(name="x", who_they_are="a calm hand", what_they_do=HOUSE_WHAT_THEY_DO, rules=list(HOUSE_RULES))
+    ).encode()
+    for persona_id in ("stoic-mentor", "wire-probe"):
+        fake_storage__api_personas.write_bytes("personas-bucket", f"{persona_id}/persona.md", house)
+    guide_body = b"You are {name}, the guide for the sre team.\n\nAnswer from the team's own pages.\n"
+    fake_storage__api_personas.write_bytes("personas-bucket", "sre-team-guide/persona.md", guide_body)
 
     outsider = _edit(client__api_personas, key, STRANGER_EMAIL, "stoic-mentor")
     assert outsider.status_code == 403
@@ -2835,6 +2847,13 @@ def test_edit_persona_is_for_the_people_who_may_move_it(gate_config, fake_storag
     }
     builtin = _edit(client__api_personas, key, OPERATOR_EMAIL, "helpful-generalist")
     assert builtin.status_code == 403
+    assert _edit(client__api_personas, key, OPERATOR_EMAIL, "sre-team-guide").status_code == 422
+    assert fake_storage__api_personas.read_bytes("personas-bucket", "sre-team-guide/persona.md") == guide_body
+    member_headers = _gate_headers(key, email=MEMBER_EMAIL)
+    assert [
+        client__api_personas.get(f"/api/personas/{persona_id}", headers=member_headers).json()["editable"]
+        for persona_id in ("stoic-mentor", "sre-team-guide", "helpful-generalist")
+    ] == [True, False, False]
     assert _index_entry(fake_storage__api_personas, "stoic-mentor")["description"] == "d"
 
     member = _edit(client__api_personas, key, MEMBER_EMAIL, "stoic-mentor")

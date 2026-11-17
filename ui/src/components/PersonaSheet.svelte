@@ -13,7 +13,8 @@
   // Manage sits at the bottom for the people who may: Edit and Move to
   // another group (the server says which personas the caller may change,
   // `movablePersonasQuery`; the edit form itself is the caller's to open,
-  // `onedit`), and Archive (a maker, a member of its group,
+  // `onedit`, and is not offered for text the form could not read back,
+  // `editable`), and Archive (a maker, a member of its group,
   // or an operator; built-ins and shared ones are the operator's alone).
   // The archive gate is the server's; the row shows for anyone the move
   // list names or who runs the room, and a refusal's own `{error}` copy
@@ -181,7 +182,7 @@
   <div class="modal__footer modal__footer--inline">
     <div class="sheet__manage">
       {#if canManage && persona.data}
-        {#if canMove && onedit}
+        {#if canMove && onedit && persona.data.editable !== false}
           <button type="button" class="btn btn--quiet" onclick={() => onedit(personaId)}>
             Edit
           </button>

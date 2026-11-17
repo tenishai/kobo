@@ -1017,6 +1017,10 @@ export type PersonaDetail = {
   created_by: string | null;
   created_at: string | null;
   truncated: boolean;
+  /** False when the room would refuse an edit whoever asked: a built-in,
+   * or text that was not written with the persona form (a team guide), so
+   * the form could not read it back. Absent on an older room. */
+  editable?: boolean;
 };
 
 /** `GET /api/personas/{id}` — see `PersonaDetail`. Ungated, same as

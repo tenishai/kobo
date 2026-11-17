@@ -1095,6 +1095,14 @@ def test_a_taken_persona_name_says_where_the_persona_is_and_a_draft_brings_its_r
     stand_in = bare.post("/api/personas/draft", json={"job": "Answer billing questions.", "rules": []})
     assert stand_in.status_code == 200
     assert stand_in.json()["generated"] is False
+    # So does a reply that left out what-they-do: the room's stand-in for that
+    # part is the source handed back, which is not a draft either.
+    partial = _make_client__api_search(
+        config__api_search,
+        _minimal_clients(storage=fake_storage__api_search, name=FakeName(draft={"name": "Alert Triager"})),
+        tmp_path,
+    )
+    assert partial.post("/api/personas/draft", json={"job": document, "rules": []}).json()["generated"] is False
 
     payload = {k: draft.json()[k] for k in ("name", "who_they_are", "what_they_do", "rules")}
     assert client.post("/api/personas", json={**payload, "team": "shared"}).status_code == 201

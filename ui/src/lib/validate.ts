@@ -190,14 +190,20 @@ export const PERSONA_NAME_MAX_WORDS = 3;
  * The first thing a persona form still needs, as one sentence, or `null`
  * when it can be sent. Top to bottom, the order the fields are in, so the
  * line under the form always names the next thing to do. `team` is `null`
- * while no group has been chosen.
+ * while no group has been chosen. `nameFixed` is the edit form, where the
+ * name is not a field: a persona made before the three-word rule keeps its
+ * name, and a line about it would be one nobody could act on.
  */
-export function personaMissing(text: PersonaText, team: string | null): string | null {
+export function personaMissing(
+  text: PersonaText,
+  team: string | null,
+  nameFixed = false,
+): string | null {
   const words = (text.name.toLowerCase().match(/[a-z0-9]+/g) ?? []).length;
-  if (words === 0) {
+  if (!nameFixed && words === 0) {
     return "Give it a name.";
   }
-  if (words > PERSONA_NAME_MAX_WORDS) {
+  if (!nameFixed && words > PERSONA_NAME_MAX_WORDS) {
     return "Keep the name to one or two words, three at most.";
   }
   if (text.whoTheyAre.trim().length === 0) {

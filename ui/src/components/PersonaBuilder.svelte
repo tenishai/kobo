@@ -230,7 +230,7 @@
   let submitError = $state<string | null>(null);
   const pending = $derived(createMut.isPending || saveMut.isPending);
   const missing = $derived(
-    personaMissing(text, editing ? (stored.data?.team ?? SHARED_TEAM) : selectedTeam),
+    personaMissing(text, editing ? (stored.data?.team ?? SHARED_TEAM) : selectedTeam, editing),
   );
   const canSubmit = $derived(
     missing === null && !pending && (!editing || stored.data !== undefined),

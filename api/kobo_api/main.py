@@ -5728,6 +5728,13 @@ def create_app(
                 "created_by": created_by or None,
                 "created_at": rfc3339_str(created_at) if created_at else None,
                 "truncated": truncated,
+                # Whether `PUT /api/personas/{id}` would take it at all:
+                # the same test `update_persona` makes, so the room never
+                # opens a form on text it could not read back. Says nothing
+                # about who is asking; that is `/api/personas/movable`.
+                "editable": bool(
+                    not entry.get("builtin") and parsed and parsed.what_they_do is not None
+                ),
             }
         )
 
@@ -5756,10 +5763,11 @@ def create_app(
         whole document, plus optional `payload.rules` to keep) into a
         `{"name", "who_they_are", "what_they_do", "rules", "purpose_tags",
         "generated"}` draft in the house shape, for the persona form to
-        show. `generated` is False when the generator had no say (it is not
-        configured, or it failed) and every part is the room's stand-in made
-        from the source: the form reads that as "no draft" and leaves its
-        fields alone, since a stand-in is not in the house shape. Always 200
+        show. `generated` is False when who-they-are or what-they-do is
+        the room's stand-in made from the source (the generator is not
+        configured, it failed, or its reply for that part was unusable):
+        the form reads that as "no draft" and leaves its fields alone, since
+        a stand-in is not in the house shape. Always 200
         — a generator failure (unconfigured `clients.name`, or a raised
         ClientError) never surfaces as an error here, just a full
         deterministic fallback instead
@@ -5778,9 +5786,7 @@ def create_app(
                 log.warning("persona draft generation failed: %s", exc)
                 raw = None
 
-        draft = finalize_draft(raw, job=payload.job)
-        draft["generated"] = raw is not None
-        return JSONResponse(draft)
+        return JSONResponse(finalize_draft(raw, job=payload.job))
 
     @app.get("/api/availability")
     def availability(

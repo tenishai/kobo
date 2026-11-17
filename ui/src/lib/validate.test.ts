@@ -253,6 +253,14 @@ describe("personaMissing", () => {
     expect(personaMissing(FULL, null)).toBe("Choose a group.");
     expect(personaMissing(FULL, "sre")).toBeNull();
   });
+
+  it("asks nothing of a name the edit form cannot change", () => {
+    const old = { ...FULL, name: "one two three four" };
+    expect(personaMissing(old, "sre", true)).toBeNull();
+    expect(personaMissing({ ...old, rules: "one" }, "sre", true)).toBe(
+      "Add at least 3 rules, one per line.",
+    );
+  });
 });
 
 describe("personaGroups", () => {

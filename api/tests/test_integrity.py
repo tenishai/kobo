@@ -118,12 +118,15 @@ from kobo_api.org import load_org_config
 from kobo_api.personas import (
     PersonaError,
     PersonaFields,
+    clean_rule,
+    clean_who,
     create_persona,
     parse_persona_body,
     render_persona,
     seed_default_personas,
     set_persona_archived,
     update_persona,
+    upsert_persona,
 )
 from kobo_api.provisioner import (
     RUN_STALE_AFTER_S,
@@ -5926,21 +5929,42 @@ def test_a_pasted_document_lands_in_the_house_shape():
     "## Rules"; the persona then had headings above the house's own, and reading it back
     cut it in two at the pasted heading. A who-line typed as a sentence rendered "You are
     X, You are a ... .." Headings are lowered (never inside a code fence), the who-line
-    and the rules are cleaned, and the round trip holds."""
+    and the rules are cleaned, and the round trip holds.
+
+    Review of the same change: a "## Rules" quoted inside a code fence is left as typed,
+    and reading the persona back cut it there, so an edit saved the cut. The house's own
+    heading is the last one. Cleaning what is already clean changes nothing, a rule that
+    is only a list marker is no rule, and a carriage return is a line break too."""
     fields = _fields(
         who_they_are="You are a meticulous documentarian of alerts..",
-        what_they_do="# Alert triage\n\n## Who you are\nx\n```\n# a comment\n```\n## Rules\n- nested\n",
+        what_they_do=(
+            "# Alert triage\n\n## Who you are\nx\n```\n# a comment\n## Rules\n- fenced\n```\n"
+            "## Rules\n- nested\n"
+        ),
         rules=["- always cite the alert", "2. never guess", " plain "],
     )
 
     assert fields.who_they_are == "a meticulous documentarian of alerts"
     assert fields.what_they_do == (
-        "### Alert triage\n\n### Who you are\nx\n```\n# a comment\n```\n### Rules\n- nested"
+        "### Alert triage\n\n### Who you are\nx\n```\n# a comment\n## Rules\n- fenced\n```\n"
+        "### Rules\n- nested"
     )
+    assert PersonaFields(**fields.model_dump()) == fields
+    assert (clean_rule("- - 1. never guess"), clean_who("You are you are a helper.")) == (
+        "never guess", "a helper",
+    )
+    for bad in ({"rules": [*HOUSE_RULES, "-"]}, {"rules": ["one\rtwo", *HOUSE_RULES]}, {"who_they_are": "a\u2028b"}):
+        with pytest.raises(ValidationError):
+            _fields(**bad)
+    no_rules = parse_persona_body(render_persona(_fields(what_they_do=fields.what_they_do, rules=[])))
+    assert (no_rules.what_they_do, no_rules.rules) == (fields.what_they_do, [])
     assert fields.rules == ["always cite the alert", "never guess", "plain"]
     body = render_persona(fields)
     assert body.splitlines()[0] == "You are {name}, a meticulous documentarian of alerts."
-    assert [line for line in body.splitlines() if line.startswith("## ")] == ["## What you do", "## Rules"]
+    # The fenced line stays as typed; the house's own two are the first and the last.
+    assert [line for line in body.splitlines() if line.startswith("## ")] == [
+        "## What you do", "## Rules", "## Rules",
+    ]
     parsed = parse_persona_body(body)
     assert (parsed.who_they_are, parsed.what_they_do, parsed.rules) == (
         fields.who_they_are, fields.what_they_do, fields.rules,
@@ -5971,6 +5995,44 @@ def test_a_persona_too_thin_to_work_from_is_refused_at_create_and_at_edit():
     assert storage.read_bytes("b", "aria-the-assistant/persona.md") == before
 
 
+def test_an_edit_never_replaces_text_the_form_could_not_read_and_survives_a_restart():
+    """Data integrity (2026-11-17 review): an edit only ever rewrites what the form showed.
+
+    A team guide is stored whole, with no "## What you do" for the form to read back, so
+    the form opened on its one-line description and saving would have replaced the guide
+    with that line. It is refused and nothing is written. A packaged group persona is in
+    the form's shape and may be edited; the boot-time seed rewrites its index entry, and
+    used to put the packaged one-liner back over the edited text on every restart."""
+    storage = FakeStorage()
+    upsert_persona(
+        storage, bucket="b", id="sre-team-guide", name="sre team guide",
+        description="The informational guide for the sre team.",
+        body="You are {name}, the guide for the sre team.\n\nAnswer from the team's own pages.\n",
+        team="sre", tags=["team-guide"], creator="kobo",
+    )
+    before = storage.read_bytes("b", "sre-team-guide/persona.md")
+    with pytest.raises(PersonaError, match="not written with the persona form"):
+        update_persona(
+            storage, bucket="b", persona_id="sre-team-guide",
+            who_they_are="a guide", what_they_do=HOUSE_WHAT_THEY_DO, rules=list(HOUSE_RULES),
+        )
+    assert storage.read_bytes("b", "sre-team-guide/persona.md") == before
+
+    seed_default_personas(storage, bucket="b")
+    update_persona(
+        storage, bucket="b", persona_id="aws-operator",
+        who_they_are="the team's own cloud operator", what_they_do=HOUSE_WHAT_THEY_DO,
+        rules=list(HOUSE_RULES), updated_by="member@example.com",
+    )
+    edited = storage.read_bytes("b", "aws-operator/persona.md")
+    seed_default_personas(storage, bucket="b")
+    entry = next(
+        e for e in json.loads(storage.read_bytes("b", "index.json"))["entries"] if e["id"] == "aws-operator"
+    )
+    assert (entry["description"], entry["updated_by"]) == ("the team's own cloud operator", "member@example.com")
+    assert storage.read_bytes("b", "aws-operator/persona.md") == edited
+
+
 def test_update_persona_rewrites_the_text_and_keeps_everything_that_points_at_it():
     """Data integrity (2026-11-17): an edit changes what a persona says, never what it is.
 
@@ -5994,6 +6056,8 @@ def test_update_persona_rewrites_the_text_and_keeps_everything_that_points_at_it
         "id": "aria-the-assistant", "name": "Aria the Assistant",
         "description": "a steadier hand than before", "team": "sre", "tags": ["billing"],
         "builtin": False, "created_by": "maker@example.com", "updated_by": "member@example.com",
+        # The date the file was first made, kept before it is written over.
+        "created_at": "2026-08-03T00:00:00Z",
     }
     parsed = parse_persona_body(storage.read_bytes("b", "aria-the-assistant/persona.md").decode())
     assert parsed.who_they_are == "a steadier hand than before"
