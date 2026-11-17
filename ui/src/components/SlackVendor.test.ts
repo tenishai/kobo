@@ -69,12 +69,25 @@ describe("SlackVendor", () => {
 
     // The pick before the app exists is sent with the create, not saved on its own.
     await fireEvent.click(screen.getByRole("radio", { name: /Every message in the channel/ }));
-    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ app_id: "A0MADE", install_url: "https://slack.com/x" }), { status: 200 }));
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ app_id: "A0MADE", install_url: "#slack-would-open-here" }), { status: 200 }),
+    );
     await fireEvent.click(create);
     const post = vi.mocked(fetch).mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "POST");
     expect(post).toBeDefined();
     expect(String(post![0])).toContain("/api/agents/clio/slack/app");
     expect(JSON.parse(String((post![1] as RequestInit).body))).toEqual({ wake: "channel" });
+    // One press: the app is made and Slack's install page opens in this tab.
+    await waitFor(() => expect(window.location.hash).toBe("#slack-would-open-here"));
+  });
+
+  it("stays on the row when Create hands back no install link", async () => {
+    room(NONE);
+    const create = await screen.findByRole("button", { name: "Create Slack app" });
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ app_id: "A0MADE", install_url: null }), { status: 200 }));
+    await fireEvent.click(create);
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "POST")).toBe(true));
+    expect(window.location.hash).toBe("");
   });
 
   it("shows Install to Slack, in this tab, once the app exists", async () => {
@@ -312,6 +325,19 @@ describe("SlackVendor", () => {
     expect(post).toBeDefined();
     expect(String(post![0])).toContain("/api/agents/clio/slack/move");
     expect(await screen.findByText(/could not confirm the old app was removed/)).toBeTruthy();
+    // The note needs reading, so the row stays rather than going on to Slack.
+    expect(window.location.hash).toBe("");
+  });
+
+  it("goes on to Slack's install page once the move removed the old app", async () => {
+    const LEGACY = { ...NONE, app_id: "A0OLD", legacy: true };
+    room(LEGACY, { ...AGENT, slack: { ...AGENT.slack, app_id: "A0OLD", legacy: true } });
+    const moveButton = await screen.findByRole("button", { name: "Move to the new Slack setup" });
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ app_id: "A0MADE", install_url: "#slack-would-open-here", old_app_removed: true }), { status: 200 }),
+    );
+    await fireEvent.click(moveButton);
+    await waitFor(() => expect(window.location.hash).toBe("#slack-would-open-here"));
   });
 
   it("says a connected agent with no port brings its own Slack app and offers no Create", async () => {

@@ -6,9 +6,13 @@
   //
   // Three states, read from `GET /api/agents/{name}/slack`:
   // - none: pick Wakes on (it decides which events the app subscribes to,
-  //   so it is picked before the app exists), then Create Slack app;
-  // - created: the app exists at Slack; Install to Slack opens Slack's own
-  //   install page in this tab and Slack sends the person back here;
+  //   so it is picked before the app exists), then Create Slack app, which
+  //   makes the app and goes straight on to Slack's own install page in this
+  //   tab when the person may install it: one press, not two;
+  // - created: the app exists at Slack and is not installed yet (the person
+  //   came back without finishing, or someone else made it); Install to
+  //   Slack opens Slack's own install page in this tab and Slack sends the
+  //   person back here;
   // - installed: the workspace and app, Wakes on, and Remove. There is no
   //   channel list here (owner ruling, 2026-11-01): a room-made app is
   //   wired at Create to answer in every channel it is invited to, and
@@ -35,8 +39,9 @@
   // `slack.relay`); an agent with an app from the Slack tab's paste flow
   // (`legacy`) keeps that tab, and this row shows the old app with one
   // button, Move to the new Slack setup (issue #304, phase 3): the room
-  // removes the old app, makes a new one and the row becomes the created
-  // state above, Install to Slack and all. Channels and Wakes on carry over.
+  // removes the old app, makes a new one and goes on to Slack's install page
+  // like Create; when the old app could not be confirmed removed it stays on
+  // the row in the created state to say so. Channels and Wakes on carry over.
   //
   // An agent that runs its team's own code (issue #484) gets the same app
   // when it serves a port (`room_app`): the copy says what its code has to
@@ -239,10 +244,18 @@
   let createError = $state<string | null>(null);
   let installing = $state(false);
 
+  // The room hands back Slack's install link with the new app, so Create goes
+  // on to it: the person presses once and lands on Slack's page. No link
+  // (someone who may not install it, or a connected agent whose files owe a
+  // pull request first) leaves the row on the created state instead.
   async function handleCreate(): Promise<void> {
     createError = null;
     try {
-      await create.mutateAsync(wakeShown);
+      const result = await create.mutateAsync(wakeShown);
+      if (result.install_url) {
+        installing = true;
+        window.location.assign(result.install_url);
+      }
     } catch (err) {
       createError = errorMessage(err, "Couldn't create the Slack app. Try again.");
     }
@@ -251,10 +264,11 @@
   // --- Move from the old setup (issue #304, phase 3) ----------------------------
   //
   // One press. The route removes the old app, makes the new one and answers
-  // like Create; the queries refresh and the row reads "App made; install it
-  // to finish". When the room could not remove the old app (it may already
-  // be gone, or belong to a token the room never held) the answer says so
-  // and the note stays on the row until the person leaves it.
+  // like Create, and the row goes on to Slack's install page the same way.
+  // When the room could not remove the old app (it may already be gone, or
+  // belong to a token the room never held) the answer says so, and the row
+  // stays here on "App made; install it to finish" with the note until the
+  // person leaves it.
   let moveError = $state<string | null>(null);
   let oldAppKept = $state(false);
 
@@ -263,6 +277,10 @@
     try {
       const result = await move.mutateAsync();
       oldAppKept = !result.old_app_removed;
+      if (result.install_url && !oldAppKept) {
+        installing = true;
+        window.location.assign(result.install_url);
+      }
     } catch (err) {
       moveError = errorMessage(err, "Couldn't move the Slack setup. Try again.");
     }
@@ -480,7 +498,8 @@
         {:else}
           <p class="copy">
             The room makes a Slack app for this agent and connects it. Pick how it wakes up first: the choice decides
-            which messages Slack sends it.
+            which messages Slack sends it. Create Slack app then takes you to Slack to install it, and Slack brings you
+            back here.
           </p>
         {/if}
         {@render wakeChoice()}
