@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.73] - 2026-11-17
+
 ### Added
 - A persona can be edited. **Edit** sits beside **Move to** and **Archive** at the bottom of the full persona, for its maker, a member of its group, or an operator (a persona shared with everyone: its maker or an operator; a built-in: nobody). It opens the builder with the persona's text in it; who they are, what they do and the rules can change, the name stays. An agent copies its persona when it is made, so an edit reaches agents made from then on. The persona of a team's informational guide is not edited: the room wrote it whole, not in the form's parts.
 
