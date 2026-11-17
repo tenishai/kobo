@@ -275,19 +275,20 @@ export type PersonaForm = {
   team?: string;
 };
 
-/** The Persona v3 "describe the job, approve the soul" draft step's result
- * (`POST /api/personas/draft`) — the same name/who_they_are/what_they_do
- * shape as `PersonaForm`'s first three fields, prefilled into the v2
- * preview for the operator to edit before Create. The server always
- * returns something creatable — a generator failure (unconfigured/erroring)
- * falls back to a deterministic, job-derived draft server-side
- * (`kobo_api.persona_draft.finalize_draft`) rather than failing the
- * request — so `draftPersona` below only ever rejects on a genuine
- * transport/route failure, never on "the generator was down". */
+/** A drafted persona (`POST /api/personas/draft`): the four parts of the
+ * builder's form, written in the house shape from whatever the person gave
+ * as a starting point, a few sentences about the job or a whole document.
+ * The server always answers: when the model is unavailable it falls back
+ * to a stand-in made from the source
+ * (`kobo_api.persona_draft.finalize_draft`) and says so with
+ * `generated: false`, which the builder treats as no draft. `draftPersona`
+ * below rejects only on a transport or route failure. */
 export type PersonaDraft = {
   name: string;
   who_they_are: string;
   what_they_do: string;
+  /** One line each, already cleaned of list markers. */
+  rules: string[];
   /** Persona-drafted purpose chips (persona-metadata plan), ≤5, lowercased
    * and deduped server-side (`kobo_api.persona_draft.finalize_draft`) —
    * falls back to the persona's own derived tags when the model omits
@@ -296,6 +297,9 @@ export type PersonaDraft = {
    * search-picked existing persona has no draft at all, so its chips start
    * empty instead. */
   purpose_tags: string[];
+  /** False when the model had no say and the parts are the room's stand-in.
+   * Absent on a room older than 2026-11-17, which reads as written. */
+  generated?: boolean;
 };
 
 /** One name-suggestion card (create flow v2 "naming ceremony" addendum) —
@@ -998,7 +1002,9 @@ export async function searchPersonas(
  * persona. A packaged built-in has no sections in its file, so both prose
  * fields come back as the catalog's one-line description instead, and
  * `rules` is empty. `created_by`/`created_at` are null when the stored
- * object carries no metadata to read them from. */
+ * object carries no metadata to read them from. `full` asks for all of
+ * `what_they_do`, which is what the edit form needs: saving a cut text
+ * would cut the persona. */
 export type PersonaDetail = {
   id: string;
   name: string;
@@ -1015,9 +1021,31 @@ export type PersonaDetail = {
 
 /** `GET /api/personas/{id}` — see `PersonaDetail`. Ungated, same as
  * `searchPersonas`; an archived or unknown id answers 404. */
-export async function fetchPersona(id: string): Promise<PersonaDetail> {
-  const res = await fetch(`/api/personas/${encodeURIComponent(id)}`);
+export async function fetchPersona(id: string, full = false): Promise<PersonaDetail> {
+  const res = await fetch(`/api/personas/${encodeURIComponent(id)}${full ? "?full=true" : ""}`);
   return parse<PersonaDetail>(res);
+}
+
+/** What an edit may change: the text. The name, the group and the tags
+ * stay (a move is `movePersona`). */
+export type PersonaUpdate = {
+  who_they_are: string;
+  what_they_do: string;
+  rules: string[];
+};
+
+/** `PUT /api/personas/{id}` — rewrites one persona's text. The people who
+ * may move a persona may edit it (its maker, a member of its group, an
+ * operator); a built-in is never edited. A refusal is a 403 `{error}`, a
+ * text too thin to work from a 422 `{error}`. Agents already made keep the
+ * persona they were made with. */
+export async function updatePersona(id: string, body: PersonaUpdate): Promise<CatalogEntry> {
+  const res = await fetch(`/api/personas/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parse<CatalogEntry>(res);
 }
 
 /** One archived persona (`GET /api/personas/archived`, hardening wave archive
@@ -1116,12 +1144,10 @@ export async function fetchTeamOptions(): Promise<TeamOptions> {
 }
 
 /**
- * `POST /api/personas/draft` — turns one plain job description (plus
- * optional short "always/never" rule hints, a prompt hint only — never
- * stored) into a drafted name/who_they_are/what_they_do for the v2 preview
- * to edit. Always 200 from the server; nothing is created or searched
- * here — `createPersona` below (untouched by v3) is still the only call
- * that actually writes anything.
+ * `POST /api/personas/draft` — drafts a persona from `job`: a few sentences
+ * about the work, or notes or a document the person already has. `rules`
+ * are any the person typed themselves, for the draft to keep. Nothing is
+ * created here; `createPersona` below is the only call that writes.
  */
 export async function draftPersona(
   job: string,
@@ -1135,42 +1161,9 @@ export async function draftPersona(
   return parse<PersonaDraft>(res);
 }
 
-/** The persona-first station's other entry point (persona-first station
- * addendum): given the operator's own ready-made persona document
- * (`POST /api/personas/distill`), the room reads it and pulls out discovery
- * metadata for the colleague directory. Deliberately no `what_they_do` -
- * unlike `PersonaDraft` above, the submitted document already IS the
- * persona body, so there's nothing to draft for that field; the caller
- * (`PersonaBuilder`) keeps its own `whatTheyDo` state untouched by this
- * response. Same "always 200, a generator failure just means a
- * deterministic fallback" contract as `draftPersona` — `distillPersona`
- * below only ever rejects on a genuine transport/route failure. */
-export type PersonaDistillResult = {
-  name: string;
-  who_they_are: string;
-  /** Distilled purpose chips, ≤5, lowercased/deduped server-side
-   * (`kobo_api.persona_draft.finalize_distill`) — `[]` when the generator
-   * omitted them or was unusable (a distill has no what_they_do to derive
-   * a fallback tag set from the way `draftPersona`'s own fallback tier
-   * does, so this is a plain empty list on any trouble, full stop). */
-  purpose_tags: string[];
-};
-
-/**
- * `POST /api/personas/distill` — reads a persona document the operator
- * already wrote (pasted or uploaded) and pulls out discovery metadata:
- * name, one-line who_they_are, purpose tags. Always 200 from the server;
- * nothing is created or searched here, same as `draftPersona`.
- */
-export async function distillPersona(body: string): Promise<PersonaDistillResult> {
-  const res = await fetch("/api/personas/distill", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ body }),
-  });
-  return parse<PersonaDistillResult>(res);
-}
-
+/** `POST /api/personas`. A name already taken is a 409 whose body says
+ * where the existing persona is (`team`) and whether it is `archived`, so
+ * the form can point at it. */
 export async function createPersona(body: PersonaForm): Promise<CatalogEntry> {
   const res = await fetch("/api/personas", {
     method: "POST",

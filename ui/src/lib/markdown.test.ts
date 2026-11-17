@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderInline, renderMarkdown } from "./markdown";
+import { boldRuns, renderInline, renderMarkdown } from "./markdown";
 
 describe("renderMarkdown", () => {
   it("renders bold, code and links, and drops unsafe link targets", () => {
@@ -20,4 +20,18 @@ describe("renderMarkdown", () => {
     expect(html).toBe("<p>Type &lt;b&gt;bold&lt;/b&gt; &amp; &quot;quotes&quot;.</p>");
   });
 
+});
+
+describe("boldRuns", () => {
+  it("cuts a persona's text at its bold marks and leaves everything else as typed", () => {
+    expect(boldRuns("1. **A new request.** Say what is asked.")).toEqual([
+      { text: "1. ", bold: false },
+      { text: "A new request.", bold: true },
+      { text: " Say what is asked.", bold: false },
+    ]);
+    expect(boldRuns("No marks, a <b>tag</b> and one ** alone.")).toEqual([
+      { text: "No marks, a <b>tag</b> and one ** alone.", bold: false },
+    ]);
+    expect(boldRuns("")).toEqual([]);
+  });
 });

@@ -88,6 +88,8 @@ from kobo_api.steps import (
 )
 from tests.fakes import (
     GCP_CATALOGUE,
+    HOUSE_RULES,
+    HOUSE_WHAT_THEY_DO,
     FakeAgent,
     FakeBab,
     FakeCabal,
@@ -2372,7 +2374,8 @@ SKILL_ENTRIES = [
 VALID_PAYLOAD = {
     "name": "Aria the Assistant",
     "who_they_are": "a calm troubleshooter for billing questions",
-    "what_they_do": "Help customers troubleshoot billing issues.",
+    "what_they_do": HOUSE_WHAT_THEY_DO,
+    "rules": list(HOUSE_RULES),
     # "shared" (Task 2's team middle gate): every test below that doesn't
     # care about team-gating posts through the plain `client` fixture with
     # no identity at all, and must land on the gate's no-membership-required
@@ -2795,6 +2798,60 @@ def test_move_builtin_persona_is_refused_even_for_an_operator(gate_config, fake_
 
     assert response.status_code == 403
     assert response.json() == {"error": "built-in personas stay shared with everyone"}
+
+
+def _edit(client__api_personas, key, email, persona_id, what_they_do=HOUSE_WHAT_THEY_DO):
+    return client__api_personas.put(
+        f"/api/personas/{persona_id}",
+        json={
+            "who_they_are": "a steadier hand than before",
+            "what_they_do": what_they_do,
+            "rules": list(HOUSE_RULES),
+        },
+        headers=_gate_headers(key, email=email),
+    )
+
+
+def test_edit_persona_is_for_the_people_who_may_move_it(gate_config, fake_storage__api_personas, tmp_path):
+    """Gate (authorization, 2026-11-17): a persona's text is its group's to rewrite.
+
+    One rule for Move and Edit: a member of the group it is filed under,
+    the person who made it, or an operator. A shared persona has no group,
+    so it is its maker's or an operator's. A built-in is nobody's: the
+    boot-time seed would write the packaged text back."""
+    client__api_personas, key = _move_client(
+        gate_config, fake_storage__api_personas, tmp_path, {MEMBER_EMAIL: ["sre"], STRANGER_EMAIL: ["qa"]}
+    )
+
+    outsider = _edit(client__api_personas, key, STRANGER_EMAIL, "stoic-mentor")
+    assert outsider.status_code == 403
+    assert outsider.json() == {
+        "error": "you must be a member of team sre, or the person who made this persona, to edit it"
+    }
+    shared = _edit(client__api_personas, key, MEMBER_EMAIL, "wire-probe")
+    assert shared.status_code == 403
+    assert shared.json() == {
+        "error": "only the person who made a shared persona, or a room operator, can edit it"
+    }
+    builtin = _edit(client__api_personas, key, OPERATOR_EMAIL, "helpful-generalist")
+    assert builtin.status_code == 403
+    assert _index_entry(fake_storage__api_personas, "stoic-mentor")["description"] == "d"
+
+    member = _edit(client__api_personas, key, MEMBER_EMAIL, "stoic-mentor")
+    assert member.status_code == 200, member.text
+    entry = _index_entry(fake_storage__api_personas, "stoic-mentor")
+    assert entry["description"] == "a steadier hand than before"
+    assert (entry["team"], entry["created_by"], entry["updated_by"]) == ("sre", CREATOR_EMAIL, MEMBER_EMAIL)
+    assert _edit(client__api_personas, key, CREATOR_EMAIL, "wire-probe").status_code == 200
+
+    # The edit form reads back all of what it saved; the hover card's read stays cut.
+    long_text = HOUSE_WHAT_THEY_DO + "\n" + "One more line of ground. " * 200
+    assert _edit(client__api_personas, key, MEMBER_EMAIL, "stoic-mentor", long_text).status_code == 200
+    headers = _gate_headers(key, email=STRANGER_EMAIL)
+    cut = client__api_personas.get("/api/personas/stoic-mentor", headers=headers).json()
+    whole = client__api_personas.get("/api/personas/stoic-mentor", params={"full": "true"}, headers=headers).json()
+    assert (cut["truncated"], len(cut["what_they_do"])) == (True, 4000)
+    assert (whole["truncated"], whole["what_they_do"]) == (False, long_text.strip())
 
 
 # --- from test_api_connect.py ---

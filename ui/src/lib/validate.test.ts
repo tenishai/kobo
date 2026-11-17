@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  mergeDistillFields,
+  BUILTIN_GROUP,
+  EMPTY_PERSONA_TEXT,
   mergeDraftFields,
+  personaGroups,
+  personaMissing,
   personaTeamOptions,
   splitLines,
   splitTags,
@@ -164,164 +167,116 @@ describe("mergeDraftFields", () => {
     name: "billing-buddy",
     who_they_are: "a calm troubleshooter for billing questions",
     what_they_do: "Helps customers resolve billing issues quickly.",
+    rules: ["Never guess a figure.", "Always say what you checked."],
+  };
+  const DRAFTED = {
+    name: draft.name,
+    whoTheyAre: draft.who_they_are,
+    whatTheyDo: draft.what_they_do,
+    rules: "Never guess a figure.\nAlways say what you checked.",
   };
 
-  it("fills every field when all three are empty", () => {
-    const result = mergeDraftFields(
-      { name: "", whoTheyAre: "", whatTheyDo: "" },
-      draft,
-    );
+  it("fills all four parts of an empty form, rules one per line", () => {
+    const result = mergeDraftFields(EMPTY_PERSONA_TEXT, EMPTY_PERSONA_TEXT, draft);
 
-    expect(result).toEqual({
-      name: draft.name,
-      whoTheyAre: draft.who_they_are,
-      whatTheyDo: draft.what_they_do,
+    expect(result.fields).toEqual(DRAFTED);
+    expect(result.drafted).toEqual(DRAFTED);
+  });
+
+  it("keeps what a person typed and fills the rest, each field judged on its own", () => {
+    const current = { ...EMPTY_PERSONA_TEXT, name: "my-own-name", whatTheyDo: "   " };
+
+    const result = mergeDraftFields(current, EMPTY_PERSONA_TEXT, draft);
+
+    expect(result.fields).toEqual({ ...DRAFTED, name: "my-own-name" });
+    // The kept field is not the draft's, so the next draft leaves it too.
+    expect(result.drafted.name).toBe("");
+  });
+
+  it("a second draft replaces what the first one wrote, and never an edit made since", () => {
+    const edited = { ...DRAFTED, whoTheyAre: "a blunt auditor of invoices" };
+    const second = {
+      name: "ledger",
+      who_they_are: "someone else",
+      what_they_do: "A longer account of the work.",
+      rules: ["Never round."],
+    };
+
+    const result = mergeDraftFields(edited, DRAFTED, second);
+
+    expect(result.fields).toEqual({
+      name: "ledger",
+      whoTheyAre: "a blunt auditor of invoices",
+      whatTheyDo: "A longer account of the work.",
+      rules: "Never round.",
     });
   });
 
-  it("keeps a pre-filled what-they-do instead of overwriting it with the draft", () => {
-    const result = mergeDraftFields(
-      { name: "", whoTheyAre: "", whatTheyDo: "Operator-typed body, keep this." },
-      draft,
-    );
+  // A route that always answers 200 can still hand back a body that does
+  // not match its type. That is nothing to fill, never a value written
+  // into form state that every binding assumes is a string.
+  it("leaves the form as it was when the response is empty or the wrong type", () => {
+    const current = { ...EMPTY_PERSONA_TEXT, whatTheyDo: "kept body" };
 
-    expect(result.whatTheyDo).toBe("Operator-typed body, keep this.");
-    expect(result.name).toBe(draft.name);
-    expect(result.whoTheyAre).toBe(draft.who_they_are);
-  });
-
-  it("judges each field independently - one filled field doesn't block the others", () => {
-    const result = mergeDraftFields(
-      { name: "my-own-name", whoTheyAre: "", whatTheyDo: "" },
-      draft,
-    );
-
-    expect(result.name).toBe("my-own-name");
-    expect(result.whoTheyAre).toBe(draft.who_they_are);
-    expect(result.whatTheyDo).toBe(draft.what_they_do);
-  });
-
-  it("treats a whitespace-only field as empty, still fillable by the draft", () => {
-    const result = mergeDraftFields(
-      { name: "", whoTheyAre: "", whatTheyDo: "   " },
-      draft,
-    );
-
-    expect(result.whatTheyDo).toBe(draft.what_they_do);
-  });
-
-  it("keeps every field when all three already have operator content", () => {
-    const current = {
-      name: "kept-name",
-      whoTheyAre: "kept who they are",
-      whatTheyDo: "kept what they do",
-    };
-
-    expect(mergeDraftFields(current, draft)).toEqual(current);
-  });
-
-  // Fix round 1 (FINDING 2): a draft route that "always 200s" can still
-  // hand back a body that doesn't match `PersonaDraft` at runtime - an
-  // empty object, or fields of the wrong type. Before this fix, an absent
-  // field fell through to `draft.name`/etc directly, so the merge wrote
-  // `undefined` straight into form state; PersonaBuilder's `nameHint`
-  // `$derived` then called `.trim()` on that `undefined` and threw the
-  // uncaught TypeError the reviewer hit while waiting out the legacy
-  // step-1 upload test's `{}` mock.
-  it("keeps every current value and never throws when the response is an empty object", () => {
-    const current = {
-      name: "",
-      whoTheyAre: "",
-      whatTheyDo: "kept body",
-    };
-
-    expect(() => mergeDraftFields(current, {})).not.toThrow();
-    expect(mergeDraftFields(current, {})).toEqual(current);
-  });
-
-  it("keeps every current value and never throws when fields are the wrong type", () => {
-    const current = {
-      name: "kept-name",
-      whoTheyAre: "",
-      whatTheyDo: "kept body",
-    };
-    const malformed = { name: 42, who_they_are: null, purpose_tags: "x" };
-
-    expect(() => mergeDraftFields(current, malformed)).not.toThrow();
-    expect(mergeDraftFields(current, malformed)).toEqual(current);
+    expect(mergeDraftFields(current, EMPTY_PERSONA_TEXT, {}).fields).toEqual(current);
+    expect(
+      mergeDraftFields(current, EMPTY_PERSONA_TEXT, {
+        name: 42,
+        who_they_are: null,
+        rules: "not a list",
+        purpose_tags: "x",
+      }).fields,
+    ).toEqual(current);
   });
 });
 
-describe("mergeDistillFields", () => {
-  // Persona-first station addendum: the same no-clobber contract as
-  // mergeDraftFields above, just a two-field shape (no whatTheyDo - the
-  // operator's pasted/uploaded persona document already fills that field
-  // directly, never through this merge) since a distill reply carries no
-  // what_they_do at all.
-  const distilled = {
-    name: "billing-buddy",
-    who_they_are: "a calm troubleshooter for billing questions",
+describe("personaMissing", () => {
+  const FULL = {
+    name: "ledger-keeper",
+    whoTheyAre: "a careful keeper of the books",
+    whatTheyDo: "x".repeat(300),
+    rules: "one\ntwo\nthree",
   };
 
-  it("fills both fields when they're empty", () => {
-    const result = mergeDistillFields({ name: "", whoTheyAre: "" }, distilled);
-
-    expect(result).toEqual({
-      name: distilled.name,
-      whoTheyAre: distilled.who_they_are,
-    });
+  it("names the next thing the form needs, top to bottom, then nothing", () => {
+    expect(personaMissing(EMPTY_PERSONA_TEXT, "sre")).toBe("Give it a name.");
+    expect(personaMissing({ ...FULL, name: "one two three four" }, "sre")).toBe(
+      "Keep the name to one or two words, three at most.",
+    );
+    expect(personaMissing({ ...FULL, whoTheyAre: " " }, "sre")).toBe("Say who they are in one line.");
+    expect(personaMissing({ ...FULL, whatTheyDo: "Helps." }, "sre")).toBe(
+      "Say more about what they do: 6 of at least 300 characters.",
+    );
+    expect(personaMissing({ ...FULL, rules: "one\n\ntwo" }, "sre")).toBe(
+      "Add at least 3 rules, one per line.",
+    );
+    expect(personaMissing(FULL, null)).toBe("Choose a group.");
+    expect(personaMissing(FULL, "sre")).toBeNull();
   });
+});
 
-  it("keeps a pre-typed name instead of overwriting it with the distilled one", () => {
-    const result = mergeDistillFields(
-      { name: "my-own-name", whoTheyAre: "" },
-      distilled,
+describe("personaGroups", () => {
+  const row = (id: string, team: string, builtin = false) => ({ id, team, builtin });
+
+  it("orders Built-in, the caller's groups, other groups, then Everyone, and drops empty ones", () => {
+    const groups = personaGroups(
+      [
+        row("wire-probe", "shared"),
+        row("zeta", "qa"),
+        row("helper", "shared", true),
+        row("stoic", "sre"),
+        row("alpha", "billing"),
+      ],
+      ["sre", "growth"],
     );
 
-    expect(result.name).toBe("my-own-name");
-    expect(result.whoTheyAre).toBe(distilled.who_they_are);
-  });
-
-  it("judges each field independently - one filled field doesn't block the other", () => {
-    const result = mergeDistillFields(
-      { name: "", whoTheyAre: "kept who they are" },
-      distilled,
-    );
-
-    expect(result.name).toBe(distilled.name);
-    expect(result.whoTheyAre).toBe("kept who they are");
-  });
-
-  it("treats a whitespace-only field as empty, still fillable by the distill", () => {
-    const result = mergeDistillFields({ name: "   ", whoTheyAre: "" }, distilled);
-
-    expect(result.name).toBe(distilled.name);
-  });
-
-  it("keeps both fields when they already have operator content", () => {
-    const current = { name: "kept-name", whoTheyAre: "kept who they are" };
-
-    expect(mergeDistillFields(current, distilled)).toEqual(current);
-  });
-
-  // Fix round 1 (FINDING 2): same exposure as mergeDraftFields above - a
-  // distill route that "always 200s" can still hand back a body that
-  // doesn't match `PersonaDistillResult` at runtime. See that describe
-  // block's matching tests for the exact crash this reproduces
-  // (`nameHint`'s `$derived .trim()` on an `undefined` name).
-  it("keeps both current values and never throws when the response is an empty object", () => {
-    const current = { name: "", whoTheyAre: "" };
-
-    expect(() => mergeDistillFields(current, {})).not.toThrow();
-    expect(mergeDistillFields(current, {})).toEqual(current);
-  });
-
-  it("keeps both current values and never throws when fields are the wrong type", () => {
-    const current = { name: "kept-name", whoTheyAre: "" };
-    const malformed = { name: 42, who_they_are: null, purpose_tags: "x" };
-
-    expect(() => mergeDistillFields(current, malformed)).not.toThrow();
-    expect(mergeDistillFields(current, malformed)).toEqual(current);
+    expect(groups.map((g) => [g.key, g.label, g.personas.map((p) => p.id)])).toEqual([
+      [BUILTIN_GROUP, "Built-in", ["helper"]],
+      ["sre", "sre", ["stoic"]],
+      ["billing", "billing", ["alpha"]],
+      ["qa", "qa", ["zeta"]],
+      ["shared", "Everyone", ["wire-probe"]],
+    ]);
   });
 });
 

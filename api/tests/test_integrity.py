@@ -123,6 +123,7 @@ from kobo_api.personas import (
     render_persona,
     seed_default_personas,
     set_persona_archived,
+    update_persona,
 )
 from kobo_api.provisioner import (
     RUN_STALE_AFTER_S,
@@ -163,6 +164,8 @@ from kobo_api.teach import format_note
 from kobo_api.tooling import ToolingError, import_tooling, upload_tooling_file
 from tests.fakes import (
     FAKE_LOCAL_HEAD_DEFAULT,
+    HOUSE_RULES,
+    HOUSE_WHAT_THEY_DO,
     FakeAgent,
     FakeCabal,
     FakeCloud,
@@ -5859,7 +5862,8 @@ def _fields(**overrides) -> PersonaFields:
     base = {
         "name": "Aria the Assistant",
         "who_they_are": "a calm troubleshooter for billing questions",
-        "what_they_do": "Help customers fix billing problems quickly.",
+        "what_they_do": HOUSE_WHAT_THEY_DO,
+        "rules": list(HOUSE_RULES),
     }
     base.update(overrides)
     return PersonaFields(**base)
@@ -5903,13 +5907,105 @@ def test_create_persona_appends_to_existing_index_without_disturbing_it():
 def test_create_persona_rejects_201_lines():
     """Data integrity: Create persona rejects 201 lines."""
     storage = FakeStorage()
-    # render_persona produces 7 fixed lines, so 201 total requires 194 lines in what_they_do
-    what_they_do_194_lines = "\n".join(["line"] * 194)
-    fields = _fields(what_they_do=what_they_do_194_lines)
+    # Everything render_persona writes around what_they_do (the opening,
+    # the headings, the rules) is fixed for these fields, so the body that
+    # makes 201 lines is 201 less that.
+    fixed = len(render_persona(_fields(what_they_do="line")).splitlines()) - 1
+    fields = _fields(what_they_do="\n".join(["line"] * (201 - fixed)))
     assert len(render_persona(fields).splitlines()) == 201
 
     with pytest.raises(PersonaError, match="persona renders to 201 lines; the limit is 200"):
         create_persona(storage, bucket="personas-bucket", fields=fields, team="cs-team")
+
+
+def test_a_pasted_document_lands_in_the_house_shape():
+    """Data integrity (2026-11-17): whatever is typed or pasted, a persona has one opening
+    and two sections.
+
+    A document pasted whole into what-they-do brought its own title and its own
+    "## Rules"; the persona then had headings above the house's own, and reading it back
+    cut it in two at the pasted heading. A who-line typed as a sentence rendered "You are
+    X, You are a ... .." Headings are lowered (never inside a code fence), the who-line
+    and the rules are cleaned, and the round trip holds."""
+    fields = _fields(
+        who_they_are="You are a meticulous documentarian of alerts..",
+        what_they_do="# Alert triage\n\n## Who you are\nx\n```\n# a comment\n```\n## Rules\n- nested\n",
+        rules=["- always cite the alert", "2. never guess", " plain "],
+    )
+
+    assert fields.who_they_are == "a meticulous documentarian of alerts"
+    assert fields.what_they_do == (
+        "### Alert triage\n\n### Who you are\nx\n```\n# a comment\n```\n### Rules\n- nested"
+    )
+    assert fields.rules == ["always cite the alert", "never guess", "plain"]
+    body = render_persona(fields)
+    assert body.splitlines()[0] == "You are {name}, a meticulous documentarian of alerts."
+    assert [line for line in body.splitlines() if line.startswith("## ")] == ["## What you do", "## Rules"]
+    parsed = parse_persona_body(body)
+    assert (parsed.who_they_are, parsed.what_they_do, parsed.rules) == (
+        fields.who_they_are, fields.what_they_do, fields.rules,
+    )
+
+
+def test_a_persona_too_thin_to_work_from_is_refused_at_create_and_at_edit():
+    """Data integrity (2026-11-17): a new or edited persona carries enough to act on.
+
+    The catalog held a persona that was one sentence and no rules; an agent made from it
+    had nothing to work from. The floor is 300 characters of what-they-do and three rules,
+    for the form and the MCP tool alike, and nothing is written when it is not met."""
+    storage = FakeStorage()
+
+    with pytest.raises(PersonaError, match="too short to work from"):
+        create_persona(storage, bucket="b", fields=_fields(what_they_do="Helps with alerts."), team="sre")
+    with pytest.raises(PersonaError, match="at least 3 rules"):
+        create_persona(storage, bucket="b", fields=_fields(rules=["Never guess."]), team="sre")
+    assert not [call for call in storage.calls if call.startswith("write_bytes")]
+
+    create_persona(storage, bucket="b", fields=_fields(), team="sre")
+    before = storage.read_bytes("b", "aria-the-assistant/persona.md")
+    with pytest.raises(PersonaError, match="at least 3 rules"):
+        update_persona(
+            storage, bucket="b", persona_id="aria-the-assistant",
+            who_they_are="a calm troubleshooter", what_they_do=HOUSE_WHAT_THEY_DO, rules=[],
+        )
+    assert storage.read_bytes("b", "aria-the-assistant/persona.md") == before
+
+
+def test_update_persona_rewrites_the_text_and_keeps_everything_that_points_at_it():
+    """Data integrity (2026-11-17): an edit changes what a persona says, never what it is.
+
+    The id, the name, the group, the tags and the maker stay; the body is rendered again
+    from the new fields and the list's one line follows the who-line. A built-in is not
+    edited: the boot-time seed would write the packaged text back."""
+    storage = FakeStorage()
+    create_persona(
+        storage, bucket="b", fields=_fields(purpose_tags=["billing"]), team="sre", created_by="Maker@Example.com"
+    )
+
+    entry = update_persona(
+        storage, bucket="b", persona_id="aria-the-assistant",
+        who_they_are="You are a steadier hand than before.",
+        what_they_do=HOUSE_WHAT_THEY_DO + "\nAnd one more line.",
+        rules=[*HOUSE_RULES, "Never round a figure."],
+        updated_by="Member@Example.com",
+    )
+
+    assert entry == {
+        "id": "aria-the-assistant", "name": "Aria the Assistant",
+        "description": "a steadier hand than before", "team": "sre", "tags": ["billing"],
+        "builtin": False, "created_by": "maker@example.com", "updated_by": "member@example.com",
+    }
+    parsed = parse_persona_body(storage.read_bytes("b", "aria-the-assistant/persona.md").decode())
+    assert parsed.who_they_are == "a steadier hand than before"
+    assert parsed.what_they_do.endswith("And one more line.")
+    assert parsed.rules[-1] == "Never round a figure."
+
+    seed_default_personas(storage, bucket="b")
+    with pytest.raises(PersonaError, match="built-in"):
+        update_persona(
+            storage, bucket="b", persona_id="helpful-generalist",
+            who_they_are="someone else", what_they_do=HOUSE_WHAT_THEY_DO, rules=list(HOUSE_RULES),
+        )
 
 
 def test_seed_default_personas_never_overwrites_existing_object():
@@ -5998,7 +6094,8 @@ SKILL_ENTRIES__api_personas = [
 VALID_PAYLOAD = {
     "name": "Aria the Assistant",
     "who_they_are": "a calm troubleshooter for billing questions",
-    "what_they_do": "Help customers troubleshoot billing issues.",
+    "what_they_do": HOUSE_WHAT_THEY_DO,
+    "rules": list(HOUSE_RULES),
     # "shared" (Task 2's team middle gate): every test below that doesn't
     # care about team-gating posts through the plain `client` fixture with
     # no identity at all, and must land on the gate's no-membership-required

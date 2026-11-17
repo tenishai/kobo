@@ -68,6 +68,8 @@ from kobo_api.tooling import list_tooling
 from tests.fakes import (
     FAKE_DEPLOYMENT_STATUS_SETTLED,
     FAKE_LOCAL_HEAD_DEFAULT,
+    HOUSE_RULES,
+    HOUSE_WHAT_THEY_DO,
     FakeAgent,
     FakeBab,
     FakeCabal,
@@ -3247,7 +3249,7 @@ def _seed_persona(
     *,
     name: str,
     who_they_are: str = "a calm, capable colleague",
-    what_they_do: str = "Helps out wherever needed.",
+    what_they_do: str = HOUSE_WHAT_THEY_DO,
     team: str = "shared",
     creator_email: str = MEMBER_A_EMAIL,
 ) -> dict:
@@ -3265,7 +3267,7 @@ def _seed_persona(
 
     create_persona_endpoint = _endpoint(app, "POST", "/api/personas")
     payload = CreatePersonaRequest(
-        name=name, who_they_are=who_they_are, what_they_do=what_they_do, team=team
+        name=name, who_they_are=who_they_are, what_they_do=what_they_do, rules=list(HOUSE_RULES), team=team
     )
     req = authz.room_request(app, creator_email)
     session = session_factory__mcp_tools_read()
@@ -3654,34 +3656,32 @@ def test_add_agent_tool_is_marked_destructive(session_factory__mcp_tools_write, 
     assert tool.annotations.destructiveHint is True
 
 
-def test_create_persona_rules_none_explicit_succeeds(session_factory__mcp_tools_write, config__mcp_tools_write, fake_storage__mcp_tools_write):
-    """Wire shape: Create persona rules none explicit succeeds.
+def test_create_persona_without_rules_is_refused_in_plain_words(session_factory__mcp_tools_write, config__mcp_tools_write, fake_storage__mcp_tools_write):
+    """Wire shape: Create persona without rules is refused in plain words.
 
     WHY this test exists: FastMCP materializes every declared default at
     call time, so a caller who never mentions `rules` at all still sends
     `rules=None` into the tool body -- there is no "key omitted" case
     inside the function, only "rules is None" or "rules is a list".
     `CreatePersonaRequest.rules` (kobo_api.main/kobo_api.personas) is
-    typed `list[str]` with `Field(default_factory=list)`, NOT
-    `Optional[list[str]]` -- passing `None` straight through raises a
-    pydantic `ValidationError`. `write.py`'s own `rules=rules or []` is
-    the ONLY thing standing between the common, rules-less call and that
-    failure. This test pins that guard directly, with `rules=None` passed
-    explicitly, against a future "simplification" to plain `rules=rules`
-    that would quietly break every rules-less `kobo_create_persona` call."""
+    typed `list[str]`, NOT `Optional[list[str]]` -- passing `None` straight
+    through raises a pydantic `ValidationError`, which reads as a type
+    complaint about a field the caller never sent. `write.py`'s own
+    `rules=rules or []` is what lets the call reach the room, whose answer
+    (2026-11-17: a persona carries at least three rules) says what to do.
+    The same call with rules is created."""
     app = _app__mcp_tools_write(session_factory__mcp_tools_write, config__mcp_tools_write, groups_resolver=_resolver__mcp_tools_write(), storage=fake_storage__mcp_tools_write)
     mcp = build_mcp_server(app)
+    call = {
+        "name": "Quiet Auditor",
+        "who_they_are": "an unassuming reviewer",
+        "what_they_do": HOUSE_WHAT_THEY_DO,
+    }
 
-    result = _call_tool(
-        mcp,
-        "kobo_create_persona",
-        _ctx_for(MEMBER_A_EMAIL),
-        name="Quiet Auditor",
-        who_they_are="an unassuming reviewer",
-        what_they_do="Check the numbers without commentary.",
-        rules=None,
-    )
+    with pytest.raises(Exception, match="a persona needs at least 3 rules"):
+        _call_tool(mcp, "kobo_create_persona", _ctx_for(MEMBER_A_EMAIL), **call, rules=None)
 
+    result = _call_tool(mcp, "kobo_create_persona", _ctx_for(MEMBER_A_EMAIL), **call, rules=list(HOUSE_RULES))
     assert result["id"] == "quiet-auditor"
     assert result["team"] == "shared"
 
@@ -4126,7 +4126,8 @@ def _fields(**overrides) -> PersonaFields:
     base = {
         "name": "Aria the Assistant",
         "who_they_are": "a calm troubleshooter for billing questions",
-        "what_they_do": "Help customers fix billing problems quickly.",
+        "what_they_do": HOUSE_WHAT_THEY_DO,
+        "rules": list(HOUSE_RULES),
     }
     base.update(overrides)
     return PersonaFields(**base)

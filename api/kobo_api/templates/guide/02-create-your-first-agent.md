@@ -10,7 +10,7 @@ Choose **Build an agent**. The create form is one column with four fields.
 
 ## 1. Persona
 
-A persona is who the agent is: its manner, its judgment, and the work it does. The list opens with the room's five **built-in** personas. Below them, a pill for each group that has personas of its own; press one to see them. The search box filters by name and description.
+A persona is who the agent is: its manner, its judgment, and the work it does. The list opens with the room's five **built-in** personas. Above it, a pill for each group that has personas of its own; press one to see them. The search box looks across every group by name and description.
 
 Rest your pointer on a persona to see its card, and **Read the full persona** for all of it. If nothing fits, **Build your own persona** opens the persona builder without leaving the form. See "Personas".
 

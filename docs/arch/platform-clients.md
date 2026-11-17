@@ -1,12 +1,12 @@
 ---
 card: arch-card:kobo-platform-clients
-updated: 2026-11-16
-anchor: api/kobo_api/clients.py sha=616f161ea5d904165df0581cad29d3cd956ba361
-anchor: api/tests/fakes.py sha=a96f0c287128eaa78a35b67aef12d9aed35afe1e
+updated: 2026-11-17
+anchor: api/kobo_api/clients.py sha=b0a4ef5448030cbc20a099c40f96b89ac8325921
+anchor: api/tests/fakes.py sha=b44313e08c348f1c400314976991355c52335235
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
-WHAT / SEAM: api/kobo_api/clients.py. The outside systems in the table below are reached through a `typing.Protocol` (cabal is a concrete class), and code depends on the Protocol, never the backend. Four outside calls do NOT: they use httpx directly, are not in `Clients`, and have no fake in tests/fakes.py: mcp/oauth_as.py (Google token exchange), iap.py (JWKS fetch), github_app.py (installation token), bootstrap.py (catalog refresh POST). The `Clients` dataclass (l.~4782) is the bag handed to steps and routes (`app.state.clients`, `Ctx.clients`).
+WHAT / SEAM: api/kobo_api/clients.py. The outside systems in the table below are reached through a `typing.Protocol` (cabal is a concrete class), and code depends on the Protocol, never the backend. Four outside calls do NOT: they use httpx directly, are not in `Clients`, and have no fake in tests/fakes.py: mcp/oauth_as.py (Google token exchange), iap.py (JWKS fetch), github_app.py (installation token), bootstrap.py (catalog refresh POST). The `Clients` dataclass (l.~5593) is the bag handed to steps and routes (`app.state.clients`, `Ctx.clients`).
 | field | Protocol | real impl | fake (tests/fakes.py) |
 |---|---|---|---|
 | github | `GitHubClient` | `GhCLI` (shells `gh`/`git`) | `FakeGitHub` |
@@ -50,3 +50,4 @@ API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provid
 - `Clients.models_gateway` (kobo#390, 2026-11-02): the room's model gateway. Mint returns the key and the caller delivers it (`model_providers.deliver_models_key`, Secret `<agent>-models`, key `MODELS_GATEWAY_KEY`, through sero when wired else `apply_secret`); revoke is by alias `agent:<name>` so the room never holds a key to take it back. Refusals carry `resp.text[:300]`, which is safe because no request of ours carries a key except the mint's answer, which is never in a raised message.
 - `GcloudClient.grant_bucket_prefix_write` (2026-11-06) waits out IAM propagation for a new account (`BUCKET_BINDING_PAUSES_S`, only on "Service account ... does not exist"); `revoke_bucket_prefix_write` takes both bindings back and destroy calls it BEFORE `delete_gsa` (a deleted account's bindings linger as `deleted:` members).
 - `FakeCloud.revoke_bucket_prefix_write` (2026-11-06) records the call and answers True, so destroy tests can pin that it runs before `delete_gsa`.
+- `NameClient.draft(job, rules)` (2026-11-17): the one persona-writing call. It returns `name`, `who_they_are`, `what_they_do`, `rules` and `purpose_tags`, with the body in the built-ins' shape, from a sentence or a pasted document alike, unchecked. `NameClient.distill` and `FakeName`'s distill half are gone with the paste-as-is path. The draft route is the only caller: it hands the reply (or None on `ClientError`) to `persona_draft.finalize_draft`, which checks each field and falls back on its own for any that fails.

@@ -106,18 +106,20 @@ describe("CreateModal — the persona list (plain-form wave)", () => {
 
     await fireEvent.click(link);
 
-    // The builder takes the whole form over, same as before.
-    expect(
-      await screen.findByLabelText("What should this agent do for you?"),
-    ).not.toBeNull();
+    // The builder takes the whole dialog over, and the title says so.
+    expect(await screen.findByLabelText("What they do")).not.toBeNull();
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
-    expect(screen.queryByLabelText("Name")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Build your own persona" })).not.toBeNull();
+    expect(screen.queryByPlaceholderText("Search personas")).toBeNull();
     // The shell's pinned footer steps aside entirely: the builder draws its
-    // own sticky one inside the body, so the two are never both on screen.
+    // own sticky one inside the body, so the two are never both on screen,
+    // and the builder is a form of its own, never one inside the agent's.
     expect(
       container.querySelector(".modal__body")?.nextElementSibling,
     ).toBeNull();
-    expect(container.querySelectorAll(".btn--primary")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Create agent" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Create persona" })).not.toBeNull();
+    expect(container.querySelector("form form")).toBeNull();
   });
 
   it("draws a persona row as the name in plain text beside its one line, never as code", async () => {
@@ -632,49 +634,69 @@ describe("CreateModal — the persona hover card", () => {
 });
 
 
-describe("CreateModal — five built-ins lead, group personas sit behind pills (2026-09-29)", () => {
+describe("CreateModal — persona groups are pills above the list (2026-11-17)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
 
   const SCRIBE = { id: "scribe", name: "Scribe", description: "Writes things down.", team: "sre", tags: [], builtin: false };
   const QA_CRITIC = { id: "qa-critic", name: "QA Critic", description: "Finds the bug first.", team: "qa", tags: [], builtin: false };
+  const PAPI = { id: "papi-triager", name: "papi-triager", description: "Sorts the alerts.", team: "shared", tags: [], builtin: false };
+  const LEDGER = { id: "ledger", name: "ledger", description: "Keeps the books.", team: "sre", tags: [], builtin: false };
+  const CATALOG = [QA_CRITIC, PAPI, SCRIBE, HELPER];
 
-  /** The whole catalog, team rows first on purpose: the list's grouping,
-   * not the payload order, puts built-ins on top and team rows behind pills. */
+  /** The whole catalog in no useful order, searched the way the room
+   * does it (by name), for someone in sre. A created persona is answered
+   * and then NOT added to the search: the list's refetch lags the create,
+   * which is the moment its maker must still see it. */
   function stubWholeCatalog(): void {
     stubCreateModalCatalogs();
     const catalogs = vi.mocked(fetch).getMockImplementation()!;
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.includes("/api/personas/search")) {
-          expect(new URL(url, "http://room").searchParams.get("scope")).toBe("all");
-          return new Response(JSON.stringify({ results: [QA_CRITIC, SCRIBE, HELPER] }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
+          const params = new URL(url, "http://room").searchParams;
+          expect(params.get("scope")).toBe("all");
+          const q = (params.get("q") ?? "").toLowerCase();
+          return json({ results: CATALOG.filter((p) => p.name.toLowerCase().includes(q)) });
+        }
+        if (url.includes("/api/whoami")) {
+          return json({ email: "me@example.com", operator: false, groups: ["sre"] });
+        }
+        if (url === "/api/personas" && init?.method === "POST") {
+          return json(LEDGER, 201);
         }
         return catalogs(input, init);
       }),
     );
   }
 
-  it("shows the built-ins, then a pill per group, and no group persona until a pill is pressed", async () => {
+  function pillLabels(): (string | undefined)[] {
+    const pills = screen.getByRole("group", { name: "Persona groups" });
+    return Array.from(pills.querySelectorAll("button")).map((b) => b.textContent?.trim());
+  }
+
+  it("shows every group as a pill above the list: Built-in pressed, the person's own group next, Everyone last", async () => {
     stubWholeCatalog();
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
 
     await screen.findByRole("radio", { name: /Helper/i });
-    expect(screen.getByText("Built-in")).not.toBeNull();
-    const pills = screen.getByRole("group", { name: "Group personas" });
-    const labels = Array.from(pills.querySelectorAll("button")).map((b) => b.textContent?.trim());
-    expect(labels).toEqual(["qa", "sre"]);
-    expect(screen.queryByRole("radio", { name: /QA Critic/i })).toBeNull();
+    await waitFor(() => expect(pillLabels()).toEqual(["Built-in", "sre", "qa", "Everyone"]));
+    const pills = screen.getByRole("group", { name: "Persona groups" });
+    // Outside the scrolling box, so no group is ever below the fold.
+    expect(pills.closest('[role="radiogroup"]')).toBeNull();
+    expect(screen.getByRole("button", { name: "Built-in" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.queryByRole("radio", { name: /Scribe/i })).toBeNull();
   });
 
-  it("a pressed pill shows that group's personas, and pressing it again hides them", async () => {
+  it("a pressed pill shows that group's personas in place of the last one's", async () => {
     stubWholeCatalog();
     renderWithClient(CreateModal, { open: true, onclose: () => {} });
     await screen.findByRole("radio", { name: /Helper/i });
@@ -682,17 +704,47 @@ describe("CreateModal — five built-ins lead, group personas sit behind pills (
     const qa = screen.getByRole("button", { name: "qa" });
     await fireEvent.click(qa);
     expect(qa.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Built-in" }).getAttribute("aria-pressed")).toBe("false");
     expect(await screen.findByRole("radio", { name: /QA Critic/i })).not.toBeNull();
-    expect(screen.queryByRole("radio", { name: /Scribe/i })).toBeNull();
+    expect(screen.queryByRole("radio", { name: /Helper/i })).toBeNull();
+  });
 
-    await fireEvent.click(screen.getByRole("button", { name: "sre" }));
-    expect(await screen.findByRole("radio", { name: /Scribe/i })).not.toBeNull();
-    expect(screen.queryByRole("radio", { name: /QA Critic/i })).toBeNull();
+  // Incident, 2026-11-17: someone made a persona named papi-triager, could
+  // not find it in the list or by searching, made it again and was told
+  // the name was taken. It was filed under Everyone; a search narrowed the
+  // pills to that group and still showed no row until the pill was pressed.
+  it("a search lists every match as a row under its group's name, with no pill to press first", async () => {
+    stubWholeCatalog();
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+    await screen.findByRole("radio", { name: /Helper/i });
 
-    await fireEvent.click(screen.getByRole("button", { name: "sre" }));
-    await waitFor(() => {
-      expect(screen.queryByRole("radio", { name: /Scribe/i })).toBeNull();
-    });
+    await fireEvent.input(screen.getByLabelText("Search personas"), { target: { value: "papi" } });
+
+    const row = await screen.findByRole("radio", { name: /papi-triager/i }, { timeout: 2000 });
+    expect(row.closest('[role="radiogroup"]')?.querySelector(".list__group")?.textContent).toBe("Everyone");
+    expect(screen.queryByRole("group", { name: "Persona groups" })).toBeNull();
+  });
+
+  it("a persona made here is picked and on screen under its own group, before the list has caught up", async () => {
+    stubWholeCatalog();
+    renderWithClient(CreateModal, { open: true, onclose: () => {} });
+    await screen.findByRole("radio", { name: /Helper/i });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Build your own persona" }));
+    const fill = async (label: string, value: string) =>
+      fireEvent.input(await screen.findByLabelText(label), { target: { value } });
+    await fill("Name", "ledger");
+    await fill("Who they are", "a careful keeper of the books");
+    await fill("What they do", "Keeps the books straight for the team. ".repeat(9));
+    await fill("Rules", "Never round.\nAlways cite the entry.\nAsk before closing a month.");
+    const create = screen.getByRole("button", { name: "Create persona" }) as HTMLButtonElement;
+    await waitFor(() => expect(create.disabled).toBe(false));
+    await fireEvent.click(create);
+
+    const made = (await screen.findByRole("radio", { name: /ledger/i })) as HTMLInputElement;
+    expect(made.checked).toBe(true);
+    expect(screen.getByRole("button", { name: "sre" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("radio", { name: /Scribe/i })).not.toBeNull();
   });
 });
 

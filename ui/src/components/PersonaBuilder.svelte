@@ -1,174 +1,144 @@
 <script lang="ts">
-  // Inline "create a new persona" form: swapped in for CreateModal's persona
-  // search list when the user picks its "Build your own" card. Persona-first
-  // station addendum: the PRIMARY path is now "the operator already has a
-  // full persona document" (pasted or uploaded) - describing a job and
-  // letting the room draft one is the secondary path, below it. Still a
-  // two-step form: step 1 gathers a starting point one way or another, step
-  // 2 is the same editable preview regardless of which way it arrived.
+  // The persona form: one screen, for making a persona and for editing one.
   //
-  // Step 1 ("draft" - the state name predates this addendum, the primary
-  // path inside it isn't drafting at all any more):
-  //   - PRIMARY, top: "Their persona" - a paste textarea plus the existing
-  //     .md/.txt upload, both writing straight into `whatTheyDo` (the
-  //     document itself already IS the persona body - there's nothing to
-  //     draft for that field). "Continue" (enabled once there's a body)
-  //     advances to step 2 IMMEDIATELY, then fires `POST
-  //     /api/personas/distill` (`distillPersonaMutation`) in the
-  //     background to pull discovery metadata - name/who_they_are/
-  //     purpose_tags - out of the document; see `continueWithPersonaBody`.
-  //     A quiet "start with a blank form" link skips straight to step 2
-  //     with nothing filled at all, for an operator who wants to type
-  //     everything by hand.
-  //   - Rules (optional) sits between the two paths - rules are constraints
-  //     on the agent, orthogonal to how its persona body arrives, so both
-  //     paths share the same `rulesInput`.
-  //   - SECONDARY, bottom: "No persona yet? Describe the job and kobo
-  //     drafts one." - the original ONE required textarea, unchanged.
-  //     "Draft persona" posts it (+ rules) to `POST /api/personas/draft`
-  //     (`draftPersonaMutation`, a pure generator call with no cache
-  //     invalidation of its own — nothing is created yet) and gets back a
-  //     name/who_they_are/what_they_do the room came up with on its own.
+  // Rebuilt 2026-11-17. What it replaced was two steps with three ways in
+  // (paste a document, describe a job, start blank), two upload buttons and
+  // a preview nobody could tell from the first step. People could not see
+  // at a glance what to add or how much, and what they made did not read
+  // like the room's own personas: a pasted document went in as it was, and
+  // a one-line job description became a one-line persona.
   //
-  // Step 2 ("preview"): the SAME four v2 fields (name/who they are/what
-  // they do/rules). Reads correctly for any of three arrivals: job-drafted
-  // ("Here's their draft. Edit anything.", `draftSucceeded`), a persona
-  // document that's mid-distill or just failed to distill (a quiet inline
-  // note near Name/Who they are - "Reading their persona…" while
-  // `distillMutation` is in flight, "Could not read the persona. Fill
-  // these in yourself." on its error, nothing once it lands), or a blank
-  // start (the same generic "Fill in anything that's missing" intro every
-  // non-drafted arrival already used). No-clobber either way: a drafted or
-  // distilled field only ever fills one that's still empty
-  // (`mergeDraftFields`/`mergeDistillFields`, ../lib/validate). Rules
-  // passes through verbatim from step 1 (the same `rulesInput` state feeds
-  // every path and this preview, so there's nothing to re-type). Create
-  // persona itself is the untouched v2 flow: same `createPersonaMutation`,
-  // same validation, same 409 handling. A quiet "start over" link drops
-  // back to step 1, clearing everything.
+  // So the form is the persona. Four parts, top to bottom, the same four a
+  // built-in has, each with one line saying what goes there and how much:
+  //   Name          one or two words
+  //   Who they are  one line
+  //   What they do  the body, in the room's shape
+  //   Rules         one per line
+  // and the group it is filed under.
   //
-  // Draft-in-flight disables the "Draft persona" button ("Drafting…"); a
-  // genuine draft *failure* (network/5xx — the endpoint itself always 200s
-  // with something creatable, per `kobo_api.main.draft_persona_route`)
-  // still lands on step 2, just with all four fields empty and an error
-  // message up top — the classic four-field form as a fallback the
-  // operator can fill in by hand rather than a dead end. A distill
-  // *failure* (same "endpoint always 200s" contract,
-  // `kobo_api.main.distill_persona_route`) is quieter still: no blocking
-  // error banner, just the inline note above, since the operator already
-  // has their persona body in hand either way — only the two extra fields
-  // stay empty for them to type.
+  // Above them, when making one, a single optional box: describe the job or
+  // paste what you already have, press Draft persona, and the room writes
+  // all four parts in that shape (`POST /api/personas/draft`). It is a way
+  // to fill the form, not a step. A draft fills what is empty and refreshes
+  // what an earlier draft wrote; anything a person typed stays
+  // (`mergeDraftFields`). A draft that fails says so and leaves the form
+  // alone.
   //
-  // Modal idiom wave (2026-09-23): the fields read from the shared `.field`
-  // classes and both steps end in one action row -- "Start with a blank
-  // form" (step 1) and "Start over" (step 2) are the quiet button on its
-  // left, Cancel and the step's own finishing button on its right. The row
-  // is sticky inside the create dialog's scrolling body rather than handed
-  // to the shell's footer: this form is swapped in for the persona list,
-  // inside that body, and while it is up the dialog's own footer is not --
-  // so the one filled button in the dialog is this form's (Continue at step
-  // 1, since a persona somebody already wrote is the primary path; Create
-  // persona at step 2).
+  // The room keeps a floor so a persona is enough for an agent to work
+  // from (`kobo_api.personas.check_substance`). `personaMissing` mirrors it
+  // and names the next thing the form needs in one sentence above the
+  // footer, the way the create form does. The server is still the check.
   //
-  // This component owns only its own form fields plus the mutations that
-  // post them — it does NOT own the "which persona is selected" or "am I
-  // showing the list or the builder" state, both of which stay in
-  // CreateModal (this is the thing that swaps in and out, not the thing
-  // deciding when to swap).
+  // Group: a new persona is filed under its maker's group, never the
+  // commons by default. The Group already picked on the create form, or
+  // the pill pressed in the persona list, when the maker may file there;
+  // else their one group; someone in several chooses. Everyone is last,
+  // and the default only for someone in no group at all. The server's gate
+  // is the real check, and a refusal reads as one sentence.
   //
-  // "Who is this persona for?" (persona team scope, operator ruling: "most
-  // personas are created under the shared tag; they should be scoped to
-  // the group that created them"): a select of the caller's own groups
-  // (whoami's `groups`, the config names the create form's Group select
-  // also lists) plus "Everyone (shared)", sent as `team` on create. An
-  // operator sees every group the room has named (`groupsQuery`). The
-  // default is the Group already picked on the create form when the caller
-  // is in it (`defaultTeam`), else their only group when they have exactly
-  // one, else everyone. The server's team gate is still the real check; a
-  // refusal from it reads as one plain sentence.
+  // Editing (`editId`) is the same form over a stored persona: the text is
+  // read whole, the name and the group stay as they are, and Save changes
+  // goes to `PUT /api/personas/{id}`.
   //
-  // `oncreated` hands back the full created CatalogEntry, not just its id
-  // (create flow v2 "naming ceremony" addendum): CreateModal selects this
-  // persona the moment it lands, and reading it back off the persona
-  // search cache would race that cache's own debounced refetch after this
-  // mutation's `invalidateQueries` — the mutation result is already sitting
-  // right here, so CreateModal just takes it directly instead.
-  //
-  // `oncreated`'s second argument (persona-metadata plan, 2026-08-18) is
-  // whatever purpose tags the draft/distill step came up with
-  // (`draft.purpose_tags`/`distilled.purpose_tags`) — captured at that time
-  // and carried through step 2 untouched, so CreateModal can pre-fill its
-  // own chips editor the moment this persona is actually created. `[]` when
-  // neither happened, or either one failed (the classic empty fallback
-  // form).
-  //
-  // There used to be a third argument, and a name-suggestions prefetch at
-  // the "Create persona" click to go with it: the create dialog's old
-  // naming station asked a generator for three names, and this was the
-  // earliest moment its who/what pair was final. The plain-form wave
-  // retired that station -- a person types the name now -- so both are
-  // gone, and a persona create no longer starts a generator call nobody
-  // will read the result of.
+  // This is drawn inside the create dialog's body in place of the persona
+  // list, so it brings its own action row, sticky at the bottom of that
+  // body; while it is up the dialog's own footer is not. Which persona is
+  // selected, and whether the list or this form is showing, stay with
+  // CreateModal. `oncreated` hands back the created entry itself, since
+  // reading it off the list's cache would race that cache's refetch.
+  import { onMount } from "svelte";
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import {
-    ApiError,
-    errorMessage,
-    type CatalogEntry,
-    type PersonaForm,
-  } from "../lib/api";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import { Input } from "$lib/components/ui/input/index.js";
+  import { Label } from "$lib/components/ui/label/index.js";
+  import ErrorState from "./ErrorState.svelte";
+  import Skeleton from "./Skeleton.svelte";
+  import { ApiError, errorMessage, type CatalogEntry } from "../lib/api";
   import {
     createPersonaMutation,
-    distillPersonaMutation,
     draftPersonaMutation,
     groupsQuery,
+    personaFullQuery,
+    updatePersonaMutation,
     whoamiQuery,
   } from "../lib/queries";
   import {
-    mergeDistillFields,
+    EMPTY_PERSONA_TEXT,
     mergeDraftFields,
+    personaGroupLabel,
+    personaMissing,
     personaTeamOptions,
     splitLines,
+    type PersonaText,
   } from "../lib/validate";
 
   let {
     oncancel,
-    oncreated,
+    oncreated = () => {},
+    onsaved = () => {},
     defaultTeam = null,
+    editId = null,
   }: {
     oncancel: () => void;
-    oncreated: (persona: CatalogEntry, purposeTags: string[]) => void;
-    /** The Group already chosen on the create form, if any. */
+    /** A persona was made. The tags are the draft's, `[]` without one. */
+    oncreated?: (persona: CatalogEntry, purposeTags: string[]) => void;
+    /** An edit was saved. */
+    onsaved?: (persona: CatalogEntry) => void;
+    /** The group to offer first: the create form's, or the pressed pill's. */
     defaultTeam?: string | null;
+    /** Edit this persona instead of making one. */
+    editId?: string | null;
   } = $props();
 
   const queryClient = useQueryClient();
-  const draftMutation = createMutation(() => (draftPersonaMutation()));
-  // Persona-first station addendum: fired in the background the moment the
-  // operator hands over a ready-made persona document (paste or upload) and
-  // clicks Continue - never blocks the advance to step 2, see
-  // `continueWithPersonaBody` below.
-  const distillMutation = createMutation(() => (distillPersonaMutation()));
-  const mutation = createMutation(() => (createPersonaMutation(queryClient)));
+  const draftMutation = createMutation(() => draftPersonaMutation());
+  const createMut = createMutation(() => createPersonaMutation(queryClient));
+  const saveMut = createMutation(() => updatePersonaMutation(queryClient));
 
-  let step = $state<"draft" | "preview">("draft");
+  const editing = $derived(editId !== null);
+  const stored = createQuery(() => personaFullQuery(editId));
 
-  // --- Who the persona is for ----------------------------------------------
+  let text = $state<PersonaText>({ ...EMPTY_PERSONA_TEXT });
+  /** What each field last received from a draft; see `mergeDraftFields`. */
+  let drafted = $state<PersonaText>({ ...EMPTY_PERSONA_TEXT });
+  let draftedTags = $state<string[]>([]);
+
+  // The stored text seeds the form once. A refetch behind an open form
+  // must not write over what is being typed.
+  let seeded = false;
+  $effect(() => {
+    const data = stored.data;
+    if (editId === null || data === undefined || seeded) {
+      return;
+    }
+    seeded = true;
+    text = {
+      name: data.name,
+      whoTheyAre: data.who_they_are,
+      whatTheyDo: data.what_they_do,
+      rules: data.rules.join("\n"),
+    };
+  });
+
+  // --- The group it is filed under -----------------------------------------
 
   const SHARED_TEAM = "shared";
   const whoami = createQuery(() => whoamiQuery());
   const isOperator = $derived(whoami.data?.operator === true);
   const roomGroups = createQuery(() => ({ ...groupsQuery(), enabled: isOperator }));
-
-  const myGroups = $derived(
-    (whoami.data?.groups ?? []).filter((g) => g !== SHARED_TEAM),
-  );
+  const myGroups = $derived((whoami.data?.groups ?? []).filter((g) => g !== SHARED_TEAM));
   const teamOptions = $derived(personaTeamOptions(whoami.data, roomGroups.data));
+  /** `null` asks the person to choose. */
   const suggestedTeam = $derived(
-    defaultTeam && (defaultTeam === SHARED_TEAM || teamOptions.includes(defaultTeam))
-      ? defaultTeam
-      : myGroups.length === 1
-        ? myGroups[0]
-        : SHARED_TEAM,
+    whoami.isPending
+      ? null
+      : defaultTeam && teamOptions.includes(defaultTeam)
+        ? defaultTeam
+        : myGroups.length === 1
+          ? myGroups[0]
+          : teamOptions.length === 0
+            ? SHARED_TEAM
+            : null,
   );
   let teamOverride = $state<string | null>(null);
   const selectedTeam = $derived(teamOverride ?? suggestedTeam);
@@ -176,647 +146,390 @@
   const TEAM_REFUSED =
     "You are not in that group, so the persona can't be filed there. Pick one of your groups, or Everyone.";
 
-  // Tracks whether step 2 was reached via a successful draft, as opposed to
-  // a bring-your-own-persona upload/paste or a draft that failed - purely a
-  // copy switch for step 2's intro line below, so it never describes a
-  // draft that doesn't exist.
-  let draftSucceeded = $state(false);
+  // --- Start from a description --------------------------------------------
 
-  // Rules count cap (upload/limits addendum): mirrors PersonaFields.rules'
-  // own Field(max_length=150) (kobo_api/personas.py) — the per-rule length
-  // cap that used to live beside it is gone (the merged persona.md's own
-  // 200-line/49152-byte gate is the real ceiling now, checked server-side
-  // against the actual rendered file, not a per-field lookalike), so this
-  // is the only client-side rules number left worth mirroring.
-  const RULES_MAX = 150;
+  // The persona size ceiling, which is also the most the draft route reads.
+  const SOURCE_MAX = 49152;
+  const READ_FAILED = "Couldn't read this file. Try another.";
 
-  // --- Step 1: one plain question -----------------------------------------
+  let source = $state("");
+  let sourceEl: HTMLTextAreaElement | undefined = $state();
+  let fileInput: HTMLInputElement | undefined = $state();
+  let draftNote = $state<{ ok: boolean; message: string } | null>(null);
+  const DRAFT_FAILED = "Couldn't draft a persona right now. Fill in the parts yourself below.";
 
-  let job = $state("");
-  let rulesInput = $state("");
-  let draftError = $state<string | null>(null);
-  let rulesFileError = $state<string | null>(null);
+  const canDraft = $derived(source.trim().length > 0 && !draftMutation.isPending);
 
-  const trimmedJob = $derived(job.trim());
-
-  // Shown only once there's something to say about it, same convention
-  // every other field-level error in this room uses.
-  const jobError = $derived(
-    trimmedJob.length > 500 ? "Keep it to 500 characters or fewer." : null,
-  );
-
-  const rules = $derived(splitLines(rulesInput));
-
-  const rulesError = $derived(
-    rules.length > RULES_MAX ? `Use up to ${RULES_MAX}, one per line.` : null,
-  );
-
-  const canDraft = $derived(
-    trimmedJob.length > 0 &&
-      trimmedJob.length <= 500 &&
-      rules.length <= RULES_MAX &&
-      !draftMutation.isPending,
-  );
-
-  /** Mirrors MemoryPanel.svelte's own `handleFileSelect` idiom exactly: read
-   * the chosen file as text, drop it straight into `rulesInput` (an upload
-   * is an explicit act - replacing whatever was typed there is expected),
-   * and surface the same plain failure copy on a read error. */
-  function handleRulesFileSelect(event: Event): void {
-    const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) {
+  function handleDraft(): void {
+    const job = source.trim();
+    if (job.length === 0 || draftMutation.isPending) {
       return;
     }
-    rulesFileError = null;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        rulesInput = e.target?.result as string;
-      } catch {
-        rulesFileError = "Couldn't read this file. Try another.";
-      }
-    };
-    reader.onerror = () => {
-      rulesFileError = "Couldn't read this file. Try another.";
-    };
-    reader.readAsText(file);
-  }
-
-  // --- Step 2: the editable preview ----------------------------------------
-
-  let name = $state("");
-  let whoTheyAre = $state("");
-  let whatTheyDo = $state("");
-  let submitError = $state<string | null>(null);
-  let whatTheyDoFileError = $state<string | null>(null);
-
-  /** Same read-as-text idiom as `handleRulesFileSelect` above, for the
-   * persona body textarea. */
-  function handleWhatTheyDoFileSelect(event: Event): void {
-    const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) {
+    if (job.length > SOURCE_MAX) {
+      draftNote = { ok: false, message: "That is too long to draft from. Cut it down and try again." };
       return;
     }
-    whatTheyDoFileError = null;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        whatTheyDo = e.target?.result as string;
-      } catch {
-        whatTheyDoFileError = "Couldn't read this file. Try another.";
-      }
-    };
-    reader.onerror = () => {
-      whatTheyDoFileError = "Couldn't read this file. Try another.";
-    };
-    reader.readAsText(file);
-  }
-
-  // --- Their persona (step 1, PRIMARY - persona-first station addendum) ----
-  //
-  // An operator who arrives with a persona document already written (paste
-  // or upload, both writing into the very same `whatTheyDo` state step 2's
-  // textarea binds to) never wants the job-drafting step at all - this is
-  // the first thing they see, at the top of step 1. Both paths below skip
-  // `draftPersonaMutation` entirely, but - unlike the old "just advance"
-  // behavior this addendum replaces - Continue fires `distillMutation` in
-  // the background instead of leaving name/who-they-are for the operator to
-  // fill in unassisted; see `continueWithPersonaBody` below.
-
-  let personaFileError = $state<string | null>(null);
-
-  /** Advance to step 2 IMMEDIATELY (never wait on the network), then fire
-   * the distill mutation against whatever `whatTheyDo` holds right now, in
-   * the background. On success, fills ONLY the fields still empty
-   * (`mergeDistillFields`'s no-clobber rule - an operator who started
-   * typing Name or Who they are during the brief window before this lands
-   * never gets overwritten) and carries the distilled purpose tags through
-   * to `oncreated`, same as a job-drafted persona's tags. On error, the
-   * quiet inline note near those two fields (driven directly by
-   * `distillMutation.isError` in the markup below) is the only signal -
-   * no blocking error banner, since the operator's persona body is already
-   * safely sitting in the form either way.
-   */
-  function continueWithPersonaBody(): void {
-    draftError = null;
-    draftSucceeded = false;
-    draftedPurposeTags = [];
-    step = "preview";
-    distillMutation.mutate(whatTheyDo, {
-      onSuccess: (distilled) => {
-        const merged = mergeDistillFields({ name, whoTheyAre }, distilled);
-        name = merged.name;
-        whoTheyAre = merged.whoTheyAre;
-        draftedPurposeTags = distilled.purpose_tags;
-      },
-    });
-  }
-
-  /** The paste/Continue half of the primary path: does nothing while
-   * `whatTheyDo` is still empty (mirrors every other submit guard in this
-   * component - the button itself is also disabled the same way, this is
-   * defense-in-depth). */
-  function handleContinueClick(): void {
-    if (whatTheyDo.trim().length === 0) {
-      return;
-    }
-    continueWithPersonaBody();
-  }
-
-  /** Same read-as-text idiom as `handleWhatTheyDoFileSelect` above (same
-   * failure copy too), but triggered from step 1: it fills the very same
-   * `whatTheyDo` state, then continues exactly like a Continue click on
-   * the pasted-text path (advance immediately, distill in the background)
-   * - upload and paste are two doors into the one primary flow. */
-  function handlePersonaFileSelect(event: Event): void {
-    const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) {
-      return;
-    }
-    personaFileError = null;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        whatTheyDo = e.target?.result as string;
-        continueWithPersonaBody();
-      } catch {
-        personaFileError = "Couldn't read this file. Try another.";
-      }
-    };
-    reader.onerror = () => {
-      personaFileError = "Couldn't read this file. Try another.";
-    };
-    reader.readAsText(file);
-  }
-
-  /** The blank-start escape hatch: jump straight to the editable preview
-   * with every field exactly as it is - typically empty, aside from
-   * whatever rules were already typed or uploaded above - for an operator
-   * who wants to type everything by hand rather than paste/upload or
-   * describe a job. No draft, no distill. */
-  function startFromOwnText(): void {
-    draftSucceeded = false;
-    step = "preview";
-  }
-
-  // Persona-metadata plan: whatever the draft step's model call (or its
-  // deterministic fallback) came up with for purpose tags, carried through
-  // step 2 untouched and handed to `oncreated` once Create persona lands.
-  let draftedPurposeTags = $state<string[]>([]);
-
-  // Display-only cue (round 2 fix, carried over from v2): the server
-  // slugifies `name` on its own (`persona_id()`, kobo_api/personas.py)
-  // rather than rejecting an unexpected-charset name outright, so this
-  // doesn't feed `canCreate` below — nothing here gates submission, same
-  // as before. It exists purely so a name like "QAer" doesn't sail through
-  // the field with zero feedback.
-  const NAME_CHARSET_RE = /^[a-z0-9-]+$/;
-  // Short-names ruling: the room refuses a name past three words
-  // (PERSONA_NAME_MAX_WORDS, kobo_api/personas.py). Say so while typing
-  // rather than after the round trip.
-  const NAME_MAX_WORDS = 3;
-  const nameWordCount = $derived((name.toLowerCase().match(/[a-z0-9]+/g) ?? []).length);
-  const nameHint = $derived(
-    name.trim().length > 0 && !NAME_CHARSET_RE.test(name.trim())
-      ? "Lowercase letters, numbers, and hyphens."
-      : nameWordCount > NAME_MAX_WORDS
-        ? "One or two words, three at most. The description carries the traits."
-        : null,
-  );
-
-  const canCreate = $derived(
-    name.trim().length > 0 &&
-      whoTheyAre.trim().length > 0 &&
-      whatTheyDo.trim().length > 0 &&
-      rules.length <= RULES_MAX &&
-      !mutation.isPending,
-  );
-
-  function handleDraftSubmit(event: SubmitEvent): void {
-    event.preventDefault();
-    if (!canDraft) {
-      return;
-    }
-    draftError = null;
+    draftNote = null;
+    // Rules the person typed are sent for the draft to keep. Rules an
+    // earlier draft wrote are not: they would come back as if hand-typed.
+    const ownRules = text.rules === drafted.rules ? [] : splitLines(text.rules);
     draftMutation.mutate(
-      { job: trimmedJob, rules },
+      { job, rules: ownRules },
       {
         onSuccess: (draft) => {
-          // No-clobber: operator text - typed, pasted, or uploaded - is
-          // never overwritten by a draft; a draft only ever fills in
-          // whatever field is still empty (mergeDraftFields, ../lib/validate,
-          // judges each field on its own).
-          const merged = mergeDraftFields({ name, whoTheyAre, whatTheyDo }, draft);
-          name = merged.name;
-          whoTheyAre = merged.whoTheyAre;
-          whatTheyDo = merged.whatTheyDo;
-          draftedPurposeTags = draft.purpose_tags;
-          draftSucceeded = true;
-          step = "preview";
+          // The model had no say: what came back is a stand-in cut from the
+          // source, not a persona in the house shape. Leave the form alone.
+          if (draft.generated === false) {
+            draftNote = { ok: false, message: DRAFT_FAILED };
+            return;
+          }
+          const merged = mergeDraftFields(text, drafted, draft);
+          text = merged.fields;
+          drafted = merged.drafted;
+          draftedTags = Array.isArray(draft.purpose_tags) ? draft.purpose_tags : [];
+          draftNote = { ok: true, message: "Drafted. Read it through and change anything." };
         },
-        onError: (error: unknown) => {
-          // The draft endpoint itself always 200s — a rejection here means
-          // a genuine network/5xx failure, not "the generator was down"
-          // (that's handled server-side with its own fallback). Reveal the
-          // classic four-field form so there's still a way forward - but
-          // never blank out anything the operator already typed, pasted,
-          // or uploaded, same no-clobber rule as the success path above.
-          draftError = errorMessage(
-            error,
-            "Couldn't draft a persona right now. Fill it in yourself below.",
-          );
-          draftedPurposeTags = [];
-          draftSucceeded = false;
-          step = "preview";
+        onError: () => {
+          draftNote = { ok: false, message: DRAFT_FAILED };
         },
       },
     );
   }
 
-  function startOver(): void {
-    step = "draft";
-    job = "";
-    rulesInput = "";
-    name = "";
-    whoTheyAre = "";
-    whatTheyDo = "";
-    draftedPurposeTags = [];
-    draftSucceeded = false;
-    draftError = null;
-    submitError = null;
-    // Clears a lingering "Reading their persona…"/"Could not read the
-    // persona" note from a prior visit to step 2 - without this, a distill
-    // that errored (or is still somehow pending) before "start over" was
-    // clicked would otherwise bleed its stale status into whichever path
-    // the operator picks next.
-    distillMutation.reset();
+  /** A file is another way to fill the box: its text lands there, and
+   * Draft persona is still the person's to press. */
+  function handleFile(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) {
+      return;
+    }
+    draftNote = null;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        source = reader.result;
+      } else {
+        draftNote = { ok: false, message: READ_FAILED };
+      }
+    };
+    reader.onerror = () => {
+      draftNote = { ok: false, message: READ_FAILED };
+    };
+    reader.readAsText(file);
+    // So picking the same file again still fires a change.
+    input.value = "";
   }
 
-  function handleCreateSubmit(event: SubmitEvent): void {
+  onMount(() => {
+    sourceEl?.focus();
+  });
+
+  // --- Create / save -------------------------------------------------------
+
+  let submitError = $state<string | null>(null);
+  const pending = $derived(createMut.isPending || saveMut.isPending);
+  const missing = $derived(
+    personaMissing(text, editing ? (stored.data?.team ?? SHARED_TEAM) : selectedTeam),
+  );
+  const canSubmit = $derived(
+    missing === null && !pending && (!editing || stored.data !== undefined),
+  );
+
+  function nameTaken(body: unknown): string {
+    const where = (body ?? {}) as { team?: unknown; archived?: unknown };
+    if (where.archived === true) {
+      return "A persona with that name was archived. Pick another name, or ask a room admin to bring it back.";
+    }
+    if (typeof where.team === "string" && where.team.length > 0) {
+      return `A persona with that name already exists. It is under ${personaGroupLabel(where.team)} in the persona list.`;
+    }
+    return "A persona with that name already exists.";
+  }
+
+  function handleSubmit(event: SubmitEvent): void {
     event.preventDefault();
-    if (!canCreate) {
+    if (!canSubmit) {
       return;
     }
     submitError = null;
-    const body: PersonaForm = {
-      name,
-      who_they_are: whoTheyAre,
-      what_they_do: whatTheyDo,
-      rules,
-      purpose_tags: draftedPurposeTags,
-      team: selectedTeam,
-    };
-    mutation.mutate(body, {
-      onSuccess: (created) => {
-        oncreated(created, draftedPurposeTags);
+    const rules = splitLines(text.rules);
+    if (editId !== null) {
+      saveMut.mutate(
+        {
+          id: editId,
+          body: { who_they_are: text.whoTheyAre, what_they_do: text.whatTheyDo, rules },
+        },
+        {
+          onSuccess: (saved) => onsaved(saved),
+          onError: (error: unknown) => {
+            submitError = errorMessage(error, "Something went wrong. Try again.");
+          },
+        },
+      );
+      return;
+    }
+    const tags = draftedTags;
+    createMut.mutate(
+      {
+        name: text.name,
+        who_they_are: text.whoTheyAre,
+        what_they_do: text.whatTheyDo,
+        rules,
+        purpose_tags: tags,
+        team: selectedTeam ?? SHARED_TEAM,
       },
-      onError: (error: unknown) => {
-        if (error instanceof ApiError && error.status === 409) {
-          // The server may already have this persona from an earlier
-          // attempt that landed but whose response never made it back here
-          // (a dropped connection, a refresh mid-request, ...) — pointing
-          // that out beats a bare "already exists" that leaves the user
-          // wondering whether to go look for it.
-          submitError =
-            "A persona with that name already exists. It may already be in the list.";
-        } else if (error instanceof ApiError && error.status === 403) {
-          submitError = TEAM_REFUSED;
-        } else {
-          submitError = errorMessage(error, "Something went wrong. Try again.");
-        }
+      {
+        onSuccess: (created) => oncreated(created, tags),
+        onError: (error: unknown) => {
+          if (error instanceof ApiError && error.status === 409) {
+            submitError = nameTaken(error.body);
+          } else if (error instanceof ApiError && error.status === 403) {
+            submitError = TEAM_REFUSED;
+          } else {
+            submitError = errorMessage(error, "Something went wrong. Try again.");
+          }
+        },
       },
-    });
+    );
   }
+
+  const WHAT_PLACEHOLDER = [
+    "The work and who it is for, in a short paragraph.",
+    "",
+    "Your ground: what you own, and what you leave to others.",
+    "",
+    "1. **A kind of request.** How you handle it.",
+    "2. **Another kind.** How you handle it.",
+    "",
+    "Tiebreaker: what wins when two of these pull apart.",
+  ].join("\n");
+
+  const RULES_PLACEHOLDER = [
+    "Never guess a number. Say what you checked.",
+    "Always name where a fact came from.",
+    "Ask before changing anything you were not asked to change.",
+  ].join("\n");
 </script>
 
-
-{#if step === "draft"}
-  <form class="modal__form" onsubmit={handleDraftSubmit}>
-    <div class="modal__section">
-      <div class="field__label-row">
-        <p class="field__label">Their persona</p>
-        <span class="field__label-actions">
-          <!-- The guide's own section, in a new tab so the form keeps
-               what has been typed. -->
-          <a
-            class="btn--link"
-            href="#/getting-started/personas"
-            target="_blank"
-            rel="noreferrer"
-          >
-            How personas work
-          </a>
-        </span>
-      </div>
-      <div class="field">
-        <label class="field__label" for="persona-builder-persona-body">
-          Paste their persona
-        </label>
-        <textarea
-          id="persona-builder-persona-body"
-          class="field__input"
-          bind:value={whatTheyDo}
-          rows="6"
-          placeholder="Paste the full document here."
-        ></textarea>
-      </div>
-      <div class="persona-builder__upload">
-        <label class="field__help" for="persona-builder-own-persona-file">
-          Upload persona file
-        </label>
-        <input
-          id="persona-builder-own-persona-file"
-          type="file"
-          accept=".md,.txt"
-          onchange={handlePersonaFileSelect}
-          aria-describedby="persona-builder-own-persona-file-status"
-        />
-        <div id="persona-builder-own-persona-file-status">
-          {#if personaFileError}
-            <p class="field__status field__status--error" role="alert">
-              {personaFileError}
-            </p>
-          {/if}
+<form class="modal__form" onsubmit={handleSubmit}>
+  {#if editing && stored.isPending}
+    <Skeleton rows={4} />
+  {:else if editing && stored.isError}
+    <ErrorState
+      message={errorMessage(stored.error, "Couldn't load this persona.")}
+      onretry={() => stored.refetch()}
+    />
+  {:else}
+    {#if !editing}
+      <div class="field persona-builder__start">
+        <div class="field__label-row">
+          <label class="field__label" for="persona-builder-source">
+            Start from a description
+            <span class="persona-builder__optional">Optional</span>
+          </label>
+          <span class="field__label-actions">
+            <!-- The guide's own section, in a new tab so the form keeps
+                 what has been typed. -->
+            <a
+              class="btn--link"
+              href="#/getting-started/personas"
+              target="_blank"
+              rel="noreferrer"
+            >
+              How personas work
+            </a>
+          </span>
         </div>
+        <textarea
+          id="persona-builder-source"
+          bind:this={sourceEl}
+          bind:value={source}
+          rows="3"
+          placeholder="Describe the job in a few sentences, or paste notes or a document you already have."
+          aria-describedby="persona-builder-source-help"
+        ></textarea>
+        <div class="persona-builder__start-row">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={!canDraft}
+            onclick={handleDraft}
+          >
+            {draftMutation.isPending ? "Drafting…" : "Draft persona"}
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onclick={() => fileInput?.click()}>
+            Upload a file
+          </Button>
+          <input
+            bind:this={fileInput}
+            type="file"
+            accept=".md,.txt"
+            hidden
+            tabindex="-1"
+            onchange={handleFile}
+          />
+        </div>
+        {#if draftNote}
+          <p
+            class="field__status"
+            class:field__status--ok={draftNote.ok}
+            class:field__status--error={!draftNote.ok}
+            role={draftNote.ok ? "status" : "alert"}
+          >
+            {draftNote.message}
+          </p>
+        {:else}
+          <p class="field__help" id="persona-builder-source-help">
+            Kobo writes the four parts below from it. Edit anything after.
+          </p>
+        {/if}
       </div>
+    {/if}
+
+    <div class="field">
+      <Label class="field__label" for="persona-builder-name">Name</Label>
+      <Input
+        id="persona-builder-name"
+        type="text"
+        bind:value={text.name}
+        maxlength={60}
+        placeholder="e.g. ledger-keeper"
+        autocomplete="off"
+        spellcheck="false"
+        disabled={editing}
+      />
+      <p class="field__help">
+        {#if editing}
+          A persona keeps its name.
+        {:else}
+          One or two words, like sentinel or ledger-keeper. The agent gets its
+          own name later.
+        {/if}
+      </p>
     </div>
 
     <div class="field">
-      <label class="field__label" for="persona-builder-rules">
-        Rules (optional)
-      </label>
+      <Label class="field__label" for="persona-builder-who">Who they are</Label>
+      <Input
+        id="persona-builder-who"
+        type="text"
+        bind:value={text.whoTheyAre}
+        maxlength={200}
+        placeholder="e.g. a careful keeper of the team's release notes"
+        autocomplete="off"
+      />
+      <p class="field__help">
+        One line. It finishes the sentence "You are [the agent's name], ..."
+      </p>
+    </div>
+
+    <div class="field">
+      <Label class="field__label" for="persona-builder-what">What they do</Label>
+      <textarea
+        id="persona-builder-what"
+        bind:value={text.whatTheyDo}
+        rows="12"
+        placeholder={WHAT_PLACEHOLDER}
+      ></textarea>
+      <p class="field__help">
+        The work, the ground it owns, each kind of request and how to handle
+        it, and what to do when unsure. Most personas run 25 to 45 lines.
+      </p>
+    </div>
+
+    <div class="field">
+      <Label class="field__label" for="persona-builder-rules">Rules</Label>
       <textarea
         id="persona-builder-rules"
-        class="field__input"
-        bind:value={rulesInput}
-        rows="3"
-        placeholder="One per line: things they always or never do."
-        aria-describedby="persona-builder-rules-status"
-        aria-invalid={rulesError !== null}
+        bind:value={text.rules}
+        rows="6"
+        placeholder={RULES_PLACEHOLDER}
       ></textarea>
-      <div class="persona-builder__upload">
-        <label class="field__help" for="persona-builder-rules-file">
-          Upload rules file
-        </label>
-        <input
-          id="persona-builder-rules-file"
-          type="file"
-          accept=".md,.txt"
-          onchange={handleRulesFileSelect}
-          aria-describedby="persona-builder-rules-file-status"
-        />
-        <div id="persona-builder-rules-file-status">
-          {#if rulesFileError}
-            <p class="field__status field__status--error" role="alert">
-              {rulesFileError}
-            </p>
-          {/if}
-        </div>
-      </div>
-      <p class="field__help">Up to {RULES_MAX}, one per line.</p>
-      <div id="persona-builder-rules-status">
-        {#if rulesError}
-          <p class="field__status field__status--error" role="alert">
-            {rulesError}
-          </p>
-        {/if}
-      </div>
+      <p class="field__help">
+        One per line: things it always or never does. At least 3, most
+        personas have 8 to 12.
+      </p>
     </div>
 
-    <div class="modal__section">
-      <p class="field__help">
-        No persona yet? Describe the job and Kobo drafts one.
-      </p>
+    {#if !editing}
       <div class="field">
-        <label class="field__label" for="persona-builder-job">
-          What should this agent do for you?
-        </label>
-        <textarea
-          id="persona-builder-job"
-          class="field__input"
-          bind:value={job}
-          rows="3"
-          aria-describedby="persona-builder-job-status"
-          aria-invalid={jobError !== null}
-        ></textarea>
-        <p class="field__help">A sentence or two, plain.</p>
-        <div id="persona-builder-job-status">
-          {#if jobError}
-            <p class="field__status field__status--error" role="alert">
-              {jobError}
-            </p>
-          {/if}
-        </div>
-      </div>
-    </div>
-
-    <!-- The builder's own footer. It is swapped in for the persona list
-         INSIDE the create dialog's scrolling body, which is why it is
-         sticky here rather than handed to the shell: while it is up, the
-         dialog's own footer is not, so this is the one action row and
-         Continue is the one filled button. -->
-    <div class="modal__footer modal__footer--inline">
-      <button type="button" class="btn btn--quiet" onclick={startFromOwnText}>
-        Start with a blank form
-      </button>
-      <div class="modal__actions">
-        <button type="button" class="btn btn--quiet" onclick={oncancel}>Cancel</button>
-        <button type="submit" class="btn" disabled={!canDraft}>
-          {draftMutation.isPending ? "Drafting…" : "Draft persona"}
-        </button>
-        <button
-          type="button"
-          class="btn btn--primary"
-          disabled={whatTheyDo.trim().length === 0}
-          onclick={handleContinueClick}
+        <Label class="field__label" for="persona-builder-team">Group</Label>
+        <select
+          id="persona-builder-team"
+          class="persona-builder__select"
+          value={selectedTeam ?? ""}
+          onchange={(event) =>
+            (teamOverride = (event.currentTarget as HTMLSelectElement).value)}
         >
-          Continue
-        </button>
+          <option value="" disabled>Choose a group</option>
+          {#each teamOptions as team (team)}
+            <option value={team}>{team}</option>
+          {/each}
+          <option value={SHARED_TEAM}>{personaGroupLabel(SHARED_TEAM)}</option>
+        </select>
+        <p class="field__help">
+          The persona is filed under this group in the persona list, and the
+          people in it can edit it.
+        </p>
       </div>
-    </div>
-  </form>
-{:else}
-  <form class="modal__form" onsubmit={handleCreateSubmit}>
-    <p class="field__help">
-      {draftSucceeded
-        ? "Here's their draft. Edit anything."
-        : "Fill in anything that's missing, then create."}
-    </p>
-
-    {#if draftError}
-      <p class="field__status field__status--error" role="alert">{draftError}</p>
     {/if}
+  {/if}
 
-    {#if distillMutation.isPending}
-      <p class="field__status">Reading their persona…</p>
-    {:else if distillMutation.isError}
-      <p class="field__status">Could not read the persona. Fill these in yourself.</p>
-    {/if}
-
-    <div class="field">
-      <label class="field__label" for="persona-builder-name">Name</label>
-      <input
-        id="persona-builder-name"
-        class="field__input"
-        type="text"
-        maxlength="60"
-        bind:value={name}
-        autocomplete="off"
-        aria-describedby="persona-builder-name-hint"
-      />
-      <p class="field__help">
-        One or two words, like "sentinel" or "ledger-keeper". Never a
-        hyphenated list of traits; the description below carries those.
-      </p>
-      <div id="persona-builder-name-hint">
-        {#if nameHint}
-          <p class="field__help">{nameHint}</p>
-        {/if}
-      </div>
-    </div>
-
-    <div class="field">
-      <label class="field__label" for="persona-builder-who-they-are">
-        Who they are
-      </label>
-      <input
-        id="persona-builder-who-they-are"
-        class="field__input"
-        type="text"
-        maxlength="200"
-        bind:value={whoTheyAre}
-        placeholder="an unflappable network detective who's seen every outage twice"
-        autocomplete="off"
-      />
-      <p class="field__help">
-        One vivid line: who is this agent?{#if whoTheyAre.length > 170}
-          {" "}({200 - whoTheyAre.length} characters left){/if}
-      </p>
-    </div>
-
-    <div class="field">
-      <label class="field__label" for="persona-builder-what-they-do">
-        What they do
-      </label>
-      <textarea
-        id="persona-builder-what-they-do"
-        class="field__input"
-        bind:value={whatTheyDo}
-        rows="3"
-      ></textarea>
-      <div class="persona-builder__upload">
-        <label class="field__help" for="persona-builder-what-they-do-file">
-          Upload body file
-        </label>
-        <input
-          id="persona-builder-what-they-do-file"
-          type="file"
-          accept=".md,.txt"
-          onchange={handleWhatTheyDoFileSelect}
-          aria-describedby="persona-builder-what-they-do-file-status"
-        />
-        <div id="persona-builder-what-they-do-file-status">
-          {#if whatTheyDoFileError}
-            <p class="field__status field__status--error" role="alert">
-              {whatTheyDoFileError}
-            </p>
-          {/if}
-        </div>
-      </div>
-      <p class="field__help">2-4 sentences, plain prose.</p>
-    </div>
-
-    <div class="field">
-      <label class="field__label" for="persona-builder-rules-preview">
-        Rules (optional)
-      </label>
-      <textarea
-        id="persona-builder-rules-preview"
-        class="field__input"
-        bind:value={rulesInput}
-        rows="3"
-        placeholder="One per line: things they always or never do."
-        aria-describedby="persona-builder-rules-preview-status"
-        aria-invalid={rulesError !== null}
-      ></textarea>
-      <div class="persona-builder__upload">
-        <label class="field__help" for="persona-builder-rules-preview-file">
-          Upload rules file
-        </label>
-        <input
-          id="persona-builder-rules-preview-file"
-          type="file"
-          accept=".md,.txt"
-          onchange={handleRulesFileSelect}
-          aria-describedby="persona-builder-rules-preview-file-status"
-        />
-        <div id="persona-builder-rules-preview-file-status">
-          {#if rulesFileError}
-            <p class="field__status field__status--error" role="alert">
-              {rulesFileError}
-            </p>
-          {/if}
-        </div>
-      </div>
-      <p class="field__help">Up to {RULES_MAX}, one per line.</p>
-      <div id="persona-builder-rules-preview-status">
-        {#if rulesError}
-          <p class="field__status field__status--error" role="alert">
-            {rulesError}
-          </p>
-        {/if}
-      </div>
-    </div>
-
-    <div class="field">
-      <label class="field__label" for="persona-builder-team">
-        Who is this persona for?
-      </label>
-      <select
-        id="persona-builder-team"
-        class="field__input"
-        value={selectedTeam}
-        onchange={(event) =>
-          (teamOverride = (event.currentTarget as HTMLSelectElement).value)}
-      >
-        {#each teamOptions as team (team)}
-          <option value={team}>{team}</option>
-        {/each}
-        <option value={SHARED_TEAM}>Everyone (shared)</option>
-      </select>
-      <p class="field__help">
-        People in this group see it in their persona list. Anyone can still
-        find it with Show all groups.
-      </p>
-    </div>
-
+  <!-- What is missing, or why the save was refused, sits in the footer so
+       it is on screen wherever the form is scrolled to. -->
+  <div class="modal__footer modal__footer--inline">
     {#if submitError}
-      <p class="field__status field__status--error" role="alert">{submitError}</p>
+      <p class="field__status field__status--error persona-builder__state" role="alert">
+        {submitError}
+      </p>
+    {:else if missing && !(editing && stored.data === undefined)}
+      <p class="field__help persona-builder__state">{missing}</p>
     {/if}
-
-    <div class="modal__footer modal__footer--inline">
-      <button type="button" class="btn btn--quiet" onclick={startOver}>
-        Start over
-      </button>
-      <div class="modal__actions">
-        <button type="button" class="btn btn--quiet" onclick={oncancel}>Cancel</button>
-        <button type="submit" class="btn btn--primary" disabled={!canCreate}>
-          {mutation.isPending ? "Creating…" : "Create persona"}
-        </button>
-      </div>
+    <div class="modal__actions">
+      <Button type="button" variant="ghost" onclick={oncancel}>Cancel</Button>
+      <Button type="submit" disabled={!canSubmit}>
+        {#if editing}
+          {saveMut.isPending ? "Saving…" : "Save changes"}
+        {:else}
+          {createMut.isPending ? "Creating…" : "Create persona"}
+        {/if}
+      </Button>
     </div>
-  </form>
-{/if}
+  </div>
+</form>
 
 <style>
-  /* A file input and the quiet label that names it, on one line. */
-  .persona-builder__upload {
+  /* The one optional thing on the form, set apart from the four parts it
+     fills: a ruled box, the way the create form sets apart its own form
+     inside a field. */
+  .persona-builder__start {
+    padding: var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+
+  .persona-builder__optional {
+    margin-left: var(--space-2xs);
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 400;
+  }
+
+  .persona-builder__start-row {
     display: flex;
     align-items: center;
     gap: var(--space-xs);
-    font-size: 0.8rem;
+  }
+
+  .persona-builder__select {
+    width: 100%;
+  }
+
+  .persona-builder__state {
+    flex: 1 1 14rem;
+    min-width: 0;
+    margin: 0;
   }
 </style>

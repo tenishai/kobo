@@ -10,9 +10,10 @@
   // do, every rule, who made it. Back returns to the list with the
   // selection untouched.
   //
-  // Manage sits at the bottom for the people who may: Move to another
-  // group (the server says which personas the caller may re-file,
-  // `movablePersonasQuery`), and Archive (a maker, a member of its group,
+  // Manage sits at the bottom for the people who may: Edit and Move to
+  // another group (the server says which personas the caller may change,
+  // `movablePersonasQuery`; the edit form itself is the caller's to open,
+  // `onedit`), and Archive (a maker, a member of its group,
   // or an operator; built-ins and shared ones are the operator's alone).
   // The archive gate is the server's; the row shows for anyone the move
   // list names or who runs the room, and a refusal's own `{error}` copy
@@ -22,6 +23,7 @@
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import Skeleton from "./Skeleton.svelte";
   import { errorMessage } from "../lib/api";
+  import { boldRuns } from "../lib/markdown";
   import {
     archivePersonaMutation,
     groupsQuery,
@@ -32,16 +34,19 @@
   } from "../lib/queries";
   import { relativeTime } from "../lib/time";
   import { toast } from "../lib/toast.svelte";
-  import { personaTeamOptions } from "../lib/validate";
+  import { personaGroupLabel, personaTeamOptions } from "../lib/validate";
 
   let {
     personaId,
     onback,
+    onedit,
     onarchived = () => {},
   }: {
     personaId: string;
     /** Back to the list. */
     onback: () => void;
+    /** Open the edit form for this persona. Left out, there is no Edit. */
+    onedit?: (personaId: string) => void;
     /** The persona was archived: the caller drops it if it was selected. */
     onarchived?: (personaId: string) => void;
   } = $props();
@@ -78,7 +83,7 @@
       { id: personaId, team },
       {
         onSuccess: () => {
-          toast.success(`Moved ${name} to ${team === SHARED_TEAM ? "everyone" : team}`);
+          toast.success(`Moved ${name} to ${personaGroupLabel(team)}`);
         },
         onError: (error: unknown) => {
           toast.error(
@@ -107,7 +112,9 @@
     });
   }
 
-  /** Plain paragraphs, never markdown: the text is prose somebody wrote. */
+  /** Plain paragraphs, never markdown: the text is prose somebody wrote.
+   * Bold alone is drawn (`boldRuns`), since the house shape labels each kind
+   * of request in bold. */
   const paragraphs = $derived(
     (persona.data?.what_they_do ?? "")
       .split(/\n\s*\n/)
@@ -139,7 +146,7 @@
       <span class="sheet__name">{persona.data.name}</span>
       <span class="sheet__tags">
         <span class="sheet__tag sheet__tag--team">
-          {persona.data.builtin ? "Built-in" : persona.data.team}
+          {persona.data.builtin ? "Built-in" : personaGroupLabel(persona.data.team)}
         </span>
         {#each [...new Set(persona.data.tags)] as tag (tag)}
           <span class="sheet__tag">{tag}</span>
@@ -152,7 +159,7 @@
 
     <p class="sheet__heading">What they do</p>
     {#each paragraphs as para, index (index)}
-      <p class="sheet__para">{para}</p>
+      <p class="sheet__para">{#each boldRuns(para) as run, at (at)}{#if run.bold}<strong>{run.text}</strong>{:else}{run.text}{/if}{/each}</p>
     {/each}
 
     {#if persona.data.rules.length > 0}
@@ -174,6 +181,11 @@
   <div class="modal__footer modal__footer--inline">
     <div class="sheet__manage">
       {#if canManage && persona.data}
+        {#if canMove && onedit}
+          <button type="button" class="btn btn--quiet" onclick={() => onedit(personaId)}>
+            Edit
+          </button>
+        {/if}
         {#if canMove && moveChoices.length > 0}
           <select
             class="field__input sheet__move"
@@ -183,7 +195,7 @@
           >
             <option value="">Move to...</option>
             {#each moveChoices as team (team)}
-              <option value={team}>{team === SHARED_TEAM ? "Everyone (shared)" : team}</option>
+              <option value={team}>{personaGroupLabel(team)}</option>
             {/each}
           </select>
         {/if}

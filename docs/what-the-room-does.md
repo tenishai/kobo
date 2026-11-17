@@ -4,9 +4,9 @@ The long form of the README's feature list: every surface of the room and the ru
 enforces. The in-app guide (Getting started, in the sidebar) is the user-facing version of
 the same ground.
 
-- **Create**: describe the job (or paste a full persona document — the discovery metadata
-  distills itself in the background), pick a name from the ceremony, pick skills, pick a
-  group, click Create. Minutes later the agent answers its first hello.
+- **Create**: pick a persona (or build one: describe the job or paste a document you
+  already have, and the room drafts it in the house shape for you to edit), pick a name
+  from the ceremony, pick skills, pick a group, click Create. Minutes later the agent answers its first hello.
 - **Connect your own**: take on a repository your team already owns and let the room deploy
   it. The repository field searches the repositories the room's GitHub App can reach as you
   type, and the room proposes its setup by pull request.
@@ -66,19 +66,27 @@ the same ground.
   Connections (each agent's `read` or `write` lane to an integration, applied live through the
   gateway's admin plane and proposed as a pull request on its grants file), Roles (four
   built-ins and custom ones), People and Audit.
-- **Personas**: the soul an agent is built from. Archive one from the Personas page when it
-  has outlived its use, and restore it later; nothing is destroyed. Good persona names pass
-  the glance test: a stranger reading the card knows what picking it gets them. The
-  built-ins are the main set, one for each general kind of agent, so every list shows
-  them first and the personas teams built appear under them.
+- **Personas**: the soul an agent is built from. Good persona names pass the glance test:
+  a stranger reading the card knows what picking it gets them. The built-ins are the main
+  set, one for each general kind of agent.
 
-  A persona belongs to the group that made it. The builder asks who it is for (one of your
-  groups, or Everyone), and the create dialog lists your groups' personas plus the shared
-  ones, with a quiet Show all groups link for the rest. Shared is the commons: anyone may
-  file there, and built-ins always live there. That list is a filter, not a lock; every
-  persona stays findable by anyone. To re-file one, use Move to... on the Personas page: the
-  person who made it, a member of its group, or an operator may move it (a shared one, only
-  its maker or an operator), and only into a group you belong to.
+  A persona belongs to the group that made it. In the create dialog a row of pills sits
+  above the list (Built-in, each group that has personas, Everyone last); one is pressed at
+  a time, and a search looks across every group and shows each match under its group. That
+  row is a filter, not a lock; every persona stays findable by anyone.
+
+  The builder is one form: name, who they are, what they do, rules, and the group it is
+  filed under, which starts on the maker's own group. An optional description box drafts
+  all four parts in the shape the built-ins are written in. Every persona is held to the
+  same floor (at least 300 characters of what they do and 3 rules) and the same tidying
+  (one who-they-are line, headings lowered, rules as plain one-liners), whether it was
+  typed, drafted or sent by an assistant.
+
+  Edit, Move to... and Archive sit at the bottom of the full persona: the person who made
+  it, a member of its group, or an operator may use them (a shared one, only its maker or
+  an operator), and a move goes only into a group you belong to. An edit keeps the name
+  and reaches agents made from then on. Archive takes one out of every list; nothing is
+  destroyed, and an operator can bring it back.
 - **MCP**: the room's tools are reachable from MCP clients (claude.ai connectors, Claude Code)
   as the signed-in user, over the room's own OAuth — no service account, no second permission
   system. Every call resolves the same visibility, ownership, and admin as the UI: check who

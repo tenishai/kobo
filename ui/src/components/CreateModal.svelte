@@ -14,11 +14,15 @@
   //
   // So: one column, no stepper, nothing gated behind anything else, and
   // everything visible without scrolling on a laptop --
-  //   1. Persona: a search box and a list that scrolls inside a fixed box
-  //      about five rows deep, so the catalog cannot set the height of the
-  //      dialog. "Build your own persona" is a quiet link on the label row,
-  //      not a row in the list; it still swaps `PersonaBuilder` in over the
-  //      whole form, exactly as before.
+  //   1. Persona: a search box, a row of group pills, and a list that
+  //      scrolls inside a fixed box about five rows deep, so the catalog
+  //      cannot set the height of the dialog. The pills sit above the list
+  //      where they are seen without scrolling; one is always pressed
+  //      (Built-in to begin with) and the list is that group's personas. A
+  //      search puts the pills away and lists every match under its
+  //      group's name. "Build your own persona" is a button on the label
+  //      row, not a row in the list; it swaps `PersonaBuilder` in over the
+  //      whole form.
   //   2. Name: a text input. The person types it. The suggestion cards, the
   //      "Offer more" round-tripping and the exclude-set bookkeeping that
   //      went with them are gone -- the route itself (`nameSuggestionsQuery`
@@ -85,7 +89,7 @@
     whoamiQuery,
   } from "../lib/queries";
   import { toast } from "../lib/toast.svelte";
-  import { validateName } from "../lib/validate";
+  import { BUILTIN_GROUP, personaGroups, validateName } from "../lib/validate";
 
   let { open, onclose }: { open: boolean; onclose: () => void } = $props();
 
@@ -179,26 +183,47 @@
 
   let personaQ = $state("");
   let personaSearchTerm = $state("");
-  // Persona team scope: the list starts on the personas for this person's
-  // own groups plus the shared ones ("mine"); the quiet toggle on the label
-  // row widens it to every group ("all"). A filter for a shorter list, not
-  // access control: each row still carries its team tag either way.
-  // One query over the whole catalog (2026-09-29): the built-ins lead the
-  // list, and every group that has personas of its own gets a pill under
-  // them. Pressing a pill shows that group's personas; nothing else of the
-  // catalog is on screen until asked for.
+  // One query over the whole catalog, drawn a group at a time
+  // (2026-11-17). The first cut of this list (2026-09-29) led with the
+  // built-ins and put the group pills under them, inside the scrolling
+  // box: they were below the fold until someone scrolled, a search
+  // narrowed the pills and still showed no row until one was pressed, and
+  // a persona made a moment ago was selected but nowhere on screen. Its
+  // maker took it for lost, made it again, and was told the name was
+  // taken. So the pills are above the list, one is always pressed, a
+  // search shows its matches outright, and a new persona's group is
+  // pressed for it.
   const personas = createQuery(() => personasSearchQuery(personaSearchTerm, null, "all"));
-  const builtinPersonas = $derived((personas.data ?? []).filter((p) => p.builtin));
-  let selectedPersonaTeam = $state<string | null>(null);
-  const personaTeams = $derived(
-    [...new Set((personas.data ?? []).filter((p) => !p.builtin).map((p) => p.team))].sort(),
+  const searching = $derived(personaSearchTerm.trim() !== "");
+  /** A persona made in this dialog, kept on the list until the catalog's
+   * own refetch brings it back. */
+  let justCreated = $state<CatalogEntry | null>(null);
+  const allPersonas = $derived.by(() => {
+    const rows = personas.data ?? [];
+    const made = justCreated;
+    if (made === null || searching || rows.some((p) => p.id === made.id)) {
+      return rows;
+    }
+    return [...rows, made];
+  });
+  const personaGroupList = $derived(personaGroups(allPersonas, whoami.data?.groups ?? []));
+  /** The pill somebody pressed; until then, the first group (Built-in). */
+  let pillOverride = $state<string | null>(null);
+  const activeGroup = $derived(
+    personaGroupList.find((g) => g.key === pillOverride) ?? personaGroupList[0] ?? null,
   );
-  const teamPersonas = $derived(
-    (personas.data ?? []).filter((p) => !p.builtin && p.team === selectedPersonaTeam),
+  const visibleGroups = $derived(
+    searching ? personaGroupList : activeGroup ? [activeGroup] : [],
   );
-  function togglePersonaTeam(team: string): void {
-    selectedPersonaTeam = selectedPersonaTeam === team ? null : team;
-  }
+  /** The picked persona's own row, so the form can still name it when the
+   * list has moved on to another group or a search. */
+  let selectedEntry = $state<CatalogEntry | null>(null);
+  const selectedOffList = $derived(
+    selectedEntry !== null &&
+      selectedEntry.id === selectedPersona &&
+      !personas.isPending &&
+      !visibleGroups.some((g) => g.personas.some((p) => p.id === selectedPersona)),
+  );
 
   const commitPersonaSearch = debounced((value: string) => {
     personaSearchTerm = value;
@@ -254,8 +279,7 @@
   $effect(() => {
     // Read the rows so a change in them re-runs this, then measure after
     // the DOM has them.
-    void builtinPersonas;
-    void teamPersonas;
+    void visibleGroups;
     void personaListEl;
     tick().then(measurePersonaList);
   });
@@ -316,6 +340,8 @@
   $effect(() => cancelHover);
 
   let builderOpen = $state(false);
+  /** The persona the builder is editing, when it was opened from a sheet. */
+  let editingPersona = $state<string | null>(null);
 
   /** The persona being read in full, swapped in over the list the way the
    * builder is (personas-in-place wave, 2026-09-30). */
@@ -326,21 +352,45 @@
     readingPersona = id;
   }
 
+  /** Edit is reached from the sheet and goes back to it, saved or not. */
+  function editPersona(id: string): void {
+    editingPersona = id;
+    readingPersona = null;
+    builderOpen = true;
+  }
+
+  function closeBuilder(): void {
+    if (editingPersona !== null) {
+      readingPersona = editingPersona;
+      editingPersona = null;
+    }
+    builderOpen = false;
+  }
+
+  function handlePersonaSaved(): void {
+    closeBuilder();
+    toast.success("Persona saved");
+  }
+
   /** An archived persona leaves the list; a selection of it goes with it. */
   function handlePersonaArchived(id: string): void {
     if (selectedPersona === id) {
       personaOverride = null;
+      selectedEntry = null;
+    }
+    if (justCreated?.id === id) {
+      justCreated = null;
     }
   }
 
-  /** A builder-drafted persona arrives with the tags its draft step already
-   * worked out, so those seed the chips editor and the disclosure opens to
-   * show them -- otherwise they would be filed away behind a shut fold the
-   * operator has no reason to open. A persona picked from search carries no
-   * draft and so touches the tags not at all: switching persona must not
-   * quietly wipe tags somebody typed by hand. */
+  /** A new persona is picked for the agent, and shown: its group's pill is
+   * pressed and the search is cleared, so the row is on screen with its
+   * radio on. Its maker should never have to go looking for it. */
   function handlePersonaCreated(persona: CatalogEntry, _draftedTags: string[]): void {
     personaOverride = persona.id;
+    selectedEntry = persona;
+    justCreated = persona;
+    pillOverride = persona.team;
     builderOpen = false;
     personaQ = "";
     personaSearchTerm = "";
@@ -401,6 +451,17 @@
   const GROUP_NOT_LISTED = "__group_not_listed__";
   const groupChosen = $derived(
     groupValue !== "" && groupValue !== GROUP_NOT_LISTED,
+  );
+
+  /** The group a new persona is offered first: the agent's Group when one
+   * is chosen, else the group whose personas are on screen. The builder
+   * only takes it when its maker may file there. */
+  const builderTeam = $derived(
+    groupChosen
+      ? groupValue
+      : activeGroup && activeGroup.key !== BUILTIN_GROUP
+        ? activeGroup.key
+        : null,
   );
 
   let groupRequestName = $state("");
@@ -479,8 +540,11 @@
       submitError = null;
       personaQ = "";
       personaSearchTerm = "";
-      selectedPersonaTeam = null;
+      pillOverride = null;
+      justCreated = null;
+      selectedEntry = null;
       builderOpen = false;
+      editingPersona = null;
       readingPersona = null;
       groupValue = "";
       groupRequestName = "";
@@ -593,6 +657,7 @@
       checked={persona.id === selectedPersona}
       onchange={() => {
         personaOverride = persona.id;
+        selectedEntry = persona;
         hideCard();
       }}
       onfocus={(event) =>
@@ -606,8 +671,8 @@
         : undefined}
     />
     <!-- The name in ink, then the one line about it, cut off rather than
-         wrapped. The heading over the run already says Built-in or names
-         the group, so the row carries no tag of its own. -->
+         wrapped. The pressed pill, or the heading over the run in a
+         search, already says whose it is, so the row carries no tag. -->
     <span class="list__name">{persona.name}</span>
     <!-- No `title`: the hover card is the answer now, and two
          tooltips over the same row fight each other. -->
@@ -629,14 +694,39 @@
   </div>
 {/snippet}
 
+<!-- The builder and the sheet are swapped in for the whole form, not
+     drawn inside it: the builder is a form of its own, and a form may not
+     hold another. The title says which of the three is up. -->
 <Modal
   {open}
-  title="Create agent"
-  description="Pick who it is, name it, and choose the group that may use it."
+  title={!builderOpen ? "Create agent" : editingPersona !== null ? "Edit persona" : "Build your own persona"}
+  description={!builderOpen
+    ? "Pick who it is, name it, and choose the group that may use it."
+    : editingPersona !== null
+      ? "Changes reach agents made from now on. An agent already made keeps the persona it was made with."
+      : "A persona is who an agent is: what it is for, how it works, and the rules it keeps."}
   size="wide"
   {onclose}
   footer={builderOpen || readingPersona !== null ? undefined : createFooter}
 >
+  {#if personasUnwired}
+    <EmptyState message={UNWIRED_MESSAGE} />
+  {:else if readingPersona !== null}
+    <PersonaSheet
+      personaId={readingPersona}
+      onback={() => (readingPersona = null)}
+      onedit={editPersona}
+      onarchived={handlePersonaArchived}
+    />
+  {:else if builderOpen}
+    <PersonaBuilder
+      oncancel={closeBuilder}
+      oncreated={handlePersonaCreated}
+      onsaved={handlePersonaSaved}
+      defaultTeam={builderTeam}
+      editId={editingPersona}
+    />
+  {:else}
   <form
     class="modal__form create-form"
     onsubmit={(event) => {
@@ -644,21 +734,6 @@
       handleSubmit();
     }}
   >
-    {#if personasUnwired}
-      <EmptyState message={UNWIRED_MESSAGE} />
-    {:else if readingPersona !== null}
-      <PersonaSheet
-        personaId={readingPersona}
-        onback={() => (readingPersona = null)}
-        onarchived={handlePersonaArchived}
-      />
-    {:else if builderOpen}
-      <PersonaBuilder
-        oncancel={() => (builderOpen = false)}
-        oncreated={handlePersonaCreated}
-        defaultTeam={groupChosen ? groupValue : null}
-      />
-    {:else}
       <!-- 1. Persona -->
       <div class="field">
         <div class="field__label-row">
@@ -681,6 +756,24 @@
           autocomplete="off"
           data-autofocus
         />
+        <!-- One pill a group, one always pressed. Above the list and
+             outside its scroll, so every group is in view the moment the
+             dialog opens. A search lists every match and has no use for
+             them. -->
+        {#if !searching && personaGroupList.length > 1}
+          <div class="chip-row" role="group" aria-label="Persona groups">
+            {#each personaGroupList as group (group.key)}
+              <button
+                type="button"
+                class="chip chip--action"
+                aria-pressed={group.key === activeGroup?.key}
+                onclick={() => (pillOverride = group.key)}
+              >
+                {group.label}
+              </button>
+            {/each}
+          </div>
+        {/if}
         <!-- The shell only exists to carry the fade: a `::after` on the
              scrolling box itself would scroll away with the rows. -->
         <div class="list-scroll" class:list-scroll--more={personaMore}>
@@ -702,52 +795,29 @@
                 onretry={() => personas.refetch()}
               />
             </div>
-          {:else if personas.data.length === 0}
-            <p class="list__empty">No personas match.</p>
+          {:else if visibleGroups.length === 0}
+            <p class="list__empty">{searching ? "No personas match." : "No personas yet."}</p>
           {:else}
-            <!-- Two groups (built-ins first ruling): the built-ins are the
-                 main set and always lead; team personas sit under them.
-                 A heading is a presentation row, never a radio, so arrow
-                 keys move between personas and skip it. A group with
-                 nothing matching drops its heading. The scope toggle only
-                 ever changes the second group. -->
-            {#if builtinPersonas.length > 0}
-              <div class="list__group" role="presentation">Built-in</div>
-              {#each builtinPersonas as persona (persona.id)}
+            <!-- The pressed group's personas, or in a search every match
+                 under its group's name. A heading is a presentation row,
+                 never a radio, so arrow keys move between personas and
+                 skip it. -->
+            {#each visibleGroups as group (group.key)}
+              {#if searching}
+                <div class="list__group" role="presentation">{group.label}</div>
+              {/if}
+              {#each group.personas as persona (persona.id)}
                 {@render personaRow(persona)}
               {/each}
-            {/if}
-            {#if personaTeams.length > 0}
-              <div class="list__group" role="presentation">Group personas</div>
-              <div class="chip-row persona-teams" role="group" aria-label="Group personas">
-                {#each personaTeams as team (team)}
-                  <button
-                    type="button"
-                    class="chip chip--action"
-                    aria-pressed={selectedPersonaTeam === team}
-                    onclick={() => togglePersonaTeam(team)}
-                  >
-                    {team}
-                  </button>
-                {/each}
-              </div>
-            {/if}
-            {#if selectedPersonaTeam !== null}
-              {#if teamPersonas.length > 0}
-                <!-- The pressed group's run gets its own heading, the way
-                     the built-ins do, so the rows under it say whose they
-                     are without a tag on each one. -->
-                <div class="list__group" role="presentation">{selectedPersonaTeam}</div>
-                {#each teamPersonas as persona (persona.id)}
-                  {@render personaRow(persona)}
-                {/each}
-              {:else}
-                <p class="list__empty">No personas from {selectedPersonaTeam} match.</p>
-              {/if}
-            {/if}
+            {/each}
           {/if}
         </div>
         </div>
+        {#if selectedOffList && selectedEntry}
+          <p class="field__help">
+            Selected: <span class="create-form__selected">{selectedEntry.name}</span>
+          </p>
+        {/if}
         {#if hoveredPersona !== null}
           <PersonaHoverCard
             id={HOVER_CARD_ID}
@@ -925,8 +995,8 @@
       {:else if missingStep}
         <p class="field__help">{missingStep}</p>
       {/if}
-    {/if}
   </form>
+  {/if}
 </Modal>
 
 <style>
@@ -937,10 +1007,11 @@
     width: 100%;
   }
 
-  /* The group pills, drawn as one row of the list under their heading. */
-  .persona-teams {
-    padding: var(--space-xs) var(--space-sm);
-    border-bottom: 1px solid var(--border);
+  /* The picked persona's name, in ink beside its grey label, for when its
+     row is not among the ones on screen. */
+  .create-form__selected {
+    color: var(--ink);
+    font-weight: 500;
   }
 
   /* The "my group isn't listed" mini-form: the one thing in this dialog

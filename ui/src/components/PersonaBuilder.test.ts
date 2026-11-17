@@ -1,504 +1,346 @@
 // @vitest-environment jsdom
 //
-// Persona builder upload/limits addendum: file-upload affordances for the
-// rules textareas and the step-2 persona body, honest new limits (150
-// rules, no more per-rule/what-they-do length caps in the UI's own client
-// checks), and the no-clobber rule for the draft step (mergeDraftFields,
-// ../lib/validate, has the exhaustive fill-vs-keep matrix - these tests
-// cover the component's own wiring: uploads land in the right field, and a
-// fresh draft still fills an empty form end to end).
+// The persona form (rebuilt 2026-11-17): one screen with the four parts of
+// a persona and the group it is filed under, for making one and for
+// editing one. These hold what a person can count on: a draft fills the
+// form and never takes what they typed, Create stays off with one sentence
+// saying why until the persona is enough to work from, a new persona is
+// filed under its maker's group, a taken name says where the persona is,
+// and an edit saves the text and nothing else. `mergeDraftFields`,
+// `personaMissing` and `personaGroups` have their own cases in
+// ../lib/validate.test.ts.
 import { fireEvent, screen, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import PersonaBuilder from "./PersonaBuilder.svelte";
-import { renderWithClient, stubFetch } from "../test-utils/render";
+import { renderWithClient } from "../test-utils/render";
 
-const DRAFT_RESPONSE = {
+const BODY = "Keeps the team's billing answers straight. ".repeat(8).trim();
+const RULES = ["Never guess a figure.", "Always say what you checked.", "Ask before you change a plan."];
+
+const DRAFT = {
   name: "billing-buddy",
   who_they_are: "a calm troubleshooter for billing questions",
-  what_they_do: "Helps customers resolve billing issues quickly.",
+  what_they_do: BODY,
+  rules: RULES,
   purpose_tags: ["billing", "support"],
 };
 
-function textFile(content: string, name = "notes.txt"): File {
-  return new File([content], name, { type: "text/plain" });
+const CREATED = {
+  id: "ledger",
+  name: "ledger",
+  description: DRAFT.who_they_are,
+  team: "sre",
+  tags: [],
+  builtin: false,
+};
+
+const CATALOG_GROUPS = {
+  groups: [
+    { name: "shared", kind: "shared" },
+    { name: "sre", kind: "engineering" },
+    { name: "qa", kind: "engineering" },
+  ],
+};
+
+type Call = { method: string; url: string; body: Record<string, unknown> | null };
+
+/** Answers whoami, the group catalog, the draft, the create and the edit
+ * routes, and records every call. `draft: null` is a route that is down. */
+function stubRoom(
+  whoami: { groups: string[]; operator?: boolean },
+  answers: {
+    draft?: unknown | null;
+    create?: { status: number; body: unknown };
+    stored?: unknown;
+  } = {},
+): Call[] {
+  const calls: Call[] = [];
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (url.includes("/api/whoami")) {
+        return json({
+          email: "me@example.com",
+          operator: whoami.operator ?? false,
+          groups: whoami.groups,
+          groups_unavailable: false,
+        });
+      }
+      if (url.includes("/api/catalog/groups")) {
+        return json(CATALOG_GROUPS);
+      }
+      if (url.includes("/api/personas/draft")) {
+        const draft = answers.draft === undefined ? DRAFT : answers.draft;
+        return draft === null ? json({ error: "down" }, 502) : json(draft);
+      }
+      if (url.includes("/api/personas/") && method === "GET") {
+        return json(answers.stored);
+      }
+      if (url.includes("/api/personas/") && method === "PUT") {
+        return json(CREATED);
+      }
+      if (url.includes("/api/personas") && method === "POST") {
+        const create = answers.create ?? { status: 201, body: CREATED };
+        return json(create.body, create.status);
+      }
+      return json({});
+    }),
+  );
+  return calls;
 }
 
-/** A fetch mock the test resolves (or rejects) on its own schedule, for
- * exercising the window between "Continue" advancing to the preview and
- * the background distill actually landing (persona-first station's whole
- * reason for existing: the advance never waits on the network). */
-function deferredResponse(): {
-  promise: Promise<Response>;
-  resolve: (body: unknown) => void;
-  reject: (reason?: unknown) => void;
-} {
-  let resolveFn!: (value: Response) => void;
-  let rejectFn!: (reason?: unknown) => void;
-  const promise = new Promise<Response>((resolve, reject) => {
-    resolveFn = resolve;
-    rejectFn = reject;
-  });
-  return {
-    promise,
-    resolve: (body: unknown) =>
-      resolveFn(
-        new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      ),
-    reject: (reason?: unknown) => rejectFn(reason),
-  };
+function field(label: string | RegExp): HTMLInputElement | HTMLTextAreaElement {
+  return screen.getByLabelText(label) as HTMLInputElement | HTMLTextAreaElement;
 }
 
-async function reachStep2(): Promise<void> {
-  const jobField = screen.getByLabelText("What should this agent do for you?");
-  await fireEvent.input(jobField, {
-    target: { value: "Help customers with billing questions." },
-  });
-  await fireEvent.click(screen.getByRole("button", { name: "Draft persona" }));
-  await screen.findByRole("button", { name: "Create persona" });
+async function type(label: string | RegExp, value: string): Promise<void> {
+  await fireEvent.input(field(label), { target: { value } });
 }
 
-describe("PersonaBuilder - file upload", () => {
+async function fillByHand(): Promise<void> {
+  await type("Name", "ledger");
+  await type("Who they are", DRAFT.who_they_are);
+  await type("What they do", BODY);
+  await type("Rules", RULES.join("\n"));
+}
+
+function createButton(): HTMLButtonElement {
+  return screen.getByRole("button", { name: "Create persona" }) as HTMLButtonElement;
+}
+
+async function groupSelect(): Promise<HTMLSelectElement> {
+  const select = screen.getByLabelText("Group") as HTMLSelectElement;
+  await waitFor(() => expect(select.options.length).toBeGreaterThan(2));
+  return select;
+}
+
+describe("PersonaBuilder", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("uploading a file into the step-1 rules textarea replaces its content", async () => {
-    stubFetch({ "/api/": {} });
+  it("a draft fills the parts that are empty, keeps what was typed, and Create files it under the maker's group", async () => {
+    const calls = stubRoom({ groups: ["sre"] });
+    const oncreated = vi.fn();
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated });
+
+    await type("Name", "ledger");
+    await type(/Start from a description/, "Help customers with billing questions.");
+    await fireEvent.click(screen.getByRole("button", { name: "Draft persona" }));
+
+    await waitFor(() => expect(field("What they do").value).toBe(BODY));
+    expect(field("Name").value).toBe("ledger");
+    expect(field("Who they are").value).toBe(DRAFT.who_they_are);
+    expect(field("Rules").value).toBe(RULES.join("\n"));
+    // Nothing was typed into Rules, so none are sent as the person's own.
+    expect(calls.find((c) => c.url.includes("/draft"))?.body).toEqual({
+      job: "Help customers with billing questions.",
+      rules: [],
+    });
+
+    await waitFor(() => expect(createButton().disabled).toBe(false));
+    await fireEvent.click(createButton());
+
+    await waitFor(() => expect(oncreated).toHaveBeenCalledWith(CREATED, DRAFT.purpose_tags));
+    expect(calls.find((c) => c.method === "POST" && c.url === "/api/personas")?.body).toEqual({
+      name: "ledger",
+      who_they_are: DRAFT.who_they_are,
+      what_they_do: BODY,
+      rules: RULES,
+      purpose_tags: DRAFT.purpose_tags,
+      team: "sre",
+    });
+  });
+
+  it("a draft that fails says so and leaves the form as it was", async () => {
+    stubRoom({ groups: ["sre"] }, { draft: null });
     renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
 
-    const rulesInput = screen.getByLabelText("Upload rules file") as HTMLInputElement;
-    await fireEvent.change(rulesInput, {
-      target: { files: [textFile("Never share account numbers.\nBe concise.")] },
-    });
-
-    await waitFor(() => {
-      const rulesTextarea = screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement;
-      expect(rulesTextarea.value).toBe("Never share account numbers.\nBe concise.");
-    });
-  });
-
-  it("uploading a file into the step-2 what-they-do textarea replaces its content", async () => {
-    stubFetch({
-      "/api/personas/draft": DRAFT_RESPONSE,
-      "/api/": {},
-    });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    await reachStep2();
-
-    const bodyUpload = screen.getByLabelText("Upload body file") as HTMLInputElement;
-    await fireEvent.change(bodyUpload, {
-      target: { files: [textFile("Answer billing questions from an uploaded playbook.")] },
-    });
-
-    await waitFor(() => {
-      const whatTheyDo = screen.getByLabelText("What they do") as HTMLTextAreaElement;
-      expect(whatTheyDo.value).toBe("Answer billing questions from an uploaded playbook.");
-    });
-  });
-});
-
-describe("PersonaBuilder - honest new limits (upload/limits addendum)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("shows the 150 rules cap message once more than 150 lines are entered", async () => {
-    stubFetch({ "/api/": {} });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    const rulesTextarea = screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement;
-    const tooMany = Array.from({ length: 151 }, (_, i) => `rule ${i}`).join("\n");
-    await fireEvent.input(rulesTextarea, { target: { value: tooMany } });
-
-    expect(await screen.findByText("Use up to 150, one per line.")).not.toBeNull();
-  });
-
-});
-
-describe("PersonaBuilder - bring your own persona (step 1)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("uploading a persona file at step 1 fills what-they-do and reaches preview without drafting", async () => {
-    // The persona-body upload also fires the background distill (same
-    // primary path a paste + Continue takes) - a bare `{}` mock for every
-    // route used to make this test racy: whether the distill happened to
-    // land before the assertions ran depended on microtask timing, and on
-    // the old (pre fix-round-1) merge helpers, an actually-landed `{}`
-    // would write `undefined` into Name/Who they are and throw. A deferred
-    // mock this test resolves itself, plus waiting for the in-flight note
-    // to clear, makes "settled" deterministic instead of timing luck.
-    const distill = deferredResponse();
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("/api/personas/distill")) {
-        return distill.promise;
-      }
-      return new Response(JSON.stringify({}), { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    const personaFile = screen.getByLabelText("Upload persona file") as HTMLInputElement;
-    await fireEvent.change(personaFile, {
-      target: {
-        files: [textFile("A full persona document, ready to go.", "persona.md")],
-      },
-    });
-
-    expect(await screen.findByRole("button", { name: "Create persona" })).not.toBeNull();
-    expect((screen.getByLabelText("What they do") as HTMLTextAreaElement).value).toBe(
-      "A full persona document, ready to go.",
-    );
-
-    distill.resolve({ name: "", who_they_are: "", purpose_tags: [] });
-    await waitFor(() => {
-      expect(screen.queryByText("Reading their persona…")).toBeNull();
-    });
-
-    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
-    expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe("");
-    expect(
-      fetchMock.mock.calls.some(([input]) => String(input).includes("draft")),
-    ).toBe(false);
-  });
-
-  it("'Start with a blank form' advances to preview with every field empty", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL) =>
-      new Response(JSON.stringify({}), { status: 200 }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    await fireEvent.click(screen.getByRole("button", { name: "Start with a blank form" }));
-
-    expect(await screen.findByRole("button", { name: "Create persona" })).not.toBeNull();
-    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
-    expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe("");
-    expect((screen.getByLabelText("What they do") as HTMLTextAreaElement).value).toBe("");
-    expect(
-      fetchMock.mock.calls.some(([input]) => String(input).includes("draft")),
-    ).toBe(false);
-  });
-
-  it("rules typed at step 1 survive the step-1 persona-file upload path", async () => {
-    stubFetch({ "/api/": {} });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    const rulesTextarea = screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement;
-    await fireEvent.input(rulesTextarea, { target: { value: "Always be concise." } });
-
-    const personaFile = screen.getByLabelText("Upload persona file") as HTMLInputElement;
-    await fireEvent.change(personaFile, {
-      target: { files: [textFile("Their full persona text.", "persona.md")] },
-    });
-
-    await screen.findByRole("button", { name: "Create persona" });
-    expect(
-      (screen.getByLabelText("Rules (optional)") as HTMLTextAreaElement).value,
-    ).toBe("Always be concise.");
-  });
-
-});
-
-describe("PersonaBuilder - draft no-clobber (component wiring)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("a successful draft fills every field when the form started empty", async () => {
-    stubFetch({
-      "/api/personas/draft": DRAFT_RESPONSE,
-      "/api/": {},
-    });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    await reachStep2();
-
-    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(
-      DRAFT_RESPONSE.name,
-    );
-    expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe(
-      DRAFT_RESPONSE.who_they_are,
-    );
-    expect((screen.getByLabelText("What they do") as HTMLTextAreaElement).value).toBe(
-      DRAFT_RESPONSE.what_they_do,
-    );
-  });
-
-  it("a failed draft still reaches the editable preview with an error message, not a dead end", async () => {
-    // A bare rejection (not an Error instance) is how the draft mutation's
-    // `errorMessage(error, fallback)` call ends up on its fallback copy -
-    // the same shape a genuine network failure (not the generator being
-    // down, which the route always 200s through) would take.
-    stubFetch({ "/api/": {} });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("/api/personas/draft")) {
-          return Promise.reject("network down");
-        }
-        return new Response(JSON.stringify({}), { status: 200 });
-      }),
-    );
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    await reachStep2();
+    await type("What they do", "typed by hand");
+    await type(/Start from a description/, "Help customers with billing questions.");
+    await fireEvent.click(screen.getByRole("button", { name: "Draft persona" }));
 
     expect(
-      await screen.findByText("Couldn't draft a persona right now. Fill it in yourself below."),
-    ).not.toBeNull();
-    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
-  });
-});
-
-describe("PersonaBuilder - paste their persona + Continue (primary path, component)", () => {
-  // Fix round 1 (FINDING 1): the primary path had zero component-level
-  // coverage - everything below exercises the paste textarea + Continue
-  // button directly, the way an operator who already has a persona
-  // document actually uses this form.
-  beforeEach(() => {
-    vi.unstubAllGlobals();
+      (await screen.findByRole("alert")).textContent?.trim(),
+    ).toBe("Couldn't draft a persona right now. Fill in the parts yourself below.");
+    expect(field("What they do").value).toBe("typed by hand");
+    expect(field("Name").value).toBe("");
   });
 
-  function stubDistillRoute(fetchImpl: (input: RequestInfo | URL) => Promise<Response>): void {
-    vi.stubGlobal("fetch", vi.fn(fetchImpl));
-  }
-
-  it("shows the preview immediately - before the distill resolves - then fills only the empty fields once it lands", async () => {
-    const distill = deferredResponse();
-    stubDistillRoute(async (input) => {
-      const url = String(input);
-      if (url.includes("/api/personas/distill")) {
-        return distill.promise;
-      }
-      return new Response(JSON.stringify({}), { status: 200 });
-    });
+  it("a stand-in from a room whose model is away is not shown as a draft", async () => {
+    stubRoom({ groups: ["sre"] }, { draft: { ...DRAFT, generated: false } });
     renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
 
-    await fireEvent.input(screen.getByLabelText("Paste their persona"), {
-      target: { value: "Their full persona document, ready to go." },
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-
-    // The preview is already up - the distill fetch is still pending.
-    expect(screen.getByRole("button", { name: "Create persona" })).not.toBeNull();
-    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
-    expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe("");
-    expect((screen.getByLabelText("What they do") as HTMLTextAreaElement).value).toBe(
-      "Their full persona document, ready to go.",
-    );
-
-    distill.resolve({
-      name: "billing-buddy",
-      who_they_are: "a calm troubleshooter for billing questions",
-      purpose_tags: ["billing"],
-    });
-
-    await waitFor(() => {
-      expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("billing-buddy");
-    });
-    expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe(
-      "a calm troubleshooter for billing questions",
-    );
-    // The pasted body is untouched - a distill reply carries no
-    // what_they_do at all (mergeDistillFields never judges that field).
-    expect((screen.getByLabelText("What they do") as HTMLTextAreaElement).value).toBe(
-      "Their full persona document, ready to go.",
-    );
-  });
-
-  it("a distill failure shows the quiet note and leaves the fields empty and editable", async () => {
-    stubDistillRoute(async (input) => {
-      const url = String(input);
-      if (url.includes("/api/personas/distill")) {
-        return Promise.reject("network down");
-      }
-      return new Response(JSON.stringify({}), { status: 200 });
-    });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    await fireEvent.input(screen.getByLabelText("Paste their persona"), {
-      target: { value: "Their full persona document." },
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await type(/Start from a description/, "Help customers with billing questions.");
+    await fireEvent.click(screen.getByRole("button", { name: "Draft persona" }));
 
     expect(
-      await screen.findByText("Could not read the persona. Fill these in yourself."),
-    ).not.toBeNull();
-    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("");
-    expect((screen.getByLabelText("Who they are") as HTMLInputElement).value).toBe("");
-
-    // No thrown error, and the fields are still ordinary editable inputs.
-    const nameField = screen.getByLabelText("Name") as HTMLInputElement;
-    await fireEvent.input(nameField, { target: { value: "typed by hand" } });
-    expect(nameField.value).toBe("typed by hand");
+      (await screen.findByRole("alert")).textContent?.trim(),
+    ).toBe("Couldn't draft a persona right now. Fill in the parts yourself below.");
+    expect(field("Name").value).toBe("");
+    expect(field("What they do").value).toBe("");
   });
 
-});
+  it("an uploaded file lands in the description box, and nothing is drafted until asked", async () => {
+    const calls = stubRoom({ groups: ["sre"] });
+    const { container } = renderWithClient(PersonaBuilder, {
+      oncancel: () => {},
+      oncreated: () => {},
+    });
 
-describe("PersonaBuilder - who the persona is for (persona team scope)", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    await fireEvent.change(input, {
+      target: { files: [new File(["# Runbook\nPage the owner."], "runbook.md", { type: "text/markdown" })] },
+    });
 
-  const CATALOG_GROUPS = {
-    groups: [
-      { name: "shared", kind: "shared" },
-      { name: "sre", kind: "engineering" },
-      { name: "qa", kind: "engineering" },
-      { name: "design", kind: "non-engineering" },
-    ],
-  };
-
-  /** Answers whoami and the group catalog, records every create body, and
-   * lets a test swap in its own create response. */
-  function stubRoom(
-    whoami: { groups: string[]; operator?: boolean },
-    createResponse: { status: number; body: unknown } = {
-      status: 201,
-      body: {
-        id: "billing-buddy",
-        name: "billing-buddy",
-        description: "d",
-        team: "shared",
-        tags: [],
-        builtin: false,
-      },
-    },
-  ): Array<Record<string, unknown>> {
-    const sent: Array<Record<string, unknown>> = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        const json = (body: unknown, status = 200) =>
-          new Response(JSON.stringify(body), {
-            status,
-            headers: { "Content-Type": "application/json" },
-          });
-        if (url.includes("/api/whoami")) {
-          return json({
-            email: "me@example.com",
-            operator: whoami.operator ?? false,
-            groups: whoami.groups,
-            groups_unavailable: false,
-          });
-        }
-        if (url.includes("/api/catalog/groups")) {
-          return json(CATALOG_GROUPS);
-        }
-        if (url.includes("/api/personas/draft")) {
-          return json(DRAFT_RESPONSE);
-        }
-        if (url.includes("/api/personas") && init?.method === "POST") {
-          sent.push(JSON.parse(String(init.body)));
-          return json(createResponse.body, createResponse.status);
-        }
-        return json({});
-      }),
+    await waitFor(() =>
+      expect(field(/Start from a description/).value).toBe("# Runbook\nPage the owner."),
     );
-    return sent;
-  }
+    expect(calls.some((c) => c.url.includes("/draft"))).toBe(false);
+    expect(field("What they do").value).toBe("");
+  });
 
-  async function forField(): Promise<HTMLSelectElement> {
-    await reachStep2();
-    const select = screen.getByLabelText("Who is this persona for?") as HTMLSelectElement;
-    await waitFor(() => expect(select.options.length).toBeGreaterThan(1));
-    return select;
-  }
+  it("keeps Create off, with one sentence saying why, until the persona is enough to work from", async () => {
+    stubRoom({ groups: ["sre"] });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
 
-  it("defaults to the group already chosen on the create form", async () => {
-    const sent = stubRoom({ groups: ["sre", "qa"] });
-    renderWithClient(PersonaBuilder, {
+    expect(screen.getByText("Give it a name.")).not.toBeNull();
+    expect(createButton().disabled).toBe(true);
+
+    await fillByHand();
+    await type("What they do", "Helps.");
+    expect(screen.getByText("Say more about what they do: 6 of at least 300 characters.")).not.toBeNull();
+    expect(createButton().disabled).toBe(true);
+
+    await type("What they do", BODY);
+    await type("Rules", "Never guess.");
+    expect(screen.getByText("Add at least 3 rules, one per line.")).not.toBeNull();
+
+    await type("Rules", RULES.join("\n"));
+    await waitFor(() => expect(createButton().disabled).toBe(false));
+  });
+
+  it("someone in several groups chooses one, and Everyone is the last choice, never the default", async () => {
+    const calls = stubRoom({ groups: ["sre", "qa"] });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+    await fillByHand();
+
+    const select = await groupSelect();
+    expect([...select.options].map((o) => o.textContent?.trim())).toEqual([
+      "Choose a group",
+      "sre",
+      "qa",
+      "Everyone",
+    ]);
+    expect(select.value).toBe("");
+    expect(screen.getByText("Choose a group.")).not.toBeNull();
+    expect(createButton().disabled).toBe(true);
+
+    await fireEvent.change(select, { target: { value: "shared" } });
+    await waitFor(() => expect(createButton().disabled).toBe(false));
+    await fireEvent.click(createButton());
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === "POST" && c.url === "/api/personas")?.body?.team).toBe("shared"),
+    );
+  });
+
+  it("offers the group the dialog was on first, and ignores one the maker is not in", async () => {
+    stubRoom({ groups: ["sre", "qa"] });
+    const first = renderWithClient(PersonaBuilder, {
       oncancel: () => {},
       oncreated: () => {},
       defaultTeam: "qa",
     });
+    await waitFor(async () => expect((await groupSelect()).value).toBe("qa"));
+    first.unmount();
 
-    const select = await forField();
-    await waitFor(() => expect(select.value).toBe("qa"));
-
-    await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
-    await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]).toEqual({
-      name: DRAFT_RESPONSE.name,
-      who_they_are: DRAFT_RESPONSE.who_they_are,
-      what_they_do: DRAFT_RESPONSE.what_they_do,
-      rules: [],
-      purpose_tags: DRAFT_RESPONSE.purpose_tags,
-      team: "qa",
-    });
-  });
-
-  it("defaults to the caller's only group when they have exactly one", async () => {
-    const sent = stubRoom({ groups: ["sre"] });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    const select = await forField();
-    await waitFor(() => expect(select.value).toBe("sre"));
-    expect([...select.options].map((o) => o.value)).toEqual(["sre", "shared"]);
-
-    await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
-    await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0].team).toBe("sre");
-  });
-
-  it("defaults to everyone when the caller has several groups and the form chose none", async () => {
-    stubRoom({ groups: ["sre", "qa"] });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    const select = await forField();
-
-    expect(select.value).toBe("shared");
-  });
-
-  it("ignores a form group the caller is not in", async () => {
-    stubRoom({ groups: ["sre"] });
     renderWithClient(PersonaBuilder, {
       oncancel: () => {},
       oncreated: () => {},
       defaultTeam: "design",
     });
-
-    const select = await forField();
-
-    await waitFor(() => expect(select.value).toBe("sre"));
+    const select = await groupSelect();
+    expect(select.value).toBe("");
+    expect([...select.options].map((o) => o.value)).not.toContain("design");
   });
 
-  it("the everyone option sends shared", async () => {
-    const sent = stubRoom({ groups: ["sre"] });
-    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
-
-    const select = await forField();
-    await waitFor(() => expect(select.value).toBe("sre"));
-    await fireEvent.change(select, { target: { value: "shared" } });
-    expect(screen.getByRole("option", { name: "Everyone (shared)" })).not.toBeNull();
-
-    await fireEvent.click(screen.getByRole("button", { name: "Create persona" }));
-    await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0].team).toBe("shared");
-  });
-
-  it("an operator can file under any group", async () => {
+  it("an operator can file under any group the room has named", async () => {
     stubRoom({ groups: [], operator: true });
     renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
 
-    const select = await forField();
-
-    expect([...select.options].map((o) => o.value)).toEqual([
-      "sre",
-      "qa",
-      "design",
-      "shared",
-    ]);
-    expect(select.value).toBe("shared");
+    const select = await groupSelect();
+    expect([...select.options].map((o) => o.value)).toEqual(["", "sre", "qa", "shared"]);
   });
 
+  it("a taken name says which group the persona is under", async () => {
+    stubRoom(
+      { groups: ["sre"] },
+      {
+        create: {
+          status: 409,
+          body: {
+            error: "a persona with that name already exists",
+            id: "ledger",
+            team: "shared",
+            archived: false,
+          },
+        },
+      },
+    );
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+    await fillByHand();
+    await waitFor(() => expect(createButton().disabled).toBe(false));
+    await fireEvent.click(createButton());
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "A persona with that name already exists. It is under Everyone in the persona list.",
+    );
+  });
+
+  it("editing starts from the whole stored text and saves the text alone", async () => {
+    const calls = stubRoom(
+      { groups: ["sre"] },
+      {
+        stored: {
+          id: "ledger",
+          name: "ledger",
+          team: "sre",
+          builtin: false,
+          tags: [],
+          who_they_are: DRAFT.who_they_are,
+          what_they_do: BODY,
+          rules: RULES,
+          created_by: "me@example.com",
+          created_at: null,
+          truncated: false,
+        },
+      },
+    );
+    const onsaved = vi.fn();
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, onsaved, editId: "ledger" });
+
+    await waitFor(() => expect(field("What they do").value).toBe(BODY));
+    expect(calls.some((c) => c.url === "/api/personas/ledger?full=true")).toBe(true);
+    expect((field("Name") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.queryByLabelText("Group")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Draft persona" })).toBeNull();
+
+    await type("Who they are", "a blunt auditor of invoices");
+    await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(onsaved).toHaveBeenCalled());
+    expect(calls.find((c) => c.method === "PUT")).toEqual({
+      method: "PUT",
+      url: "/api/personas/ledger",
+      body: { who_they_are: "a blunt auditor of invoices", what_they_do: BODY, rules: RULES },
+    });
+  });
 });

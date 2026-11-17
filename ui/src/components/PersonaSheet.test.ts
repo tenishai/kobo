@@ -89,4 +89,23 @@ describe("PersonaSheet (personas-in-place wave)", () => {
     const options = Array.from(move.options).map((o) => o.value);
     expect(options).toEqual(["", "shared"]);
   });
+
+  it("offers Edit to someone who may change the persona, and hands its id to the dialog", async () => {
+    stubRoom(["aria"]);
+    const onedit = vi.fn();
+    renderWithClient(PersonaSheet, { personaId: "aria", onback: () => {}, onedit });
+
+    await screen.findByText("A calm operator.");
+    await fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    expect(onedit).toHaveBeenCalledWith("aria");
+  });
+
+  it("keeps Edit from someone who may not change the persona, an operator included", async () => {
+    stubRoom([], true);
+    renderWithClient(PersonaSheet, { personaId: "aria", onback: () => {}, onedit: () => {} });
+
+    await screen.findByText("A calm operator.");
+    expect(await screen.findByRole("button", { name: "Archive" })).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
 });
