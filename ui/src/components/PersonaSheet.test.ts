@@ -26,7 +26,7 @@ function json(body: unknown, status = 200): Response {
 }
 
 /** whoami, the movable list and the persona; anything else is an error. */
-function stubRoom(movable: string[], operator = false): void {
+function stubRoom(movable: string[], operator = false, persona: object = ARIA): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
@@ -35,7 +35,7 @@ function stubRoom(movable: string[], operator = false): void {
         return json({ ids: movable });
       }
       if (url.includes("/api/personas/aria")) {
-        return json(ARIA);
+        return json(persona);
       }
       if (url.includes("/api/whoami")) {
         return json({ email: "k@example.org", operator, groups: ["sre"], display_name: "K" });
@@ -88,5 +88,33 @@ describe("PersonaSheet (personas-in-place wave)", () => {
     // The persona's own team is not a destination; everyone is.
     const options = Array.from(move.options).map((o) => o.value);
     expect(options).toEqual(["", "shared"]);
+  });
+
+  it("offers Edit to someone who may change the persona, and hands its id to the dialog", async () => {
+    stubRoom(["aria"]);
+    const onedit = vi.fn();
+    renderWithClient(PersonaSheet, { personaId: "aria", onback: () => {}, onedit });
+
+    await screen.findByText("A calm operator.");
+    await fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    expect(onedit).toHaveBeenCalledWith("aria");
+  });
+
+  it("keeps Edit from someone who may not change the persona, an operator included", async () => {
+    stubRoom([], true);
+    renderWithClient(PersonaSheet, { personaId: "aria", onback: () => {}, onedit: () => {} });
+
+    await screen.findByText("A calm operator.");
+    expect(await screen.findByRole("button", { name: "Archive" })).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+
+  it("keeps Edit off a persona the form could not read back, such as a team guide", async () => {
+    stubRoom(["aria"], false, { ...ARIA, editable: false });
+    renderWithClient(PersonaSheet, { personaId: "aria", onback: () => {}, onedit: () => {} });
+
+    await screen.findByText("A calm operator.");
+    expect(await screen.findByLabelText("Move to")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
   });
 });

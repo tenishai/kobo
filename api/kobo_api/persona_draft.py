@@ -1,10 +1,18 @@
 """Persona drafting (Persona v3 addendum): the generator
 (`kobo_api.clients.VertexNameClient.draft`) supplies a best-effort
-name/who_they_are/what_they_do object; this module is what guarantees the
-room's contract of "the room always drafts SOMETHING editable" — validating
-each field against `kobo_api.personas.PersonaFields`' real bounds and
-falling each one back INDIVIDUALLY to a deterministic, job-derived value
-when it's missing, mistyped, or out of bounds.
+name/who_they_are/what_they_do/rules object; this module is what guarantees
+the room's contract of "the room always drafts SOMETHING editable" —
+validating each field against `kobo_api.personas.PersonaFields`' real
+bounds and falling each one back INDIVIDUALLY to a deterministic,
+source-derived value when it's missing, mistyped, or out of bounds.
+
+One way in (2026-11-17). The draft's source is whatever the person has: a
+few sentences about the job, or a whole document they already wrote. There
+used to be a second path for the document (`distill`), which pulled a name
+and a who-line out of it and stored the document itself, as it came, as
+what-they-do; a persona made that way kept its own title, its own opening
+and its own sections under the house's. Now a document is material for the
+same draft, rewritten into the same three parts as every other persona.
 
 Kept separate from `kobo_api.main` (mirrors `kobo_api.namegen`'s own split
 from the name-suggestions route: pure validation/fallback logic here,
@@ -16,7 +24,13 @@ from __future__ import annotations
 
 import re
 
-from kobo_api.personas import PersonaError, persona_id
+from kobo_api.personas import (
+    PersonaError,
+    clean_rule,
+    clean_who,
+    house_body,
+    persona_id,
+)
 from kobo_api.purpose_tags import normalize_tags
 
 # _NAME_MAX/_WHO_MAX mirror PersonaFields' real Field bounds (kobo_api.
@@ -43,6 +57,10 @@ _WHAT_MAX = 12000
 # rejected, since there's no caller input to reject here at all.
 _DRAFT_TAG_CAP = 5
 
+# The most rules one draft hands back. The prompt asks for eight to twelve;
+# a reply with more is cut here rather than refused, the same as the tags.
+_DRAFT_RULES_CAP = 20
+
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
 # The fallback name when the job text has no alphanumeric words at all
@@ -65,9 +83,9 @@ _CLAUSE_END_RE = re.compile(r"[.!?;\n]")
 
 def _slugify_name_candidate(words: list[str]) -> str:
     """Shared tail of every deterministic name fallback in this module
-    (`_fallback_name` below, `_fallback_distilled_name` further down):
-    hyphen-join `words` (already lowercase alphanumeric — both callers
-    extract via `_WORD_RE`) into a slug, validate it against `persona_id()`
+    (`_fallback_name` below):
+    hyphen-join `words` (already lowercase alphanumeric — the caller
+    extracts via `_WORD_RE`) into a slug, validate it against `persona_id()`
     — retrying with a "the-" prefix when the plain slug is digit-led
     (`persona_id()` rejects that) — and fall back to
     `_FALLBACK_NAME_DEFAULT` when neither passes. The accepted slug is
@@ -121,6 +139,8 @@ def _fallback_name(job: str) -> str:
     fails, fall back to "new-agent". See `_slugify_name_candidate` for that
     shared slugify-validate-clamp pipeline.
     """
+    if _is_document(job):
+        return _fallback_document_name(job)
     words = _WORD_RE.findall(job.lower())[:_FALLBACK_NAME_MAX_WORDS]
     return _slugify_name_candidate(words)
 
@@ -156,6 +176,8 @@ def _fallback_who(job: str) -> str:
     stripping), returns "an agent with one clear job" instead of leaving
     the template dangling.
     """
+    if _is_document(job):
+        return _fallback_document_who(job)
     clause = _first_clause(job)
     if not clause:
         who = "an agent with one clear job"
@@ -170,7 +192,7 @@ def _fallback_what(job: str) -> str:
     truncates — the draft endpoint's own `job` field shares the exact same
     1-500 bound, so any `job` that reached here already fits; the clamp is
     just defense-in-depth against a caller that skips that check."""
-    return job[:_WHAT_MAX]
+    return house_body(job[:_WHAT_MAX])
 
 
 def _fallback_tags(name: str, who: str, what: str) -> list[str]:
@@ -201,12 +223,13 @@ def _extract_field(
         # The renderer prepends "You are {name}, " to this line -- a draft
         # that opens with its own "You are" would read doubled in the
         # composed persona ("You are X, You are the ..."). Observed live
-        # 2026-08-28; stripped here so the bounds check sees the real line.
-        lowered = value.lower()
-        for prefix in ("you are the ", "you are a ", "you are an ", "you are "):
-            if lowered.startswith(prefix):
-                value = value[len(prefix):].strip()
-                break
+        # 2026-08-28. The one cleaner the stored field uses
+        # (`kobo_api.personas.clean_who`), so the bounds check sees the
+        # real line: it keeps the article ("a calm ..."), which the first
+        # version of this strip took off along with "You are".
+        value = clean_who(value)
+    elif key == "what_they_do":
+        value = house_body(value)
     if reject_newline and "\n" in value:
         return None
     if not (1 <= len(value) <= max_len):
@@ -217,8 +240,8 @@ def _extract_field(
 def finalize_draft(raw: dict | None, *, job: str) -> dict:
     """Turn the generator's best-effort `raw` (or `None`/anything non-dict,
     when the generator is unconfigured or raised `ClientError`) into a
-    `{"name", "who_they_are", "what_they_do", "purpose_tags"}` dict that's
-    ALWAYS PersonaFields-valid (`purpose_tags` isn't a PersonaFields field
+    `{"name", "who_they_are", "what_they_do", "rules", "purpose_tags"}` dict
+    that's ALWAYS PersonaFields-valid (`purpose_tags` isn't a PersonaFields field
     at all — see `kobo_api.personas.PersonaFields`'s own docstring — so it
     rides alongside, never through, that validity check).
 
@@ -245,6 +268,12 @@ def finalize_draft(raw: dict | None, *, job: str) -> dict:
     persona's own tags" (`_fallback_tags`) — derived from THIS draft's own
     finalized name/who_they_are/what_they_do, not the raw job text
     directly.
+
+    `rules` is the model's own list, each entry cleaned to one bullet's
+    text (`kobo_api.personas.clean_rule`), anything that is not a one-line
+    string dropped, capped at `_DRAFT_RULES_CAP`. There is no deterministic
+    fallback for rules: a sentence about a job does not contain them, so an
+    unusable reply hands back none and the form asks for them.
     """
     raw = raw if isinstance(raw, dict) else {}
 
@@ -274,135 +303,83 @@ def finalize_draft(raw: dict | None, *, job: str) -> dict:
         "name": final_name,
         "who_they_are": final_who,
         "what_they_do": final_what,
+        "rules": _draft_rules(raw.get("rules")),
         "purpose_tags": tags,
+        # False when who-they-are or what-they-do is the room's stand-in,
+        # which is the source handed back, not a persona in the house shape.
+        "generated": who is not None and what is not None,
     }
 
 
-# --- distill (persona-first station addendum) --------------------------------
+def _draft_rules(value: object) -> list[str]:
+    """The model's `rules`, as the form's Rules box takes them: one-line
+    strings, list markers off, blanks and repeats dropped, capped."""
+    if not isinstance(value, list):
+        return []
+    rules: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or "\n" in item.strip():
+            continue
+        rule = clean_rule(item)
+        if rule and rule not in rules:
+            rules.append(rule)
+    return rules[:_DRAFT_RULES_CAP]
+
+
+# --- when the source is a document ------------------------------------------
 #
-# The station's OTHER entry point: the operator arrives with a persona
-# DOCUMENT already written (uploaded or pasted) rather than a one-line job
-# description. `finalize_distill` is `finalize_draft`'s counterpart for that
-# case — it produces discovery metadata (name/who_they_are/purpose_tags) from
-# the document itself, following the exact same "each field validates and
-# falls back on its own, the room never blocks" idiom `finalize_draft` uses.
-# There is no `what_they_do` here at all: the document the operator handed
-# over already IS the persona body, so there's nothing to draft for that
-# field — the generator (`kobo_api.clients.VertexNameClient.distill`) is
-# only ever asked to pull discovery metadata OUT of it.
+# The fallbacks above read `job` as a sentence or two: the name is its first
+# two words, the who-line its first clause. A pasted document starts with a
+# title or a preamble, so the same reading gives "papi-alert" and "an agent
+# whose whole job is # PAPI Alert Triage". When the source looks like a
+# document the fallbacks read it as one instead: the name from its first
+# heading, the who-line from its first line of prose.
+
+# A source longer than the old one-line job box took, or one with a heading
+# in it, is read as a document.
+_DOCUMENT_MIN_CHARS = 500
 
 # A markdown ATX heading line ("#" through "######", a space/tab, then the
-# heading text) — used by `_fallback_distilled_name` to find the document's
-# own title anywhere in the body (`re.search`, not anchored to line one: a
-# short preamble before the first heading is common enough in a
-# hand-written persona document that this shouldn't miss it).
+# heading text), found anywhere in the text (`re.search`, not anchored to
+# line one: a short preamble before the first heading is common enough in a
+# hand-written document that this shouldn't miss it).
 _MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+)$", re.MULTILINE)
 
-# Same shape as _MARKDOWN_HEADING_RE above, but matched against a single
-# stripped line (`.match`, not `.search`) — used by `_fallback_distilled_who`
-# to skip past heading lines while scanning for the document's first real
-# line of prose. Also matches a heading marker with no text after it at all
-# (e.g. a bare "#"), which `_MARKDOWN_HEADING_RE` above does not (that one
-# requires `(.+)$`), since a heading with nothing to say still isn't a line
-# of prose worth using as who_they_are.
+# The same shape matched against a single stripped line, and also a heading
+# marker with nothing after it (a bare "#"): a heading with nothing to say
+# still isn't a line of prose worth using as who_they_are.
 _MARKDOWN_HEADING_LINE_RE = re.compile(r"^#{1,6}(?:[ \t]|$)")
 
-# How many leading words of the whole document `_fallback_distilled_name`
-# slugifies when there's no heading to use instead — short on purpose (a
-# document's opening words are prose, not already name-shaped, unlike a
-# heading's own text).
-_DISTILL_NO_HEADING_WORDS = 2
-
-# The plain fallback who_they_are text (persona-first station addendum) when
-# `body` has no non-blank, non-heading line at all — mirrors
-# `_fallback_who`'s own dangling-template rescue text for a job description
-# that's all punctuation.
-_DISTILL_WHO_FALLBACK_TEXT = "an agent with one clear job"
+# The who-line when a document has no line of prose at all.
+_DOCUMENT_WHO_FALLBACK_TEXT = "an agent with one clear job"
 
 
-def _fallback_distilled_name(body: str) -> str:
-    """Deterministic fallback persona name for a distilled persona document:
-    the document's first markdown heading (found anywhere in `body`, not
-    just its first line), or — when there's no heading at all, or a heading
-    marker with no text after it — the document's own first two words
-    instead. Either source runs through the same slugify-validate-clamp
-    pipeline `_fallback_name` uses (`_slugify_name_candidate`).
-    """
+def _is_document(job: str) -> bool:
+    return len(job) > _DOCUMENT_MIN_CHARS or _MARKDOWN_HEADING_RE.search(job) is not None
+
+
+def _fallback_document_name(body: str) -> str:
+    """The document's first markdown heading, or its first two words when
+    it has none, through the same slugify-validate-clamp pipeline as
+    `_fallback_name` (`_slugify_name_candidate`)."""
     heading_match = _MARKDOWN_HEADING_RE.search(body)
     if heading_match:
         words = _WORD_RE.findall(heading_match.group(1).lower())[:_FALLBACK_NAME_MAX_WORDS]
         if words:
             return _slugify_name_candidate(words)
-    words = _WORD_RE.findall(body.lower())[:_DISTILL_NO_HEADING_WORDS]
+    words = _WORD_RE.findall(body.lower())[:_FALLBACK_NAME_MAX_WORDS]
     return _slugify_name_candidate(words)
 
 
-def _fallback_distilled_who(body: str) -> str:
-    """Deterministic fallback who_they_are for a distilled persona document:
-    the first non-blank, non-heading line of `body`, clamped to
-    PersonaFields.who_they_are's bound (`_WHO_MAX`) — already a single line
-    by construction (one line of the body, taken as-is), so there's no
-    clause-boundary search here the way `_fallback_who`'s job-description
-    fallback needs.
-
-    Falls back to `_DISTILL_WHO_FALLBACK_TEXT` when `body` has no such line
-    at all (every line is blank or itself a heading).
-    """
+def _fallback_document_who(body: str) -> str:
+    """The first non-blank, non-heading line of the document, cleaned the
+    way a typed who-line is and clamped to its bound; the plain fallback
+    text when there is no such line."""
     for line in body.splitlines():
         stripped = line.strip()
-        if not stripped:
+        if not stripped or _MARKDOWN_HEADING_LINE_RE.match(stripped):
             continue
-        if _MARKDOWN_HEADING_LINE_RE.match(stripped):
-            continue
-        return stripped[:_WHO_MAX]
-    return _DISTILL_WHO_FALLBACK_TEXT
-
-
-def finalize_distill(raw: dict | None, *, body: str) -> dict:
-    """Turn the generator's best-effort `raw` (or `None`/anything non-dict,
-    when the generator is unconfigured or raised `ClientError`) into a
-    `{"name", "who_they_are", "purpose_tags"}` dict — the persona-first
-    station's discovery-metadata counterpart to `finalize_draft` above, for
-    when the operator hands over a persona document rather than a one-line
-    job description. Deliberately no `what_they_do` key at all: the
-    document itself already IS the persona body, so there's nothing to
-    draft or fall back for that field here.
-
-    `name`/`who_they_are` each validate and fall back independently, same
-    "one field's trouble doesn't take the others down with it" idiom
-    `finalize_draft` uses — see `_extract_field`'s docstring for exactly
-    which malformed shapes fall back (missing, non-string, empty after
-    stripping, over bound, or — `who_they_are` only — containing a
-    newline). A name that passes PersonaFields' own bound but fails
-    `persona_id()` (e.g. it slugifies to a digit-led string) falls back the
-    same way.
-
-    `purpose_tags` fallback tier is a plain empty list, full stop — UNLIKE
-    `finalize_draft`'s own fallback tier (the persona's own tags, derived
-    from its finalized name/who_they_are/what_they_do): a distill has no
-    what_they_do to derive anything from, so there's no second tier to fall
-    through to here.
-    """
-    raw = raw if isinstance(raw, dict) else {}
-
-    name = _extract_field(raw, "name", max_len=_NAME_MAX)
-    if name is not None:
-        try:
-            persona_id(name)
-        except PersonaError:
-            name = None
-        else:
-            name = _shorten_name(name)
-
-    who = _extract_field(raw, "who_they_are", max_len=_WHO_MAX, reject_newline=True)
-
-    final_name = name if name is not None else _fallback_distilled_name(body)
-    final_who = who if who is not None else _fallback_distilled_who(body)
-
-    tags = normalize_tags(raw.get("purpose_tags"))[:_DRAFT_TAG_CAP]
-
-    return {
-        "name": final_name,
-        "who_they_are": final_who,
-        "purpose_tags": tags,
-    }
+        who = clean_who(stripped[:_WHO_MAX])
+        if who:
+            return who
+    return _DOCUMENT_WHO_FALLBACK_TEXT

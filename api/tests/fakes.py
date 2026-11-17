@@ -2249,6 +2249,42 @@ class FakeImage:
         return self._image_bytes
 
 
+# A persona's what-they-do and rules in the house shape, long enough to
+# pass the room's floor (`kobo_api.personas.check_substance`). It is what
+# `FakeName.draft` hands back, so the lab room's Draft persona button fills
+# a form that can be created as it is, and it is the body any test that
+# creates a persona uses when the text itself is not what it is testing.
+HOUSE_WHAT_THEY_DO = """\
+A billing question is somebody waiting on money, so the answer has to be right
+and short. The person asking wants to know what happened to their charge and
+what happens next.
+
+Your ground: charges, refunds, invoices and plan changes. Tax advice and
+contract terms belong to finance.
+
+1. **A question about one charge.** Say what the charge was for, when it was
+   made, and whether it will repeat.
+2. **Everything else.** Answer like a colleague: the answer, the reason, and
+   where to look.
+
+Tiebreaker: when it could be either, answer the question about the charge
+first.
+
+When you cannot tell from what you have, say so and name the finance channel.
+
+Example answer:
+"The 12 March charge is the yearly renewal. It repeats next March unless the
+plan is changed before then."
+"""
+
+HOUSE_RULES = (
+    "Every answer names the charge it is about.",
+    "Never guess an amount or a date.",
+    "Say plainly when a refund is not yours to promise.",
+    "Never give tax advice.",
+)
+
+
 class FakeName:
     """Records every (who, what, tags, exclude) call to `suggest`
     (`.calls`) and returns a configurable list of candidate dicts (default:
@@ -2277,13 +2313,9 @@ class FakeName:
     sentence), or raises `ClientError(capability_error)` instead when set —
     independent of the other two knobs, same as they are of each other.
 
-    `distill`/`distill_error` (persona-first station addendum) are the same
-    pair for `distill()`: records every `body` call to `.distill_calls` and
-    returns a configurable draft dict (default: a small canned
-    `{"name", "who_they_are", "purpose_tags"}` — no `what_they_do`, unlike
-    `draft`'s own default, since a distill reply never carries one),
-    or raises `ClientError(distill_error)` instead when set — independent
-    of every other knob here, same as they are of each other.
+    The default draft is a whole persona in the house shape (2026-11-17),
+    long enough and with rules enough to pass `check_substance`, so the lab
+    room's Draft persona button fills a form that can be created as it is.
     """
 
     def __init__(
@@ -2296,8 +2328,6 @@ class FakeName:
         capability: str = "Helps with billing questions and small talk.",
         capability_error: str | None = None,
         tags: list[str] | None = None,
-        distill: dict | None = None,
-        distill_error: str | None = None,
     ):
         self._candidates = (
             list(candidates)
@@ -2318,7 +2348,9 @@ class FakeName:
             else {
                 "name": "billing-buddy",
                 "who_they_are": "a calm troubleshooter for billing questions",
-                "what_they_do": "Helps customers resolve billing issues quickly.",
+                "what_they_do": HOUSE_WHAT_THEY_DO,
+                "rules": list(HOUSE_RULES),
+                "purpose_tags": ["billing", "support"],
             }
         )
         self._draft_error = draft_error
@@ -2328,17 +2360,6 @@ class FakeName:
         self._tags = list(tags or [])
         self.tags_calls: list[tuple[str, str, str | None]] = []
         self.capability_calls: list[tuple[str, list[str], list[str]]] = []
-        self._distill = (
-            dict(distill)
-            if distill is not None
-            else {
-                "name": "billing-buddy",
-                "who_they_are": "a calm troubleshooter for billing questions",
-                "purpose_tags": ["billing", "support"],
-            }
-        )
-        self._distill_error = distill_error
-        self.distill_calls: list[str] = []
 
     def suggest(
         self,
@@ -2379,12 +2400,6 @@ class FakeName:
     def tags(self, persona_body: str, capability: str, group: str | None) -> list[str]:
         self.tags_calls.append((persona_body, capability, group))
         return list(self._tags)
-
-    def distill(self, body: str) -> dict:
-        self.distill_calls.append(body)
-        if self._distill_error is not None:
-            raise ClientError(self._distill_error)
-        return dict(self._distill)
 
 
 class FakeStorage:

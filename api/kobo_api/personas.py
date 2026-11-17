@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from kobo_api import delivery
 from kobo_api.catalog import _parse_persona_file
-from kobo_api.clients import StorageClient, StorageNotFound
+from kobo_api.clients import ClientError, StorageClient, StorageNotFound
 from kobo_api.purpose_tags import normalize_tags
 from kobo_api.search import CatalogEntry
 
@@ -78,7 +78,100 @@ class PersonaError(Exception):
 
 
 class PersonaExists(Exception):
-    """create_persona: a persona with this id is already in the index."""
+    """A persona with this id is already in the index. `entry` is that
+    index entry, so the route can say where the existing one is filed
+    (2026-11-17: a person who could not see their persona in the list tried
+    to make it again and was told only that the name was taken)."""
+
+    def __init__(self, message: str, entry: dict | None = None) -> None:
+        super().__init__(message)
+        self.entry = entry or {}
+
+
+# --- the house shape (2026-11-17) -------------------------------------------
+#
+# Every persona the room writes has the same three parts, in the same order:
+# the opening line, `## What you do`, `## Rules`. The built-ins are written
+# that way by hand; a team's own persona used to be whatever was typed or
+# pasted, wrapped in the skeleton as it came. Three things went wrong in the
+# catalog because of it: a pasted document brought its own title and
+# sections, so the persona had two openings and headings above the house's
+# own; a who-they-are line that ended in a period rendered with two; and a
+# persona could be one thin sentence with no rules at all. The cleaners
+# below run on every PersonaFields, so the form, the drafter and the MCP
+# tool all land in the same shape, and `check_substance` holds the floor.
+
+# What a hand-typed who-they-are tends to start with. The opening line
+# already says "You are {name}, ", so the field carries only what follows.
+_WHO_PREFIXES = ("you are {name},", "you are {name}", "you are ")
+
+# The fewest characters of what-they-do, and the fewest rules, a new or
+# edited persona may carry. The built-ins run to about 1,700 characters and
+# ten to twelve rules; these are floors, not targets.
+PERSONA_WHAT_MIN_CHARS = 300
+PERSONA_RULES_MIN = 3
+
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_TOP_HEADING_RE = re.compile(r"^#{1,2}[ \t]+(?=\S)")
+_BULLET_RE = re.compile(r"^(?:[-*\u2022]|\d+[.)])[ \t]+")
+_BARE_MARKER_RE = re.compile(r"^(?:[-*\u2022]|\d+[.)])$")
+
+
+def clean_who(text: str) -> str:
+    """The who-they-are line as the opening line wants it: what follows
+    "You are {name}, ", with no period of its own. Strips a leading "You
+    are" somebody typed out of habit and any closing period, so the
+    rendered line never reads "You are {name}, You are a ..." or ends in
+    two periods. Idempotent."""
+    value = text.strip()
+    while True:
+        lowered = value.lower()
+        for prefix in _WHO_PREFIXES:
+            if lowered.startswith(prefix):
+                value = value[len(prefix):].strip()
+                break
+        else:
+            break
+    return value.rstrip(". ").strip()
+
+
+def house_body(text: str) -> str:
+    """The what-they-do text with nothing in it that outranks the house's
+    own sections: a `#` or `##` heading becomes `###`, outside a code
+    fence. A persona has exactly two sections of that rank, and
+    `parse_persona_body` finds them by their headings, so a pasted "## Rules"
+    in the middle of the body used to cut the persona in two when it was
+    read back. Blank lines at either end go. Idempotent."""
+    out: list[str] = []
+    fenced = False
+    for line in text.strip("\n").splitlines():
+        if _FENCE_RE.match(line):
+            fenced = not fenced
+        elif not fenced:
+            line = _TOP_HEADING_RE.sub("### ", line)
+        out.append(line.rstrip())
+    return "\n".join(out).strip("\n")
+
+
+def clean_rule(text: str) -> str:
+    """One rule as one bullet's text: the list marker somebody pasted along
+    with it ("- ", "* ", "1. ") goes, since the renderer writes its own.
+    Every marker goes, not just the first, and a rule that was only a
+    marker comes back empty, so cleaning a cleaned rule changes nothing."""
+    value = text.strip()
+    while True:
+        stripped = _BULLET_RE.sub("", value).strip()
+        if stripped == value:
+            break
+        value = stripped
+    return "" if _BARE_MARKER_RE.match(value) else value
+
+
+def _one_line(text: str) -> bool:
+    """True when `text` is one line the way `parse_persona_body` reads
+    lines (`str.splitlines`), which breaks on a carriage return and the
+    Unicode line separators as well as on a newline."""
+    return len(text.strip().splitlines()) <= 1
 
 
 class PersonaFields(BaseModel):
@@ -114,9 +207,20 @@ class PersonaFields(BaseModel):
     @field_validator("who_they_are")
     @classmethod
     def _who_they_are_one_line(cls, v: str) -> str:
-        if "\n" in v:
+        if not _one_line(v):
             raise ValueError("who_they_are must be a single line (no newlines)")
-        return v
+        cleaned = clean_who(v)
+        if not cleaned:
+            raise ValueError("who_they_are must say who the persona is")
+        return cleaned
+
+    @field_validator("what_they_do")
+    @classmethod
+    def _what_they_do_house_shape(cls, v: str) -> str:
+        cleaned = house_body(v)
+        if not cleaned:
+            raise ValueError("what_they_do must not be blank")
+        return cleaned
 
     @field_validator("rules")
     @classmethod
@@ -126,12 +230,15 @@ class PersonaFields(BaseModel):
         more (upload/limits addendum dropped the old 200-char ceiling): a
         long rule is bounded by the merged render's own 200-line/49152-byte
         gate (create_persona), not a per-field lookalike of it."""
+        cleaned: list[str] = []
         for item in v:
-            if not item:
-                raise ValueError(f"each rule must not be empty: {item!r}")
-            if "\n" in item:
+            if not _one_line(item):
                 raise ValueError(f"each rule must be a single line (no newlines): {item!r}")
-        return v
+            rule = clean_rule(item)
+            if not rule:
+                raise ValueError(f"each rule must not be empty: {item!r}")
+            cleaned.append(rule)
+        return cleaned
 
 
 # The order the built-in personas are shown in, everywhere the room lists
@@ -315,6 +422,31 @@ class ParsedPersona:
     rules: list[str] = field(default_factory=list)
 
 
+def _rules_heading_at(lines: list[str], start: int) -> int:
+    """The index of the house's own `## Rules` heading at or after `start`,
+    or `len(lines)` when the body has none.
+
+    The LAST such line, not the first: `render_persona` writes the heading
+    after the whole of what-they-do and follows it with bullets only, so
+    nothing below it can be another. The first one cut a persona in two
+    when its body quoted the heading inside a code fence (the cleaners
+    leave a fence alone), and an edit then saved the cut for good
+    (2026-11-17 review). A persona with no rules has no house heading, so
+    a last match that sits inside a closed fence is the body's own text.
+    """
+    at = next(
+        (i for i in range(len(lines) - 1, start - 1, -1) if lines[i] == _RULES_HEADING),
+        None,
+    )
+    if at is None:
+        return len(lines)
+    fences_before = sum(1 for line in lines[start:at] if _FENCE_RE.match(line))
+    closed_after = any(_FENCE_RE.match(line) for line in lines[at + 1 :])
+    if fences_before % 2 == 1 and closed_after:
+        return len(lines)
+    return at
+
+
 def parse_persona_body(text: str) -> ParsedPersona:
     """The inverse of `render_persona`: read a stored persona.md back into
     the three fields that wrote it.
@@ -354,10 +486,7 @@ def parse_persona_body(text: str) -> ParsedPersona:
             parsed.who_they_are = match.group("who")
             break
 
-    try:
-        rules_at = lines.index(_RULES_HEADING, what_at + 1)
-    except ValueError:
-        rules_at = len(lines)
+    rules_at = _rules_heading_at(lines, what_at + 1)
 
     body = lines[what_at + 1 : rules_at]
     while body and not body[0].strip():
@@ -403,6 +532,26 @@ def _check_rendered_size(body: str) -> None:
     if byte_count > _MAX_RENDERED_BYTES:
         raise PersonaError(
             f"persona renders to {byte_count} bytes; the limit is {_MAX_RENDERED_BYTES}"
+        )
+
+
+def check_substance(fields: PersonaFields) -> None:
+    """Raise PersonaError when `fields` is too thin to be a persona an
+    agent can work from: under `PERSONA_WHAT_MIN_CHARS` of what-they-do, or
+    fewer than `PERSONA_RULES_MIN` rules. Checked at create and at edit,
+    for the form and the MCP tool alike; never on read, so a thin persona
+    already in the catalog keeps working until somebody edits it."""
+    if len(fields.what_they_do) < PERSONA_WHAT_MIN_CHARS:
+        raise PersonaError(
+            "What they do is too short to work from: say what the persona covers, "
+            "how it works through a request and what it hands back "
+            f"({PERSONA_WHAT_MIN_CHARS} characters at least, it has "
+            f"{len(fields.what_they_do)})"
+        )
+    if len(fields.rules) < PERSONA_RULES_MIN:
+        raise PersonaError(
+            f"a persona needs at least {PERSONA_RULES_MIN} rules, one line each: "
+            "things it always or never does"
         )
 
 
@@ -534,9 +683,11 @@ def create_persona(
     id_ = persona_id(fields.name)
 
     index = _read_index(storage, bucket, prefix)
-    if any(entry["id"] == id_ for entry in index):
-        raise PersonaExists(f"a persona with id {id_!r} already exists")
+    existing = next((entry for entry in index if entry["id"] == id_), None)
+    if existing is not None:
+        raise PersonaExists(f"a persona with id {id_!r} already exists", existing)
 
+    check_substance(fields)
     body = render_persona(fields)
     _check_rendered_size(body)
     storage.write_bytes(
@@ -570,6 +721,92 @@ def create_persona(
         tags=tags,
         builtin=False,
     )
+
+
+def update_persona(
+    storage: StorageClient,
+    *,
+    bucket: str,
+    prefix: str = "",
+    persona_id: str,
+    who_they_are: str,
+    what_they_do: str,
+    rules: list[str],
+    updated_by: str | None = None,
+) -> dict:
+    """Rewrite a room-authored persona's text in place: who they are, what
+    they do, the rules. The id, the name, the group, the tags and the maker
+    stay as they were, so nothing that points at the persona moves. Storage
+    only, same as `create_persona`: the route re-ingests.
+
+    The same cleaners and the same floor as a create (`PersonaFields`,
+    `check_substance`, `_check_rendered_size`), so an edit can only leave a
+    persona in the house shape. An agent already made from the persona
+    keeps the copy it was made with; the edit is what the next agent gets.
+
+    Only a persona whose stored text is in the form's shape is edited. A
+    team guide (`upsert_persona`) or a body somebody put in the bucket by
+    hand has no `## What you do` for the form to read back, so the form
+    would open on the one-line description and saving it would replace the
+    whole text with that line.
+
+    Raises `PersonaError` when the id is not in the index, when it is a
+    built-in (the boot-time seed would write the packaged text back) or
+    archived, when its stored text is not in the form's shape, or when the
+    new text fails a check. `pydantic.ValidationError`
+    from the fields is the caller's to turn into a 422.
+    """
+    index = _read_index(storage, bucket, prefix)
+    entry = next((e for e in index if e["id"] == persona_id), None)
+    if entry is None or entry.get("archived"):
+        raise PersonaError(f"no persona with id {persona_id!r}")
+    if entry.get("builtin"):
+        raise PersonaError("built-in personas are the room's own and are not edited")
+
+    key = f"{prefix}{persona_id}/persona.md"
+    try:
+        stored = parse_persona_body(storage.read_bytes(bucket, key).decode())
+    except StorageNotFound:
+        stored = ParsedPersona()
+    if stored.what_they_do is None:
+        raise PersonaError(
+            "this persona was not written with the persona form, so it is not edited here"
+        )
+    # Writing over the file gives it a new date and new custom metadata.
+    # The date it was first made is read off the old file once and kept in
+    # the index, where the single-persona read looks first.
+    try:
+        meta = storage.object_metadata(bucket, key)
+    except ClientError:
+        meta = {}
+    creator = (meta.get("metadata") or {}).get("creator") or "room"
+    made_at = meta.get("timeCreated") or meta.get("updated")
+
+    fields = PersonaFields(
+        name=entry.get("name") or persona_id,
+        who_they_are=who_they_are,
+        what_they_do=what_they_do,
+        rules=rules,
+    )
+    check_substance(fields)
+    body = render_persona(fields)
+    _check_rendered_size(body)
+    storage.write_bytes(
+        bucket,
+        key,
+        body.encode(),
+        metadata={"team": entry.get("team", ""), "creator": creator},
+        content_type="text/markdown",
+    )
+
+    entry["description"] = fields.who_they_are
+    # Always set: it is also how the boot-time seed knows a packaged group
+    # persona was edited in the room and leaves its line alone.
+    entry["updated_by"] = (updated_by or "").lower() or "room"
+    if made_at and not entry.get("created_at"):
+        entry["created_at"] = made_at
+    _write_index(storage, bucket, prefix, index)
+    return entry
 
 
 def upsert_persona(
@@ -712,6 +949,14 @@ def seed_default_personas(storage: StorageClient, *, bucket: str, prefix: str = 
         # would silently return on the next restart.
         if previous and previous.get("archived"):
             index_by_id[info.id]["archived"] = True
+        # A packaged group persona edited in the room (`update_persona`)
+        # keeps its edited file, above; its one line in the list and who
+        # edited it stay with it, or the list would show the packaged
+        # description over the edited text after every restart.
+        if previous and previous.get("updated_by") and not index_by_id[info.id]["builtin"]:
+            for kept in ("description", "updated_by", "created_at"):
+                if previous.get(kept):
+                    index_by_id[info.id][kept] = previous[kept]
 
     for retired in RETIRED_TEMPLATES:
         if retired in index_by_id:

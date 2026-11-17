@@ -121,3 +121,34 @@ export function renderMarkdown(markdown: string): string {
   }
   return html.join("\n");
 }
+
+/** One stretch of a persona's text, bold or not. */
+export interface TextRun {
+  text: string;
+  bold: boolean;
+}
+
+/**
+ * A persona's text cut at its `**bold**` marks, as runs a component draws
+ * itself (2026-11-17). The built-in personas label each kind of request in
+ * bold and the builder shows that shape, so the one place a persona is read
+ * in full showed raw asterisks. Bold is the only mark read: a persona is
+ * prose somebody wrote, and headings or links are still never invented from
+ * it. An unpaired `**` stays as typed.
+ */
+export function boldRuns(text: string): TextRun[] {
+  const runs: TextRun[] = [];
+  let last = 0;
+  for (const match of text.matchAll(/\*\*([^*\n]+)\*\*/g)) {
+    const at = match.index ?? 0;
+    if (at > last) {
+      runs.push({ text: text.slice(last, at), bold: false });
+    }
+    runs.push({ text: match[1], bold: true });
+    last = at + match[0].length;
+  }
+  if (last < text.length) {
+    runs.push({ text: text.slice(last), bold: false });
+  }
+  return runs;
+}

@@ -6,6 +6,21 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- A persona can be edited. **Edit** sits beside **Move to** and **Archive** at the bottom of the full persona, for its maker, a member of its group, or an operator (a persona shared with everyone: its maker or an operator; a built-in: nobody). It opens the builder with the persona's text in it; who they are, what they do and the rules can change, the name stays. An agent copies its persona when it is made, so an edit reaches agents made from then on. The persona of a team's informational guide is not edited: the room wrote it whole, not in the form's parts.
+
+### Changed
+- **Build your own persona** is one form. The two ways in (paste a persona, describe the job) are gone: there are four parts, each saying what goes in it and how much (name, who they are, what they do, rules), and a group. An optional box at the top takes a few sentences, notes or an uploaded file, and **Draft persona** writes all four parts in the shape the built-in personas are written in; whatever was typed by hand stays. A pasted document is no longer kept word for word: it is rewritten into that shape, to edit before saving. When the room cannot write a draft it says so and leaves the form alone, where it filled the form with a stand-in cut from the description.
+- Every new or edited persona meets the same floor: at least 300 characters of what they do and at least 3 rules, with **Create persona** off until the form has them and a line beside it saying what is missing. The room also tidies what it is given the same way for everyone (the who-they-are line is one line without "You are", headings in the body are lowered, rules lose their bullets and numbers). The floor holds for a persona sent by an assistant too. Personas made before this are untouched until someone edits them.
+- A new persona is filed under its maker's group, not under Everyone. Someone in one group gets it without choosing; someone in several chooses; **Everyone** is still there for a persona meant for the whole room, last in the menu.
+- The persona groups in **Create agent** are a row of pills above the list, with **Built-in** pressed first and **Everyone** last, where they were a row below the built-ins that had to be scrolled to. The list shows the pressed group's personas.
+
+### Fixed
+- A persona you search for is in the results. A search narrowed the group pills to the ones holding a match and showed no row until that pill was pressed, so a persona filed under Everyone looked as if it had not been saved. A search now lists every match, each under the name of its group.
+- A persona made from **Create agent** is on screen and picked when the builder closes, with its group's pill pressed. It was picked, but out of sight until its group was pressed.
+- The full persona and its hover card show the bold labels a persona's kinds of request are written with, where they showed the asterisks.
+- A name that is already taken says where the persona is ("It is under Everyone in the persona list"), or that it was archived, where it said only that the name existed.
+
 ## [0.3.72] - 2026-11-17
 
 ### Changed

@@ -218,7 +218,7 @@ from kobo_api.pairs import (
     sync_dispatch_pairs,
     sync_dispatch_pairs_best_effort,
 )
-from kobo_api.persona_draft import finalize_distill, finalize_draft
+from kobo_api.persona_draft import finalize_draft
 from kobo_api.personas import (
     PERSONA_ID_RE,
     PersonaError,
@@ -230,6 +230,7 @@ from kobo_api.personas import (
     seed_default_personas,
     set_persona_archived,
     set_persona_team,
+    update_persona,
     upsert_persona,
     write_persona_file,
 )
@@ -911,16 +912,32 @@ class MovePersonaRequest(BaseModel):
     team: str = Field(pattern=TEAM_SLUG_RE.pattern)
 
 
-class PersonaDraftRequest(BaseModel):
-    """POST /api/personas/draft body (Persona v3 addendum): one plain job
-    description, plus optional short "always/never" rule hints — the
-    generator (or, failing that, a deterministic fallback) turns this into
-    a name/who_they_are/what_they_do draft for the v2 preview to edit.
-    `rules` here is never stored; it's only ever a prompt hint for this one
-    draft — the room-authored rules a persona actually ships with are
-    whatever the operator edits into the v2 preview before Create."""
+class UpdatePersonaRequest(BaseModel):
+    """PUT /api/personas/{id} body: the three parts of a persona its people
+    may rewrite. The name is not here on purpose: the name is the id, and
+    agents and audit lines point at it. Bounds mirror `PersonaFields`
+    (kobo_api.personas), which `update_persona` runs the values through for
+    the real checks."""
 
-    job: str = Field(min_length=1, max_length=500)
+    model_config = ConfigDict(extra="forbid")
+
+    who_they_are: str = Field(min_length=1, max_length=200)
+    what_they_do: str = Field(min_length=1, max_length=49152)
+    rules: list[str] = Field(default_factory=list, max_length=150)
+
+
+class PersonaDraftRequest(BaseModel):
+    """POST /api/personas/draft body: what the person has to start from,
+    plus optional "always/never" lines they want kept. `job` is a few
+    sentences about the work, or notes or a whole document they already
+    wrote (2026-11-17: the bound went from 500 to the persona size ceiling
+    when the separate document path, `/api/personas/distill`, was folded
+    into this one). The generator, or failing that a deterministic
+    fallback, turns it into a name/who_they_are/what_they_do/rules draft
+    for the form to show. Nothing here is stored; a persona is whatever
+    the person sends to POST /api/personas afterwards."""
+
+    job: str = Field(min_length=1, max_length=49152)
     # Same 0-150 optional-one-liners shape as PersonaFields.rules
     # (kobo_api.personas, upload/limits addendum) — mirrored here rather
     # than imported, same "mirror the bounds, don't cross-import
@@ -941,20 +958,6 @@ class PersonaDraftRequest(BaseModel):
             if "\n" in item:
                 raise ValueError(f"each rule must be a single line (no newlines): {item!r}")
         return v
-
-
-class PersonaDistillRequest(BaseModel):
-    """POST /api/personas/distill body (persona-first station addendum): the
-    operator's own ready-made persona document (uploaded or pasted), from
-    which the generator (or, failing that, a deterministic fallback) pulls
-    discovery metadata for the colleague directory — a name, a one-line
-    who-they-are, and purpose tags. Mirrors PersonaFields.what_they_do's own
-    1-49152 bound (kobo_api.personas, upload/limits addendum) — same
-    "mirror the bounds, don't cross-import validation" convention
-    PersonaDraftRequest.job above already uses, since this IS that same
-    persona-body text, just arriving before a job description would."""
-
-    body: str = Field(min_length=1, max_length=49152)
 
 
 class AgentMetadataPatch(BaseModel):
@@ -5270,9 +5273,20 @@ def create_app(
             app.state.catalog_loaded_at = time.monotonic()
         except PersonaError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
-        except PersonaExists:
+        except PersonaExists as exc:
+            # Where the existing one is filed, and whether it is archived,
+            # so the form can point at it (2026-11-17: the person refused
+            # here had made the persona a minute earlier and could not find
+            # it in the list). Nothing the search and archived listings do
+            # not already show any caller.
             return JSONResponse(
-                {"error": "a persona with that name already exists"}, status_code=409
+                {
+                    "error": "a persona with that name already exists",
+                    "id": exc.entry.get("id"),
+                    "team": exc.entry.get("team", ""),
+                    "archived": bool(exc.entry.get("archived")),
+                },
+                status_code=409,
             )
         except ClientError as exc:
             log.warning("persona create failed: %s", exc)
@@ -5387,7 +5401,9 @@ def create_app(
 
     # --- Re-filing (persona team scope) --------------------------------------
 
-    def _persona_move_block(request: Request, entry: dict) -> JSONResponse | None:
+    def _persona_move_block(
+        request: Request, entry: dict, verb: str = "move"
+    ) -> JSONResponse | None:
         """Who may re-file this persona, whatever the destination: the
         person who made it, a member of the team it sits under now, or an
         operator. A persona in the commons has no team to be a member of,
@@ -5397,8 +5413,18 @@ def create_app(
 
         The destination is `_persona_team_gate`'s, checked separately by
         the route: being allowed to move a persona is not being allowed to
-        file it anywhere."""
+        file it anywhere.
+
+        The same people may rewrite it (`update_persona_route`, verb
+        "edit"): a persona belongs to its group, so one rule answers both,
+        and the list `GET /api/personas/movable` hands the room is the list
+        for both buttons."""
         if entry.get("builtin"):
+            if verb == "edit":
+                return JSONResponse(
+                    {"error": "built-in personas are the room's own and are not edited"},
+                    status_code=403,
+                )
             return JSONResponse(
                 {"error": "built-in personas stay shared with everyone"}, status_code=403
             )
@@ -5414,7 +5440,7 @@ def create_app(
                 {
                     "error": (
                         "only the person who made a shared persona, "
-                        "or a room operator, can move it"
+                        f"or a room operator, can {verb} it"
                     )
                 },
                 status_code=403,
@@ -5425,7 +5451,7 @@ def create_app(
             {
                 "error": (
                     f"you must be a member of team {team}, "
-                    "or the person who made this persona, to move it"
+                    f"or the person who made this persona, to {verb} it"
                 )
             },
             status_code=403,
@@ -5494,9 +5520,75 @@ def create_app(
         session.commit()
         return JSONResponse(updated)
 
-    # Which cards on the Personas page get a Move action: the ids this
-    # caller may re-file (`_persona_move_block` above), worked out here so
-    # the page never has to copy the rule. Active personas only, sorted.
+    # --- Editing (2026-11-17) -------------------------------------------------
+    #
+    # A team may rewrite its own persona: who they are, what they do, the
+    # rules. Until this route a persona could be made, moved and archived
+    # but never corrected, so a typo or a rule learned the hard way meant
+    # archiving it and making another under a new name. The gate is the
+    # move gate's (`_persona_move_block`); the text goes through the same
+    # cleaners and the same floor as a create (`update_persona`). An agent
+    # already made keeps the persona it was made with.
+    @app.put("/api/personas/{persona_id}")
+    def update_persona_route(
+        persona_id: str,
+        payload: UpdatePersonaRequest,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        if clients is None or clients.storage is None or not cfg.personas_bucket:
+            return JSONResponse({"error": "catalogs aren't set up yet"}, status_code=503)
+
+        try:
+            index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+        except ClientError as exc:
+            log.warning("persona edit index read failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        entry = next((e for e in index if e.get("id") == persona_id), None)
+        if entry is None or entry.get("archived"):
+            return JSONResponse({"error": "no persona with that id"}, status_code=404)
+
+        block = _persona_move_block(request, entry, verb="edit")
+        if block is not None:
+            return block
+
+        try:
+            updated = update_persona(
+                clients.storage,
+                bucket=cfg.personas_bucket,
+                persona_id=persona_id,
+                who_they_are=payload.who_they_are,
+                what_they_do=payload.what_they_do,
+                rules=payload.rules,
+                updated_by=getattr(request.state, "iap_email", None),
+            )
+            # Same instant-ingest idiom as create/move: the FULL
+            # kind->bucket mapping, so the new one-line description shows in
+            # the list at once and the skills table is rebuilt, not wiped.
+            engine = session.get_bind()
+            ingest_indexes(engine, clients.storage, configured_catalogs(cfg))
+            app.state.catalog_loaded_at = time.monotonic()
+        except ValidationError as exc:
+            return JSONResponse({"error": _validation_error_message(exc)}, status_code=422)
+        except PersonaError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        except ClientError as exc:
+            log.warning("persona edit failed: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=502)
+
+        audit.record(
+            session, request=request, action="persona.update", target_kind="persona", target_id=persona_id,
+            detail={"team": updated.get("team", "")},
+            summary=f"{audit.who(request)} edited persona {updated.get('name') or persona_id}",
+        )
+        session.commit()
+        return JSONResponse(updated)
+
+    # Which personas get a Move and an Edit action: the ids this caller may
+    # re-file or rewrite (`_persona_move_block` above), worked out here so
+    # the room never has to copy the rule. Active personas only, sorted.
     # A literal GET path, so it sits above GET /api/personas/{persona_id}.
     @app.get("/api/personas/movable")
     def movable_personas_route(request: Request) -> JSONResponse:
@@ -5560,8 +5652,11 @@ def create_app(
     # the agent a caller could create from the persona wouldn't already
     # show. Archived answers 404 rather than a body, so a retired persona
     # can't be browsed back into use through here.
+    #
+    # `full=true` gives the whole of what-they-do, for the edit form: a
+    # form filled from the cut text would save the cut back.
     @app.get("/api/personas/{persona_id}")
-    def get_persona_route(persona_id: str) -> JSONResponse:
+    def get_persona_route(persona_id: str, full: bool = False) -> JSONResponse:
         cfg: Config = app.state.config
         clients = app.state.clients
         if clients is None or clients.storage is None or not cfg.personas_bucket:
@@ -5600,7 +5695,7 @@ def create_app(
         what_they_do = (parsed.what_they_do if parsed else None) or description
         rules = parsed.rules if parsed else []
 
-        truncated = len(what_they_do) > _PERSONA_BODY_CHARS
+        truncated = not full and len(what_they_do) > _PERSONA_BODY_CHARS
         if truncated:
             what_they_do = what_they_do[:_PERSONA_BODY_CHARS]
 
@@ -5633,6 +5728,13 @@ def create_app(
                 "created_by": created_by or None,
                 "created_at": rfc3339_str(created_at) if created_at else None,
                 "truncated": truncated,
+                # Whether `PUT /api/personas/{id}` would take it at all:
+                # the same test `update_persona` makes, so the room never
+                # opens a form on text it could not read back. Says nothing
+                # about who is asking; that is `/api/personas/movable`.
+                "editable": bool(
+                    not entry.get("builtin") and parsed and parsed.what_they_do is not None
+                ),
             }
         )
 
@@ -5657,16 +5759,22 @@ def create_app(
 
     @app.post("/api/personas/draft")
     def draft_persona_route(payload: PersonaDraftRequest) -> JSONResponse:
-        """The Persona v3 "describe the job, approve the soul" draft step:
-        turns `payload.job` (+ optional `payload.rules` hints) into a
-        `{"name", "who_they_are", "what_they_do"}` draft for the v2 preview
-        to edit. Always 200 — a generator failure (unconfigured `clients.
-        name`, or a raised ClientError) never surfaces as an error here,
-        just a full deterministic fallback instead
+        """Turns what the person has (`payload.job`: a few sentences, or a
+        whole document, plus optional `payload.rules` to keep) into a
+        `{"name", "who_they_are", "what_they_do", "rules", "purpose_tags",
+        "generated"}` draft in the house shape, for the persona form to
+        show. `generated` is False when who-they-are or what-they-do is
+        the room's stand-in made from the source (the generator is not
+        configured, it failed, or its reply for that part was unusable):
+        the form reads that as "no draft" and leaves its fields alone, since
+        a stand-in is not in the house shape. Always 200
+        — a generator failure (unconfigured `clients.name`, or a raised
+        ClientError) never surfaces as an error here, just a full
+        deterministic fallback instead
         (`kobo_api.persona_draft.finalize_draft`'s job); the room always
         drafts SOMETHING editable. Never touches storage/search/DB at
-        all — nothing is created until the operator approves the preview
-        and calls POST /api/personas, completely untouched by this route.
+        all — nothing is created until the person presses Create and the
+        form calls POST /api/personas, completely untouched by this route.
         """
         clients = app.state.clients
 
@@ -5679,35 +5787,6 @@ def create_app(
                 raw = None
 
         return JSONResponse(finalize_draft(raw, job=payload.job))
-
-    @app.post("/api/personas/distill")
-    def distill_persona_route(payload: PersonaDistillRequest) -> JSONResponse:
-        """The persona-first station's other entry point (persona-first
-        station addendum): the operator has already written (or uploaded)
-        the FULL persona document, so this route reads it and pulls
-        discovery metadata out in the background — a
-        `{"name", "who_they_are", "purpose_tags"}` dict, deliberately no
-        `what_they_do` (the submitted document already IS the persona
-        body; the operator's own preview textarea holds it verbatim, never
-        round-tripped through this route). Same "always 200, a generator
-        failure just means a deterministic fallback instead" contract as
-        `draft_persona_route` above
-        (`kobo_api.persona_draft.finalize_distill`'s job) — the station
-        never blocks on this call. Storage/search/DB untouched, same as
-        the draft route: nothing is created until the operator approves
-        the preview and calls POST /api/personas.
-        """
-        clients = app.state.clients
-
-        raw: dict | None = None
-        if clients is not None and clients.name is not None:
-            try:
-                raw = clients.name.distill(payload.body)
-            except ClientError as exc:
-                log.warning("persona distill generation failed: %s", exc)
-                raw = None
-
-        return JSONResponse(finalize_distill(raw, body=payload.body))
 
     @app.get("/api/availability")
     def availability(

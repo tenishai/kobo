@@ -701,6 +701,7 @@ a.btn:hover {
   position: sticky;
   bottom: calc(-1 * var(--space-md));
   margin: 0 calc(-1 * var(--space-lg)) calc(-1 * var(--space-md));
+  border-radius: 0 0 var(--radius) var(--radius);
   background: var(--panel);
 }
 
@@ -1023,6 +1024,15 @@ textarea.field__input {
 .chip--action:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* A chip that is a filter, pressed: ink, the room's selection color, and
+   it stays that way under the pointer. */
+.chip--action[aria-pressed="true"],
+.chip--action[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--panel);
 }
 
 .chip__remove {

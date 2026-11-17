@@ -160,7 +160,6 @@ import {
   deleteTooling,
   destroyAgent,
   disconnectAdminIntegration,
-  distillPersona,
   draftPersona,
   fetchAccessLeases,
   fetchAccessRequests,
@@ -239,10 +238,10 @@ import {
   type PeopleSearchResult,
   type Person,
   type PersonaDetail,
-  type PersonaDistillResult,
   type PersonaDraft,
   type PersonaForm,
   type PersonaScope,
+  type PersonaUpdate,
   postThreadTurn,
   putAdminLane,
   putAdminRole,
@@ -290,6 +289,7 @@ import {
   type ToolingFile,
   type ToolingListResponse,
   unarchivePersona,
+  updatePersona,
   updateSlackApp,
   uploadAvatar,
   uploadIntake,
@@ -512,6 +512,31 @@ export function personaQuery(id: string | null) {
     enabled: id !== null,
     staleTime: 5 * 60_000,
   });
+}
+
+/** All of one persona, for the edit form. Its own cache entry beside the
+ * hover card's cut one, and never served stale: the form must start from
+ * what is stored now. */
+export function personaFullQuery(id: string | null) {
+  return queryOptions({
+    queryKey: ["personas", "detail", id, "full"] as const,
+    queryFn: () => fetchPersona(id as string, true),
+    enabled: id !== null,
+    staleTime: 0,
+    gcTime: 0,
+  });
+}
+
+/** Rewrites one persona's text (`PUT /api/personas/{id}`). The list's one
+ * line and every detail read follow it. */
+export function updatePersonaMutation(queryClient: QueryClient) {
+  return {
+    mutationFn: ({ id, body }: { id: string; body: PersonaUpdate }) => updatePersona(id, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["catalog", "personas"] });
+      queryClient.invalidateQueries({ queryKey: ["personas", "detail"] });
+    },
+  };
 }
 
 /**
@@ -1021,33 +1046,14 @@ export function nameSuggestionsQuery(params: {
 }
 
 /**
- * Drafts a persona from one plain job description (+ optional short rule
- * hints) — the Persona v3 "describe the job, approve the soul" step
- * (`POST /api/personas/draft`). No `onSuccess`/cache invalidation: the
- * route never touches storage (`kobo_api.main.draft_persona_route`'s own
- * docstring — nothing is created until the operator approves the preview
- * and `createPersonaMutation` below actually runs), so there's nothing in
- * the query cache for a pure generator call to invalidate. No
- * `queryClient` param for the same reason `chatMutation` above has none.
+ * Drafts a persona (`POST /api/personas/draft`) from a description of the
+ * job or a document the person already has. Nothing is created until the
+ * form is submitted, so there is nothing in the cache to invalidate.
  */
 export function draftPersonaMutation() {
   return {
     mutationFn: ({ job, rules }: { job: string; rules: string[] }) =>
       draftPersona(job, rules),
-  };
-}
-
-/**
- * Distills discovery metadata from an operator-supplied persona document
- * (persona-first station addendum) — `POST /api/personas/distill`. Same
- * "no onSuccess/cache invalidation" shape as `draftPersonaMutation` above,
- * for the same reason: the route never touches storage
- * (`kobo_api.main.distill_persona_route`'s own docstring), so there's
- * nothing in the query cache for a pure generator call to invalidate.
- */
-export function distillPersonaMutation() {
-  return {
-    mutationFn: (body: string) => distillPersona(body),
   };
 }
 
@@ -2285,7 +2291,6 @@ export type {
   PeopleSearchResult,
   Person,
   PersonaDetail,
-  PersonaDistillResult,
   PersonaDraft,
   PersonaForm,
   RequestableAgent,

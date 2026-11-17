@@ -20,6 +20,7 @@
   import { createQuery } from "@tanstack/svelte-query";
   import Skeleton from "./Skeleton.svelte";
   import { personaQuery } from "../lib/queries";
+  import { boldRuns } from "../lib/markdown";
   import { relativeTime } from "../lib/time";
 
   let {
@@ -58,7 +59,8 @@
 
   /** The body as plain paragraphs: split on blank lines, nothing rendered
    * as markdown. A persona's text is prose a human wrote, not a document —
-   * rendering it would invent headings and links that are not there. */
+   * rendering it would invent headings and links that are not there.
+   * Bold alone is drawn (`boldRuns`). */
   const paragraphs = $derived(
     (persona.data?.what_they_do ?? "")
       .split(/\n\s*\n/)
@@ -168,7 +170,7 @@
     <p class="hover-card__heading">What they do</p>
     <div class="hover-card__body">
       {#each paragraphs as para, index (index)}
-        <p class="hover-card__para">{para}</p>
+        <p class="hover-card__para">{#each boldRuns(para) as run, at (at)}{#if run.bold}<strong>{run.text}</strong>{:else}{run.text}{/if}{/each}</p>
       {/each}
     </div>
     <button

@@ -101,106 +101,182 @@ export function splitLines(input: string): string[] {
     .filter((line) => line.length > 0);
 }
 
-/**
- * Coerces one field off an API response into a usable string, or `null`
- * when it's missing or came back some other type entirely (`undefined`,
- * `null`, a number, ...). The declared response types (`PersonaDraft`,
- * `PersonaDistillResult`) say these fields are always strings, but that's
- * only a compile-time promise about the client's own code - a live 200
- * whose body doesn't honor its own shape (an empty `{}`, a field of the
- * wrong type) is still valid JSON as far as `fetch`/`JSON.parse` are
- * concerned, and shows up here at runtime exactly like a well-formed one
- * would.
- */
-function fillableString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
+/** The four parts of a persona as the builder's form holds them. `rules`
+ * is the textarea's own text, one rule per line. */
+export type PersonaText = {
+  name: string;
+  whoTheyAre: string;
+  whatTheyDo: string;
+  rules: string;
+};
+
+export const EMPTY_PERSONA_TEXT: PersonaText = {
+  name: "",
+  whoTheyAre: "",
+  whatTheyDo: "",
+  rules: "",
+};
+
+/** One drafted field as text, or `null` when the response did not carry a
+ * usable one. A 200 whose body does not match its own type (an empty
+ * object, a number where a string belongs) is still valid JSON, so the
+ * fields are judged here rather than trusted. */
+function draftedText(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-/**
- * The shared no-clobber decision for one field, used by both merge
- * functions below: keep the current (operator) value unless it's empty AND
- * the incoming value is a usable string. `incoming === null` means the
- * field was missing or malformed (see `fillableString`) - "nothing to
- * fill" either way, same treatment an incoming empty string would get, so
- * a malformed response degrades to "leave the field exactly as it was"
- * rather than writing `undefined`/`null`/a number into form state that
- * every caller (bindings, `$derived`s like `nameHint`) assumes is always a
- * string.
- */
-function pickField(current: string, incoming: string | null): string {
-  if (incoming === null) {
-    return current;
+function draftedRules(value: unknown): string | null {
+  if (!Array.isArray(value)) {
+    return null;
   }
-  return current.trim().length > 0 ? current : incoming;
+  const lines = value.filter((rule): rule is string => typeof rule === "string" && rule.trim().length > 0);
+  return lines.length > 0 ? lines.join("\n") : null;
 }
 
 /**
- * The persona builder's no-clobber rule (Persona v3 upload/limits
- * addendum): a drafted name/who-they-are/what-they-do only ever fills in a
- * field that's still empty. Operator text - typed, pasted, or uploaded -
- * is never overwritten by a draft, no matter which field it landed in.
+ * Lays a draft over the persona builder's form.
  *
- * Pulled out of PersonaBuilder.svelte as its own pure function (same
- * "logic here, wiring there" split the API's `kobo_api.persona_draft`
- * module uses) so the fill-vs-keep decision for each field is directly
- * testable without going through a mutation, a mocked fetch, or the
- * component's two-step form at all.
+ * A field takes the drafted text when it is empty, or when it still holds
+ * exactly what the last draft put there. Anything a person typed, pasted
+ * or changed stays, so pressing Draft persona a second time refreshes what
+ * the room wrote and never what they wrote.
  *
- * `draft`'s fields are typed `unknown` on purpose (fix round 1): a route
- * that "always 200s" (see `draftPersona`'s doc in ../lib/api) can still
- * hand back a body that doesn't match `PersonaDraft` - an empty `{}`, or a
- * field of the wrong type - and this used to write that value straight
- * into form state unchecked, so a name/who_they_are of `undefined` would
- * survive all the way to `nameHint`'s `$derived .trim()` in
- * PersonaBuilder.svelte and throw. `purpose_tags` is accepted but never
- * read - callers pass the full response object through, and this function
- * only ever judges the three fields it owns.
+ * `drafted` is what each field last received from a draft (empty for a
+ * field no draft has filled); the returned `drafted` is what to pass next
+ * time. A field the response lacks, or carries in the wrong type, is left
+ * as it was.
  */
 export function mergeDraftFields(
-  current: { name: string; whoTheyAre: string; whatTheyDo: string },
+  current: PersonaText,
+  drafted: PersonaText,
   draft: {
     name?: unknown;
     who_they_are?: unknown;
     what_they_do?: unknown;
+    rules?: unknown;
     purpose_tags?: unknown;
   },
-): { name: string; whoTheyAre: string; whatTheyDo: string } {
-  return {
-    name: pickField(current.name, fillableString(draft.name)),
-    whoTheyAre: pickField(current.whoTheyAre, fillableString(draft.who_they_are)),
-    whatTheyDo: pickField(current.whatTheyDo, fillableString(draft.what_they_do)),
+): { fields: PersonaText; drafted: PersonaText } {
+  const incoming: Record<keyof PersonaText, string | null> = {
+    name: draftedText(draft.name),
+    whoTheyAre: draftedText(draft.who_they_are),
+    whatTheyDo: draftedText(draft.what_they_do),
+    rules: draftedRules(draft.rules),
   };
+  const fields = { ...current };
+  const nextDrafted = { ...drafted };
+  for (const key of Object.keys(incoming) as (keyof PersonaText)[]) {
+    const value = incoming[key];
+    if (value === null) {
+      continue;
+    }
+    if (current[key].trim().length === 0 || current[key] === drafted[key]) {
+      fields[key] = value;
+      nextDrafted[key] = value;
+    }
+  }
+  return { fields, drafted: nextDrafted };
 }
 
+/** The room's floor for a persona (`kobo_api.personas.check_substance`),
+ * mirrored so the form says what is missing before the round trip. The
+ * server is still the check. */
+export const PERSONA_WHAT_MIN_CHARS = 300;
+export const PERSONA_RULES_MIN = 3;
+export const PERSONA_RULES_MAX = 150;
+export const PERSONA_NAME_MAX_WORDS = 3;
+
 /**
- * `mergeDraftFields`'s counterpart for a distilled persona document
- * (persona-first station addendum): the same no-clobber rule, just a
- * two-field shape - no `whatTheyDo` here at all, since a distill reply
- * never carries one (the operator's pasted/uploaded persona document
- * already fills that field directly, the moment it arrives - long before
- * this merge ever runs). Only Name/Who they are can still be empty when a
- * distill lands, so only those two are judged.
- *
- * Same defensive typing as `mergeDraftFields` above, and for the same
- * reason: `distillPersona`'s route always 200s too, and a malformed body
- * (missing keys, wrong types) is "nothing to fill" here rather than a
- * value that ends up written into `name`/`whoTheyAre` unchecked.
+ * The first thing a persona form still needs, as one sentence, or `null`
+ * when it can be sent. Top to bottom, the order the fields are in, so the
+ * line under the form always names the next thing to do. `team` is `null`
+ * while no group has been chosen. `nameFixed` is the edit form, where the
+ * name is not a field: a persona made before the three-word rule keeps its
+ * name, and a line about it would be one nobody could act on.
  */
-export function mergeDistillFields(
-  current: { name: string; whoTheyAre: string },
-  distilled: { name?: unknown; who_they_are?: unknown; purpose_tags?: unknown },
-): { name: string; whoTheyAre: string } {
-  return {
-    name: pickField(current.name, fillableString(distilled.name)),
-    whoTheyAre: pickField(current.whoTheyAre, fillableString(distilled.who_they_are)),
-  };
+export function personaMissing(
+  text: PersonaText,
+  team: string | null,
+  nameFixed = false,
+): string | null {
+  const words = (text.name.toLowerCase().match(/[a-z0-9]+/g) ?? []).length;
+  if (!nameFixed && words === 0) {
+    return "Give it a name.";
+  }
+  if (!nameFixed && words > PERSONA_NAME_MAX_WORDS) {
+    return "Keep the name to one or two words, three at most.";
+  }
+  if (text.whoTheyAre.trim().length === 0) {
+    return "Say who they are in one line.";
+  }
+  const length = text.whatTheyDo.trim().length;
+  if (length === 0) {
+    return "Say what they do.";
+  }
+  if (length < PERSONA_WHAT_MIN_CHARS) {
+    return `Say more about what they do: ${length} of at least ${PERSONA_WHAT_MIN_CHARS} characters.`;
+  }
+  const rules = splitLines(text.rules).length;
+  if (rules < PERSONA_RULES_MIN) {
+    return `Add at least ${PERSONA_RULES_MIN} rules, one per line.`;
+  }
+  if (rules > PERSONA_RULES_MAX) {
+    return `Use up to ${PERSONA_RULES_MAX} rules.`;
+  }
+  if (team === null) {
+    return "Choose a group.";
+  }
+  return null;
+}
+
+/** What a persona's group is called on screen. The commons is stored as
+ * "shared" and reads as Everyone, in the picker, the builder and the
+ * sheet alike. */
+export function personaGroupLabel(team: string): string {
+  return team === "shared" ? "Everyone" : team;
+}
+
+export type PersonaGroup<T> = { key: string; label: string; personas: T[] };
+
+/** The key of the built-ins' group in `personaGroups`. Not a name a real
+ * group can have. */
+export const BUILTIN_GROUP = "(built-in)";
+
+/**
+ * The persona list in the groups the picker draws: Built-in first, then
+ * the caller's own groups, then every other group, and Everyone last
+ * (teams reach for their own before the commons). A group with nothing in
+ * it is left out, so a search narrows the groups along with the rows.
+ */
+export function personaGroups<T extends { team: string; builtin?: boolean }>(
+  personas: T[],
+  ownGroups: string[],
+): PersonaGroup<T>[] {
+  const builtins = personas.filter((p) => p.builtin);
+  const made = personas.filter((p) => !p.builtin);
+  const teams = [...new Set(made.map((p) => p.team))].filter((t) => t !== "shared").sort();
+  const ordered = [
+    ...teams.filter((t) => ownGroups.includes(t)),
+    ...teams.filter((t) => !ownGroups.includes(t)),
+    ...(made.some((p) => p.team === "shared") ? ["shared"] : []),
+  ];
+  return [
+    ...(builtins.length > 0
+      ? [{ key: BUILTIN_GROUP, label: "Built-in", personas: builtins }]
+      : []),
+    ...ordered.map((team) => ({
+      key: team,
+      label: personaGroupLabel(team),
+      personas: made.filter((p) => p.team === team),
+    })),
+  ];
 }
 
 /**
  * The groups a persona may be filed under from this caller's seat (persona
- * team scope), for the builder's "Who is this persona for?" select and the
- * persona sheet's "Move to..." menu. Never includes the commons: both
- * surfaces add "Everyone (shared)" as their own last option.
+ * team scope), for the builder's Group select and the persona sheet's
+ * "Move to..." menu. Never includes the commons: both surfaces add
+ * Everyone as their own last option.
  *
  * A caller's own groups come from whoami (config names, the same names the
  * create form's Group select lists). An operator may file anywhere, so it

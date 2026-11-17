@@ -1512,10 +1512,15 @@ def register(mcp: FastMCP, app: Any) -> None:
         mannerisms and tone only, never identity claims.
 
         `name` becomes the catalog id via the room's slug law (must not
-        already exist). `who_they_are` is ONE
-        line; `what_they_do` is the persona's body; `rules` are optional
-        always/never one-liners. The merged persona renders to at most
-        200 lines and 48KB. `team` defaults to "shared", the commons
+        already exist). `who_they_are` is ONE line that finishes "You are
+        NAME, ..." (no "You are", no closing period). `what_they_do` is
+        the persona's body, at least 300 characters: why the work matters,
+        what the persona covers and leaves alone, the kinds of request it
+        gets and what each answer contains, what to do when it cannot
+        answer, one example. No headings above "###" (they are lowered).
+        `rules` are always/never one-liners, at least 3; most personas
+        carry 8 to 12. The built-in personas are written in this shape.
+        The merged persona renders to at most 200 lines and 48KB. `team` defaults to "shared", the commons
         anyone may file into; naming any other team requires that you
         are a member of it (a room operator may name any team). The
         persona is searchable and pickable by kobo_create_agent

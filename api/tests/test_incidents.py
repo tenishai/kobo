@@ -72,6 +72,7 @@ from kobo_api.steps import (
 )
 from tests.fakes import (
     FAKE_CONNECTED_DOCKERFILE,
+    HOUSE_RULES,
     FakeAgent,
     FakeBab,
     FakeCabal,
@@ -1057,6 +1058,60 @@ def test_recommend_skills_keeps_three_letter_domain_words(client__api_search):
     assert response.status_code == 200
     ids = [r["id"] for r in response.json()["results"]]
     assert "terraform-check" in ids
+
+
+def test_a_taken_persona_name_says_where_the_persona_is_and_a_draft_brings_its_rules(
+    config__api_search, fake_storage__api_search, tmp_path
+):
+    """Production bug (2026-11-17): a person made a persona, could not find it in the create
+    dialog, made it again and was told only that the name was taken.
+
+    The refusal now carries where the existing one is filed and whether it is archived, so
+    the form can point at it. The same report found that the persona was a pasted document
+    stored as it came: the draft now takes a document as its source and hands back all
+    four parts, rules included, in the shape a create accepts."""
+    name = FakeName()
+    client = _make_client__api_search(
+        config__api_search, _minimal_clients(storage=fake_storage__api_search, name=name), tmp_path
+    )
+    document = "# Alert triage\n\n" + "You look at every alert and say what it means. " * 20
+    assert len(document) > 500  # past the old one-line job box
+
+    draft = client.post("/api/personas/draft", json={"job": document, "rules": []})
+    assert draft.status_code == 200
+    assert name.draft_calls == [(document, [])]
+    assert set(draft.json()) == {
+        "name", "who_they_are", "what_they_do", "rules", "purpose_tags", "generated",
+    }
+    assert draft.json()["generated"] is True
+    assert draft.json()["rules"] == list(HOUSE_RULES)
+    assert client.post("/api/personas/distill", json={"body": document}).status_code in (404, 405)
+
+    # A room whose generator is away still answers, and says the parts are
+    # its own stand-in so the form does not present them as a draft.
+    bare = _make_client__api_search(
+        config__api_search, _minimal_clients(storage=fake_storage__api_search), tmp_path
+    )
+    stand_in = bare.post("/api/personas/draft", json={"job": "Answer billing questions.", "rules": []})
+    assert stand_in.status_code == 200
+    assert stand_in.json()["generated"] is False
+    # So does a reply that left out what-they-do: the room's stand-in for that
+    # part is the source handed back, which is not a draft either.
+    partial = _make_client__api_search(
+        config__api_search,
+        _minimal_clients(storage=fake_storage__api_search, name=FakeName(draft={"name": "Alert Triager"})),
+        tmp_path,
+    )
+    assert partial.post("/api/personas/draft", json={"job": document, "rules": []}).json()["generated"] is False
+
+    payload = {k: draft.json()[k] for k in ("name", "who_they_are", "what_they_do", "rules")}
+    assert client.post("/api/personas", json={**payload, "team": "shared"}).status_code == 201
+    again = client.post("/api/personas", json={**payload, "team": "shared"})
+    assert again.status_code == 409
+    assert again.json() == {
+        "error": "a persona with that name already exists",
+        "id": "billing-buddy", "team": "shared", "archived": False,
+    }
 
 
 # --- from test_bootstrap.py ---
