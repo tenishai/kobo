@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.72] - 2026-11-16
+
 ### Fixed
 - An agent whose Slack app the room made, and nobody has installed yet, keeps running. The room wrote Slack into the agent as soon as the app existed, and an agent built as an image (a room without bundles as artifacts) then restarted into a crash loop until someone pressed **Install to Slack**, because Slack was required and its token had not arrived. Slack is now written as optional everywhere the room wires it: the agent starts without it, and serves Slack from its next start once the token is there. Agents wired before this keep the required form until their Slack is next changed; one that is installed is unaffected.
 - Connecting a repository again after its agent was destroyed deploys it. The repository was already wired and built from the first connect, so nothing new was committed and no build started; the room took the old build, whose deploy went to the place the destroy removed, and **Deploy** failed with "rollout failed". A successful build that ended before the agent was created is now run again, once, and **Image build** waits for it.
