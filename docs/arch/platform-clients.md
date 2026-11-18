@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-platform-clients
 updated: 2026-11-17
-anchor: api/kobo_api/clients.py sha=b0a4ef5448030cbc20a099c40f96b89ac8325921
+anchor: api/kobo_api/clients.py sha=9622e5d6ef16e57af8711284dd08a1f76ee180ae
 anchor: api/tests/fakes.py sha=b44313e08c348f1c400314976991355c52335235
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
@@ -50,4 +50,4 @@ API: `Clients.real(config)`; `cabal_enabled(config)`; `installation_token_provid
 - `Clients.models_gateway` (kobo#390, 2026-11-02): the room's model gateway. Mint returns the key and the caller delivers it (`model_providers.deliver_models_key`, Secret `<agent>-models`, key `MODELS_GATEWAY_KEY`, through sero when wired else `apply_secret`); revoke is by alias `agent:<name>` so the room never holds a key to take it back. Refusals carry `resp.text[:300]`, which is safe because no request of ours carries a key except the mint's answer, which is never in a raised message.
 - `GcloudClient.grant_bucket_prefix_write` (2026-11-06) waits out IAM propagation for a new account (`BUCKET_BINDING_PAUSES_S`, only on "Service account ... does not exist"); `revoke_bucket_prefix_write` takes both bindings back and destroy calls it BEFORE `delete_gsa` (a deleted account's bindings linger as `deleted:` members).
 - `FakeCloud.revoke_bucket_prefix_write` (2026-11-06) records the call and answers True, so destroy tests can pin that it runs before `delete_gsa`.
-- `NameClient.draft(job, rules)` (2026-11-17): the one persona-writing call. It returns `name`, `who_they_are`, `what_they_do`, `rules` and `purpose_tags`, with the body in the built-ins' shape, from a sentence or a pasted document alike, unchecked. `NameClient.distill` and `FakeName`'s distill half are gone with the paste-as-is path. The draft route is the only caller: it hands the reply (or None on `ClientError`) to `persona_draft.finalize_draft`, which checks each field and falls back on its own for any that fails.
+- `NameClient.draft(job, rules)` (2026-11-17): the one persona-writing call. It returns `name`, `who_they_are`, `what_they_do`, `rules` and `purpose_tags`, with the body in the built-ins' shape, from a sentence or a pasted document alike, unchecked. `NameClient.distill` and `FakeName`'s distill half are gone with the paste-as-is path. A document keeps its length: the 25 to 45 lines and eight to twelve rules are for a short description, while a document's working detail is carried whole under bold labels (up to 120 lines) with every rule it states (up to forty). The call runs with thinking off and its own 90s timeout (`_PERSONA_DRAFT_TIMEOUT`), under the front door's 120s. The draft route is the only caller: it hands the reply (or None on `ClientError`) to `persona_draft.finalize_draft`, which checks each field and falls back on its own for any that fails.
