@@ -17,6 +17,26 @@ Leave the field empty and no reaction wakes the agent, which is how every agent 
 
 An agent that runs its team's own code is handed the names and its code decides what a reaction does. An app made before the room listened for reactions hears them from the first time you save the field; there is nothing to reinstall.
 
+### When another app mentions it
+
+Alerts, tickets and other agents arrive in Slack as apps, and an app can @-mention your agent the way a person does. Two things are fixed. An app's message that does not mention the agent never reaches it, whichever **Wakes on** you picked: an alert that should get an answer has to name the agent in its text. And the agent answers an app at most three times in a row in one thread and thirty times an hour, so two apps cannot keep each other talking; a mention past that gets a stop sign reaction and no reply.
+
+What a mention from an app may do is yours to choose, on the Slack row under **When another app mentions it**:
+
+- **Answer from what it knows.** The agent replies from its knowledge and memory and uses none of its tools or connections. Every agent starts here, because the words in an alert or a ticket are often written by someone outside your team, and those words should not be able to steer what the agent can reach.
+- **Work with all its tools.** The agent does what it would for a person: every tool and connection it has. Whoever can get an app to post in the agent's channels can then direct it, so pick this only where you trust every app in those channels. It is the choice for an agent whose job is to act on alerts.
+- **Do not answer.** A mention from another app gets no reply.
+
+The choice saves when you pick it and the agent restarts with it, like a **Wakes on** change. People are not affected: a person's mention always gets the whole agent.
+
+### Reading the channels it is in
+
+An agent sees the conversation it was woken in and nothing else, until you tick **Read the channels it is in** on the Slack row. With it ticked the agent can look through the messages and threads of every channel it has been invited to: find the thread where something was discussed last week, read what was said in a release channel before it answers. Inviting it to a channel in Slack is what lets it read there, and removing it stops that, so there is no channel list to keep in the room.
+
+Ticking the box restarts the agent. It reads only when its work calls for it, and it still answers only where it is woken. The box is there for an agent the room built. An agent that runs its team's own code reads Slack however its code does, and a team's informational guide never reads channels.
+
+A few agents were set up to read by hand before the box existed, some of them with a list of the only channels they may read. Such an agent shows the box unticked until someone ticks it once, which changes nothing about what it reads. Its list is kept for as long as the box stays ticked. Unticking removes the list with the reading, and ticking again lets it read every channel it is in.
+
 ### What it can do in Slack
 
 Beside answering where it is asked, an agent the room built can do five things in Slack. They come with the app. One of them, the slash command, has a switch for where it is answered.
@@ -39,7 +59,7 @@ The agent also has to be on the room's current runtime to use what is new. If th
 
 ### An agent that runs its team's own code
 
-A connected agent that serves a port can have the room make its Slack app the same way: pick **Wakes on** and press **Create Slack app**, which takes you to Slack to install it. The pull request the room opened when the agent was connected already lets it read the app, so nothing more is asked of its team: the agent restarts with the app once it is installed. Changing **Wakes on**, the emoji or the slash command choice later is no pull request either. The row reads **Saved. The agent restarts with it in a minute or two.**, and the room restarts the agent once the choice has reached it.
+A connected agent that serves a port can have the room make its Slack app the same way: pick **Wakes on** and press **Create Slack app**, which takes you to Slack to install it. The pull request the room opened when the agent was connected already lets it read the app, so nothing more is asked of its team: the agent restarts with the app once it is installed. Changing **Wakes on**, the emoji, the slash command choice or what another app's mention may do later is no pull request either. The row reads **Saved. The agent restarts with it in a minute or two.**, and the room restarts the agent once the choice has reached it.
 
 One thing differs for an agent connected before the room did this. The change that hands the app to the agent arrives in its repository as one pull request, which the room merges itself. If the repository's rules stop the room, the row reads **The room could not merge its pull request**, with a link to it, until someone who can merge there does. That is the only one Slack asks for; later choices are restarts. If the request is closed without being merged the row says so, and **Open it again** opens it afresh; no second app is made. The agent's code has to take the messages the room hands it. See "Running your own code".
 

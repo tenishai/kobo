@@ -16,12 +16,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from kobo_api.clients import Clients
+from kobo_api.clients import ClientError, Clients
 from kobo_api.composer import (
     _VENDOR_SCHEMA_PATH,
+    SLACK_READ_TOOLS,
     BundleSpec,
     ComposeError,
+    _splice_tools_section,
     compose,
+    update_agent_yaml_slack_read,
     validate_agent_yaml,
 )
 from kobo_api.model_providers import MODELS_SECRET_PURPOSE, gateway_model_name
@@ -367,6 +370,55 @@ def test_default_mode_composes_the_same_bytes_as_before_the_setting(tmp_path):
         "off/agent.yaml": "49506d5ef07c485517abe98c526589df10fbb96e11b1f35298a71b6d1b4a7801",
         "off/colleagues.md": "06be61b3e459caffaf6439d577616128f9f4d42dbc76e315b0411a348d722d86",
     }
+
+
+def test_the_slack_reading_block_goes_in_and_comes_out_without_moving_anything_else(tmp_path):
+    """Wire shape: the reading switch edits one key of the tools block. A
+    channel list somebody wrote by hand is kept; an allow list that does not
+    already admit the two reading tools gains them by name and loses them
+    again; asking for what the file already says changes nothing."""
+    bundle = _compose(tmp_path / "on", _spec())
+    agent_yaml = bundle / "agent.yaml"
+    before = yaml.safe_load(agent_yaml.read_text())
+
+    assert update_agent_yaml_slack_read(bundle, on=False) is False
+    assert update_agent_yaml_slack_read(bundle, on=True) is True
+    assert update_agent_yaml_slack_read(bundle, on=True) is False
+    after = yaml.safe_load(agent_yaml.read_text())
+    assert after == {**before, "tools": {**before["tools"], "slack_read": {"channels": []}}}
+
+    # A list written by hand is the owner's narrowing; the switch keeps it.
+    narrowed = {**after["tools"], "slack_read": {"channels": ["C0123456789"]}}
+    agent_yaml.write_text(agent_yaml.read_text().replace("channels: []", "channels: [C0123456789]"))
+    assert yaml.safe_load(agent_yaml.read_text())["tools"] == narrowed
+    assert update_agent_yaml_slack_read(bundle, on=True) is False
+
+    assert update_agent_yaml_slack_read(bundle, on=False) is True
+    assert yaml.safe_load(agent_yaml.read_text()) == before
+
+    # An allow list with no `slack.*`: the two tools are named, then unnamed.
+    allow = [entry for entry in before["tools"]["allow"] if entry != "slack.*"]
+    _splice_tools_section(agent_yaml, agent_yaml.read_text(), {**before["tools"], "allow": allow})
+    assert update_agent_yaml_slack_read(bundle, on=True) is True
+    assert yaml.safe_load(agent_yaml.read_text())["tools"]["allow"] == [*allow, *SLACK_READ_TOOLS]
+    assert update_agent_yaml_slack_read(bundle, on=False) is True
+    assert yaml.safe_load(agent_yaml.read_text())["tools"] == {**before["tools"], "allow": allow}
+
+    # A tools section written out by hand, with a blank line inside it, is
+    # replaced whole: nothing of it is left behind under the new line.
+    by_hand = "name: clio\ntools:\n  provider: none\n  allow:\n  - slack.*\n\n  slack_read:\n    channels: [C0123456789]\ntransports: []\n"
+    agent_yaml.write_text(by_hand)
+    assert update_agent_yaml_slack_read(bundle, on=False) is True
+    assert yaml.safe_load(agent_yaml.read_text()) == {
+        "name": "clio", "tools": {"provider": "none", "allow": ["slack.*"]}, "transports": [],
+    }
+    # One the room cannot span (a comment at the margin, mid-section) is
+    # refused and left exactly as it was, never written half-replaced.
+    broken_up = by_hand.replace("\n\n  slack_read", "\n# reading\n  slack_read")
+    agent_yaml.write_text(broken_up)
+    with pytest.raises(ClientError):
+        update_agent_yaml_slack_read(bundle, on=False)
+    assert agent_yaml.read_text() == broken_up
 
 
 # --- from test_steps_wire.py ---

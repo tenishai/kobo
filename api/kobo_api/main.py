@@ -289,17 +289,23 @@ from kobo_api.skills import (
     save_local_skill,
 )
 from kobo_api.slack_setup import (
+    BOT_MENTION_MODES,
+    BOT_MENTIONS_ENV,
+    BOT_MENTIONS_KNOWLEDGE,
     COMMAND_PUBLIC_ENV,
     COMMAND_PUBLIC_ON,
     WAKE_DEFAULT_NEW,
     WAKE_EMOJI_ENV,
     WAKE_ENV,
     WAKE_MODES,
+    bot_mentions,
     clean_wake_emoji,
     command_public,
+    commit_slack_reading,
     deliver_slack_values,
     deliver_wake_settings,
     effective_wake,
+    reads_channels,
     render_manifest,
     rewire_slack_channels,
     scopes_owed,
@@ -815,12 +821,21 @@ class SlackWakeRequest(BaseModel):
     """PUT .../slack/wake body: `wake` is one of `mention`, `thread`,
     `channel`; `emoji` is the emoji whose reaction also wakes the agent (an
     empty list for none); `command_public` is whether its slash command is
-    answered in public channels it is not in. Any may be left out, and what
-    is left out stays as it is."""
+    answered in public channels it is not in; `bot_mentions` is what another
+    Slack app's mention of it may do, one of `knowledge`, `full`, `off`. Any
+    may be left out, and what is left out stays as it is."""
 
     wake: str | None = None
     emoji: list[str] | None = Field(default=None, max_length=50)
     command_public: bool | None = None
+    bot_mentions: str | None = None
+
+
+class SlackReadingRequest(BaseModel):
+    """PUT .../slack/reading body: whether the agent may read the channels
+    its Slack app has been invited to."""
+
+    on: bool
 
 
 class ColleagueModeRequest(BaseModel):
@@ -6910,6 +6925,8 @@ def create_app(
             "wake": effective_wake(agent),
             "wake_emoji": wake_emoji(agent),
             "command_public": command_public(agent),
+            "bot_mentions": bot_mentions(agent),
+            "reads_channels": reads_channels(agent),
             "available": room_credentials.slack_configured(slack_clients),
             "relay": bool(cfg.slack_relay),
             "legacy": agent.slack_app_id is not None and relay_row is None,
@@ -9156,6 +9173,8 @@ def create_app(
             "wake": effective_wake(agent),
             "wake_emoji": wake_emoji(agent),
             "command_public": command_public(agent),
+            "bot_mentions": bot_mentions(agent),
+            "reads_channels": reads_channels(agent),
             "legacy": agent.slack_app_id is not None and row is None,
             # A connected agent runs its team's own code. With no room-made app
             # it is on its own Slack app, or on none; the row says so.
@@ -9453,7 +9472,9 @@ def create_app(
             # How it wakes travels in the Secret too: the room cannot commit
             # to this repository, and a setting kept in its files would be a
             # pull request every time it changed.
-            settings = wake_settings(mode, agent.slack_wake_emoji or "", command_public(agent))
+            settings = wake_settings(
+                mode, agent.slack_wake_emoji or "", command_public(agent), bot_mentions(agent)
+            )
             values.update({key: value for key, value in settings.items() if value is not None})
             gone = tuple(key for key, value in settings.items() if value is None)
             # The Secret first, so it exists by the time anything can merge
@@ -9901,6 +9922,12 @@ def create_app(
         `SLACK_COMMAND_PUBLIC`: whether the agent answers its slash command
         in a public channel it was never added to. Off for every agent until
         its owner turns it on; false takes the variable away.
+
+        `bot_mentions` (2026-11-17) is a fourth, `SLACK_BOT_MENTIONS`: what
+        another Slack app's mention of the agent may do. `knowledge`, which
+        is every agent until its owner says otherwise, answers it with
+        knowledge-only tools and takes the variable away; `full` gives it
+        the tools a person's mention gets; `off` leaves it unanswered.
         """
         agent = _ready_agent_or_error(
             session, request, name, not_ready_message="agent is not ready for Slack changes yet"
@@ -9917,8 +9944,20 @@ def create_app(
         if gate is not None:
             return gate
         public = payload.command_public
-        if payload.wake is None and payload.emoji is None and public is None:
-            return JSONResponse({"error": "send wake, emoji or command_public"}, status_code=422)
+        if payload.wake is None and payload.emoji is None and public is None and payload.bot_mentions is None:
+            return JSONResponse(
+                {"error": "send wake, emoji, command_public or bot_mentions"}, status_code=422
+            )
+        # None: what another app's mention may do was not part of this save.
+        bots: str | None = None
+        if payload.bot_mentions is not None:
+            bots = payload.bot_mentions.strip().lower()
+            if bots not in BOT_MENTION_MODES:
+                return JSONResponse(
+                    {"error": "for another app's mention, choose one of: knowledge, full, off"},
+                    status_code=422,
+                )
+        previous_bots = bot_mentions(agent)
         previous = effective_wake(agent)
         mode = previous if payload.wake is None else payload.wake.strip().lower()
         if mode not in WAKE_MODES:
@@ -9945,6 +9984,10 @@ def create_app(
                 changed = _set_env_key(data, COMMAND_PUBLIC_ENV, COMMAND_PUBLIC_ON) or changed
             elif public is not None:
                 changed = _drop_env_key(data, COMMAND_PUBLIC_ENV) or changed
+            if bots == BOT_MENTIONS_KNOWLEDGE:
+                changed = _drop_env_key(data, BOT_MENTIONS_ENV) or changed
+            elif bots is not None:
+                changed = _set_env_key(data, BOT_MENTIONS_ENV, bots) or changed
             return changed
 
         if payload.wake is not None:
@@ -9953,6 +9996,13 @@ def create_app(
         elif emoji is not None:
             message = "kobo: in Slack, the emoji that wake it"
             summary = f"{audit.who(request)} set the emoji that wake agent {agent.name} in Slack"
+        elif bots is not None:
+            message = "kobo: in Slack, what another app's mention may do"
+            summary = f"{audit.who(request)} set agent {agent.name} to " + {
+                BOT_MENTIONS_KNOWLEDGE: "answer another Slack app's mention from what it knows",
+                "full": "answer another Slack app's mention with all its tools",
+                "off": "not answer another Slack app's mention",
+            }[bots]
         else:
             message = "kobo: in Slack, where its slash command is answered"
             summary = (
@@ -9966,11 +10016,12 @@ def create_app(
             refusal = acting_email_refusal(agent.name, acting_email)
             if refusal is not None:
                 return JSONResponse({"error": refusal}, status_code=409)
-        # All three as this save leaves them: what the agent's Secret carries.
+        # All four as this save leaves them: what the agent's Secret carries.
         settings = wake_settings(
             mode,
             (agent.slack_wake_emoji or "") if emoji is None else emoji,
             previous_public if public is None else public,
+            previous_bots if bots is None else bots,
         )
         manifest_changed = wake_subscribes_channel_messages(mode) != wake_subscribes_channel_messages(previous)
         # Looked for before anything is written: a save Slack has to hear of
@@ -10036,6 +10087,8 @@ def create_app(
             agent.slack_wake_emoji = emoji or None
         if public is not None:
             agent.slack_command_public = public
+        if bots is not None:
+            agent.slack_bot_mentions = bots
         # The commit above reaches the running agent only when the deploy
         # platform next rolls it, minutes later, and the page cannot see
         # when. So the same value is set on the live deployment now (which
@@ -10056,6 +10109,10 @@ def create_app(
                     clients.kubectl.set_env(agent.name, agent.name, COMMAND_PUBLIC_ENV, COMMAND_PUBLIC_ON)
                 elif public is not None:
                     clients.kubectl.unset_env(agent.name, agent.name, COMMAND_PUBLIC_ENV)
+                if bots == BOT_MENTIONS_KNOWLEDGE:
+                    clients.kubectl.unset_env(agent.name, agent.name, BOT_MENTIONS_ENV)
+                elif bots is not None:
+                    clients.kubectl.set_env(agent.name, agent.name, BOT_MENTIONS_ENV, bots)
             except ClientError as exc:
                 applied_now = False
                 log.warning("slack wake: live apply for agent %s failed: %s", agent.name, exc)
@@ -10087,6 +10144,7 @@ def create_app(
                 "wake": mode, "previous": previous,
                 "emoji": wake_emoji(agent), "previous_emoji": previous_emoji,
                 "command_public": command_public(agent), "previous_command_public": previous_public,
+                "bot_mentions": bot_mentions(agent), "previous_bot_mentions": previous_bots,
             },
             summary=summary,
         )
@@ -10109,12 +10167,94 @@ def create_app(
                 "previous_wake": previous,
                 "wake_emoji": wake_emoji(agent),
                 "command_public": command_public(agent),
+                "bot_mentions": bot_mentions(agent),
                 "manifest_changed": manifest_changed,
                 "applied_now": applied_now,
                 "applied_at": rfc3339(datetime.now(UTC)) if applied_now else None,
                 "restart_pending": restart_pending,
                 "wiring": result.how,
                 "pull_request": result.pull_request,
+            }
+        )
+
+    @app.put("/api/agents/{name}/slack/reading")
+    def set_slack_reading(
+        name: str,
+        payload: SlackReadingRequest,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Whether this agent may read Slack channels (2026-11-17): the
+        threads and messages of every channel its app has been invited to,
+        with `slack.find_threads` and `slack.read_thread`. Without it an
+        agent sees only the conversation it was woken in.
+
+        Unlike how it wakes, this is not a variable: the runtime takes it
+        from the bundle's `slack_read` block, so the change is one commit to
+        the agent's repository (`commit_slack_reading`), then the row. The
+        block is written with no channel list of its own. Inviting the app
+        to a channel is the grant, in Slack, by a person; naming the channel
+        again here would ask for the same permission twice. A bundle whose
+        block already names channels keeps its list.
+
+        No short-circuit on an unchanged choice: asking again repairs a
+        repository that drifted from the row. Where the file already says
+        what was asked and the row does not (a save whose commit landed and
+        whose delivery failed, a block written by hand), the bundle is
+        delivered again. `applied_now` says the running agent is restarting
+        with the change already; false with a new `sha` is a room that still
+        builds each change, and the agent has it a few minutes later.
+
+        Owner or operator, READY, composed only: an agent that runs its
+        team's own code reads Slack however its code does. A team guide is
+        refused, since its bundle carries colleagues and memory alone.
+        """
+        agent = _ready_agent_or_error(
+            session, request, name, not_ready_message="agent is not ready for Slack changes yet"
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+        if agent.archetype == ARCHETYPE_TEAM_GUIDE:
+            return JSONResponse(
+                {"error": "a team guide answers from what it has been taught and does not read channels"},
+                status_code=409,
+            )
+        previous = reads_channels(agent)
+        try:
+            sha, applied_now = commit_slack_reading(
+                app.state.clients.github, agent.repo_full_name, on=payload.on,
+                redeliver=previous != payload.on,
+            )
+        except ClientError as exc:
+            log.warning("slack reading commit failed for agent %s (%s)", agent.name, type(exc).__name__)
+            return JSONResponse({"error": "couldn't save that. Try again."}, status_code=502)
+        agent.slack_read = payload.on
+        audit.record(
+            session, request=request, action="slack.reading", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, detail={"on": payload.on, "previous": previous},
+            summary=(
+                f"{audit.who(request)} let agent {agent.name} read the Slack channels it is in"
+                if payload.on
+                else f"{audit.who(request)} stopped agent {agent.name} reading Slack channels"
+            ),
+        )
+        session.commit()
+        log.info("agent %s reads Slack channels: %s (was %s)", agent.name, payload.on, previous)
+        # The push restarts the agent itself when the room delivers bundles
+        # without a build; the page follows that restart from `applied_at`.
+        return JSONResponse(
+            {
+                "reads_channels": payload.on,
+                "previous_reads_channels": previous,
+                "sha": sha,
+                "applied_now": applied_now,
+                "applied_at": rfc3339(datetime.now(UTC)) if applied_now else None,
             }
         )
 

@@ -198,8 +198,8 @@ def register(mcp: FastMCP, app: Any) -> None:
         is what it runs on, `room_runtime_image` what the room builds on
         today, `runtime_pinned` whether it deliberately holds its own.
         `colleague_mode` and `archetype` are as the page shows them.
-        `slack` carries the listened channels, `wake`, `wake_emoji`, `command_public`, and whether this room
-        makes Slack apps itself (`relay`); `kobo_get_slack` has the rest.
+        `slack` carries the listened channels, `wake`, `wake_emoji`, `command_public`, `bot_mentions`,
+        `reads_channels`, and whether this room makes Slack apps itself (`relay`); `kobo_get_slack` has the rest.
 
         A `connected` agent is a team's own repository the room deploys, so
         its persona and skills carry nothing to act on. For one that is
@@ -669,8 +669,11 @@ def register(mcp: FastMCP, app: Any) -> None:
         waiting for a person to open `install_url` and allow it in Slack) or
         `installed`, with the `workspace` it is in, the `channels` it
         listens to, its `wake`, the `wake_emoji` whose reaction also
-        wakes it, and `command_public` (whether its slash command is answered
-        in public channels it is not in). `update_due` true means the room asks
+        wakes it, `command_public` (whether its slash command is answered
+        in public channels it is not in), `bot_mentions` (what another Slack
+        app's mention of it may do: `knowledge`, `full` or `off`) and
+        `reads_channels` (whether it may read the channels its app is in).
+        `update_due` true means the room asks
         Slack for more today than this app was allowed when it was
         installed; `kobo_update_slack_app` starts that. `legacy` marks an
         older app a person made by hand, and `own_app` an agent that runs

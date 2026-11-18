@@ -740,6 +740,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     set_persona_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/persona")
     set_model_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/model")
     set_slack_wake_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/slack/wake")
+    set_slack_reading_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/slack/reading")
     set_colleague_mode_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/colleague-mode")
     metadata_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/metadata")
     set_runtime_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/runtime")
@@ -1055,6 +1056,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         wake: str | None = None,
         emoji: list[str] | None = None,
         command_public: bool | None = None,
+        bot_mentions: str | None = None,
     ) -> dict:
         """How Slack wakes `agent` in a channel. `wake` is one of `mention`
         (only an @-mention reaches it), `thread` (a mention, then every reply
@@ -1073,9 +1075,18 @@ def register(mcp: FastMCP, app: Any) -> None:
         has been added to. True also answers in any public channel, where the
         agent posts the question and its answer for everyone there.
 
-        Send any of the three; what you leave out stays as it is, and
-        `wake_emoji` and `command_public` in the answer are what is now in
-        force.
+        `bot_mentions` is what another Slack app's @-mention of the agent may
+        do, such as an alert or a workflow whose message names it. `knowledge`,
+        which is how every agent starts, answers from what the agent knows
+        and uses none of its access. `full` lets that mention use everything
+        a person's can: pick it only when the apps in the agent's channels
+        are ones the team trusts, since some post words an outsider wrote.
+        `off` leaves such a mention unanswered. A message from another app
+        that does not mention the agent never wakes it, whatever this is.
+
+        Send any of the four; what you leave out stays as it is, and
+        `wake_emoji`, `command_public` and `bot_mentions` in the answer are
+        what is now in force.
 
         `applied_now` true means the running agent is restarting with the
         new choice already. For an agent that runs its team's own code,
@@ -1101,7 +1112,9 @@ def register(mcp: FastMCP, app: Any) -> None:
             response = await _off_loop(
                 set_slack_wake_endpoint,
                 name=agent,
-                payload=SlackWakeRequest(wake=wake, emoji=emoji, command_public=command_public),
+                payload=SlackWakeRequest(
+                    wake=wake, emoji=emoji, command_public=command_public, bot_mentions=bot_mentions
+                ),
                 request=req,
                 session=session,
             )
@@ -1116,12 +1129,48 @@ def register(mcp: FastMCP, app: Any) -> None:
             "previous_wake": body.get("previous_wake"),
             "wake_emoji": body.get("wake_emoji"),
             "command_public": body.get("command_public"),
+            "bot_mentions": body.get("bot_mentions"),
             "manifest_changed": body.get("manifest_changed"),
             "applied_now": body.get("applied_now"),
             "restart_pending": body.get("restart_pending"),
             "wiring": body.get("wiring"),
             "pull_request": body.get("pull_request"),
         }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+    @audited("kobo_set_slack_reading")
+    async def kobo_set_slack_reading(ctx: Context, agent: str, on: bool) -> dict:
+        """Whether `agent` may read Slack channels. Off, which is how every
+        agent starts, it sees only the conversation it was woken in. On, it
+        can look through the threads and messages of every channel its Slack
+        app has been invited to, so it can check another channel for context
+        before it answers. Inviting the app to a channel in Slack is what
+        lets the agent read it; removing the app from the channel takes that
+        away. It posts only where it is asked, whatever this is.
+
+        The room commits the change to the agent's repository and the agent
+        restarts with it, usually within a minute (`applied_now` true; a room
+        still building an image for every change rebuilds first, a few
+        minutes). You must own `agent` or be a room operator, and `agent`
+        must be READY and built by the room: one that runs its team's own
+        code reads Slack however its code does.
+        """
+        from kobo_api.main import SlackReadingRequest
+
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                set_slack_reading_endpoint,
+                name=agent,
+                payload=SlackReadingRequest(on=on),
+                request=req,
+                session=session,
+            )
+        finally:
+            session.close()
+        body = _agent_route_result(response)
+        return {"agent": agent, **body}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
     @audited("kobo_set_colleague_mode")

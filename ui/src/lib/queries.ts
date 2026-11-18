@@ -275,8 +275,11 @@ import {
   searchPersonas,
   searchSkills,
   setSlackWake,
+  setSlackBotMentions,
   setSlackCommandPublic,
+  setSlackReading,
   setSlackWakeEmoji,
+  type SlackBotMentions,
   type SlackWake,
   syncAccessTopology,
   teachAgent,
@@ -1694,6 +1697,26 @@ export function setSlackWakeMutation(queryClient: QueryClient, name: string) {
 export function setSlackCommandPublicMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (on: boolean) => setSlackCommandPublic(name, on),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
+}
+
+/** What another app's mention may do: the wake route, the same reads. */
+export function setSlackBotMentionsMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (mode: SlackBotMentions) => setSlackBotMentions(name, mode),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    },
+  };
+}
+
+/** Whether the agent may read the channels it is in: its own route. */
+export function setSlackReadingMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (on: boolean) => setSlackReading(name, on),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name] });
     },

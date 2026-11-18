@@ -60,7 +60,7 @@ Beside any of the three, **Also wakes on these emoji** names emoji whose reactio
 
 Direct messages always reach it. Moving to or from **Mentions only** means pasting the manifest again. See "Slack".
 
-Once in Slack, an agent the room built can also offer a choice as buttons, be asked with a slash command that is its own name, post in a public channel it was not invited to, pin a message and bookmark a link. An app made before the room could do these is brought up to date with **Update in Slack**.
+Another app's mention is answered from what the agent knows until its owner lets it use its tools, and an agent reads the channels it is in only once its owner ticks that box. Once in Slack, an agent the room built can also offer a choice as buttons, be asked with a slash command that is its own name, post in a public channel it was not invited to, pin a message and bookmark a link. An app made before the room could do these is brought up to date with **Update in Slack**.
 
 One of them has a setting: **Answer its slash command in any public channel**. Off, which is how every agent starts, the command works only where the agent has been added. Why you would turn it on: the whole workspace should be able to call this agent from wherever they are, and you are content for its answers to appear in channels nobody invited it to.
 

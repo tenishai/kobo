@@ -212,6 +212,18 @@ class Agent(Base):
     slack_command_public: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )
+    # What another Slack app's @-mention of the agent may do (2026-11-17):
+    # "knowledge" (answered with knowledge-only tools), "full" (the tools a
+    # person's mention gets) or "off" (not answered). NULL reads as
+    # "knowledge", which is what every agent did before the choice. The
+    # runtime reads SLACK_BOT_MENTIONS.
+    slack_bot_mentions: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Whether the agent may read the channels its Slack app has been invited
+    # to (2026-11-17): the `slack_read` block in its bundle, written by the
+    # room when its owner turns this on. Off for every agent until then.
+    slack_read: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     # Colleague mode (issue #131), set by the owner: "default", "roster-only"
     # or "none" (`kobo_api.composer.COLLEAGUE_MODES`). NULL reads as
     # "default", which is what every agent had before the setting existed.

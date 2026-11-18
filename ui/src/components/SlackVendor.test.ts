@@ -164,7 +164,7 @@ describe("SlackVendor", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
-        if (url.includes("/slack/wake")) return json(wake);
+        if (url.includes("/slack/wake") || url.includes("/slack/reading")) return json(wake);
         if (url.includes("/slack")) return json(INSTALLED);
         return detail;
       }),
@@ -275,6 +275,46 @@ describe("SlackVendor", () => {
     await waitFor(() => expect(box.checked).toBe(true));
     const put = vi.mocked(fetch).mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "PUT");
     expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ command_public: true });
+  });
+
+  it("answers another app's mention from what it knows until its owner picks otherwise", async () => {
+    // Contract (2026-11-17): an alert or a ticket that names the agent may
+    // carry an outsider's words, so tools are its owner's to open.
+    roomAfterWakeSave(
+      { wake: "thread", previous_wake: "thread", bot_mentions: "full", manifest_changed: false, applied_now: false, wiring: "env" },
+      new Promise<Response>(() => {}),
+    );
+    await screen.findByRole("group", { name: "When another app mentions it" });
+    expect(radio(/Answer from what it knows/).checked).toBe(true);
+
+    await fireEvent.click(radio(/Work with all its tools/));
+
+    await waitFor(() => expect(radio(/Work with all its tools/).checked).toBe(true));
+    const put = vi.mocked(fetch).mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "PUT");
+    expect(String(put![0])).toContain("/api/agents/clio/slack/wake");
+    expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ bot_mentions: "full" });
+  });
+
+  it("lets it read the channels it is in with one box, and never offers that to an agent on its team's own code", async () => {
+    roomAfterWakeSave(
+      { reads_channels: true, previous_reads_channels: false, sha: "a".repeat(40), applied_now: false, applied_at: null },
+      new Promise<Response>(() => {}),
+    );
+    const box = (await screen.findByRole("checkbox", { name: /Read the channels it is in/ })) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+
+    await fireEvent.click(box);
+
+    await waitFor(() => expect(box.checked).toBe(true));
+    const put = vi.mocked(fetch).mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === "PUT");
+    expect(String(put![0])).toContain("/api/agents/clio/slack/reading");
+    expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ on: true });
+    // Nothing restarted, so the row does not claim a change is waiting.
+    expect(screen.getByRole("status").textContent?.trim()).toBe("Live");
+
+    room(INSTALLED, { ...AGENT, kind: "connected" });
+    await waitFor(() => expect(screen.getAllByRole("group", { name: "When another app mentions it" })).toHaveLength(2));
+    expect(screen.getAllByRole("checkbox", { name: /Read the channels it is in/ })).toHaveLength(1);
   });
 
   it("says a saved choice waits for the agent's next restart when it could not be applied now", async () => {

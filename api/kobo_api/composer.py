@@ -1286,10 +1286,10 @@ def update_agent_yaml_auth(
 _TOOLS_LINE_RE = re.compile(r"^tools:[ \t]*\{.*\}[ \t]*$", re.MULTILINE)
 
 # The whole tools SECTION: the `tools:` line plus any following
-# more-indented lines (the block-style form hand-edited bundles use). For a
-# flow-style line the second alternative matches nothing and the line alone
-# is the section.
-_TOOLS_SECTION_RE = re.compile(r"^tools:[^\n]*(?:\n[ \t]+[^\n]*)*", re.MULTILINE)
+# more-indented lines (the block-style form hand-edited bundles use), blank
+# lines between them included. For a flow-style line the second alternative
+# matches nothing and the line alone is the section.
+_TOOLS_SECTION_RE = re.compile(r"^tools:[^\n]*(?:\n(?:[ \t]*\n)*[ \t]+[^\n]*)*", re.MULTILINE)
 
 
 def update_agent_yaml_tools(
@@ -1366,6 +1366,17 @@ def _splice_tools_section(agent_yaml_path: Path, text: str, tools: dict) -> None
     updated, count = _TOOLS_SECTION_RE.subn(lambda match: replacement, text, count=1)
     if count == 0:
         raise ClientError(f"agent.yaml has no tools section to update: {agent_yaml_path}")
+    # A hand-written section the pattern above does not span whole (a comment
+    # at the margin in the middle of it) would leave its tail behind as a file
+    # that no longer parses. Nothing is written unless the result says `tools`.
+    try:
+        after = yaml.safe_load(updated)
+    except yaml.YAMLError:
+        after = None
+    if not isinstance(after, dict) or after.get("tools") != tools:
+        raise ClientError(
+            f"agent.yaml's tools section is laid out in a way the room cannot rewrite: {agent_yaml_path}"
+        )
     agent_yaml_path.write_text(updated)
 
 
@@ -1444,6 +1455,61 @@ def update_agent_yaml_allow(bundle_dir: Path, *, entries: list[str], remove: lis
     if not missing and len(kept) == len(allow):
         return False
     tools["allow"] = [*kept, *missing]
+    _splice_tools_section(agent_yaml_path, text, tools)
+    return True
+
+
+# Reading Slack (2026-11-17): the runtime's `slack_read` block and its two
+# tools. `channels: []`, written out, is the block on with no list of its own:
+# the agent may read every channel its app has been invited to, so inviting
+# the app stays the one grant. No block at all is the lane off.
+SLACK_READ_KEY = "slack_read"
+SLACK_READ_TOOLS = ("slack.find_threads", "slack.read_thread")
+
+
+def update_agent_yaml_slack_read(bundle_dir: Path, *, on: bool) -> bool:
+    """Turn the Slack reading lane of an already-composed
+    `bundle_dir/agent.yaml` on or off. Returns whether the file changed;
+    nothing else in the tools block moves.
+
+    On writes `slack_read: {channels: []}` and admits the two tools, by name
+    where no pattern on the allow list (`slack.*` on most bundles) already
+    covers them. A block that already names channels is somebody's own,
+    narrower list and is left as it is: the lane is on either way. Off takes
+    the block out, and the two names with it where the room wrote them out.
+    Raises `ClientError` when the file is missing, does not parse, or has no
+    tools section.
+    """
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    try:
+        text = agent_yaml_path.read_text()
+    except OSError as exc:
+        raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ClientError(f"agent.yaml does not parse: {agent_yaml_path}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("tools"), dict):
+        raise ClientError(f"agent.yaml has no tools section to update: {agent_yaml_path}")
+    tools = dict(data["tools"])
+    allow = list(tools.get("allow") or [])
+    if on:
+        block = tools.get(SLACK_READ_KEY)
+        block = dict(block) if isinstance(block, dict) else {}
+        if not isinstance(block.get("channels"), list):
+            block["channels"] = []
+        tools[SLACK_READ_KEY] = block
+        allow += [
+            tool for tool in SLACK_READ_TOOLS
+            if not any(fnmatch(tool, str(pattern)) for pattern in allow)
+        ]
+    else:
+        tools.pop(SLACK_READ_KEY, None)
+        allow = [entry for entry in allow if str(entry) not in SLACK_READ_TOOLS]
+    if allow != list(tools.get("allow") or []):
+        tools["allow"] = allow
+    if tools == data["tools"]:
+        return False
     _splice_tools_section(agent_yaml_path, text, tools)
     return True
 

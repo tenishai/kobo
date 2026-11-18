@@ -1577,6 +1577,7 @@ def test_connect_slack_wires_secret_transport_and_secrets_from_returns_sha(
     assert detail["slack"] == {
         "app_id": APP_ID, "channels": [CHANNEL], "state": "connected",
         "wake": "mention", "wake_emoji": [], "command_public": False,
+        "bot_mentions": "knowledge", "reads_channels": False,
         "available": True,
         # The paste flow's app keeps the Slack tab (issue #371): `legacy`.
         "relay": False,
@@ -1602,6 +1603,7 @@ def test_get_agent_slack_carries_app_id_and_channels_after_connect(session_facto
     assert detail["slack"] == {
         "app_id": APP_ID, "channels": [CHANNEL], "state": "connected",
         "wake": "mention", "wake_emoji": [], "command_public": False,
+        "bot_mentions": "knowledge", "reads_channels": False,
         "available": True,
         # The paste flow's app keeps the Slack tab (issue #371): `legacy`.
         "relay": False,
@@ -1634,7 +1636,8 @@ def test_get_slack_app_view_carries_the_install_link_while_created_and_not_insta
     assert view["install_url"].startswith("https://slack.com/oauth/v2/authorize?client_id=fake-client-id")
     assert {k: v for k, v in view.items() if k != "install_url"} == {
         "enabled": True, "available": True, "state": "created", "app_id": "A0FAKE",
-        "workspace": None, "app_name": None, "channels": [CHANNEL], "wake": "mention", "wake_emoji": [], "command_public": False, "legacy": False,
+        "workspace": None, "app_name": None, "channels": [CHANNEL], "wake": "mention", "wake_emoji": [], "command_public": False,
+        "bot_mentions": "knowledge", "reads_channels": False, "legacy": False,
         "own_app": False, "room_app": True, "wiring": None, "rebuilding": False,
         "update_due": False,
     }
@@ -2319,6 +2322,88 @@ def test_put_command_public_lets_a_slash_command_be_answered_where_the_agent_is_
     assert "SLACK_COMMAND_PUBLIC" not in github.captured_gojira["env"]
     assert kubectl.env_unsets == [(AGENT_NAME, AGENT_NAME, "SLACK_COMMAND_PUBLIC")]
     assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["command_public"] is False
+
+
+def test_put_bot_mentions_says_what_another_apps_mention_may_do(session_factory__api_slack, config__api_slack):
+    """Wire shape: another app's mention is answered from what the agent
+    knows unless its owner says otherwise. `full` and `off` are one more key
+    on the wake lane, set on the running agent at once and kept by a mode
+    change; back to `knowledge` takes the key away, since that is what the
+    agent does with none."""
+    gojira, app_id = _onboarded_gojira()
+    github = _GojiraCapturingGitHub()
+    kubectl = FakeKubectl()
+    client = _make_client__api_slack(
+        session_factory__api_slack, config__api_slack, github=github, gojira=gojira, kubectl=kubectl
+    )
+    _seed_agent__api_slack(session_factory__api_slack, config__api_slack, gojira_app_id=app_id)
+    wake = f"/api/agents/{AGENT_NAME}/slack/wake"
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["bot_mentions"] == "knowledge"
+
+    full = client.put(wake, json={"bot_mentions": "full"})
+
+    assert full.status_code == 200, full.text
+    assert (full.json()["bot_mentions"], full.json()["wake"], full.json()["applied_now"]) == ("full", "mention", True)
+    assert github.captured_gojira["env"]["SLACK_BOT_MENTIONS"] == "full"
+    assert "SLACK_WAKE_MODE" not in github.captured_gojira["env"]
+    assert kubectl.env_sets == [(AGENT_NAME, AGENT_NAME, "SLACK_BOT_MENTIONS", "full")]
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["bot_mentions"] == "full"
+    assert client.put(wake, json={"wake": "thread"}).json()["bot_mentions"] == "full"
+    assert client.put(wake, json={"bot_mentions": "everything"}).status_code == 422
+
+    off = client.put(wake, json={"bot_mentions": "off"})
+
+    assert (off.status_code, off.json()["bot_mentions"]) == (200, "off")
+    assert github.captured_gojira["env"]["SLACK_BOT_MENTIONS"] == "off"
+
+    back = client.put(wake, json={"bot_mentions": "knowledge"})
+
+    assert (back.status_code, back.json()["bot_mentions"]) == (200, "knowledge")
+    assert kubectl.env_unsets == [(AGENT_NAME, AGENT_NAME, "SLACK_BOT_MENTIONS")]
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["bot_mentions"] == "knowledge"
+
+
+def test_put_slack_reading_writes_the_reading_block_into_the_bundle(
+    session_factory__api_slack, config__api_slack, tmp_path
+):
+    """Wire shape: reading channels is a block in the agent's bundle, not a
+    variable. On writes `slack_read` with no channel list of its own, since
+    inviting the app to a channel is the grant; the allow list already
+    admits both reading tools through `slack.*` and is left as it was; the
+    file still passes the runtime's own schema."""
+    from kobo_api.composer import BundleSpec, compose, validate_agent_yaml
+
+    composed = tmp_path / "composed"
+    compose(
+        BundleSpec(
+            name=AGENT_NAME, persona_body="You are clio.\n", model_id="vertex_ai/claude-sonnet-4-5", skills=[],
+            runtime_image="registry.example/agents/daedalus-runtime:v1", vertex_project="p",
+            vertex_location="us-east5", cabal_url="https://cabal.example",
+        ),
+        composed,
+    )
+    tree = {p.relative_to(composed).as_posix(): p.read_text() for p in composed.rglob("*") if p.is_file()}
+    before = yaml.safe_load(tree["bundle/agent.yaml"])["tools"]
+    github = FakeGitHub(clone_tree=tree)
+    client = _make_client__api_slack(session_factory__api_slack, config__api_slack, github=github)
+    _seed_agent__api_slack(session_factory__api_slack, config__api_slack)
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["reads_channels"] is False
+
+    response = client.put(f"/api/agents/{AGENT_NAME}/slack/reading", json={"on": True})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["reads_channels"], body["previous_reads_channels"], body["applied_now"], body["applied_at"]) == (
+        True, False, False, None
+    )
+    assert set(body) == {"reads_channels", "previous_reads_channels", "sha", "applied_now", "applied_at"}
+    pushed = github.pushed_file("bundle/agent.yaml")
+    tools = yaml.safe_load(pushed)["tools"]
+    assert tools == {**before, "slack_read": {"channels": []}}
+    (tmp_path / "pushed").mkdir()
+    (tmp_path / "pushed" / "agent.yaml").write_text(pushed)
+    validate_agent_yaml(tmp_path / "pushed")
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["slack"]["reads_channels"] is True
 
 
 def test_put_wake_says_applied_now_false_when_the_live_apply_fails(session_factory__api_slack, config__api_slack):
@@ -3367,6 +3452,7 @@ def test_get_agent_carries_the_detail_routes_full_field_set(session_factory__mcp
     assert result["repo_full_name"] == REPO_TEMPLATE.format(name="agent-a")
     assert result["slack"] == {
         "app_id": None, "channels": [], "state": "idle", "wake": "mention", "wake_emoji": [], "command_public": False,
+        "bot_mentions": "knowledge", "reads_channels": False,
         "available": False, "relay": False, "legacy": False,
     }
     # What the page's header and Harness tab show, which this tool had

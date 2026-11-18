@@ -158,6 +158,23 @@ def test_an_old_shape_agent_on_an_older_runtime_is_left_alone(tmp_path, configur
     assert "bundle_image" not in yaml.safe_load((work / "gojira.yaml").read_text())
 
 
+def test_a_change_whose_commit_landed_and_delivery_did_not_is_delivered_when_asked_again(tmp_path, configured):
+    """Gate (integrity): asked again, `push` finds nothing to commit and stops, so
+    the agent would never get a change whose publish or restart failed the first
+    time. `redeliver` publishes the bundle as it stands and restarts the agent."""
+    pub, kube = configured
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")
+    gh = GitHub()
+    assert delivery.push(gh, work, "kobo: again") is False
+    assert pub.pushed == [] and kube.restarts == []
+    assert delivery.redeliver(gh, work) is True
+    (ref, files), = pub.pushed
+    assert ref.startswith(f"{REGISTRY}/ledger-bundle:") and files["persona.md"] == "one\n"
+    assert kube.restarts == [("ledger", "ledger")]
+    delivery.configure(None)
+    assert delivery.redeliver(gh, work) is False
+
+
 def test_a_secret_change_restarts_even_with_nothing_to_commit(tmp_path, configured):
     _, kube = configured
     work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")

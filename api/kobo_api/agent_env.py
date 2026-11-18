@@ -114,6 +114,7 @@ RESERVED_KEYS = frozenset(
         "SLACK_WAKE_MODE",
         "SLACK_WAKE_EMOJI",
         "SLACK_COMMAND_PUBLIC",
+        "SLACK_BOT_MENTIONS",
         # The agent's key for the room's model gateway (kobo#390), minted and
         # delivered by the room.
         "MODELS_GATEWAY_KEY",

@@ -108,6 +108,11 @@ export type StepView = {
  * a mention and then the thread it started, or every message. */
 export type SlackWake = "mention" | "thread" | "channel";
 
+/** What another Slack app's @-mention may do (2026-11-17): answer from what
+ * the agent knows, work with every tool a person's mention could, or get
+ * no answer. Another app's message without a mention never reaches it. */
+export type SlackBotMentions = "knowledge" | "full" | "off";
+
 export type AgentSlack = {
   app_id: string | null;
   channels: string[];
@@ -117,6 +122,10 @@ export type AgentSlack = {
   wake_emoji?: string[];
   /** Whether its slash command is answered in public channels it is not in. */
   command_public?: boolean;
+  /** What another app's mention may do. Older rooms omit it. */
+  bot_mentions?: SlackBotMentions;
+  /** Whether it may read the channels it is in. Older rooms omit it. */
+  reads_channels?: boolean;
   /** False when the room has no Slack config-token store, so no app can
    * be created or reconnected from here (issue #262). */
   available: boolean;
@@ -147,6 +156,12 @@ export type SlackAppView = {
   /** Whether its slash command is answered in public channels it has not
    * been added to. Off until its owner turns it on. Older rooms omit it. */
   command_public?: boolean;
+  /** What another app's mention may do: `knowledge` until its owner says
+   * otherwise. Older rooms omit it. */
+  bot_mentions?: SlackBotMentions;
+  /** Whether it may read the messages and threads of the channels it is
+   * in, beyond the conversation it was woken in. Older rooms omit it. */
+  reads_channels?: boolean;
   legacy: boolean;
   /** A connected agent with no room-made app: it is on its team's own
    * Slack app (tokens under Secrets), or on none yet. */
@@ -2686,6 +2701,8 @@ export type SlackWakeResult = {
   wake_emoji?: string[];
   /** Where its slash command is answered, as now in force. */
   command_public?: boolean;
+  /** What another app's mention may do, as now in force. */
+  bot_mentions?: SlackBotMentions;
   manifest_changed: boolean;
   applied_now?: boolean;
   /** The room's own clock at the save (when `applied_now`), so a later
@@ -2718,6 +2735,40 @@ export async function setSlackCommandPublic(name: string, on: boolean): Promise<
     body: JSON.stringify({ command_public: on }),
   });
   return parse<SlackWakeResult>(res);
+}
+
+/** The same route with `bot_mentions` alone: what another Slack app's
+ * @-mention may do. The mode stays as it is. */
+export async function setSlackBotMentions(name: string, mode: SlackBotMentions): Promise<SlackWakeResult> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/slack/wake`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bot_mentions: mode }),
+  });
+  return parse<SlackWakeResult>(res);
+}
+
+/**
+ * `PUT /api/agents/{name}/slack/reading`: whether the agent may read the
+ * channels it is in. `applied_now` is whether the agent is restarting with
+ * the change already; false, it has it a few minutes later (a room that
+ * still builds each change) or nothing needed to change.
+ */
+export type SlackReadingResult = {
+  reads_channels: boolean;
+  previous_reads_channels: boolean;
+  sha: string;
+  applied_now: boolean;
+  applied_at: string | null;
+};
+
+export async function setSlackReading(name: string, on: boolean): Promise<SlackReadingResult> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/slack/reading`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ on }),
+  });
+  return parse<SlackReadingResult>(res);
 }
 
 /** The same route with `emoji` alone: the emoji whose reaction also wakes
