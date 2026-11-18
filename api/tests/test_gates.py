@@ -406,6 +406,10 @@ def _set_colleague_mode(client, headers):
     )
 
 
+def _set_slack_reading(client, headers):
+    return client.put(f"/api/agents/{AGENT_NAME}/slack/reading", json={"on": True}, headers=headers)
+
+
 def _delete_knowledge(client, headers):
     return client.delete(f"/api/agents/{AGENT_NAME}/knowledge/gotchas.md", headers=headers)
 
@@ -501,6 +505,7 @@ SMOKE_ROUTES = [
     ("slack-app-remove", _remove_slack_app),
     ("slack-app-move", _move_slack_app),
     ("colleague-mode", _set_colleague_mode),
+    ("slack-reading", _set_slack_reading),
     ("knowledge-delete", _delete_knowledge),
     ("retry", _retry),
     ("directory-sync", _sync_directory),
@@ -737,6 +742,7 @@ READY_GATED_ROUTES = [
     ("POST", f"/api/agents/{AGENT_NAME}/restart", {}),
     ("PATCH", f"/api/agents/{AGENT_NAME}/runtime", {"json": {"runtime_image": "example.dev/runtime:v2"}}),
     ("PUT", f"/api/agents/{AGENT_NAME}/colleague-mode", {"json": {"mode": "roster-only"}}),
+    ("PUT", f"/api/agents/{AGENT_NAME}/slack/reading", {"json": {"on": True}}),
     ("PATCH", f"/api/agents/{AGENT_NAME}/metadata", {"json": {"purpose_tags": ["billing"]}}),
     ("POST", f"/api/agents/{AGENT_NAME}/metadata/regenerate", {}),
     ("POST", f"/api/agents/{AGENT_NAME}/directory/sync", {}),
@@ -971,6 +977,7 @@ GUARDED_ROUTES = [
     # 2026-11-15 (the test below): a message through the switchboard changes
     # nothing in anybody's repository.
     ("PUT", f"/api/agents/{AGENT_NAME}/colleague-mode", {"json": {"mode": "roster-only"}}),
+    ("PUT", f"/api/agents/{AGENT_NAME}/slack/reading", {"json": {"on": True}}),
     # Making a Slack app is not here since issue #484: for a connected agent it
     # proposes a pull request (tests/test_wire_shapes.py), never a push.
     ("POST", f"/api/agents/{AGENT_NAME}/slack/move", {}),

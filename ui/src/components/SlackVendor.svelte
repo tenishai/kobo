@@ -19,6 +19,12 @@
   //   inviting it in Slack is the only control. The legacy Slack tab keeps
   //   its own list and the channels route.
   //
+  // Installed, the row also carries the two choices about what the agent may
+  // take in beyond a person's ask (2026-11-17): what another app's mention
+  // may do (from what it knows, with all its tools, or nothing), and whether
+  // it may read the channels it is in. The second is written into the
+  // agent itself, so it shows only for an agent the room built.
+  //
   // The row's one line carries an honest state once installed: Live (the
   // agent is ready and nothing is pending), Applying your change (a Wakes
   // on save restarts the agent; the state turns Live only when a health
@@ -59,13 +65,15 @@
   // button, Update in Slack: the room refreshes the app, Slack shows what is
   // new, and the person comes back here as after an install.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { errorMessage, type SlackWake, type SlackWakeResult } from "../lib/api";
+  import { errorMessage, KIND_CONNECTED, type SlackBotMentions, type SlackWake } from "../lib/api";
   import {
     agentQuery,
     createSlackAppMutation,
     moveSlackAppMutation,
     removeSlackAppMutation,
+    setSlackBotMentionsMutation,
     setSlackCommandPublicMutation,
+    setSlackReadingMutation,
     setSlackWakeEmojiMutation,
     setSlackWakeMutation,
     slackAppQuery,
@@ -110,12 +118,24 @@
   const saveWake = createMutation(() => setSlackWakeMutation(queryClient, agentName));
   const saveEmoji = createMutation(() => setSlackWakeEmojiMutation(queryClient, agentName));
   const savePublic = createMutation(() => setSlackCommandPublicMutation(queryClient, agentName));
+  const saveBots = createMutation(() => setSlackBotMentionsMutation(queryClient, agentName));
+  const saveRead = createMutation(() => setSlackReadingMutation(queryClient, agentName));
   const update = createMutation(() => updateSlackAppMutation(agentName));
 
   const WAKE_OPTIONS: { value: SlackWake; label: string; help: string }[] = [
     { value: "mention", label: "Mentions only", help: "Only a message that @-mentions the agent reaches it." },
     { value: "thread", label: "Mentions, then the thread", help: "Mention it once at the top of a thread and every reply there reaches it." },
     { value: "channel", label: "Every message in the channel", help: "For an agent whose job is the channel. It hears everything." },
+  ];
+
+  const BOT_OPTIONS: { value: SlackBotMentions; label: string; help: string }[] = [
+    { value: "knowledge", label: "Answer from what it knows", help: "It replies from its knowledge and memory. It uses none of its tools or connections." },
+    {
+      value: "full",
+      label: "Work with all its tools",
+      help: "It does what it would for a person: every tool and connection it has. Whoever can get an app to post in its channels can then direct it, so pick this only where you trust every app in them.",
+    },
+    { value: "off", label: "Do not answer", help: "A mention from another app gets no reply." },
   ];
 
   // --- Wakes on: local before the app exists, saved on pick after ----------
@@ -140,10 +160,11 @@
   let wakeRestartsSoon = $state(false);
   let stopWakeWatch: (() => void) | null = null;
   const wakeLocked = $derived(
-    frozen || saveWake.isPending || saveEmoji.isPending || savePublic.isPending || create.isPending || wakeApplying,
+    frozen || saveWake.isPending || saveEmoji.isPending || savePublic.isPending || saveBots.isPending ||
+      saveRead.isPending || create.isPending || wakeApplying,
   );
 
-  function watchWake(result: SlackWakeResult): void {
+  function watchWake(result: { applied_at?: string | null }): void {
     stopWakeWatch?.();
     wakeApplying = true;
     beginRestart(agentName);
@@ -237,6 +258,64 @@
     } catch (err) {
       publicDraft = null;
       publicError = errorMessage(err, "Couldn't save that. Try again.");
+    }
+  }
+
+  // --- When another app mentions it: three choices, saved on pick ----------------
+  //
+  // An alert, a ticket or another agent can @-mention this one. Until its
+  // owner says otherwise it answers from what it knows, since the words in
+  // such a message may be an outsider's (an issue title, an alert body) and
+  // must not drive its tools. A pick restarts the agent like a Wakes on
+  // pick, and shares its lock.
+  let botsDraft = $state<SlackBotMentions | null>(null);
+  let botsError = $state<string | null>(null);
+  const botsShown = $derived<SlackBotMentions>(botsDraft ?? view.data?.bot_mentions ?? "knowledge");
+  $effect(() => {
+    if (botsDraft !== null && !saveBots.isPending && view.data?.bot_mentions === botsDraft) botsDraft = null;
+  });
+
+  async function pickBots(next: SlackBotMentions): Promise<void> {
+    if (wakeLocked || next === botsShown) return;
+    botsDraft = next;
+    botsError = null;
+    try {
+      const result = await saveBots.mutateAsync(next);
+      wakeRestartsSoon = !!result.restart_pending;
+      wakeWaitsForRestart = !result.applied_now && !result.pull_request && !result.restart_pending;
+      if (result.applied_now) watchWake(result);
+    } catch (err) {
+      botsDraft = null;
+      botsError = errorMessage(err, "Couldn't save that. Try again.");
+    }
+  }
+
+  // --- Read the channels it is in: one switch, saved when flipped ----------------
+  //
+  // Off, the agent sees only the conversation it was woken in. On, it can
+  // look through the channels its app has been invited to; the invite, in
+  // Slack, is the permission, so there is no channel list here. Unlike the
+  // choices above this is written into the agent itself, which only an
+  // agent the room built has: one that runs its team's own code reads Slack
+  // however its code does, and a team's guide never reads channels.
+  const canRead = $derived(agent.data?.kind !== KIND_CONNECTED && agent.data?.archetype !== "team_guide");
+  let readDraft = $state<boolean | null>(null);
+  let readError = $state<string | null>(null);
+  const readShown = $derived(readDraft ?? view.data?.reads_channels ?? false);
+  $effect(() => {
+    if (readDraft !== null && !saveRead.isPending && view.data?.reads_channels === readDraft) readDraft = null;
+  });
+
+  async function pickRead(next: boolean): Promise<void> {
+    if (wakeLocked || next === readShown) return;
+    readDraft = next;
+    readError = null;
+    try {
+      const result = await saveRead.mutateAsync(next);
+      if (result.applied_now) watchWake(result);
+    } catch (err) {
+      readDraft = null;
+      readError = errorMessage(err, "Couldn't save that. Try again.");
     }
   }
 
@@ -599,6 +678,58 @@
             <p class="copy copy--fail" role="alert">{publicError}</p>
           {/if}
         </div>
+        <fieldset class="wake" disabled={wakeLocked}>
+          <legend class="label">When another app mentions it</legend>
+          <div class="wake__options">
+            {#each BOT_OPTIONS as option (option.value)}
+              <label class="wake__option" class:wake__option--on={botsShown === option.value}>
+                <input
+                  type="radio"
+                  name="slack-vendor-bots"
+                  value={option.value}
+                  checked={botsShown === option.value}
+                  disabled={wakeLocked}
+                  onchange={() => pickBots(option.value)}
+                />
+                <span class="wake__text">
+                  <span class="wake__label">{option.label}</span>
+                  <span class="help">{option.help}</span>
+                </span>
+              </label>
+            {/each}
+          </div>
+          {#if botsError}
+            <p class="copy copy--fail" role="alert">{botsError}</p>
+          {:else}
+            <p class="help">
+              Another app's message reaches the agent only when it @-mentions the agent: an alert that does not name it
+              is never answered. It answers an app at most three times in a row in a thread, and thirty times an hour.
+            </p>
+          {/if}
+        </fieldset>
+        {#if canRead}
+          <div class="block">
+            <label class="wake__option" class:wake__option--on={readShown}>
+              <input
+                type="checkbox"
+                checked={readShown}
+                disabled={wakeLocked}
+                onchange={(event) => pickRead(event.currentTarget.checked)}
+              />
+              <span class="wake__text">
+                <span class="wake__label">Read the channels it is in</span>
+                <span class="help">
+                  Off, it sees only the conversation it was woken in. On, it can look through the messages and threads
+                  of every channel it has been invited to. Invite it to a channel in Slack to let it read there; remove
+                  it to stop.
+                </span>
+              </span>
+            </label>
+            {#if readError}
+              <p class="copy copy--fail" role="alert">{readError}</p>
+            {/if}
+          </div>
+        {/if}
         {#if !removing}
           <div class="row">
             <button type="button" class="btn btn--quiet" disabled={frozen || remove.isPending} onclick={() => (removing = true)}>Remove</button>

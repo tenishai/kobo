@@ -1903,6 +1903,10 @@ def _set_service_account_and_model_env(data: dict, agent, config) -> None:
         model_env["SLACK_WAKE_EMOJI"] = wake_emoji
     if getattr(agent, "slack_command_public", False):
         model_env["SLACK_COMMAND_PUBLIC"] = "on"
+    # NULL and `knowledge` write nothing: that is the runtime's own default.
+    bot_mentions = getattr(agent, "slack_bot_mentions", None)
+    if bot_mentions in ("full", "off"):
+        model_env["SLACK_BOT_MENTIONS"] = bot_mentions
 
     existing = data.get("env")
     if existing is not None and not isinstance(existing, dict):

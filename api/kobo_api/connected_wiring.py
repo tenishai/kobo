@@ -66,6 +66,8 @@ from kobo_api.clients import ClientError
 from kobo_api.kinds import KIND_CONNECTED
 from kobo_api.models import Agent, AgentStatus
 from kobo_api.slack_setup import (
+    BOT_MENTIONS_ENV,
+    BOT_MENTIONS_KNOWLEDGE,
     COMMAND_PUBLIC_ENV,
     COMMAND_PUBLIC_ON,
     WAKE_EMOJI_ENV,
@@ -253,11 +255,13 @@ SLACK_PR_BODY = (
     "the file already reads that Secret. It carries `SLACK_BOT_TOKEN` once "
     "the app is installed, `SLACK_RELAY_SECRET`, `SLACK_SIGNING_SECRET`, "
     "`SLACK_ICON_URL`, the app's ids, `SLACK_WAKE_MODE`, `SLACK_WAKE_EMOJI` "
-    "when its owner named emoji that wake it, and `SLACK_COMMAND_PUBLIC` "
+    "when its owner named emoji that wake it, `SLACK_COMMAND_PUBLIC` "
     "when its owner lets its slash command be answered in public channels "
-    "it is not in.\n"
-    "- gojira.yaml: `SLACK_WAKE_MODE`, `SLACK_WAKE_EMOJI` and "
-    "`SLACK_COMMAND_PUBLIC` are taken out of `env` where they are set. A "
+    "it is not in, and `SLACK_BOT_MENTIONS` when its owner changed what "
+    "another app's mention may do.\n"
+    "- gojira.yaml: `SLACK_WAKE_MODE`, `SLACK_WAKE_EMOJI`, "
+    "`SLACK_COMMAND_PUBLIC` and `SLACK_BOT_MENTIONS` are taken out of `env` "
+    "where they are set. A "
     "value there hides the one in the Secret, so the agent would keep "
     "waking the old way.\n\n"
     "This is the last pull request Slack needs in this repository: from here "
@@ -274,7 +278,7 @@ SLACK_PR_ALREADY_OPEN = (
     "close it: "
 )
 
-_WAKE_KEYS = (WAKE_ENV, WAKE_EMOJI_ENV, COMMAND_PUBLIC_ENV)
+_WAKE_KEYS = (WAKE_ENV, WAKE_EMOJI_ENV, COMMAND_PUBLIC_ENV, BOT_MENTIONS_ENV)
 
 
 def _set_in_file(data: dict) -> dict[str, str]:
@@ -290,6 +294,9 @@ def _set_in_file(data: dict) -> dict[str, str]:
 def _same(key: str, in_file: str, wanted: str | None) -> bool:
     if key == COMMAND_PUBLIC_ENV:
         return (in_file.lower() == COMMAND_PUBLIC_ON) == (wanted == COMMAND_PUBLIC_ON)
+    if key == BOT_MENTIONS_ENV:
+        # Not set and `knowledge` are the same thing to the runtime.
+        return (in_file.lower() or BOT_MENTIONS_KNOWLEDGE) == (wanted or BOT_MENTIONS_KNOWLEDGE)
     return in_file == (wanted or "")
 
 

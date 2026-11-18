@@ -6,6 +6,14 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **When another app mentions it**, on an agent's Slack row. Alerts, tickets and other agents arrive in Slack as apps, and one that @-mentions an agent has always been answered from what the agent knows, with none of its tools. That stays the start for every agent; its owner can now pick **Work with all its tools**, for an agent whose job is to act on alerts, or **Do not answer**. The row says what does not change: an app's message that does not mention the agent never reaches it, and an agent answers an app at most three times in a row in a thread and thirty times an hour. An agent on its team's own code is handed the choice as `SLACK_BOT_MENTIONS`.
+- **Read the channels it is in**, a box on the same row for an agent the room built. Unticked, an agent sees only the conversation it was woken in. Ticked, it can look through the messages and threads of every channel it has been invited to. Inviting it in Slack is what lets it read a channel, so the room keeps no channel list. This was a block written into an agent's files by hand; an agent that already has one keeps the channels it names.
+- From an assistant: **set slack wake** takes what another app's mention may do, and **set slack reading** is new. An agent's Slack state carries both.
+
+### Fixed
+- A persona drafted from a document keeps the document. A team's 160-line runbook with 30 rules came back from **Draft persona** as 36 lines and 10 rules, its channel names, steps and reply template gone. A short description still drafts short; a document now keeps its working detail, up to 120 lines and forty rules, and the draft comes back in about a quarter of the time.
+
 ## [0.3.73] - 2026-11-17
 
 ### Added

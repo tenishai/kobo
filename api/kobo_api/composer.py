@@ -1448,6 +1448,61 @@ def update_agent_yaml_allow(bundle_dir: Path, *, entries: list[str], remove: lis
     return True
 
 
+# Reading Slack (2026-11-17): the runtime's `slack_read` block and its two
+# tools. `channels: []`, written out, is the block on with no list of its own:
+# the agent may read every channel its app has been invited to, so inviting
+# the app stays the one grant. No block at all is the lane off.
+SLACK_READ_KEY = "slack_read"
+SLACK_READ_TOOLS = ("slack.find_threads", "slack.read_thread")
+
+
+def update_agent_yaml_slack_read(bundle_dir: Path, *, on: bool) -> bool:
+    """Turn the Slack reading lane of an already-composed
+    `bundle_dir/agent.yaml` on or off. Returns whether the file changed;
+    nothing else in the tools block moves.
+
+    On writes `slack_read: {channels: []}` and admits the two tools, by name
+    where no pattern on the allow list (`slack.*` on most bundles) already
+    covers them. A block that already names channels is somebody's own,
+    narrower list and is left as it is: the lane is on either way. Off takes
+    the block out, and the two names with it where the room wrote them out.
+    Raises `ClientError` when the file is missing, does not parse, or has no
+    tools section.
+    """
+    agent_yaml_path = bundle_dir / "agent.yaml"
+    try:
+        text = agent_yaml_path.read_text()
+    except OSError as exc:
+        raise ClientError(f"agent.yaml not found: {agent_yaml_path}") from exc
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ClientError(f"agent.yaml does not parse: {agent_yaml_path}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("tools"), dict):
+        raise ClientError(f"agent.yaml has no tools section to update: {agent_yaml_path}")
+    tools = dict(data["tools"])
+    allow = list(tools.get("allow") or [])
+    if on:
+        block = tools.get(SLACK_READ_KEY)
+        block = dict(block) if isinstance(block, dict) else {}
+        if not isinstance(block.get("channels"), list):
+            block["channels"] = []
+        tools[SLACK_READ_KEY] = block
+        allow += [
+            tool for tool in SLACK_READ_TOOLS
+            if not any(fnmatch(tool, str(pattern)) for pattern in allow)
+        ]
+    else:
+        tools.pop(SLACK_READ_KEY, None)
+        allow = [entry for entry in allow if str(entry) not in SLACK_READ_TOOLS]
+    if allow != list(tools.get("allow") or []):
+        tools["allow"] = allow
+    if tools == data["tools"]:
+        return False
+    _splice_tools_section(agent_yaml_path, text, tools)
+    return True
+
+
 def update_agent_yaml_skills_load(bundle_dir: Path) -> bool:
     """Make an already-composed `bundle_dir/agent.yaml`'s allow list admit
     `skills.load`, appending it when no entry matches (issue #137).

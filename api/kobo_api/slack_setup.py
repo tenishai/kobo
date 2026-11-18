@@ -52,6 +52,7 @@ from kobo_api.composer import (
     SLACK_TOOLS_ALLOW,
     repin_commit_note,
     update_agent_yaml_allow,
+    update_agent_yaml_slack_read,
     update_dockerfile_runtime_image,
 )
 from kobo_api.repo_lock import repo_write_lock
@@ -210,6 +211,34 @@ def command_public(agent) -> bool:
     return bool(getattr(agent, "slack_command_public", False))
 
 
+# What another Slack app's @-mention of the agent may do (2026-11-17). The
+# runtime answers one with knowledge-only tools unless this variable says
+# otherwise: the words came from a program, and some programs post text an
+# outsider wrote (an alert body, an issue title). `full` gives that mention
+# the tools a person's gets, `off` drops it. No value is `knowledge`, what
+# every agent did before the choice. Another app's plain message never wakes
+# an agent, whatever this says, and the runtime's own bounds on app-woken
+# turns (three in a row in a thread, thirty an hour from one app) hold in
+# every mode.
+BOT_MENTIONS_ENV = "SLACK_BOT_MENTIONS"
+BOT_MENTIONS_KNOWLEDGE = "knowledge"
+BOT_MENTIONS_FULL = "full"
+BOT_MENTIONS_OFF = "off"
+BOT_MENTION_MODES = (BOT_MENTIONS_KNOWLEDGE, BOT_MENTIONS_FULL, BOT_MENTIONS_OFF)
+
+
+def bot_mentions(agent) -> str:
+    """What another app's mention may do, with NULL (every row from before
+    the choice) read as `knowledge`."""
+    mode = getattr(agent, "slack_bot_mentions", None)
+    return mode if mode in BOT_MENTION_MODES else BOT_MENTIONS_KNOWLEDGE
+
+
+def reads_channels(agent) -> bool:
+    """Whether the agent may read the channels its Slack app is in."""
+    return bool(getattr(agent, "slack_read", False))
+
+
 def wake_emoji(agent) -> list[str]:
     """The emoji whose reaction wakes the agent, in the order they were given."""
     return [name for name in (getattr(agent, "slack_wake_emoji", None) or "").split(",") if name]
@@ -250,19 +279,23 @@ def effective_wake(agent) -> str:
     return mode if mode in WAKE_MODES else WAKE_MENTION
 
 
-def wake_settings(mode: str, emoji: str, public: bool) -> dict[str, str | None]:
+def wake_settings(mode: str, emoji: str, public: bool, bots: str) -> dict[str, str | None]:
     """How Slack wakes an agent, as the variables its code reads. None is a
-    variable that is not set: no emoji wake it, or its slash command stays
-    where it has been added."""
+    variable that is not set: no emoji wake it, its slash command stays
+    where it has been added, or another app's mention gets knowledge-only
+    tools."""
     return {
         WAKE_ENV: mode,
         WAKE_EMOJI_ENV: emoji or None,
         COMMAND_PUBLIC_ENV: COMMAND_PUBLIC_ON if public else None,
+        BOT_MENTIONS_ENV: None if bots == BOT_MENTIONS_KNOWLEDGE else bots,
     }
 
 
 def wake_settings_of(agent) -> dict[str, str | None]:
-    return wake_settings(effective_wake(agent), ",".join(wake_emoji(agent)), command_public(agent))
+    return wake_settings(
+        effective_wake(agent), ",".join(wake_emoji(agent)), command_public(agent), bot_mentions(agent)
+    )
 
 
 def wake_subscribes_channel_messages(mode: str) -> bool:
@@ -642,6 +675,22 @@ def deliver_slack_values(
         )
     else:
         kubectl.apply_secret(name, f"{name}-slack", values)
+
+
+def commit_slack_reading(github: GitHubClient, repo: str, *, on: bool) -> tuple[str, bool]:
+    """Clone `repo`, turn its bundle's Slack reading lane on or off, commit
+    and push. Returns the head and whether anything was pushed: a bundle
+    that already says so pushes nothing, and the agent is not restarted.
+    Raises `ClientError` on any GitHub or agent.yaml failure."""
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        github.clone(repo, workdir)
+        update_agent_yaml_slack_read(workdir / "bundle", on=on)
+        pushed = delivery.push(
+            github, workdir,
+            "kobo: in Slack, it reads the channels it is in" if on else "kobo: in Slack, it no longer reads channels",
+        )
+        return github.local_head(workdir), pushed
 
 
 def deliver_wake_settings(
