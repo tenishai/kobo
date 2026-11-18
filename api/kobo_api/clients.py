@@ -3902,8 +3902,9 @@ def _build_persona_draft_prompt(job: str, rules: list[str]) -> str:
         "are' and has no period at the end.\n"
         "- what_they_do: markdown with no headings. From a short "
         "description, 25 to 45 lines. From a document, as long as its "
-        "substance needs, up to 120 lines: nothing the team wrote down to "
-        "be followed is cut to save space. In this order:\n"
+        "substance needs, up to 120 lines. When the document would run "
+        "past that, keep its facts, steps and templates and shorten the "
+        "prose around them. In this order:\n"
         "  1. One short paragraph on why the work matters and what the "
         "person asking needs from it.\n"
         "  2. A paragraph beginning 'Your ground:' that names what the "
@@ -3918,20 +3919,23 @@ def _build_persona_draft_prompt(job: str, rules: list[str]) -> str:
         "  6. From a document only: its working detail, in the order the "
         "document gives it. Each group begins with a bold label alone on "
         "its own line, such as '**How you investigate**', followed by "
-        "that group's paragraphs, lists or template. Keep every name, "
-        "id, link, number, step and template exactly as the source "
-        "writes it.\n"
+        "that group's paragraphs, lists or template. Keep each name, "
+        "id, link, number, step and template you carry over exactly as "
+        "the source writes it.\n"
         "  7. One short example of a good answer, in quotes, introduced by "
-        "a line such as 'Example answer:'. When the source gives its own "
-        "example or template, use that instead of writing one.\n"
+        "a line such as 'Example answer:'. Leave this part out when part "
+        "6 already carries the source's own example or template.\n"
         "- rules: each one line and one sentence, each a thing the agent "
-        "always or never does. From a short description, eight to twelve: "
-        "make them specific to this job and checkable against an answer, "
-        "and leave out anything true of every agent. From a document that "
-        "states its own rules, every one of them, in its own words, up to "
-        "forty; never merge two into one and never drop one. Write each "
-        "as an order that begins with the thing itself ('Never ...', "
-        "'Every answer ...'), not with 'You'. No list markers.\n"
+        "always or never does. From a short description, or a document "
+        "that states no rules of its own, eight to twelve: make them "
+        "specific to this job and checkable against an answer, and leave "
+        "out anything true of every agent. From a document that states "
+        "its own rules, each of them, keeping its meaning and its "
+        "wording where one line allows, never two merged into one. When "
+        "it states more than forty, keep the forty most specific to the "
+        "job. Write each as an order that begins with the thing itself "
+        "('Never ...', 'Every answer ...'), not with 'You'. No list "
+        "markers.\n"
         "- purpose_tags: one to five short lowercase tags (one or two words "
         "each), plain words someone would search for.\n\n"
         'Respond with ONLY a strict JSON object shaped {"name": "...", '
@@ -4010,8 +4014,9 @@ class VertexNameClient:
     Vertex's text default already models the desired output shape).
     `suggest()` below does send its own `generationConfig` regardless (see
     its own comment) to turn dynamic thinking off, since a naming task needs
-    none of it, and to cap the output length; `draft()`/`capability()`
-    further down send none.
+    none of it, and to cap the output length; `draft()` further down
+    turns thinking off too (its own comment says why), and
+    `capability()` sends none.
 
     A 200 response doesn't guarantee a well-formed answer: the model can
     reply with a chatty preamble, a fenced code block, or truncated JSON —

@@ -48,7 +48,10 @@ from kobo_api.purpose_tags import normalize_tags
 # every reasonable draft, still comfortably under the render ceiling that
 # create_persona enforces for real. Raised to 30000 (2026-11-17): a
 # draft made from a document keeps the document's working detail, up to
-# 120 lines, and a real one came to 11,500 characters.
+# 120 lines, and a real one came to 11,500 characters. The bound is on
+# characters only: a reply that overshoots the prompt's 120 lines can
+# still render past the 200-line ceiling, and the form then fills and
+# Create refuses it with the line count, for the person to trim.
 _NAME_MAX = 60
 _WHO_MAX = 200
 _WHAT_MAX = 30000
@@ -299,11 +302,15 @@ def finalize_draft(raw: dict | None, *, job: str) -> dict:
         # The renderer writes "You are {name}, " ahead of this line, and a
         # reply sometimes opens it with the name again ("renewal-helper, a
         # specialist who ...", seen on dev 2026-11-17).
+        # Only ahead of an article, so a line that lists the name's own
+        # word ("triage, routing and follow-up for ...") is left alone.
         for said in (raw.get("name"), final_name):
             if isinstance(said, str) and said.strip():
-                lead = said.strip().lower() + ","
-                if who.lower().startswith(lead):
-                    who = who[len(lead):].strip() or None
+                repeat = re.match(
+                    re.escape(said.strip()) + r",\s+(?=(?:a|an|the)\b)", who, re.IGNORECASE
+                )
+                if repeat:
+                    who = who[repeat.end():]
                     break
     final_who = who if who is not None else _fallback_who(job)
     final_what = what if what is not None else _fallback_what(job)
