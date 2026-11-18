@@ -1104,6 +1104,40 @@ def test_a_taken_persona_name_says_where_the_persona_is_and_a_draft_brings_its_r
     )
     assert partial.post("/api/personas/draft", json={"job": document, "rules": []}).json()["generated"] is False
 
+    # A long document keeps its length (seen on dev the same day: a 160-line runbook with
+    # 30 rules came back as 36 lines and 10 rules). A reply that size is taken whole, and
+    # a who-line that repeats the name loses the repeat.
+    long_rules = [f"Never skip step {n} of the runbook." for n in range(30)]
+    long_what = "\n".join(
+        f"Step {n}: read the dashboard for this service, write down what it shows, and say which "
+        "reading is out of its usual range before you move to the next step."
+        for n in range(110)
+    )
+    assert len(long_what) > 12000  # past the old bound on a drafted body
+    reply = {
+        "name": "alert-triager",
+        "who_they_are": "alert-triager, the first reader of every alert",
+        "what_they_do": long_what,
+        "rules": long_rules,
+    }
+    long = _make_client__api_search(
+        config__api_search,
+        _minimal_clients(storage=fake_storage__api_search, name=FakeName(draft=reply)),
+        tmp_path,
+    ).post("/api/personas/draft", json={"job": document, "rules": []}).json()
+    assert long["generated"] is True
+    assert long["rules"] == long_rules
+    assert long["what_they_do"] == long_what
+    assert long["who_they_are"] == "the first reader of every alert"
+    # and what it handed back is something Create takes
+    made = _make_client__api_search(
+        config__api_search, _minimal_clients(storage=fake_storage__api_search), tmp_path
+    ).post(
+        "/api/personas",
+        json={**{k: long[k] for k in ("name", "who_they_are", "what_they_do", "rules")}, "team": "shared"},
+    )
+    assert made.status_code == 201, made.text
+
     payload = {k: draft.json()[k] for k in ("name", "who_they_are", "what_they_do", "rules")}
     assert client.post("/api/personas", json={**payload, "team": "shared"}).status_code == 201
     again = client.post("/api/personas", json={**payload, "team": "shared"})

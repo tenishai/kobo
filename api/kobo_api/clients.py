@@ -3826,6 +3826,9 @@ _NAME_PROMPT_TEMPLATE = (
 _PERSONA_DRAFT_FAILED = "persona draft generation failed"
 
 
+_PERSONA_DRAFT_TIMEOUT = httpx.Timeout(90.0, connect=10.0)
+
+
 def _build_persona_draft_prompt(job: str, rules: list[str]) -> str:
     """Build the persona-draft prompt from `job` (a few sentences about the
     work, or a whole document, up to the persona size ceiling) and optional
@@ -3839,6 +3842,14 @@ def _build_persona_draft_prompt(job: str, rules: list[str]) -> str:
     skipped the drafter altogether and was stored as it came. One prompt
     now serves both sources and lands both in the house shape
     (2026-11-17).
+
+    A document keeps its length. The first cut of this prompt asked for
+    25 to 45 lines and eight to twelve rules whatever the source was, so
+    a team's 160-line runbook with 30 rules came back as 36 lines and
+    10 rules: its channel ids, its steps and its reply template were
+    gone (seen on dev, 2026-11-17). Those sizes now describe a short
+    description only; a document's working detail goes in whole, under
+    bold labels, and so does every rule it states.
 
     Deliberately plain string concatenation, NEVER `str.format()` against
     `job`/`rules` — the exact same hazard `kobo_api.personas.render_persona`
@@ -3889,8 +3900,11 @@ def _build_persona_draft_prompt(job: str, rules: list[str]) -> str:
         "'a code reviewer whose reviews are short enough to read before "
         "the merge and exact enough to act on'. It never begins with 'You "
         "are' and has no period at the end.\n"
-        "- what_they_do: markdown, 25 to 45 lines, with no headings. In "
-        "this order:\n"
+        "- what_they_do: markdown with no headings. From a short "
+        "description, 25 to 45 lines. From a document, as long as its "
+        "substance needs, up to 120 lines. When the document would run "
+        "past that, keep its facts, steps and templates and shorten the "
+        "prose around them. In this order:\n"
         "  1. One short paragraph on why the work matters and what the "
         "person asking needs from it.\n"
         "  2. A paragraph beginning 'Your ground:' that names what the "
@@ -3902,12 +3916,26 @@ def _build_persona_draft_prompt(job: str, rules: list[str]) -> str:
         "request could be read two ways.\n"
         "  5. What to do when it cannot answer or the request is outside "
         "its ground: say so plainly and say where to take it.\n"
-        "  6. One short example of a good answer, in quotes, introduced by "
-        "a line such as 'Example answer:'.\n"
-        "- rules: eight to twelve rules, each one line and one sentence, "
-        "each a thing the agent always or never does. Make them specific "
-        "to this job and checkable against an answer; leave out anything "
-        "true of every agent. No list markers.\n"
+        "  6. From a document only: its working detail, in the order the "
+        "document gives it. Each group begins with a bold label alone on "
+        "its own line, such as '**How you investigate**', followed by "
+        "that group's paragraphs, lists or template. Keep each name, "
+        "id, link, number, step and template you carry over exactly as "
+        "the source writes it.\n"
+        "  7. One short example of a good answer, in quotes, introduced by "
+        "a line such as 'Example answer:'. Leave this part out when part "
+        "6 already carries the source's own example or template.\n"
+        "- rules: each one line and one sentence, each a thing the agent "
+        "always or never does. From a short description, or a document "
+        "that states no rules of its own, eight to twelve: make them "
+        "specific to this job and checkable against an answer, and leave "
+        "out anything true of every agent. From a document that states "
+        "its own rules, each of them, keeping its meaning and its "
+        "wording where one line allows, never two merged into one. When "
+        "it states more than forty, keep the forty most specific to the "
+        "job. Write each as an order that begins with the thing itself "
+        "('Never ...', 'Every answer ...'), not with 'You'. No list "
+        "markers.\n"
         "- purpose_tags: one to five short lowercase tags (one or two words "
         "each), plain words someone would search for.\n\n"
         'Respond with ONLY a strict JSON object shaped {"name": "...", '
@@ -3986,8 +4014,9 @@ class VertexNameClient:
     Vertex's text default already models the desired output shape).
     `suggest()` below does send its own `generationConfig` regardless (see
     its own comment) to turn dynamic thinking off, since a naming task needs
-    none of it, and to cap the output length; `draft()`/`capability()`
-    further down send none.
+    none of it, and to cap the output length; `draft()` further down
+    turns thinking off too (its own comment says why), and
+    `capability()` sends none.
 
     A 200 response doesn't guarantee a well-formed answer: the model can
     reply with a chatty preamble, a fenced code block, or truncated JSON —
@@ -4114,7 +4143,15 @@ class VertexNameClient:
             f"models/{self._model}:generateContent"
         )
         prompt = _build_persona_draft_prompt(job, rules)
-        body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
+        body = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            # Thinking off, as in suggest() above. A draft made from a
+            # document is a long reply (a 160-line runbook comes back at
+            # about 110 lines), and with the default dynamic thinking
+            # that took 65s on dev against 16s without, for the same
+            # text kept (2026-11-17).
+            "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}},
+        }
 
         try:
             token = self._token_provider()
@@ -4127,7 +4164,14 @@ class VertexNameClient:
 
         try:
             resp = self._http_client.post(
-                url, json=body, headers={"Authorization": f"Bearer {token}"}
+                url,
+                json=body,
+                headers={"Authorization": f"Bearer {token}"},
+                # Longer than the client's own 30s: the reply grows with
+                # the document. Still short of the 120s the room's front
+                # door gives a request, so a slow draft ends as "no
+                # draft" in the form and never as a gateway error.
+                timeout=_PERSONA_DRAFT_TIMEOUT,
             )
         except httpx.HTTPError as exc:
             log.warning("persona draft request failed: %r", exc)

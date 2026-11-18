@@ -46,10 +46,15 @@ from kobo_api.purpose_tags import normalize_tags
 # the draft is now a FULL working brief (the prompt asks for 40-120 lines
 # of handbook-depth markdown), so the bound sits at 12000 chars — room for
 # every reasonable draft, still comfortably under the render ceiling that
-# create_persona enforces for real.
+# create_persona enforces for real. Raised to 30000 (2026-11-17): a
+# draft made from a document keeps the document's working detail, up to
+# 120 lines, and a real one came to 11,500 characters. The bound is on
+# characters only: a reply that overshoots the prompt's 120 lines can
+# still render past the 200-line ceiling, and the form then fills and
+# Create refuses it with the line count, for the person to trim.
 _NAME_MAX = 60
 _WHO_MAX = 200
-_WHAT_MAX = 12000
+_WHAT_MAX = 30000
 
 # purpose_tags (persona-metadata plan, Task 2): the draft's own cap, narrower
 # than the create route's MAX_CREATE_TAGS (kobo_api.purpose_tags) — a
@@ -57,9 +62,10 @@ _WHAT_MAX = 12000
 # rejected, since there's no caller input to reject here at all.
 _DRAFT_TAG_CAP = 5
 
-# The most rules one draft hands back. The prompt asks for eight to twelve;
-# a reply with more is cut here rather than refused, the same as the tags.
-_DRAFT_RULES_CAP = 20
+# The most rules one draft hands back. The prompt asks for eight to twelve
+# from a description and every rule a document states, up to forty; a
+# reply with more is cut here rather than refused, the same as the tags.
+_DRAFT_RULES_CAP = 40
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
@@ -292,6 +298,20 @@ def finalize_draft(raw: dict | None, *, job: str) -> dict:
     what = _extract_field(raw, "what_they_do", max_len=_WHAT_MAX)
 
     final_name = name if name is not None else _fallback_name(job)
+    if who is not None:
+        # The renderer writes "You are {name}, " ahead of this line, and a
+        # reply sometimes opens it with the name again ("renewal-helper, a
+        # specialist who ...", seen on dev 2026-11-17).
+        # Only ahead of an article, so a line that lists the name's own
+        # word ("triage, routing and follow-up for ...") is left alone.
+        for said in (raw.get("name"), final_name):
+            if isinstance(said, str) and said.strip():
+                repeat = re.match(
+                    re.escape(said.strip()) + r",\s+(?=(?:a|an|the)\b)", who, re.IGNORECASE
+                )
+                if repeat:
+                    who = who[repeat.end():]
+                    break
     final_who = who if who is not None else _fallback_who(job)
     final_what = what if what is not None else _fallback_what(job)
 

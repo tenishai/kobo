@@ -28,7 +28,7 @@ From the create form, **Build your own persona** opens the builder. It is one fo
 - **What they do.** The body of the persona: the work and who it is for, the ground it owns and what it leaves to others, each kind of request and how to handle it, what wins when two of those pull apart, and what to do when unsure. Most personas run 25 to 45 lines. The room asks for at least 300 characters.
 - **Rules.** One per line: things it always or never does. At least 3. Most personas have 8 to 12.
 
-You do not have to start from a blank form. **Start from a description**, at the top, takes a few sentences about the job, or notes or a document you already have: paste it, or use **Upload a file**. Press **Draft persona** and the room writes the four parts in the same shape the built-ins are written in. Anything you had already typed stays as you typed it. Read the draft through and change whatever you like.
+You do not have to start from a blank form. **Start from a description**, at the top, takes a few sentences about the job, or notes or a document you already have: paste it, or use **Upload a file**. Press **Draft persona** and the room writes the four parts in the same shape the built-ins are written in. A long document keeps its detail: its steps, names and templates are carried over under bold labels, and every rule it states is kept, so a draft made from one runs longer than most. Anything you had already typed stays as you typed it. Read the draft through and change whatever you like.
 
 **Group** is where the persona is filed. It starts on your own group, and its members can edit the persona later. If you are in several groups, you choose one. Choose **Everyone** to share it with the whole room.
 
