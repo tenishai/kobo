@@ -35,6 +35,8 @@ An agent sees the conversation it was woken in and nothing else, until you tick 
 
 Ticking the box restarts the agent. It reads only when its work calls for it, and it still answers only where it is woken. The box is there for an agent the room built. An agent that runs its team's own code reads Slack however its code does, and a team's informational guide never reads channels.
 
+A few agents were set up to read by hand before the box existed, some of them with a list of the only channels they may read. Such an agent shows the box unticked until someone ticks it once, which changes nothing about what it reads. Its list is kept for as long as the box stays ticked. Unticking removes the list with the reading, and ticking again lets it read every channel it is in.
+
 ### What it can do in Slack
 
 Beside answering where it is asked, an agent the room built can do five things in Slack. They come with the app. One of them, the slash command, has a switch for where it is answered.

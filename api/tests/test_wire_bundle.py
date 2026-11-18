@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from kobo_api.clients import Clients
+from kobo_api.clients import ClientError, Clients
 from kobo_api.composer import (
     _VENDOR_SCHEMA_PATH,
     SLACK_READ_TOOLS,
@@ -403,6 +403,22 @@ def test_the_slack_reading_block_goes_in_and_comes_out_without_moving_anything_e
     assert yaml.safe_load(agent_yaml.read_text())["tools"]["allow"] == [*allow, *SLACK_READ_TOOLS]
     assert update_agent_yaml_slack_read(bundle, on=False) is True
     assert yaml.safe_load(agent_yaml.read_text())["tools"] == {**before["tools"], "allow": allow}
+
+    # A tools section written out by hand, with a blank line inside it, is
+    # replaced whole: nothing of it is left behind under the new line.
+    by_hand = "name: clio\ntools:\n  provider: none\n  allow:\n  - slack.*\n\n  slack_read:\n    channels: [C0123456789]\ntransports: []\n"
+    agent_yaml.write_text(by_hand)
+    assert update_agent_yaml_slack_read(bundle, on=False) is True
+    assert yaml.safe_load(agent_yaml.read_text()) == {
+        "name": "clio", "tools": {"provider": "none", "allow": ["slack.*"]}, "transports": [],
+    }
+    # One the room cannot span (a comment at the margin, mid-section) is
+    # refused and left exactly as it was, never written half-replaced.
+    broken_up = by_hand.replace("\n\n  slack_read", "\n# reading\n  slack_read")
+    agent_yaml.write_text(broken_up)
+    with pytest.raises(ClientError):
+        update_agent_yaml_slack_read(bundle, on=False)
+    assert agent_yaml.read_text() == broken_up
 
 
 # --- from test_steps_wire.py ---

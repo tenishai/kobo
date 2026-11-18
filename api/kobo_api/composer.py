@@ -1286,10 +1286,10 @@ def update_agent_yaml_auth(
 _TOOLS_LINE_RE = re.compile(r"^tools:[ \t]*\{.*\}[ \t]*$", re.MULTILINE)
 
 # The whole tools SECTION: the `tools:` line plus any following
-# more-indented lines (the block-style form hand-edited bundles use). For a
-# flow-style line the second alternative matches nothing and the line alone
-# is the section.
-_TOOLS_SECTION_RE = re.compile(r"^tools:[^\n]*(?:\n[ \t]+[^\n]*)*", re.MULTILINE)
+# more-indented lines (the block-style form hand-edited bundles use), blank
+# lines between them included. For a flow-style line the second alternative
+# matches nothing and the line alone is the section.
+_TOOLS_SECTION_RE = re.compile(r"^tools:[^\n]*(?:\n(?:[ \t]*\n)*[ \t]+[^\n]*)*", re.MULTILINE)
 
 
 def update_agent_yaml_tools(
@@ -1366,6 +1366,17 @@ def _splice_tools_section(agent_yaml_path: Path, text: str, tools: dict) -> None
     updated, count = _TOOLS_SECTION_RE.subn(lambda match: replacement, text, count=1)
     if count == 0:
         raise ClientError(f"agent.yaml has no tools section to update: {agent_yaml_path}")
+    # A hand-written section the pattern above does not span whole (a comment
+    # at the margin in the middle of it) would leave its tail behind as a file
+    # that no longer parses. Nothing is written unless the result says `tools`.
+    try:
+        after = yaml.safe_load(updated)
+    except yaml.YAMLError:
+        after = None
+    if not isinstance(after, dict) or after.get("tools") != tools:
+        raise ClientError(
+            f"agent.yaml's tools section is laid out in a way the room cannot rewrite: {agent_yaml_path}"
+        )
     agent_yaml_path.write_text(updated)
 
 

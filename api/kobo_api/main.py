@@ -10198,10 +10198,12 @@ def create_app(
         block already names channels keeps its list.
 
         No short-circuit on an unchanged choice: asking again repairs a
-        repository that drifted from the row. `applied_now` says the running
-        agent is restarting with the change already; false with a new `sha`
-        is a room that still builds each change, and the agent has it a few
-        minutes later.
+        repository that drifted from the row. Where the file already says
+        what was asked and the row does not (a save whose commit landed and
+        whose delivery failed, a block written by hand), the bundle is
+        delivered again. `applied_now` says the running agent is restarting
+        with the change already; false with a new `sha` is a room that still
+        builds each change, and the agent has it a few minutes later.
 
         Owner or operator, READY, composed only: an agent that runs its
         team's own code reads Slack however its code does. A team guide is
@@ -10225,8 +10227,9 @@ def create_app(
             )
         previous = reads_channels(agent)
         try:
-            sha, pushed = commit_slack_reading(
-                app.state.clients.github, agent.repo_full_name, on=payload.on
+            sha, applied_now = commit_slack_reading(
+                app.state.clients.github, agent.repo_full_name, on=payload.on,
+                redeliver=previous != payload.on,
             )
         except ClientError as exc:
             log.warning("slack reading commit failed for agent %s (%s)", agent.name, type(exc).__name__)
@@ -10245,7 +10248,6 @@ def create_app(
         log.info("agent %s reads Slack channels: %s (was %s)", agent.name, payload.on, previous)
         # The push restarts the agent itself when the room delivers bundles
         # without a build; the page follows that restart from `applied_at`.
-        applied_now = pushed and delivery.configured()
         return JSONResponse(
             {
                 "reads_channels": payload.on,

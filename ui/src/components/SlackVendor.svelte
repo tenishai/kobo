@@ -312,6 +312,10 @@
     readError = null;
     try {
       const result = await saveRead.mutateAsync(next);
+      // Applied, the agent restarts and takes any waiting choice with it.
+      // Not applied, the room builds each change: the same wait as above.
+      wakeRestartsSoon = !result.applied_now;
+      wakeWaitsForRestart = false;
       if (result.applied_now) watchWake(result);
     } catch (err) {
       readDraft = null;
@@ -702,8 +706,14 @@
             <p class="copy copy--fail" role="alert">{botsError}</p>
           {:else}
             <p class="help">
-              Another app's message reaches the agent only when it @-mentions the agent: an alert that does not name it
-              is never answered. It answers an app at most three times in a row in a thread, and thirty times an hour.
+              {#if agent.data?.kind === KIND_CONNECTED}
+                The room hands this choice to your agent's code, which decides what another app's mention may do and
+                how often.
+              {:else}
+                Another app's message reaches the agent only when it @-mentions the agent: an alert that does not name
+                it is never answered. It answers an app at most three times in a row in a thread, and thirty times an
+                hour.
+              {/if}
             </p>
           {/if}
         </fieldset>

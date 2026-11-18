@@ -677,12 +677,21 @@ def deliver_slack_values(
         kubectl.apply_secret(name, f"{name}-slack", values)
 
 
-def commit_slack_reading(github: GitHubClient, repo: str, *, on: bool) -> tuple[str, bool]:
+def commit_slack_reading(
+    github: GitHubClient, repo: str, *, on: bool, redeliver: bool = False
+) -> tuple[str, bool]:
     """Clone `repo`, turn its bundle's Slack reading lane on or off, commit
-    and push. Returns the head and whether anything was pushed: a bundle
-    that already says so pushes nothing, and the agent is not restarted.
-    Raises `ClientError` on any GitHub or agent.yaml failure."""
-    with tempfile.TemporaryDirectory() as tmp:
+    and push. Returns the head and whether the running agent is restarting
+    with it: false in a room that builds each change, and for a bundle that
+    already says so, which pushes nothing.
+
+    `redeliver` is for that last case when the room's own record disagrees
+    with the file: an earlier save whose commit landed and whose delivery
+    failed, or a block somebody wrote by hand. The bundle is published as it
+    stands and the agent restarted, so asking again repairs the agent and
+    not only the repository. Raises `ClientError` on any GitHub, agent.yaml
+    or delivery failure."""
+    with repo_write_lock(repo), tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
         update_agent_yaml_slack_read(workdir / "bundle", on=on)
@@ -690,7 +699,10 @@ def commit_slack_reading(github: GitHubClient, repo: str, *, on: bool) -> tuple[
             github, workdir,
             "kobo: in Slack, it reads the channels it is in" if on else "kobo: in Slack, it no longer reads channels",
         )
-        return github.local_head(workdir), pushed
+        delivered = pushed and delivery.configured()
+        if not pushed and redeliver:
+            delivered = delivery.redeliver(github, workdir)
+        return github.local_head(workdir), delivered
 
 
 def deliver_wake_settings(

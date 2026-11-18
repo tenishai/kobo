@@ -229,6 +229,22 @@ def push(github: GitHubClient, workdir: Path, message: str, *, restart: bool = T
     return pushed
 
 
+def redeliver(github: GitHubClient, workdir: Path) -> bool:
+    """Publish the working copy's bundle as it stands and restart the agent,
+    with nothing to commit: for a change whose commit landed and whose publish
+    or restart did not, where `push` asked again finds nothing to push and
+    stops. Returns whether it delivered (False in a room that builds each
+    change, and for an agent still on the old shape). Raises ClientError."""
+    if _delivery is None:
+        return False
+    name = agent_name_of(workdir)
+    if name is None or legacy_shape(workdir):
+        return False
+    publish(workdir, name, head_sha=github.local_head(workdir) or "")
+    _restart(name)
+    return True
+
+
 def _restart(name: str) -> None:
     assert _delivery is not None
     try:
