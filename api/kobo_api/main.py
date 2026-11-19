@@ -11243,7 +11243,10 @@ def create_app(
             try:
                 has_guardrails = bool(read_guardrails(clients.github, agent.repo_full_name))
             except ClientError:
-                has_guardrails = False
+                # Not knowing could put the rules in two places or none: say so.
+                return JSONResponse(
+                    {"error": "the agent's repository could not be read"}, status_code=502
+                )
             if has_guardrails:
                 rendered = split_rules(rendered)[0]
         try:
