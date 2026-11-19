@@ -19,6 +19,7 @@ RULE_MAX_CHARS, so a paragraph cannot eat the list.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import tempfile
 from dataclasses import dataclass
@@ -30,10 +31,12 @@ from sqlalchemy.orm import Session
 
 from kobo_api import delivery
 from kobo_api.clients import GitHubClient
-from kobo_api.models import GuardrailRule
+from kobo_api.models import Agent, AgentLearning, GuardrailRule
+from kobo_api.repo_lock import repo_write_lock
 
 GUARDRAILS_MARKER = "guardrails"
 GUARDRAILS_FILE = "guardrails.md"
+GUARDRAILS_PATH = f"bundle/{GUARDRAILS_FILE}"
 RULES_MAX_CHARS = 4000
 RULE_MAX_CHARS = 300
 
@@ -89,12 +92,15 @@ def validate_rules(rules: list[str]) -> list[str]:
                 f"a rule is at most {RULE_MAX_CHARS} characters; split a longer one, "
                 "or move the steps into a skill"
             )
+        if "<!--" in rule or "-->" in rule:
+            # The file's comment markers: the runtime would drop what is between them.
+            raise GuardrailsError("a rule can't hold '<!--' or '-->'")
         if rule in cleaned:
             raise GuardrailsError(f"that rule is on the list twice: {rule!r}")
         cleaned.append(rule)
     if parse_rules(render_file(cleaned)) != cleaned:
-        # A rule shaped like a heading or a comment would vanish on the way in.
-        raise GuardrailsError("a rule can't start with '#' and a space, or hold '<!--'")
+        # A backstop: whatever the file would not give back as written is refused.
+        raise GuardrailsError("a rule would not read back as written; reword it")
     if used_chars(cleaned) > RULES_MAX_CHARS:
         raise GuardrailsError(
             f"the list is over its {RULES_MAX_CHARS:,}-character limit; shorten a rule, or "
@@ -108,13 +114,16 @@ def render_file(rules: list[str]) -> str:
     return _HEADER + "".join(f"- {rule}\n" for rule in rules)
 
 
+def file_sha(text: str) -> str:
+    """The version a person's save names (`base_sha`): the file's own sha256, the
+    same bytes the runtime hashes."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def read_guardrails(github: GitHubClient, repo: str) -> str:
-    """The repository's guardrails file, or "" when it has none yet."""
-    with tempfile.TemporaryDirectory() as tmp:
-        workdir = Path(tmp)
-        github.clone(repo, workdir)
-        path = workdir / "bundle" / GUARDRAILS_FILE
-        return path.read_text(encoding="utf-8") if path.is_file() else ""
+    """The repository's guardrails file, or "" when it has none yet. One file read,
+    no clone."""
+    return github.read_file(repo, GUARDRAILS_PATH) or ""
 
 
 def save_guardrails_file(
@@ -123,8 +132,9 @@ def save_guardrails_file(
     """Write `bundle/guardrails.md` and push it; returns the pushed commit's sha.
     `archive_only` as in `kobo_api.knowledge.save_knowledge_file`: after a relay
     the agent already has the list, so the commit only mirrors it (`[skip ci]`);
-    without one, the commit is the delivery and keeps CI."""
-    with tempfile.TemporaryDirectory() as tmp:
+    without one, the commit is the delivery and keeps CI. Held under the repo's
+    write lock, clone to push, as the skills and tooling writers are."""
+    with repo_write_lock(repo), tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
         bundle_dir = workdir / "bundle"
@@ -166,14 +176,34 @@ def rule_payload(row: GuardrailRule | None, text: str) -> dict:
 
 
 def annotate(session: Session, agent_name: str, rules: list[str]) -> list[dict]:
-    """The file's rules in order, each with its row's provenance when it has one."""
+    """The file's rules in order, each with its row's provenance when it has one. A
+    row goes to one line only: a line repeated in the repository reads as written
+    there the second time, so no two rules share an id."""
     rows = session.scalars(
         select(GuardrailRule).where(GuardrailRule.agent_name == agent_name)
     ).all()
     by_text: dict[str, GuardrailRule] = {}
     for row in rows:
         by_text.setdefault(row.text, row)
-    return [rule_payload(by_text.get(text), text) for text in rules]
+    out = []
+    for text in rules:
+        out.append(rule_payload(by_text.pop(text, None), text))
+    return out
+
+
+def checked_source(session: Session, agent: Agent, kind: str, ref: str | None) -> tuple[str, str | None]:
+    """The source a saved rule may claim. The persona must be the agent's, a skill
+    one it has, a correction one of its own learnings; anything else is recorded as
+    the person's, so a label never names a source the rule did not come from."""
+    if kind == "persona" and ref == agent.persona:
+        return kind, ref
+    if kind == "skill" and ref in {entry.get("name") for entry in agent.skills or []}:
+        return kind, ref
+    if kind == "correction" and ref is not None and ref.isdigit():
+        learning = session.get(AgentLearning, int(ref))
+        if learning is not None and learning.agent_name == agent.name:
+            return kind, ref
+    return SOURCE_PERSON, None
 
 
 def sync_rows(session: Session, agent_name: str, items: list[RuleIn], actor: str) -> None:

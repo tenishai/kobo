@@ -1268,8 +1268,6 @@ export function teachMutation(queryClient: QueryClient, name: string) {
   };
 }
 
-/** An agent's knowledge files. No polling — edits are user-driven, not
- * something that changes on its own in the background. */
 export function guardrailsQuery(name: string) {
   return queryOptions({
     queryKey: ["agents", name, "guardrails"] as const,
@@ -1281,18 +1279,27 @@ export function guardrailsQuery(name: string) {
  * replaces the cached one rather than waiting for a refetch. */
 export function saveGuardrailsMutation(queryClient: QueryClient, name: string) {
   return {
-    mutationFn: (rules: GuardrailRuleIn[]) => saveGuardrails(name, rules),
+    mutationFn: ({ rules, baseSha }: { rules: GuardrailRuleIn[]; baseSha: string | null }) =>
+      saveGuardrails(name, rules, baseSha),
     onSuccess: (data: GuardrailsResponse) => {
       queryClient.setQueryData(["agents", name, "guardrails"], {
         rules: data.rules,
         limit_chars: data.limit_chars,
         used_chars: data.used_chars,
+        sha: data.sha,
         can_edit: data.can_edit,
       });
+    },
+    onError: () => {
+      // A refused save (someone changed the list, a rule over the limit)
+      // shows the list as it stands now.
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "guardrails"] });
     },
   };
 }
 
+/** An agent's knowledge files. No polling — edits are user-driven, not
+ * something that changes on its own in the background. */
 export function knowledgeQuery(name: string) {
   return queryOptions({
     queryKey: ["agents", name, "knowledge"] as const,

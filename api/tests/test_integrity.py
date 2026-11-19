@@ -7304,3 +7304,26 @@ def test_the_filler_survives_a_gateway_failure_and_leaves_the_provider_connected
     result = model_providers.sync_from_session(session, clients, config)
     assert result is not None and result.ok and len(result.added) == 2
     session.close()
+
+
+def test_a_guardrails_save_from_a_stale_list_is_refused_not_overwritten(tmp_path, monkeypatch):
+    """Integrity (concurrency, issue #524): every save replaces the whole rules list, so
+    one made from a list read before someone else's change (another person's save, or a
+    line written straight into the repository) is refused with nothing relayed or pushed.
+    Saving it would drop their rule without a word."""
+    from kobo_api.guardrails import file_sha, render_file
+    from tests.test_wire_bundle import _guardrails_room
+
+    client, github, cabal = _guardrails_room(tmp_path, monkeypatch)
+    read_at = file_sha(render_file(["Answer only in the request thread."]))
+    github._repo_files = {"bundle/guardrails.md": render_file(
+        ["Answer only in the request thread.", "Post in #sre-requests only."]
+    )}
+
+    response = client.put("/api/agents/gate/guardrails", json={
+        "rules": [{"text": "Answer only in the request thread."}, {"text": "Never guess."}],
+        "base_sha": read_at,
+    })
+
+    assert response.status_code == 409
+    assert cabal.relay_calls == [] and github.pushes == []

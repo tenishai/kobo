@@ -28,10 +28,14 @@ const RULES = {
   ],
   limit_chars: 4000,
   used_chars: 87,
+  sha: "a".repeat(64),
   can_edit: true,
 };
 
-function savedBody(): { rules: Array<{ id?: number | null; text: string }> } {
+function savedBody(): {
+  rules: Array<{ id?: number | null; text: string }>;
+  base_sha: string | null;
+} {
   const call = vi
     .mocked(fetch)
     .mock.calls.find(
@@ -48,8 +52,9 @@ describe("GuardrailsPanel", () => {
 
   // Wire payload (PUT /api/agents/{name}/guardrails, issue #524): an edit sends
   // the whole list with each rule's id, so the room keeps where an edited rule
-  // came from instead of recording the persona's rule as a person's.
-  it("saves an edit as the whole list, each rule carrying its id", async () => {
+  // came from instead of recording the persona's rule as a person's, and the
+  // version it was read at, so a change made since is refused, not overwritten.
+  it("saves an edit as the whole list, each rule carrying its id, at the version read", async () => {
     renderWithClient(GuardrailsPanel, { agentName: "gate" });
 
     await fireEvent.click(
@@ -69,6 +74,7 @@ describe("GuardrailsPanel", () => {
         { id: 4, text: "Never change access without an approved ticket in Jira." },
         { id: 5, text: "Answer only in the request thread." },
       ],
+      base_sha: "a".repeat(64),
     });
   });
 });

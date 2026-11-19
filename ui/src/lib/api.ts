@@ -2183,6 +2183,9 @@ export type GuardrailsResponse = {
   rules: GuardrailRule[];
   limit_chars: number;
   used_chars: number;
+  /** The version the list was read at, sent back as `base_sha` on a save so a
+   * change someone else made in the meantime is refused, not overwritten. */
+  sha: string;
   /** Whether this caller may change the list (the owner, an operator or a
    * manager, on an agent the room composed). */
   can_edit: boolean;
@@ -2208,11 +2211,12 @@ export async function getGuardrails(name: string): Promise<GuardrailsResponse> {
 export async function saveGuardrails(
   name: string,
   rules: GuardrailRuleIn[],
+  baseSha: string | null,
 ): Promise<GuardrailsResponse & { mode: "instant" | "archive" }> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/guardrails`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rules }),
+    body: JSON.stringify({ rules, base_sha: baseSha }),
   });
   return parse<GuardrailsResponse & { mode: "instant" | "archive" }>(res);
 }

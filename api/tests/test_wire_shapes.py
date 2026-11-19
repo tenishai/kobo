@@ -5228,15 +5228,17 @@ def test_set_model_through_the_gateway_rewrites_the_model_block_and_delivers_a_k
 def test_the_guardrails_list_says_where_each_rule_came_from(tmp_path, monkeypatch):
     """Wire shape (the Guardrails panel and the room's assistant tools read it, issue #524):
     each rule carries its source; a rule proposed from the persona keeps that source when a
-    person edits it, and a line written straight into the repository reads as `repository`."""
+    person edits it, a source the agent does not have is recorded as the person's, and a
+    line written straight into the repository reads as `repository`."""
     from kobo_api.guardrails import render_file
     from tests.test_wire_bundle import _guardrails_room
 
     client, github, _ = _guardrails_room(tmp_path, monkeypatch)
     first = "Never change access without an approved ticket."
     saved = client.put("/api/agents/gate/guardrails", json={"rules": [
-        {"text": first, "source_kind": "persona", "source_ref": "access-agent"},
-        {"text": "Answer only in the request thread."},
+        {"text": first, "source_kind": "persona", "source_ref": "helpful-generalist"},
+        {"text": "Answer only in the request thread.", "source_kind": "skill",
+         "source_ref": "a-skill-it-does-not-have"},
     ]}).json()
     persona_id = saved["rules"][0]["id"]
 
@@ -5245,13 +5247,13 @@ def test_the_guardrails_list_says_where_each_rule_came_from(tmp_path, monkeypatc
         {"id": persona_id, "text": edited},
         {"text": "Answer only in the request thread."},
     ]})
-    github._extra_clone_files = {"bundle/guardrails.md": render_file(
+    github._repo_files = {"bundle/guardrails.md": render_file(
         [edited, "Answer only in the request thread.", "Post in #sre-requests only."]
     )}
     body = client.get("/api/agents/gate/guardrails").json()
 
     assert [rule["source"] for rule in body["rules"]] == [
-        {"kind": "persona", "ref": "access-agent"},
+        {"kind": "persona", "ref": "helpful-generalist"},
         {"kind": "person", "ref": None},
         {"kind": "repository", "ref": None},
     ]
@@ -5277,7 +5279,7 @@ def test_an_assistant_reads_and_sets_the_guardrails_list(
     rules = ["Never change access without an approved ticket.", "Answer only in the request thread."]
 
     saved = _call_tool(mcp, "kobo_set_guardrails", _ctx_for(owner), agent="gate", rules=rules)
-    github._extra_clone_files = {"bundle/guardrails.md": render_file(rules)}
+    github._repo_files = {"bundle/guardrails.md": render_file(rules)}
     read = _call_tool(mcp, "kobo_get_guardrails", _ctx_for(owner), agent="gate")
 
     assert saved["agent"] == "gate" and saved["mode"] == "archive"

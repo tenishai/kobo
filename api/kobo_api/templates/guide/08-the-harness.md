@@ -37,13 +37,13 @@ Each new row shows where its change is: **Pending** (saved, on its way), **Build
 
 The rules the agent follows on every task, one per line, in plain words. Each line says where it came from: the persona, a skill, a correction, or the person who added it. A line written straight into the agent's repository says so.
 
-**Add a rule** puts a line at the bottom; **Edit** and **Remove** sit on each row. A change reaches the agent for its next task without a restart. When the room can't reach it, the line under the list says the change lands at the agent's next restart instead. Write each rule so it makes sense on its own: "When searching tickets, use the person's full email", not "Use the full email". Always or never: a guardrail. How to do a job: a skill.
+**Add a rule** puts a line at the bottom; **Edit** and **Remove** sit on each row. A change reaches the agent for its next task without a restart. When the room can't reach it, the line under the list says the change lands at the agent's next restart instead. If someone else changed the list while you had it open, your save is refused and the panel shows the list as it stands, so nobody's change is lost. Write each rule so it makes sense on its own: "When searching tickets, use the person's full email", not "Use the full email". Always or never: a guardrail. How to do a job: a skill.
 
 The list has room for about 4,000 characters, which is 30 to 40 rules, and the count at the top says how many more fit. A rule that only matters inside one job belongs in that job's skill.
 
 Rules guide the agent; they don't lock anything. To make sure something never happens, take the permission away on the **Access** tab, or add a check.
 
-**Checks the room runs**, below the rules, is code that runs before each task and around each reply. A check can stop a task or hold back a reply, which a rule can't. Every agent built by the room starts with the baseline pack: a leak guard that stops secrets leaving in a reply, and a probe guard that stops the agent being led off its job. You can add checks from the catalog or upload your own. A check is a small Python file that hooks in before a task or after a draft. The room checks it before it lands, and the agent runs only what is in its checks folder.
+**Checks the room runs**, below the rules, is code that runs before each task and around each reply. A check can stop a task or hold back a reply, which a rule can't. Every agent built by the room starts with the baseline pack: a leak guard that stops secrets leaving in a reply, and a probe guard that stops the agent being led off its job. You can add checks from the catalog or upload your own. A check is a small Python file that hooks in before a task or after a draft. The room checks it before it lands, and the agent runs only the checks in its own files.
 
 ## Memory
 

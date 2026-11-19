@@ -69,7 +69,10 @@
     errorText = "";
     note = "";
     try {
-      const result = await save.mutateAsync(next);
+      const result = await save.mutateAsync({
+        rules: next,
+        baseSha: guardrails.data?.sha ?? null,
+      });
       note =
         result.mode === "instant"
           ? `${done} ${agentName} follows the list from its next task.`
@@ -168,7 +171,7 @@
       </p>
     {:else}
       <ol class="guardrails__list">
-        {#each rules as rule, index (rule.id ?? `line-${index}`)}
+        {#each rules as rule, index (`${rule.id ?? "line"}-${index}`)}
           <li class="guardrail">
             {#if editingIndex === index}
               <input
