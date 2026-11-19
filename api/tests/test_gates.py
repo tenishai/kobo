@@ -162,6 +162,8 @@ def config__web_ownership_gate(tmp_path):
         # The room-made Slack app routes (issue #371) exist only with the
         # switch on; off they are a 404 before any gate.
         slack_relay=True,
+        # Guardrails save only on a room whose runtime reads them (issue #524).
+        guardrails=True,
     )
 
 

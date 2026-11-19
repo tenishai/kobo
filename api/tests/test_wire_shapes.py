@@ -5273,7 +5273,8 @@ def test_an_assistant_reads_and_sets_the_guardrails_list(
 
     owner = "owner@example.com"
     github = FakeGitHub()
-    app = _app(session_factory__mcp_tools_read, config__mcp_tools_read, github=github)
+    config = config__mcp_tools_read.model_copy(update={"guardrails": True})
+    app = _app(session_factory__mcp_tools_read, config, github=github)
     _seed_agent__mcp_tools_read(session_factory__mcp_tools_read, name="gate", created_by=owner)
     mcp = build_mcp_server(app)
     rules = ["Never change access without an approved ticket.", "Answer only in the request thread."]
@@ -5285,4 +5286,4 @@ def test_an_assistant_reads_and_sets_the_guardrails_list(
     assert saved["agent"] == "gate" and saved["mode"] == "archive"
     assert [rule["text"] for rule in read["rules"]] == rules
     assert {rule["source"]["kind"] for rule in read["rules"]} == {"person"}
-    assert read["can_edit"] is True
+    assert read["can_edit"] is True and read["enabled"] is True

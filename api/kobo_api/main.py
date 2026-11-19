@@ -7521,12 +7521,14 @@ def create_app(
         session: Session, agent: Agent, text: str, *, can_edit: bool
     ) -> dict:
         rules = parse_rules(text)
+        enabled = app.state.config.guardrails
         return {
             "rules": annotate(session, agent.name, rules),
             "limit_chars": RULES_MAX_CHARS,
             "used_chars": used_chars(rules),
             "sha": file_sha(text),
-            "can_edit": can_edit,
+            "enabled": enabled,
+            "can_edit": can_edit and enabled,
         }
 
     @app.get("/api/agents/{name}/guardrails")
@@ -7573,6 +7575,12 @@ def create_app(
         gate = _owner_or_operator_or_403(agent, request)
         if gate is not None:
             return gate
+        if not app.state.config.guardrails:
+            return JSONResponse(
+                {"error": "this room's runtime doesn't read guardrails yet, so the list "
+                 "can't be saved; an agent's rules are in its persona until it does"},
+                status_code=409,
+            )
         try:
             rules = validate_rules([rule.text for rule in payload.rules])
         except GuardrailsError as exc:

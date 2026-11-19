@@ -697,7 +697,7 @@ def _guardrails_room(tmp_path, monkeypatch, *, relay_error=None):
     github = FakeGitHub(existing_repos={GUARDRAILS_REPO})
     cabal = FakeCabal(relay_result=_COMPLETED_RELAY, relay_error=relay_error)
     config = Config(workdir=tmp_path / "work", cabal_url="http://cabal.internal",
-                    agent_endpoint_template=WIRE_CABAL_ENDPOINT_TEMPLATE)
+                    agent_endpoint_template=WIRE_CABAL_ENDPOINT_TEMPLATE, guardrails=True)
     clients = Clients(github=github, gojira=FakeGojira(), cloud=None, agent=None,
                       kubectl=FakeKubectl(), cabal=cabal)
     return TestClient(create_app(session_factory, config=config, clients=clients)), github, cabal
@@ -759,4 +759,19 @@ def test_the_room_never_writes_a_list_the_runtime_would_cut(tmp_path, monkeypatc
 
     assert response.status_code == 422
     assert "4,000-character limit" in response.json()["error"]
+    assert cabal.relay_calls == [] and github.pushes == []
+
+
+def test_a_room_whose_runtime_does_not_read_guardrails_saves_none(tmp_path, monkeypatch):
+    """Wire shape (issue #524, the rollout gate): with `guardrails` off the room's runtime
+    predates the file, so a saved list would be followed by nobody. The list reads as not
+    enabled and a save is refused, with nothing relayed or pushed."""
+    client, github, cabal = _guardrails_room(tmp_path, monkeypatch)
+    client.app.state.config = client.app.state.config.model_copy(update={"guardrails": False})
+
+    read = client.get("/api/agents/gate/guardrails").json()
+    saved = client.put("/api/agents/gate/guardrails", json={"rules": [{"text": RULES[0]}]})
+
+    assert read["enabled"] is False and read["can_edit"] is False
+    assert saved.status_code == 409 and "doesn't read guardrails" in saved.json()["error"]
     assert cabal.relay_calls == [] and github.pushes == []

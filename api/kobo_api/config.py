@@ -354,6 +354,13 @@ class Config(BaseModel):
     # Set it only once `runtime_image` pins a runtime that pulls bundles, and
     # the room's identity may write to the registry.
     bundle_registry: str = ""
+    # Guardrails (issue #524): the room's runtime reads an agent's
+    # `bundle/guardrails.md` and takes a live `guardrails` system task
+    # (tenishai/daedalus#267). Set it with the `runtime_image` pin that brings
+    # that runtime. Off, the Guardrails list shows and does not save, and a
+    # new agent's persona keeps its rules: a runtime that ignores the file
+    # would follow none of them.
+    guardrails: bool = False
     # WIF provider + service account identity the org's own skills-publish
     # pipeline (if any) runs as. skills_publish_external True means that
     # pipeline is external to kobo — kobo must never install or modify

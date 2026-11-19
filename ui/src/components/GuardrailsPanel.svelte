@@ -131,6 +131,13 @@
       onretry={() => guardrails.refetch()}
     />
   {:else}
+    {#if guardrails.data && !guardrails.data.enabled}
+      <p class="panel__note" role="status">
+        Guardrails turn on when this room's runtime reads them. Until then, {agentName}'s
+        rules are in its persona.
+      </p>
+    {/if}
+
     <p class="guardrails__count">
       {rules.length}
       {rules.length === 1 ? "rule" : "rules"} ·

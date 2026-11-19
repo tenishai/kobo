@@ -1287,6 +1287,7 @@ export function saveGuardrailsMutation(queryClient: QueryClient, name: string) {
         limit_chars: data.limit_chars,
         used_chars: data.used_chars,
         sha: data.sha,
+        enabled: data.enabled,
         can_edit: data.can_edit,
       });
     },

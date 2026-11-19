@@ -2186,6 +2186,9 @@ export type GuardrailsResponse = {
   /** The version the list was read at, sent back as `base_sha` on a save so a
    * change someone else made in the meantime is refused, not overwritten. */
   sha: string;
+  /** Whether the room's runtime reads guardrails. Off, the list is shown and
+   * cannot be saved; an agent's rules are in its persona. */
+  enabled: boolean;
   /** Whether this caller may change the list (the owner, an operator or a
    * manager, on an agent the room composed). */
   can_edit: boolean;

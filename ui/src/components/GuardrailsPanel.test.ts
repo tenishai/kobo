@@ -29,6 +29,7 @@ const RULES = {
   limit_chars: 4000,
   used_chars: 87,
   sha: "a".repeat(64),
+  enabled: true,
   can_edit: true,
 };
 

@@ -671,7 +671,9 @@ def register(mcp: FastMCP, app: Any) -> None:
         the agent's repository. `used_chars` against `limit_chars` says how
         much room is left (about 30 to 40 rules fit), `sha` is the version to
         pass back as `base_sha`, and `can_edit` says whether you may change the
-        list with `kobo_set_guardrails`. Rules guide the
+        list with `kobo_set_guardrails`. `enabled` false means the room's
+        runtime does not read guardrails yet: the list cannot be saved, and an
+        agent's rules are in its persona. Rules guide the
         agent; Access and the checks the room runs are what enforce."""
         req = authz.room_request(app, get_user_email(ctx))
         session = app.state.session_factory()
