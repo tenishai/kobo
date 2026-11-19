@@ -5289,3 +5289,28 @@ def test_an_assistant_reads_and_sets_the_guardrails_list(
     assert [rule["text"] for rule in read["rules"]] == rules
     assert {rule["source"]["kind"] for rule in read["rules"]} == {"person"}
     assert read["can_edit"] is True and read["enabled"] is True
+
+
+def test_a_broken_rule_carries_its_count(tmp_path, monkeypatch):
+    """Wire shape (the Guardrails panel reads it, issue #524): saying the agent broke a
+    rule counts on that rule and shows on the list with when, beside the threshold
+    after which the panel asks for a check or a permission; a rule of another agent,
+    or none, is not found."""
+    from kobo_api.guardrails import render_file
+    from tests.test_wire_bundle import _guardrails_room
+
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    rule = "Never change access without an approved ticket."
+    rule_id = client.put(
+        "/api/agents/gate/guardrails", json={"rules": [{"text": rule}]}
+    ).json()["rules"][0]["id"]
+
+    client.post(f"/api/agents/gate/guardrails/{rule_id}/broken")
+    reported = client.post(f"/api/agents/gate/guardrails/{rule_id}/broken").json()
+    github._repo_files = {"bundle/guardrails.md": render_file([rule])}
+    body = client.get("/api/agents/gate/guardrails").json()
+
+    assert reported["breaks"] == 2 and reported["last_broken_at"]
+    assert body["rules"][0]["breaks"] == 2 and body["breaks_before_a_check"] == 2
+    assert body["can_report"] is True
+    assert client.post("/api/agents/gate/guardrails/999/broken").status_code == 404

@@ -15,6 +15,8 @@ const RULES = {
       added_at: "2026-11-19T10:00:00",
       edited_by: null,
       edited_at: null,
+      breaks: 0,
+      last_broken_at: null,
     },
     {
       id: 5,
@@ -24,6 +26,8 @@ const RULES = {
       added_at: "2026-11-19T11:00:00",
       edited_by: null,
       edited_at: null,
+      breaks: 0,
+      last_broken_at: null,
     },
   ],
   limit_chars: 4000,
@@ -31,6 +35,8 @@ const RULES = {
   sha: "a".repeat(64),
   enabled: true,
   can_edit: true,
+  can_report: true,
+  breaks_before_a_check: 2,
 };
 
 function savedBody(): {

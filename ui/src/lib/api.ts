@@ -2180,6 +2180,9 @@ export type GuardrailRule = {
   added_at: string | null;
   edited_by: string | null;
   edited_at: string | null;
+  /** How often a person said the agent broke this rule, and when last. */
+  breaks: number;
+  last_broken_at: string | null;
 };
 
 export type GuardrailsResponse = {
@@ -2195,6 +2198,11 @@ export type GuardrailsResponse = {
   /** Whether this caller may change the list (the owner, an operator or a
    * manager, on an agent the room composed). */
   can_edit: boolean;
+  /** Whether this caller may say the agent broke a rule (anyone who may
+   * decide its learnings). */
+  can_report: boolean;
+  /** Breaks of one rule before the panel says it wants a check. */
+  breaks_before_a_check: number;
 };
 
 /** One line of a save: `id` keeps an existing rule's source through an edit;
@@ -2209,6 +2217,16 @@ export type GuardrailRuleIn = {
 export async function getGuardrails(name: string): Promise<GuardrailsResponse> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/guardrails`);
   return parse<GuardrailsResponse>(res);
+}
+
+/** `POST /api/agents/{name}/guardrails/{id}/broken`: the agent broke this
+ * rule. Answers the rule with its new count. */
+export async function reportGuardrailBroken(name: string, ruleId: number): Promise<GuardrailRule> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(name)}/guardrails/${ruleId}/broken`,
+    { method: "POST" },
+  );
+  return parse<GuardrailRule>(res);
 }
 
 /** `PUT /api/agents/{name}/guardrails`: the whole list, in order. `mode:

@@ -136,12 +136,15 @@ characters per question on the same bundle and questions.
 - **The record** is one file in the agent's repository, `bundle/guardrails.md`,
   one rule per line. Every change is a commit; the room records who made it.
   The room keeps provenance per line in its own rows and renders the file.
-- **The runtime** seeds the file at boot into techne as charters (operator
-  rules the agent never changes), through the lessons API, and takes live
-  edits through the same fast lane knowledge files use, so a changed rule
-  applies on the next task with no restart. Before every task it puts
-  `select_principles` for the agent, under its budget, right after the persona
-  as one Rules block.
+- **The runtime** reads the file and puts it right after the persona as one
+  `## Rules` block, cut from the bottom at 4,000 characters with a note that
+  says so (tenishai/daedalus#267). A live edit arrives whole on a system task,
+  `guardrails`, is kept on the agent's own volume, and applies on the next
+  task with no restart; the boot seeder's staleness protocol decides between
+  that copy and the bundle after a restart. (Changed 2026-11-19, while
+  building: an earlier draft stored rules as techne charters. A file keeps the
+  owners' order, works without techne, and never comes back through recall
+  beside the block that carries it.)
 - **The room** renames Tooling to Guardrails, adds the list editor, moves the
   persona's rules into starter guardrails (`parse_persona_body` already finds
   the section), relabels the builder's field, and retires "New guardrail skill".

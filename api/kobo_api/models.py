@@ -759,6 +759,12 @@ class GuardrailRule(Base):
     )
     edited_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
     edited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # How often a person said the agent broke this rule, and when last: a rule
+    # that keeps breaking while it is loaded wants a check or a permission, not
+    # more words (the panel says so after BREAKS_BEFORE_A_CHECK).
+    breaks: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_broken_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_broken_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
 
 
 class AgentSystemTask(Base):

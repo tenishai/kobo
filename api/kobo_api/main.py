@@ -136,6 +136,7 @@ from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
 from kobo_api.directory import listed as directory_lists
 from kobo_api.directory import retire_directory, served_card, sync_directory
 from kobo_api.guardrails import (
+    BREAKS_BEFORE_A_CHECK,
     GUARDRAILS_MARKER,
     RULES_MAX_CHARS,
     GuardrailsError,
@@ -146,6 +147,7 @@ from kobo_api.guardrails import (
     parse_rules,
     read_guardrails,
     render_file,
+    rule_payload,
     save_guardrails_file,
     sync_rows,
     used_chars,
@@ -219,6 +221,7 @@ from kobo_api.models import (
     AgentSystemTask,
     AgentUserGrant,
     GroupRequest,
+    GuardrailRule,
     MCPRevocation,
     SlackRelayApp,
     Thread,
@@ -7524,7 +7527,7 @@ def create_app(
             )
 
     def _guardrails_body(
-        session: Session, agent: Agent, text: str, *, can_edit: bool
+        session: Session, agent: Agent, text: str, *, can_edit: bool, can_report: bool
     ) -> dict:
         rules = parse_rules(text)
         enabled = app.state.config.guardrails
@@ -7535,6 +7538,8 @@ def create_app(
             "sha": file_sha(text),
             "enabled": enabled,
             "can_edit": can_edit and enabled,
+            "can_report": can_report and enabled,
+            "breaks_before_a_check": BREAKS_BEFORE_A_CHECK,
         }
 
     def _deliver_guardrails(
@@ -7609,11 +7614,12 @@ def create_app(
             return JSONResponse(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
-        can_edit = (
-            _room_edits_this_agent_or_409(agent) is None
-            and _owner_or_operator_or_403(agent, request) is None
+        composed = _room_edits_this_agent_or_409(agent) is None
+        can_edit = composed and _owner_or_operator_or_403(agent, request) is None
+        can_report = composed and _decider_or_403(agent, request, session) is None
+        return JSONResponse(
+            _guardrails_body(session, agent, text, can_edit=can_edit, can_report=can_report)
         )
-        return JSONResponse(_guardrails_body(session, agent, text, can_edit=can_edit))
 
     @app.put("/api/agents/{name}/guardrails")
     def save_guardrails(
@@ -7669,8 +7675,46 @@ def create_app(
         )
         session.commit()
         return JSONResponse(
-            {"mode": mode, **_guardrails_body(session, agent, content, can_edit=True)}
+            {
+                "mode": mode,
+                **_guardrails_body(
+                    session, agent, content, can_edit=True,
+                    can_report=_decider_or_403(agent, request, session) is None,
+                ),
+            }
         )
+
+    @app.post("/api/agents/{name}/guardrails/{rule_id}/broken")
+    def report_guardrail_broken(
+        name: str, rule_id: int, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """Record that the agent broke one of its rules (issue #524): the evidence
+        that a rule wants a check or a permission instead of more words. Anyone who
+        may decide the agent's learnings may say so, since it is the same kind of
+        correction. Answers the rule as the list reads it."""
+        agent = _ready_agent_or_error(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
+        gate = _decider_or_403(agent, request, session)
+        if gate is not None:
+            return gate
+        row = session.get(GuardrailRule, rule_id)
+        if row is None or row.agent_name != agent.name:
+            return JSONResponse({"error": f"no rule {rule_id} on agent {agent.name}"}, status_code=404)
+        row.breaks = (row.breaks or 0) + 1
+        row.last_broken_at = datetime.now(UTC)
+        row.last_broken_by = audit.actor_from(request)[0]
+        audit.record(
+            session, request=request, action="guardrails.broken", target_kind="agent",
+            target_id=agent.name, agent_name=agent.name,
+            summary=f"{audit.who(request)} said agent {agent.name} broke a rule: {row.text}",
+            detail={"rule": row.id, "breaks": row.breaks},
+        )
+        session.commit()
+        return JSONResponse(rule_payload(row, row.text))
 
     @app.get("/api/agents/{name}/knowledge")
     def list_knowledge(

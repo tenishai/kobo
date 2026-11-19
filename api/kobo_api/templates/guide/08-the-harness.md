@@ -43,7 +43,7 @@ The list has room for about 4,000 characters, which is 30 to 40 rules, and the c
 
 If the section says guardrails haven't turned on yet, this room's runtime doesn't read them, and an agent's rules are in its persona until it does.
 
-Rules guide the agent; they don't lock anything. To make sure something never happens, take the permission away on the **Access** tab, or add a check.
+Rules guide the agent; they don't lock anything. To make sure something never happens, take the permission away on the **Access** tab, or add a check. When the agent breaks a rule, press **It broke this** on its row: anyone who can decide the agent's learnings can. The row counts the breaks, and after the second it says the rule keeps breaking and needs a permission or a check to hold.
 
 **Checks the room runs**, below the rules, is code that runs before each task and around each reply. A check can stop a task or hold back a reply, which a rule can't. Every agent built by the room starts with the baseline pack: a leak guard that stops secrets leaving in a reply, and a probe guard that stops the agent being led off its job. You can add checks from the catalog or upload your own. A check is a small Python file that hooks in before a task or after a draft. The room checks it before it lands, and the agent runs only the checks in its own files.
 
