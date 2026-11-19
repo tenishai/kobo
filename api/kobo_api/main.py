@@ -135,6 +135,20 @@ from kobo_api.db import init_db, make_engine, make_session_factory
 from kobo_api.destroy import DESTROY_STEP_LABELS, run_destroy
 from kobo_api.directory import listed as directory_lists
 from kobo_api.directory import retire_directory, served_card, sync_directory
+from kobo_api.guardrails import (
+    GUARDRAILS_MARKER,
+    RULES_MAX_CHARS,
+    GuardrailsError,
+    RuleIn,
+    annotate,
+    parse_rules,
+    read_guardrails,
+    render_file,
+    save_guardrails_file,
+    sync_rows,
+    used_chars,
+    validate_rules,
+)
 from kobo_api.guide import find_section, load_guide
 from kobo_api.health import AgentHealth, health_sweep_loop
 from kobo_api.iap import HttpsOnlyMiddleware, IapMiddleware, IapVerifier
@@ -621,6 +635,24 @@ class GroupRequestCreate(BaseModel):
 
 class KnowledgeSavePayload(BaseModel):
     content: str
+
+
+class GuardrailRulePayload(BaseModel):
+    """One line of a guardrails save. `id` is the line's row when it was already
+    on the list, so an edit keeps where the rule came from; `source_kind` and
+    `source_ref` name the persona, skill or correction a proposed rule came from
+    (kobo_api.guardrails.SETTABLE_SOURCES; anything else saves as a person's)."""
+
+    text: str
+    id: int | None = None
+    source_kind: str = "person"
+    source_ref: str | None = Field(default=None, max_length=200)
+
+
+class GuardrailsSavePayload(BaseModel):
+    """PUT .../guardrails body: the whole list, in order. An empty list clears it."""
+
+    rules: list[GuardrailRulePayload] = Field(default_factory=list, max_length=200)
 
 
 class SkillSavePayload(BaseModel):
@@ -7479,6 +7511,128 @@ def create_app(
             log.warning(
                 "knowledge archive delete failed for %s (%s): %s", repo, filename, exc
             )
+
+    def _archive_guardrails(repo: str, content: str) -> None:
+        """The guardrails save's background archive lane, after the relay already
+        reported the list kept: the commit only mirrors it, `[skip ci]`, the same
+        posture as `_archive_knowledge_save`. Failure is logged, never surfaced."""
+        if not _room_may_commit_to_repo(app, repo):
+            return
+        try:
+            save_guardrails_file(app.state.clients.github, repo, content, archive_only=True)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("guardrails archive commit failed for %s: %s", repo, exc)
+
+    def _guardrails_body(
+        session: Session, agent: Agent, rules: list[str], *, can_edit: bool
+    ) -> dict:
+        return {
+            "rules": annotate(session, agent.name, rules),
+            "limit_chars": RULES_MAX_CHARS,
+            "used_chars": used_chars(rules),
+            "can_edit": can_edit,
+        }
+
+    @app.get("/api/agents/{name}/guardrails")
+    def get_guardrails(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """The agent's rules in order, each with where it came from (issue #524),
+        read from the repository's bundle/guardrails.md."""
+        agent = _ready_agent_or_error(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        try:
+            text = read_guardrails(app.state.clients.github, agent.repo_full_name)
+        except ClientError as exc:
+            log.warning("guardrails route failed: %s", exc)
+            return JSONResponse(
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
+            )
+        can_edit = (
+            _room_edits_this_agent_or_409(agent) is None
+            and _owner_or_operator_or_403(agent, request) is None
+        )
+        return JSONResponse(
+            _guardrails_body(session, agent, parse_rules(text), can_edit=can_edit)
+        )
+
+    @app.put("/api/agents/{name}/guardrails")
+    def save_guardrails(
+        name: str,
+        payload: GuardrailsSavePayload,
+        request: Request,
+        background_tasks: BackgroundTasks,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Replace the agent's whole rules list. The instant lane relays the file
+        to the running agent (system task `guardrails`), which uses it from the
+        next task, then archives the same bytes; without a relay, the commit
+        itself is the delivery and the agent takes the list at its restart."""
+        agent = _ready_agent_or_error(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        blocked = _room_edits_this_agent_or_409(agent)
+        if blocked is not None:
+            return blocked
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+        try:
+            rules = validate_rules([rule.text for rule in payload.rules])
+        except GuardrailsError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        content = render_file(rules)
+
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        mode = "archive"
+        if cabal_enabled(cfg) and clients.cabal is not None:
+            envelope = _build_system_task_envelope(GUARDRAILS_MARKER, content)
+            try:
+                raw = clients.cabal.relay(agent.name, envelope)
+                if _teach_task_not_completed(raw):
+                    # A runtime from before guardrails refuses the marker; the
+                    # commit below still lands the file for its next image.
+                    raise CabalError("agent reply was not a completed task")
+                _extract_relay_reply(raw)
+            except (CabalError, httpx.HTTPError, ValueError) as exc:
+                log.warning(
+                    "guardrails relay failed for agent %s, archive lane instead: %s", name, exc
+                )
+            else:
+                mode = "instant"
+        if mode == "instant":
+            background_tasks.add_task(_archive_guardrails, agent.repo_full_name, content)
+        else:
+            try:
+                save_guardrails_file(app.state.clients.github, agent.repo_full_name, content)
+            except ClientError as exc:
+                log.warning("guardrails route failed: %s", exc)
+                return JSONResponse(
+                    {"error": "couldn't reach your agent's files. Try again."}, status_code=502
+                )
+
+        email = audit.actor_from(request)[0]
+        items = [
+            RuleIn(
+                text=text, id=rule.id, source_kind=rule.source_kind, source_ref=rule.source_ref
+            )
+            for text, rule in zip(rules, payload.rules, strict=True)
+        ]
+        sync_rows(session, agent.name, items, email)
+        noun = "rule" if len(rules) == 1 else "rules"
+        audit.record(
+            session, request=request, action="guardrails.update", target_kind="agent",
+            target_id=agent.name, agent_name=agent.name,
+            summary=f"{audit.who(request)} set the guardrails of agent {agent.name}: "
+            f"{len(rules)} {noun}",
+            detail={"rules": len(rules), "mode": mode},
+        )
+        session.commit()
+        return JSONResponse(
+            {"mode": mode, **_guardrails_body(session, agent, rules, can_edit=True)}
+        )
 
     @app.get("/api/agents/{name}/knowledge")
     def list_knowledge(

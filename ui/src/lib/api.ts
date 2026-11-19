@@ -2165,6 +2165,58 @@ export async function checkAvailability(
   return parse<{ available: boolean; reason: string | null }>(res);
 }
 
+/** Where a guardrail rule came from (issue #524). `repository` is a line
+ * written straight into the agent's repository, with no record in the room. */
+export type GuardrailSourceKind = "person" | "persona" | "skill" | "correction" | "repository";
+
+export type GuardrailRule = {
+  id: number | null;
+  text: string;
+  source: { kind: GuardrailSourceKind; ref: string | null };
+  added_by: string | null;
+  added_at: string | null;
+  edited_by: string | null;
+  edited_at: string | null;
+};
+
+export type GuardrailsResponse = {
+  rules: GuardrailRule[];
+  limit_chars: number;
+  used_chars: number;
+  /** Whether this caller may change the list (the owner, an operator or a
+   * manager, on an agent the room composed). */
+  can_edit: boolean;
+};
+
+/** One line of a save: `id` keeps an existing rule's source through an edit;
+ * `source_kind`/`source_ref` name where a proposed rule came from. */
+export type GuardrailRuleIn = {
+  text: string;
+  id?: number | null;
+  source_kind?: Exclude<GuardrailSourceKind, "repository">;
+  source_ref?: string | null;
+};
+
+export async function getGuardrails(name: string): Promise<GuardrailsResponse> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/guardrails`);
+  return parse<GuardrailsResponse>(res);
+}
+
+/** `PUT /api/agents/{name}/guardrails`: the whole list, in order. `mode:
+ * "instant"` means the running agent has it for its next task; `"archive"`
+ * means it reaches the agent at its next restart. */
+export async function saveGuardrails(
+  name: string,
+  rules: GuardrailRuleIn[],
+): Promise<GuardrailsResponse & { mode: "instant" | "archive" }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/guardrails`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rules }),
+  });
+  return parse<GuardrailsResponse & { mode: "instant" | "archive" }>(res);
+}
+
 export type KnowledgeFile = { name: string; content: string };
 
 export async function listKnowledge(name: string): Promise<KnowledgeFile[]> {

@@ -94,7 +94,7 @@ export const HARNESS_SECTION_LABELS: Record<HarnessSectionId, string> = {
   identity: "Identity and access",
   persona: "Persona",
   skills: "Skills",
-  tooling: "Tooling",
+  tooling: "Guardrails",
   a2a: "Agent to agent",
   memory: "Memory",
   learnings: "Learnings",

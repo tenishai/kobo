@@ -5223,3 +5223,64 @@ def test_set_model_through_the_gateway_rewrites_the_model_block_and_delivers_a_k
     kubectl = client.app.state.clients.kubectl
     assert kubectl.secrets[("clio", "clio-models")] == {"MODELS_GATEWAY_KEY": minted["key"]}
     assert minted["key"] not in response.text and minted["key"] not in github.agent_yaml
+
+
+def test_the_guardrails_list_says_where_each_rule_came_from(tmp_path, monkeypatch):
+    """Wire shape (the Guardrails panel and the room's assistant tools read it, issue #524):
+    each rule carries its source; a rule proposed from the persona keeps that source when a
+    person edits it, and a line written straight into the repository reads as `repository`."""
+    from kobo_api.guardrails import render_file
+    from tests.test_wire_bundle import _guardrails_room
+
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    first = "Never change access without an approved ticket."
+    saved = client.put("/api/agents/gate/guardrails", json={"rules": [
+        {"text": first, "source_kind": "persona", "source_ref": "access-agent"},
+        {"text": "Answer only in the request thread."},
+    ]}).json()
+    persona_id = saved["rules"][0]["id"]
+
+    edited = "Never change access without an approved ticket in Jira."
+    client.put("/api/agents/gate/guardrails", json={"rules": [
+        {"id": persona_id, "text": edited},
+        {"text": "Answer only in the request thread."},
+    ]})
+    github._extra_clone_files = {"bundle/guardrails.md": render_file(
+        [edited, "Answer only in the request thread.", "Post in #sre-requests only."]
+    )}
+    body = client.get("/api/agents/gate/guardrails").json()
+
+    assert [rule["source"] for rule in body["rules"]] == [
+        {"kind": "persona", "ref": "access-agent"},
+        {"kind": "person", "ref": None},
+        {"kind": "repository", "ref": None},
+    ]
+    assert body["rules"][0]["id"] == persona_id and body["rules"][0]["edited_by"]
+    assert body["rules"][2]["id"] is None
+    assert body["limit_chars"] == 4000 and body["can_edit"] is True
+    assert body["used_chars"] == sum(len(f"- {r['text']}\n") for r in body["rules"])
+
+
+def test_an_assistant_reads_and_sets_the_guardrails_list(
+    session_factory__mcp_tools_read, config__mcp_tools_read
+):
+    """Wire shape (an assistant over MCP, issue #524): `kobo_set_guardrails` replaces the
+    list with plain sentences and `kobo_get_guardrails` reads it back with each rule's
+    source, the same body the Guardrails panel reads."""
+    from kobo_api.guardrails import render_file
+
+    owner = "owner@example.com"
+    github = FakeGitHub()
+    app = _app(session_factory__mcp_tools_read, config__mcp_tools_read, github=github)
+    _seed_agent__mcp_tools_read(session_factory__mcp_tools_read, name="gate", created_by=owner)
+    mcp = build_mcp_server(app)
+    rules = ["Never change access without an approved ticket.", "Answer only in the request thread."]
+
+    saved = _call_tool(mcp, "kobo_set_guardrails", _ctx_for(owner), agent="gate", rules=rules)
+    github._extra_clone_files = {"bundle/guardrails.md": render_file(rules)}
+    read = _call_tool(mcp, "kobo_get_guardrails", _ctx_for(owner), agent="gate")
+
+    assert saved["agent"] == "gate" and saved["mode"] == "archive"
+    assert [rule["text"] for rule in read["rules"]] == rules
+    assert {rule["source"]["kind"] for rule in read["rules"]} == {"person"}
+    assert read["can_edit"] is True

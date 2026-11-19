@@ -664,3 +664,99 @@ def test_wire_step_delivers_the_gateway_key_and_names_its_secret(session_factory
     assert minted["models"] == [gateway_model_name(m) for m in cfg.models]
     assert kubectl.secrets[(AGENT_NAME, f"{AGENT_NAME}-models")] == {"MODELS_GATEWAY_KEY": minted["key"]}
     assert minted["key"] not in (ctx.workdir / "wire" / "gojira.yaml").read_text()
+
+
+# --- guardrails (issue #524 step 2) ---
+
+
+GUARDRAILS_REPO = "acme-corp/agent-gate"
+_COMPLETED_RELAY = {"status": {"state": "completed", "message": {"parts": [{"text": "ok"}]}}}
+
+
+def _guardrails_room(tmp_path, monkeypatch, *, relay_error=None):
+    """A room with the switchboard wired and one ready composed agent, `gate`."""
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from kobo_api.config import Config
+    from kobo_api.main import create_app
+    from kobo_api.models import AgentStatus, Base
+
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    session = session_factory()
+    session.add(Agent(name="gate", persona="helpful-generalist", model_id="m", skills=[],
+                      status=AgentStatus.READY, repo_full_name=GUARDRAILS_REPO))
+    session.commit()
+    session.close()
+    github = FakeGitHub(existing_repos={GUARDRAILS_REPO})
+    cabal = FakeCabal(relay_result=_COMPLETED_RELAY, relay_error=relay_error)
+    config = Config(workdir=tmp_path / "work", cabal_url="http://cabal.internal",
+                    agent_endpoint_template=WIRE_CABAL_ENDPOINT_TEMPLATE)
+    clients = Clients(github=github, gojira=FakeGojira(), cloud=None, agent=None,
+                      kubectl=FakeKubectl(), cabal=cabal)
+    return TestClient(create_app(session_factory, config=config, clients=clients)), github, cabal
+
+
+RULES = ["Never change access without an approved ticket.", "Answer only in the request thread."]
+
+
+def test_a_guardrails_save_relays_and_archives_the_same_bytes(tmp_path, monkeypatch):
+    """Wire shape (the runtime's staleness protocol, daedalus.guardrails): the file the room
+    archives is byte for byte the text it relayed. The runtime keeps a live write's sha and
+    compares the bundle's against it; different bytes would read as a newer edit made in
+    the repository, and the agent would drop the list it was just given."""
+    client, github, cabal = _guardrails_room(tmp_path, monkeypatch)
+
+    response = client.put(
+        "/api/agents/gate/guardrails", json={"rules": [{"text": rule} for rule in RULES]}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["mode"] == "instant"
+    [call] = cabal.relay_calls
+    envelope = call["task_envelope"]
+    assert envelope["metadata"] == {"system_task": "guardrails"}
+    relayed = envelope["status"]["message"]["parts"][0]["text"]
+    assert github.pushed_file("bundle/guardrails.md") == relayed
+    assert relayed.endswith("- Never change access without an approved ticket.\n"
+                            "- Answer only in the request thread.\n")
+    assert github.pushes[-1][1].endswith("[skip ci]")
+
+
+def test_without_a_relay_the_commit_is_the_delivery(tmp_path, monkeypatch):
+    """Wire shape: an agent the switchboard cannot reach (or a runtime from before
+    guardrails) gets the list by an ordinary commit, which keeps CI so the next image
+    carries it; the archive marker would leave it on the old list."""
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch, relay_error="unreachable")
+
+    response = client.put(
+        "/api/agents/gate/guardrails", json={"rules": [{"text": rule} for rule in RULES]}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["mode"] == "archive"
+    assert "- Answer only in the request thread.\n" in github.pushed_file("bundle/guardrails.md")
+    assert "[skip ci]" not in github.pushes[-1][1]
+
+
+def test_the_room_never_writes_a_list_the_runtime_would_cut(tmp_path, monkeypatch):
+    """Wire shape (daedalus.guardrails RULES_MAX_CHARS): the runtime cuts a list past
+    4,000 characters from the bottom; the room refuses one instead, so what a person
+    saved is what the agent follows. Nothing is relayed or pushed."""
+    client, github, cabal = _guardrails_room(tmp_path, monkeypatch)
+    rule = "Check the approval record before every change, and say which record you used"
+
+    response = client.put(
+        "/api/agents/gate/guardrails",
+        json={"rules": [{"text": f"{rule} ({i})."} for i in range(60)]},
+    )
+
+    assert response.status_code == 422
+    assert "4,000-character limit" in response.json()["error"]
+    assert cabal.relay_calls == [] and github.pushes == []

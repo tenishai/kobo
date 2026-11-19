@@ -83,7 +83,7 @@ describe("HarnessPanel sections", () => {
   it("opens on the section it was given, so a bookmarked hash lands where it says", async () => {
     renderWithClient(HarnessPanel, { ...BASE_PROPS, section: "tooling" });
 
-    expect(item("Tooling").getAttribute("aria-current")).toBe("true");
+    expect(item("Guardrails").getAttribute("aria-current")).toBe("true");
     expect(body("tooling").hasAttribute("hidden")).toBe(false);
   });
 
@@ -315,11 +315,11 @@ describe("HarnessPanel agent to agent (issue #368)", () => {
     });
   });
 
-  it("is a section after Tooling for a caller who may administer the agent, for both kinds", async () => {
+  it("is a section after Guardrails for a caller who may administer the agent, for both kinds", async () => {
     renderWithClient(HarnessPanel, { ...BASE_PROPS, canAdminister: true, section: "a2a" });
 
     const labels = within(nav()).getAllByRole("button").map((b) => b.textContent?.trim());
-    expect(labels.indexOf("Agent to agent")).toBe(labels.indexOf("Tooling") + 1);
+    expect(labels.indexOf("Agent to agent")).toBe(labels.indexOf("Guardrails") + 1);
     expect(body("a2a").hasAttribute("hidden")).toBe(false);
     // The block that was on the Access tab, with its one sentence.
     expect(within(body("a2a")).getByText(/Agents in the same group need nothing here/)).not.toBeNull();

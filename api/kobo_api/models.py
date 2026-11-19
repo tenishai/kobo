@@ -738,6 +738,29 @@ class AgentLearning(Base):
     )
 
 
+class GuardrailRule(Base):
+    """Where one of an agent's guardrail rules came from (issue #524 step 2). The
+    rule itself lives in the agent's repository (`bundle/guardrails.md`); this row
+    holds only what the file cannot say: its source (`person`, `persona`, `skill`
+    or `correction`, with `source_ref` naming which one) and who added or last
+    edited it. Matched to the file's lines by text (`kobo_api.guardrails`).
+    `agent_name` is a plain string, same as `AgentLearning.agent_name`."""
+
+    __tablename__ = "guardrail_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="person")
+    source_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    added_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    edited_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class AgentSystemTask(Base):
     """How a system task the room sends an agent (the nightly learnings pass
     today) last went for that agent (issue #142). Without it a task the

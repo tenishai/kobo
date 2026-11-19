@@ -215,6 +215,8 @@ import {
   type Invite,
   type InvitesResult,
   type PairedAgent,
+  type GuardrailRuleIn,
+  type GuardrailsResponse,
   type KnowledgeFile,
   type Learning,
   listAgentEnv,
@@ -224,6 +226,7 @@ import {
   listIntake,
   listInvites,
   listPairs,
+  getGuardrails,
   listKnowledge,
   listLearnings,
   listSkills,
@@ -261,6 +264,7 @@ import {
   revokeInvite,
   saveAgentEnv,
   saveAgentSecrets,
+  saveGuardrails,
   saveKnowledgeFile,
   saveLocalSkill,
   moveSlackApp,
@@ -1266,6 +1270,29 @@ export function teachMutation(queryClient: QueryClient, name: string) {
 
 /** An agent's knowledge files. No polling — edits are user-driven, not
  * something that changes on its own in the background. */
+export function guardrailsQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "guardrails"] as const,
+    queryFn: () => getGuardrails(name),
+  });
+}
+
+/** Saves the whole guardrails list; the reply carries the saved list, so it
+ * replaces the cached one rather than waiting for a refetch. */
+export function saveGuardrailsMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (rules: GuardrailRuleIn[]) => saveGuardrails(name, rules),
+    onSuccess: (data: GuardrailsResponse) => {
+      queryClient.setQueryData(["agents", name, "guardrails"], {
+        rules: data.rules,
+        limit_chars: data.limit_chars,
+        used_chars: data.used_chars,
+        can_edit: data.can_edit,
+      });
+    },
+  };
+}
+
 export function knowledgeQuery(name: string) {
   return queryOptions({
     queryKey: ["agents", name, "knowledge"] as const,

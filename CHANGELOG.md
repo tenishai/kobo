@@ -6,6 +6,13 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Guardrails**, a section on the Harness tab. It holds the rules an agent follows on every task: one plain list, one rule per line. Each rule says where it came from: the persona, a skill, a correction, the person who added it, or the agent's repository when someone wrote it there by hand. **Add a rule**, **Edit** and **Remove** change the list. The running agent uses the change from its next task, with no restart, and the line under the list says when the room could only reach the agent's files, so the change waits for its next restart. The list has room for about 4,000 characters, 30 to 40 rules, and the count at the top says how many more fit. A longer list is refused rather than cut. The section says plainly that rules guide and don't lock anything, and points a rule that must never fail at Access or a check. The rules are the agent's `guardrails.md`, which needs daedalus with guardrails (tenishai/daedalus#267). An older runtime keeps the file and ignores it until it moves. From an assistant, **get guardrails** reads the list and **set guardrails** replaces it.
+
+### Changed
+- **Tooling** is now the **Checks the room runs** part of Guardrails: the same leak guard, probe guard and uploaded checks, under the rules list.
+- **New guardrail skill** on the Skills section is now **Write a skill**. A skill loads only when the model asks for it, so it never was a guardrail. Rules the agent must always follow go in Guardrails.
+
 ## [0.3.74] - 2026-11-17
 
 ### Added

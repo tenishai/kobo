@@ -13,7 +13,7 @@ Kobo is an assembly room for agents. You pick who an agent is, give it a name an
 
 When you create an agent the room:
 
-- creates a repository for it under your organization, holding its persona, skills and tooling as plain files;
+- creates a repository for it under your organization, holding its persona, skills, guardrails and checks as plain files;
 - gives it its own identity, model access and a place to run;
 - deploys it and checks that it answers;
 - lists it in the agent directory so other agents can find it.
