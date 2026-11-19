@@ -109,6 +109,56 @@ def validate_rules(rules: list[str]) -> list[str]:
     return cleaned
 
 
+def fit_starter_rules(rules: list[str]) -> tuple[list[str], list[str]]:
+    """Of a persona's rules, the ones that start an agent's guardrails, in order, and
+    the ones left in its persona. A rule the list would refuse (too long, a comment
+    marker, a repeat) or one past the limit stays where it was, so nothing a persona
+    said is lost on the way in."""
+    starter: list[str] = []
+    left: list[str] = []
+    used = 0
+    for rule in rules:
+        cost = len(f"- {rule}\n")
+        fits = (
+            len(rule) <= RULE_MAX_CHARS
+            and "<!--" not in rule
+            and "-->" not in rule
+            and rule not in starter
+            and used + cost <= RULES_MAX_CHARS
+        )
+        if fits:
+            starter.append(rule)
+            used += cost
+        else:
+            left.append(rule)
+    return starter, left
+
+
+def persona_with_rules(body: str, rules: list[str]) -> str:
+    """`body` with a house `## Rules` section holding `rules` again, or `body` alone
+    when there are none: what stays in the persona when not every rule fits."""
+    if not rules:
+        return body
+    return body.rstrip("\n") + "\n\n## Rules\n\n" + "".join(f"- {rule}\n" for rule in rules)
+
+
+def starter_guardrails(persona_body: str) -> tuple[str, list[str]]:
+    """The persona body an agent is born with and its starter guardrails: the
+    persona's rules move into the list, minus any the list could not hold."""
+    from kobo_api.personas import split_rules
+
+    body, rules = split_rules(persona_body)
+    starter, left = fit_starter_rules(rules)
+    return persona_with_rules(body, left), starter
+
+
+def record_starter_rows(session: Session, agent: Agent, rules: list[str]) -> None:
+    """The provenance of an agent's starter guardrails, uncommitted: each from the
+    persona it was born with. Re-running a create keeps the same rows."""
+    items = [RuleIn(text=rule, source_kind="persona", source_ref=agent.persona) for rule in rules]
+    sync_rows(session, agent.name, items, agent.created_by or "room")
+
+
 def render_file(rules: list[str]) -> str:
     """The file the room writes and relays, byte for byte."""
     return _HEADER + "".join(f"- {rule}\n" for rule in rules)

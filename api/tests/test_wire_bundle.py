@@ -775,3 +775,72 @@ def test_a_room_whose_runtime_does_not_read_guardrails_saves_none(tmp_path, monk
     assert read["enabled"] is False and read["can_edit"] is False
     assert saved.status_code == 409 and "doesn't read guardrails" in saved.json()["error"]
     assert cabal.relay_calls == [] and github.pushes == []
+
+
+def _born(session_factory, config, fake_storage, *, guardrails: bool):
+    """Create agent `clio` (persona helpful-generalist, ten rules) through RepoStep and
+    return its composed bundle directory and the room's session."""
+    from kobo_api.steps import RepoStep
+
+    config = config.model_copy(update={"guardrails": guardrails})
+    session, agent = _make_agent(session_factory)
+    clients = Clients(github=FakeGitHub(), gojira=FakeGojira(), cloud=None, agent=None,
+                      kubectl=FakeKubectl(), storage=fake_storage)
+    ctx = _make_ctx(session, agent, config, clients)
+    RepoStep().run(ctx)
+    return ctx.workdir / "repo" / "bundle", session
+
+
+def test_a_new_agents_persona_rules_start_its_guardrails(session_factory, config, fake_storage):
+    """Wire shape (what the room writes at birth, issue #524): with guardrails on, the
+    persona's rules move into `bundle/guardrails.md`, each recorded as from that persona,
+    and persona.md keeps who the agent is and what it does with no Rules section, so a
+    rule lives in one place."""
+    from kobo_api.guardrails import parse_rules
+    from kobo_api.models import GuardrailRule
+
+    bundle, session = _born(session_factory, config, fake_storage, guardrails=True)
+
+    rules = parse_rules((bundle / "guardrails.md").read_text())
+    persona = (bundle / "persona.md").read_text()
+    assert len(rules) == 10
+    assert "## Rules" not in persona and "## What you do" in persona
+    rows = session.query(GuardrailRule).filter_by(agent_name=AGENT_NAME).all()
+    assert sorted(row.text for row in rows) == sorted(rules)
+    assert {(row.source_kind, row.source_ref) for row in rows} == {("persona", PERSONA)}
+
+
+def test_without_guardrails_a_new_agent_keeps_its_persona_rules(session_factory, config, fake_storage):
+    """Wire shape (the rollout gate, issue #524): a room whose runtime does not read
+    guardrails composes exactly as before, rules in the persona and no guardrails file,
+    because that runtime would follow none of them from the file."""
+    bundle, _ = _born(session_factory, config, fake_storage, guardrails=False)
+
+    assert "## Rules" in (bundle / "persona.md").read_text()
+    assert not (bundle / "guardrails.md").exists()
+
+
+@pytest.mark.parametrize("has_list", [True, False], ids=["with-guardrails", "from-before-guardrails"])
+def test_a_persona_swap_leaves_an_agents_rules_where_they_live(tmp_path, monkeypatch, fake_storage, has_list):
+    """Wire shape (issue #524): swapping the persona of an agent whose rules live in its
+    guardrails writes persona.md without the new persona's Rules section and leaves the
+    list alone; an agent from before guardrails, with no list yet, keeps the persona's
+    rules, which would otherwise be lost."""
+    from kobo_api.guardrails import render_file
+    from tests.conftest import PERSONAS_BUCKET
+
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    client.app.state.config = client.app.state.config.model_copy(
+        update={"personas_bucket": PERSONAS_BUCKET}
+    )
+    client.app.state.clients.storage = fake_storage
+    if has_list:
+        github._repo_files = {"bundle/guardrails.md": render_file(["Answer in the thread."])}
+
+    response = client.put("/api/agents/gate/persona", json={"persona": "identity-admin"})
+
+    assert response.status_code == 200, response.text
+    persona = github.pushed_file("bundle/persona.md")
+    assert ("## Rules" in persona) is not has_list
+    assert "## What you do" in persona
+    assert len(github.pushes) == 1  # the persona file alone; the list is not rewritten

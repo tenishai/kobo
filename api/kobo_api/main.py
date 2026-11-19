@@ -246,6 +246,7 @@ from kobo_api.personas import (
     seed_default_personas,
     set_persona_archived,
     set_persona_team,
+    split_rules,
     update_persona,
     upsert_persona,
     write_persona_file,
@@ -3621,6 +3622,10 @@ def create_app(
             # deployment names a sign-out path.
             "admin_panel": bool(app.state.config.admin_panel),
             "logout_url": app.state.config.logout_url,
+            # Whether the room's runtime reads guardrails (issue #524): the
+            # persona builder then calls a persona's rules what they become,
+            # each new agent's starter guardrails.
+            "guardrails": bool(app.state.config.guardrails),
             # Whether the permission service is on: the Harness then drops its
             # Identity and access section, since access is asked for under
             # Permissions (issue #292).
@@ -11230,6 +11235,17 @@ def create_app(
             rendered = resolve_persona_body(cfg, clients.storage, persona_id, agent.name)
         except RuntimeError:
             return not_found
+        if cfg.guardrails:
+            # An agent whose rules live in its guardrails keeps them: the new
+            # persona brings who it is and what it does, and its rules stay out of
+            # persona.md so a rule is never in two places (issue #524). An agent
+            # from before guardrails has none yet; it keeps the persona's rules.
+            try:
+                has_guardrails = bool(read_guardrails(clients.github, agent.repo_full_name))
+            except ClientError:
+                has_guardrails = False
+            if has_guardrails:
+                rendered = split_rules(rendered)[0]
         try:
             sha = write_persona_file(
                 clients.github, agent.repo_full_name, rendered, persona_id=persona_id

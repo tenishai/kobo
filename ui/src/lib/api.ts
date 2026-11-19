@@ -364,6 +364,9 @@ export type Whoami = {
   /** True when the room holds a GitHub app for its own pull requests (skills,
    * tooling), from the room or the deployment config (#304). */
   github_available?: boolean;
+  /** True when the room's runtime reads guardrails (issue #524): a persona's
+   * rules then start each new agent's Guardrails list. */
+  guardrails?: boolean;
   logout_url?: string | null;
 };
 

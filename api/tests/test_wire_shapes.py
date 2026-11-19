@@ -666,6 +666,8 @@ def test_whoami_with_iap_operator_email_reports_email_and_operator_true(tmp_path
         "groups_unavailable": False,
         "admin_panel": False,
         "logout_url": None,
+        # The room's runtime does not read guardrails (issue #524).
+        "guardrails": False,
         "access_on": False,
         # No GitHub app from the room or the deployment config: the agent's
         # Repositories card greys out on this flag (#304).
