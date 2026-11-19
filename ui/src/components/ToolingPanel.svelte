@@ -334,12 +334,10 @@ def pre_task(task: dict) -> dict | None:
 
 <section class="panel" aria-labelledby="tooling-panel-heading">
   <div class="panel__header">
-    <h2 id="tooling-panel-heading" class="panel__heading">Tooling</h2>
+    <h2 id="tooling-panel-heading" class="panel__heading">Checks the room runs</h2>
     <p class="panel__lead">
-      Every agent ships with colleague tools: it can list and consult the room,
-      and share a fact with quorum review. Its repo tools stay dormant until an
-      operator approves a repository on the Access tab. Tools added here are
-      extras on top of that baseline.
+      A check is code that runs before each task and around each reply. It can stop a
+      task or hold back a reply, which a rule can't. Add one from a file or a repository.
     </p>
   </div>
 

@@ -162,6 +162,8 @@ def config__web_ownership_gate(tmp_path):
         # The room-made Slack app routes (issue #371) exist only with the
         # switch on; off they are a 404 before any gate.
         slack_relay=True,
+        # Guardrails save only on a room whose runtime reads them (issue #524).
+        guardrails=True,
     )
 
 
@@ -307,6 +309,14 @@ def _save_knowledge(client, headers):
     )
 
 
+def _save_guardrails(client, headers):
+    return client.put(
+        f"/api/agents/{AGENT_NAME}/guardrails",
+        json={"rules": [{"text": "Never change access without an approved ticket."}]},
+        headers=headers,
+    )
+
+
 GATE_MATRIX_ROUTES = [
     ("tooling", _upload_tooling),
     ("skills", _save_local_skill),
@@ -315,6 +325,7 @@ GATE_MATRIX_ROUTES = [
     ("avatar", _upload_avatar),
     ("slack", _save_slack_channels),
     ("knowledge", _save_knowledge),
+    ("guardrails", _save_guardrails),
 ]
 
 
@@ -704,6 +715,8 @@ def test_stranger_is_blocked_on_every_other_gated_route(
 # route; the per-route copies (`*_non_ready_agent_returns_409`,
 # `*_unknown_agent_returns_404`) were folded here on 2026-10-29.
 READY_GATED_ROUTES = [
+    ("GET", f"/api/agents/{AGENT_NAME}/guardrails", {}),
+    ("PUT", f"/api/agents/{AGENT_NAME}/guardrails", {"json": {"rules": []}}),
     ("GET", f"/api/agents/{AGENT_NAME}/knowledge", {}),
     ("PUT", f"/api/agents/{AGENT_NAME}/knowledge/notes.md", {"json": {"content": "hi"}}),
     ("DELETE", f"/api/agents/{AGENT_NAME}/knowledge/notes.md", {}),
@@ -893,6 +906,7 @@ PNG_BYTES = (
 # would otherwise 422 first, so a body here that is merely plausible is
 # enough, and a row that starts 422-ing is itself a finding.
 GUARDED_ROUTES = [
+    ("PUT", f"/api/agents/{AGENT_NAME}/guardrails", {"json": {"rules": []}}),
     ("PUT", f"/api/agents/{AGENT_NAME}/knowledge/notes.md", {"json": {"content": "hi"}}),
     ("DELETE", f"/api/agents/{AGENT_NAME}/knowledge/notes.md", {}),
     (

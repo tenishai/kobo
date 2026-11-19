@@ -154,7 +154,7 @@ describe("AgentDetail tabs", () => {
 
     // They are not tabs any more, and there is no menu left to open. Nor
     // is Settings: that tab is Secrets now (issue #368).
-    for (const label of ["Learnings", "Memory", "Skills", "Tooling", "Settings"]) {
+    for (const label of ["Learnings", "Memory", "Skills", "Guardrails", "Settings"]) {
       expect(screen.queryByRole("tab", { name: label })).toBeNull();
     }
     expect(screen.queryByRole("button", { name: /^More ▾/ })).toBeNull();
@@ -355,7 +355,7 @@ describe("AgentDetail tabs", () => {
 
     const harnessTab = await screen.findByRole("tab", { name: "Harness" });
     expect(harnessTab.getAttribute("aria-selected")).toBe("true");
-    expect(harnessItem("Tooling").getAttribute("aria-current")).toBe("true");
+    expect(harnessItem("Guardrails").getAttribute("aria-current")).toBe("true");
     expect(screen.getByRole("tab", { name: "Chat" }).getAttribute("aria-selected")).toBe(
       "false",
     );

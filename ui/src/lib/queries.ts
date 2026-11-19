@@ -215,6 +215,8 @@ import {
   type Invite,
   type InvitesResult,
   type PairedAgent,
+  type GuardrailRuleIn,
+  type GuardrailsResponse,
   type KnowledgeFile,
   type Learning,
   listAgentEnv,
@@ -224,6 +226,7 @@ import {
   listIntake,
   listInvites,
   listPairs,
+  getGuardrails,
   listKnowledge,
   listLearnings,
   listSkills,
@@ -261,6 +264,7 @@ import {
   revokeInvite,
   saveAgentEnv,
   saveAgentSecrets,
+  saveGuardrails,
   saveKnowledgeFile,
   saveLocalSkill,
   moveSlackApp,
@@ -1260,6 +1264,37 @@ export function teachMutation(queryClient: QueryClient, name: string) {
     mutationFn: (text: string) => teachAgent(name, text),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name, "intake"] });
+    },
+  };
+}
+
+export function guardrailsQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "guardrails"] as const,
+    queryFn: () => getGuardrails(name),
+  });
+}
+
+/** Saves the whole guardrails list; the reply carries the saved list, so it
+ * replaces the cached one rather than waiting for a refetch. */
+export function saveGuardrailsMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: ({ rules, baseSha }: { rules: GuardrailRuleIn[]; baseSha: string | null }) =>
+      saveGuardrails(name, rules, baseSha),
+    onSuccess: (data: GuardrailsResponse) => {
+      queryClient.setQueryData(["agents", name, "guardrails"], {
+        rules: data.rules,
+        limit_chars: data.limit_chars,
+        used_chars: data.used_chars,
+        sha: data.sha,
+        enabled: data.enabled,
+        can_edit: data.can_edit,
+      });
+    },
+    onError: () => {
+      // A refused save (someone changed the list, a rule over the limit)
+      // shows the list as it stands now.
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "guardrails"] });
     },
   };
 }

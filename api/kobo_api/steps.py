@@ -77,6 +77,12 @@ from kobo_api.composer import (
 )
 from kobo_api.config import Config, vertex_location_for
 from kobo_api.directory import sync_directory, sync_directory_from_path
+from kobo_api.guardrails import (
+    GUARDRAILS_FILE,
+    record_starter_rows,
+    render_file,
+    starter_guardrails,
+)
 from kobo_api.kinds import (
     KIND_CONNECTED,
     RUN_MODE_HEADLESS,
@@ -286,6 +292,23 @@ def resolve_persona_body(config: Config, storage: StorageClient, persona_id: str
     else:
         body = text
     return body.replace("{name}", agent_name)
+
+
+def _born_persona_and_rules(config: Config, persona_body: str) -> tuple[str, list[str] | None]:
+    """The persona an agent is born with and its starter guardrails (issue #524).
+    With `config.guardrails` on, the persona's rules move into the agent's
+    `guardrails.md`, so a rule lives in one place; off, the runtime would not read
+    that file, so the persona keeps its rules and there is no list (None)."""
+    if not config.guardrails:
+        return persona_body, None
+    return starter_guardrails(persona_body)
+
+
+def _write_starter_guardrails(bundle_dir: Path, rules: list[str] | None) -> None:
+    """`bundle/guardrails.md` at birth, even with no rules: the file is what marks
+    an agent whose rules live in its guardrails, not its persona."""
+    if rules is not None:
+        (bundle_dir / GUARDRAILS_FILE).write_text(render_file(rules), encoding="utf-8")
 
 
 @dataclass
@@ -910,7 +933,9 @@ class RepoStep:
                 f"{agent.name!r} — refusing to adopt it"
             )
 
-        persona_body = _resolve_persona_body(config, storage, engine, agent)
+        persona_body, starter = _born_persona_and_rules(
+            config, _resolve_persona_body(config, storage, engine, agent)
+        )
 
         staging_dir = ctx.workdir / "staging"
         # Retry safety (mirrors compose_dir's own rmtree below): a prior
@@ -982,6 +1007,7 @@ class RepoStep:
         # before/at create_repo_from_dir) — clear it before recomposing.
         shutil.rmtree(compose_dir, ignore_errors=True)
         compose(spec, compose_dir)
+        _write_starter_guardrails(compose_dir / "bundle", starter)
 
         # Baseline tooling pack (Task 6): staged into the just-composed bundle
         # rather than up beside `_stage_skills` above, for one mechanical
@@ -1010,6 +1036,8 @@ class RepoStep:
         # compose wrote carries `spec.runtime_image` on its FROM line, and
         # the Harness page compares that fact with the room's pin.
         agent.built_runtime_image = spec.runtime_image
+        if starter is not None:
+            record_starter_rows(ctx.session, agent, starter)
         ctx.session.commit()
         github.create_repo_from_dir(repo, compose_dir)
         if spec.bundle_artifact:
@@ -1052,7 +1080,9 @@ class ComposeDirectoryStep:
         engine = ctx.session.get_bind()
         target = agent_directory(config, agent.name)
 
-        persona_body = _resolve_persona_body(config, storage, engine, agent)
+        persona_body, starter = _born_persona_and_rules(
+            config, _resolve_persona_body(config, storage, engine, agent)
+        )
         staging_dir = ctx.workdir / "staging"
         shutil.rmtree(staging_dir, ignore_errors=True)
         staged_skills = _stage_skills(storage, config, agent, staging_dir)
@@ -1082,6 +1112,9 @@ class ComposeDirectoryStep:
         compose_dir = ctx.workdir / "compose"
         shutil.rmtree(compose_dir, ignore_errors=True)
         compose(spec, compose_dir)
+        _write_starter_guardrails(compose_dir / "bundle", starter)
+        if starter is not None:
+            record_starter_rows(ctx.session, agent, starter)
         if not agent.skip_baseline and config.skills_repo:
             _stage_baseline_tools(ctx.clients.github, config, compose_dir / "bundle")
         validate_agent_yaml(compose_dir / "bundle")

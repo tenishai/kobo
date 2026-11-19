@@ -501,6 +501,27 @@ def parse_persona_body(text: str) -> ParsedPersona:
     return parsed
 
 
+def split_rules(body: str) -> tuple[str, list[str]]:
+    """`body` without its house `## Rules` section, and the rules that section held
+    (issue #524: at create they start the agent's guardrails, so a rule lives in one
+    place). A body without the house headings comes back whole with no rules: a
+    persona the room didn't write in its shape keeps its rules where its author put
+    them, the same "never guess" `parse_persona_body` keeps."""
+    lines = body.splitlines()
+    try:
+        what_at = lines.index(_WHAT_HEADING)
+    except ValueError:
+        return body, []
+    rules_at = _rules_heading_at(lines, what_at + 1)
+    if rules_at == len(lines):
+        return body, []
+    rules = [line[2:].strip() for line in lines[rules_at + 1 :] if line.startswith("- ")]
+    kept = lines[:rules_at]
+    while kept and not kept[-1].strip():
+        kept.pop()
+    return "\n".join(kept) + "\n", [rule for rule in rules if rule]
+
+
 # The room's real limit on a persona (upload/limits addendum): the MERGED
 # persona.md — render_persona's output, body plus rules section together —
 # tops out at 200 lines and 49152 bytes (48KB, measured on the UTF-8

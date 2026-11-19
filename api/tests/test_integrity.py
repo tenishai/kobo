@@ -7304,3 +7304,48 @@ def test_the_filler_survives_a_gateway_failure_and_leaves_the_provider_connected
     result = model_providers.sync_from_session(session, clients, config)
     assert result is not None and result.ok and len(result.added) == 2
     session.close()
+
+
+def test_a_guardrails_save_from_a_stale_list_is_refused_not_overwritten(tmp_path, monkeypatch):
+    """Integrity (concurrency, issue #524): every save replaces the whole rules list, so
+    one made from a list read before someone else's change (another person's save, or a
+    line written straight into the repository) is refused with nothing relayed or pushed.
+    Saving it would drop their rule without a word."""
+    from kobo_api.guardrails import file_sha, render_file
+    from tests.test_wire_bundle import _guardrails_room
+
+    client, github, cabal = _guardrails_room(tmp_path, monkeypatch)
+    read_at = file_sha(render_file(["Answer only in the request thread."]))
+    github._repo_files = {"bundle/guardrails.md": render_file(
+        ["Answer only in the request thread.", "Post in #sre-requests only."]
+    )}
+
+    response = client.put("/api/agents/gate/guardrails", json={
+        "rules": [{"text": "Answer only in the request thread."}, {"text": "Never guess."}],
+        "base_sha": read_at,
+    })
+
+    assert response.status_code == 409
+    assert cabal.relay_calls == [] and github.pushes == []
+
+
+def test_an_edited_rule_keeps_its_source_when_its_old_text_is_saved_beside_it(tmp_path, monkeypatch):
+    """Integrity (provenance, issue #524): a save that rewords a rule by its id and also
+    carries the rule's old text as a new line keeps the source on the reworded rule; the
+    old text is the new line, recorded as the person's."""
+    from tests.test_wire_bundle import _guardrails_room
+
+    client, _, _ = _guardrails_room(tmp_path, monkeypatch)
+    old = "Never change access without an approved ticket."
+    persona_rule = client.put("/api/agents/gate/guardrails", json={"rules": [
+        {"text": old, "source_kind": "persona", "source_ref": "helpful-generalist"},
+    ]}).json()["rules"][0]
+
+    saved = client.put("/api/agents/gate/guardrails", json={"rules": [
+        {"text": old},
+        {"id": persona_rule["id"], "text": old + " Say which ticket."},
+    ]}).json()["rules"]
+
+    assert saved[1]["id"] == persona_rule["id"]
+    assert saved[1]["source"] == {"kind": "persona", "ref": "helpful-generalist"}
+    assert saved[0]["source"]["kind"] == "person" and saved[0]["id"] != persona_rule["id"]

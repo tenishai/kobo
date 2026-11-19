@@ -6,6 +6,14 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Guardrails**, a section on the Harness tab. It holds the rules an agent follows on every task: one plain list, one rule per line. Each rule says where it came from: the persona, a skill, a correction, the person who added it, or the agent's repository when someone wrote it there by hand. **Add a rule**, **Edit** and **Remove** change the list. The running agent uses the change from its next task, with no restart, and the line under the list says when the room could only reach the agent's files, so the change waits for its next restart. The list has room for about 4,000 characters, 30 to 40 rules, and the count at the top says how many more fit. A longer list is refused rather than cut, and so is a save made from a list someone else changed since it was opened: the panel then shows the list as it stands. The section says plainly that rules guide and don't lock anything, and points a rule that must never fail at Access or a check. The rules are the agent's `guardrails.md`, which needs daedalus with guardrails (tenishai/daedalus#267). A room turns them on with `guardrails: true` in its deployment config, set with the runtime pin that reads the file. Until then the section shows the list and saves nothing, because an older runtime would follow none of it. From an assistant, **get guardrails** reads the list and **set guardrails** replaces it.
+- **A new agent's persona rules start its Guardrails** in a room where guardrails are on. The persona's rules move into the agent's list, each marked as from the persona, so a rule lives in one place. A rule the list would refuse, or one past its limit, stays in the persona, so nothing is lost. The persona builder calls the field **Starter guardrails** there. Giving an agent another persona later leaves its list alone. An agent made before guardrails keeps its persona's rules until it is moved over.
+
+### Changed
+- **Tooling** is now the **Checks the room runs** part of Guardrails: the same leak guard, probe guard and uploaded checks, under the rules list.
+- **New guardrail skill** on the Skills section is now **Write a skill**. A skill loads only when the model asks for it, so it never was a guardrail. Rules the agent must always follow go in Guardrails.
+
 ## [0.3.74] - 2026-11-17
 
 ### Added

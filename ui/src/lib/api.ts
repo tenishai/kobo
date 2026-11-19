@@ -364,6 +364,9 @@ export type Whoami = {
   /** True when the room holds a GitHub app for its own pull requests (skills,
    * tooling), from the room or the deployment config (#304). */
   github_available?: boolean;
+  /** True when the room's runtime reads guardrails (issue #524): a persona's
+   * rules then start each new agent's Guardrails list. */
+  guardrails?: boolean;
   logout_url?: string | null;
 };
 
@@ -2163,6 +2166,65 @@ export async function checkAvailability(
 ): Promise<{ available: boolean; reason: string | null }> {
   const res = await fetch(`/api/availability?name=${encodeURIComponent(name)}`);
   return parse<{ available: boolean; reason: string | null }>(res);
+}
+
+/** Where a guardrail rule came from (issue #524). `repository` is a line
+ * written straight into the agent's repository, with no record in the room. */
+export type GuardrailSourceKind = "person" | "persona" | "skill" | "correction" | "repository";
+
+export type GuardrailRule = {
+  id: number | null;
+  text: string;
+  source: { kind: GuardrailSourceKind; ref: string | null };
+  added_by: string | null;
+  added_at: string | null;
+  edited_by: string | null;
+  edited_at: string | null;
+};
+
+export type GuardrailsResponse = {
+  rules: GuardrailRule[];
+  limit_chars: number;
+  used_chars: number;
+  /** The version the list was read at, sent back as `base_sha` on a save so a
+   * change someone else made in the meantime is refused, not overwritten. */
+  sha: string;
+  /** Whether the room's runtime reads guardrails. Off, the list is shown and
+   * cannot be saved; an agent's rules are in its persona. */
+  enabled: boolean;
+  /** Whether this caller may change the list (the owner, an operator or a
+   * manager, on an agent the room composed). */
+  can_edit: boolean;
+};
+
+/** One line of a save: `id` keeps an existing rule's source through an edit;
+ * `source_kind`/`source_ref` name where a proposed rule came from. */
+export type GuardrailRuleIn = {
+  text: string;
+  id?: number | null;
+  source_kind?: Exclude<GuardrailSourceKind, "repository">;
+  source_ref?: string | null;
+};
+
+export async function getGuardrails(name: string): Promise<GuardrailsResponse> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/guardrails`);
+  return parse<GuardrailsResponse>(res);
+}
+
+/** `PUT /api/agents/{name}/guardrails`: the whole list, in order. `mode:
+ * "instant"` means the running agent has it for its next task; `"archive"`
+ * means it reaches the agent at its next restart. */
+export async function saveGuardrails(
+  name: string,
+  rules: GuardrailRuleIn[],
+  baseSha: string | null,
+): Promise<GuardrailsResponse & { mode: "instant" | "archive" }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/guardrails`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rules, base_sha: baseSha }),
+  });
+  return parse<GuardrailsResponse & { mode: "instant" | "archive" }>(res);
 }
 
 export type KnowledgeFile = { name: string; content: string };

@@ -1,5 +1,5 @@
 # The harness
-<!-- summary: What runs the agent: model and runtime, agent to agent, identity, persona, skills, tooling, memory, learnings, activity. -->
+<!-- summary: What runs the agent: model and runtime, agent to agent, identity, persona, skills, guardrails, memory, learnings, activity. -->
 
 The **Harness** tab is everything that runs your agent, in eight sections down its left side. A connected agent shows Model and runtime, Identity and access, and Activity, because it brings its own harness. What the agent may reach at each vendor is on the **Access** tab (see "Access and groups").
 
@@ -29,13 +29,23 @@ The persona the agent was built from, its source (Built-in, or the team whose ca
 
 ## Skills
 
-Skills are abilities from your organization's skills catalog: a way of working, a checklist, a domain the agent should know. Open **Browse the catalog** or **Suggestions** (skills recommended for this agent's persona), select the ones you want and press **Add N skills**. There is no second confirm: they go out together as one update and one restart of the agent, so select everything you want before you press it; one the agent already has says Added. **New guardrail skill** writes one by hand; it ends in the same table.
+Skills are abilities from your organization's skills catalog: a way of working, a checklist, a domain the agent should know. Open **Browse the catalog** or **Suggestions** (skills recommended for this agent's persona), select the ones you want and press **Add N skills**. There is no second confirm: they go out together as one update and one restart of the agent, so select everything you want before you press it; one the agent already has says Added. **Write a skill** writes one by hand; it ends in the same table. A skill is how to do a job, and the agent reads it when a question needs it. A rule it must always follow belongs in **Guardrails**.
 
 Each new row shows where its change is: **Pending** (saved, on its way), **Building** (the agent is being rebuilt with it), **Rolling** (the new agent is starting), **Active** (in place; the mark fades after a few seconds). **Failed** stays, with a sentence saying what to do, until you remove the row or change something and save again. While a change is building or rolling the page rests: every control that would change the agent is disabled, the banner at the top says Updating, and reading goes on as usual. The controls come back when the change lands or fails. On a current runtime the agent sees a short list of its skills in its instructions and loads one in full when a question needs it. Remove a skill from its row.
 
-## Tooling
+## Guardrails
 
-Tooling is code the agent runs around every task. Every agent built by the room starts with the baseline pack: a leak guard that stops secrets leaving in a reply, and a probe guard that stops the agent being led off its job. You can add tools from the catalog or upload your own. A tool is a small Python file that hooks in before a task or after a draft. The room checks it before it lands, and the agent enforces what is in its tooling folder. Nothing runs that is not there.
+The rules the agent follows on every task, one per line, in plain words. Each line says where it came from: the persona, a skill, a correction, or the person who added it. A line written straight into the agent's repository says so.
+
+**Add a rule** puts a line at the bottom; **Edit** and **Remove** sit on each row. A change reaches the agent for its next task without a restart. When the room can't reach it, the line under the list says the change lands at the agent's next restart instead. If someone else changed the list while you had it open, your save is refused and the panel shows the list as it stands, so nobody's change is lost. Write each rule so it makes sense on its own: "When searching tickets, use the person's full email", not "Use the full email". Always or never: a guardrail. How to do a job: a skill.
+
+The list has room for about 4,000 characters, which is 30 to 40 rules, and the count at the top says how many more fit. A rule that only matters inside one job belongs in that job's skill.
+
+If the section says guardrails haven't turned on yet, this room's runtime doesn't read them, and an agent's rules are in its persona until it does.
+
+Rules guide the agent; they don't lock anything. To make sure something never happens, take the permission away on the **Access** tab, or add a check.
+
+**Checks the room runs**, below the rules, is code that runs before each task and around each reply. A check can stop a task or hold back a reply, which a rule can't. Every agent built by the room starts with the baseline pack: a leak guard that stops secrets leaving in a reply, and a probe guard that stops the agent being led off its job. You can add checks from the catalog or upload your own. A check is a small Python file that hooks in before a task or after a draft. The room checks it before it lands, and the agent runs only the checks in its own files.
 
 ## Memory
 

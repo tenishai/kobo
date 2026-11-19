@@ -440,7 +440,9 @@
     </div>
 
     <div class="field">
-      <Label class="field__label" for="persona-builder-rules">Rules</Label>
+      <Label class="field__label" for="persona-builder-rules">
+        {whoami.data?.guardrails ? "Starter guardrails" : "Rules"}
+      </Label>
       <textarea
         id="persona-builder-rules"
         bind:value={text.rules}
@@ -449,7 +451,9 @@
       ></textarea>
       <p class="field__help">
         One per line: things it always or never does. At least 3, most
-        personas have 8 to 12.
+        personas have 8 to 12.{whoami.data?.guardrails
+          ? " Each new agent starts its Guardrails with these, and its owners change them there."
+          : ""}
       </p>
     </div>
 

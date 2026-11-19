@@ -741,6 +741,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     set_model_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/model")
     set_slack_wake_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/slack/wake")
     set_slack_reading_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/slack/reading")
+    set_guardrails_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/guardrails")
     set_colleague_mode_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/colleague-mode")
     metadata_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/metadata")
     set_runtime_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/runtime")
@@ -1136,6 +1137,53 @@ def register(mcp: FastMCP, app: Any) -> None:
             "wiring": body.get("wiring"),
             "pull_request": body.get("pull_request"),
         }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+    @audited("kobo_set_guardrails")
+    async def kobo_set_guardrails(
+        ctx: Context, agent: str, rules: list[str], base_sha: str | None = None
+    ) -> dict:
+        """Replace `agent`'s whole Guardrails list with `rules`, in order: one
+        plain sentence each, at most 300 characters, about 4,000 characters in
+        all. Read the list with `kobo_get_guardrails` first and send it back
+        with your change, since anything left out is removed, and pass its
+        `sha` as `base_sha`: if someone changed the list since you read it, the
+        save is refused instead of overwriting them. A rule you keep word for
+        word keeps where it came from; a new or reworded one is recorded as
+        yours. An empty list clears it.
+
+        Write rules that make sense on their own ("When searching tickets, use
+        the person's full email", not "Use the full email"). Always or never
+        is a rule; how to do a job is a skill. A rule guides the agent but
+        locks nothing: for what must never happen, take the permission away
+        or add a check.
+
+        `mode` "instant" means the running agent follows the new list from its
+        next task; "archive" means the room could only reach its files and the
+        list arrives at its next restart. You must own `agent`, manage it, or
+        be a room operator, and `agent` must be READY and built by the room.
+        """
+        from pydantic import ValidationError
+
+        from kobo_api.main import GuardrailRulePayload, GuardrailsSavePayload
+
+        try:
+            payload = GuardrailsSavePayload(
+                rules=[GuardrailRulePayload(text=text) for text in rules], base_sha=base_sha
+            )
+        except ValidationError as exc:
+            raise ToolError(
+                "a guardrails list is at most 200 rules and about 4,000 characters"
+            ) from exc
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                set_guardrails_endpoint, name=agent, payload=payload, request=req, session=session
+            )
+        finally:
+            session.close()
+        return {"agent": agent, **_agent_route_result(response)}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
     @audited("kobo_set_slack_reading")

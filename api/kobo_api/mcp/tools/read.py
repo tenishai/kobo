@@ -453,6 +453,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     access_endpoint = _endpoint(app, "GET", "/api/agents/{name}/access")
     repositories_endpoint = _endpoint(app, "GET", "/api/agents/{name}/github/repositories")
     slack_endpoint = _endpoint(app, "GET", "/api/agents/{name}/slack")
+    guardrails_endpoint = _endpoint(app, "GET", "/api/agents/{name}/guardrails")
     activity_endpoint = _endpoint(app, "GET", "/api/agents/{name}/activity")
     leases_endpoint = _endpoint(app, "GET", "/api/agents/{name}/leases")
 
@@ -659,6 +660,28 @@ def register(mcp: FastMCP, app: Any) -> None:
             # a manager's or an operator's), or the read failed.
             "github": github,
         }
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @audited("kobo_get_guardrails")
+    async def kobo_get_guardrails(ctx: Context, agent: str) -> dict:
+        """The rules `agent` follows on every task, in order: its Guardrails.
+        Each rule has its `text` and `source`, where it came from: `person`
+        (with `added_by`), `persona`, `skill` or `correction` (with `ref`
+        naming which), or `repository` for a line someone wrote straight into
+        the agent's repository. `used_chars` against `limit_chars` says how
+        much room is left (about 30 to 40 rules fit), `sha` is the version to
+        pass back as `base_sha`, and `can_edit` says whether you may change the
+        list with `kobo_set_guardrails`. `enabled` false means the room's
+        runtime does not read guardrails yet: the list cannot be saved, and an
+        agent's rules are in its persona. Rules guide the
+        agent; Access and the checks the room runs are what enforce."""
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(guardrails_endpoint, name=agent, request=req, session=session)
+        finally:
+            session.close()
+        return {"agent": agent, **_room_route_result(response, agent)}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     @audited("kobo_get_slack")

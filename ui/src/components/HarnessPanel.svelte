@@ -54,6 +54,7 @@
   import MemoryPanel from "./MemoryPanel.svelte";
   import ModelPicker from "./ModelPicker.svelte";
   import SkillsPanel from "./SkillsPanel.svelte";
+  import GuardrailsPanel from "./GuardrailsPanel.svelte";
   import ToolingPanel from "./ToolingPanel.svelte";
   import { errorMessage, KIND_COMPOSED, KIND_CONNECTED, type ColleagueMode } from "../lib/api";
   import {
@@ -554,6 +555,9 @@
             recommendWhat={purposeTags.join(" ")}
           />
         {:else if id === "tooling"}
+          <!-- Guardrails (issue #524): the rules list, then the checks the
+               room runs in code, which is what the Tooling section held. -->
+          <GuardrailsPanel {agentName} {frozen} />
           <ToolingPanel {agentName} {frozen} />
         {:else if id === "a2a"}
           <AgentToAgentPanel {agentName} {frozen} />

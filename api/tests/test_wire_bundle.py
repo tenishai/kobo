@@ -664,3 +664,183 @@ def test_wire_step_delivers_the_gateway_key_and_names_its_secret(session_factory
     assert minted["models"] == [gateway_model_name(m) for m in cfg.models]
     assert kubectl.secrets[(AGENT_NAME, f"{AGENT_NAME}-models")] == {"MODELS_GATEWAY_KEY": minted["key"]}
     assert minted["key"] not in (ctx.workdir / "wire" / "gojira.yaml").read_text()
+
+
+# --- guardrails (issue #524 step 2) ---
+
+
+GUARDRAILS_REPO = "acme-corp/agent-gate"
+_COMPLETED_RELAY = {"status": {"state": "completed", "message": {"parts": [{"text": "ok"}]}}}
+
+
+def _guardrails_room(tmp_path, monkeypatch, *, relay_error=None):
+    """A room with the switchboard wired and one ready composed agent, `gate`."""
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from kobo_api.config import Config
+    from kobo_api.main import create_app
+    from kobo_api.models import AgentStatus, Base
+
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/kobo.db", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    session = session_factory()
+    session.add(Agent(name="gate", persona="helpful-generalist", model_id="m", skills=[],
+                      status=AgentStatus.READY, repo_full_name=GUARDRAILS_REPO))
+    session.commit()
+    session.close()
+    github = FakeGitHub(existing_repos={GUARDRAILS_REPO})
+    cabal = FakeCabal(relay_result=_COMPLETED_RELAY, relay_error=relay_error)
+    config = Config(workdir=tmp_path / "work", cabal_url="http://cabal.internal",
+                    agent_endpoint_template=WIRE_CABAL_ENDPOINT_TEMPLATE, guardrails=True)
+    clients = Clients(github=github, gojira=FakeGojira(), cloud=None, agent=None,
+                      kubectl=FakeKubectl(), cabal=cabal)
+    return TestClient(create_app(session_factory, config=config, clients=clients)), github, cabal
+
+
+RULES = ["Never change access without an approved ticket.", "Answer only in the request thread."]
+
+
+def test_a_guardrails_save_relays_and_archives_the_same_bytes(tmp_path, monkeypatch):
+    """Wire shape (the runtime's staleness protocol, daedalus.guardrails): the file the room
+    archives is byte for byte the text it relayed. The runtime keeps a live write's sha and
+    compares the bundle's against it; different bytes would read as a newer edit made in
+    the repository, and the agent would drop the list it was just given."""
+    client, github, cabal = _guardrails_room(tmp_path, monkeypatch)
+
+    response = client.put(
+        "/api/agents/gate/guardrails", json={"rules": [{"text": rule} for rule in RULES]}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["mode"] == "instant"
+    [call] = cabal.relay_calls
+    envelope = call["task_envelope"]
+    assert envelope["metadata"] == {"system_task": "guardrails"}
+    relayed = envelope["status"]["message"]["parts"][0]["text"]
+    assert github.pushed_file("bundle/guardrails.md") == relayed
+    assert relayed.endswith("- Never change access without an approved ticket.\n"
+                            "- Answer only in the request thread.\n")
+    assert github.pushes[-1][1].endswith("[skip ci]")
+
+
+def test_without_a_relay_the_commit_is_the_delivery(tmp_path, monkeypatch):
+    """Wire shape: an agent the switchboard cannot reach (or a runtime from before
+    guardrails) gets the list by an ordinary commit, which keeps CI so the next image
+    carries it; the archive marker would leave it on the old list."""
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch, relay_error="unreachable")
+
+    response = client.put(
+        "/api/agents/gate/guardrails", json={"rules": [{"text": rule} for rule in RULES]}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["mode"] == "archive"
+    assert "- Answer only in the request thread.\n" in github.pushed_file("bundle/guardrails.md")
+    assert "[skip ci]" not in github.pushes[-1][1]
+
+
+def test_the_room_never_writes_a_list_the_runtime_would_cut(tmp_path, monkeypatch):
+    """Wire shape (daedalus.guardrails RULES_MAX_CHARS): the runtime cuts a list past
+    4,000 characters from the bottom; the room refuses one instead, so what a person
+    saved is what the agent follows. Nothing is relayed or pushed."""
+    client, github, cabal = _guardrails_room(tmp_path, monkeypatch)
+    rule = "Check the approval record before every change, and say which record you used"
+
+    response = client.put(
+        "/api/agents/gate/guardrails",
+        json={"rules": [{"text": f"{rule} ({i})."} for i in range(60)]},
+    )
+
+    assert response.status_code == 422
+    assert "4,000-character limit" in response.json()["error"]
+    assert cabal.relay_calls == [] and github.pushes == []
+
+
+def test_a_room_whose_runtime_does_not_read_guardrails_saves_none(tmp_path, monkeypatch):
+    """Wire shape (issue #524, the rollout gate): with `guardrails` off the room's runtime
+    predates the file, so a saved list would be followed by nobody. The list reads as not
+    enabled and a save is refused, with nothing relayed or pushed."""
+    client, github, cabal = _guardrails_room(tmp_path, monkeypatch)
+    client.app.state.config = client.app.state.config.model_copy(update={"guardrails": False})
+
+    read = client.get("/api/agents/gate/guardrails").json()
+    saved = client.put("/api/agents/gate/guardrails", json={"rules": [{"text": RULES[0]}]})
+
+    assert read["enabled"] is False and read["can_edit"] is False
+    assert saved.status_code == 409 and "doesn't read guardrails" in saved.json()["error"]
+    assert cabal.relay_calls == [] and github.pushes == []
+
+
+def _born(session_factory, config, fake_storage, *, guardrails: bool):
+    """Create agent `clio` (persona helpful-generalist, ten rules) through RepoStep and
+    return its composed bundle directory and the room's session."""
+    from kobo_api.steps import RepoStep
+
+    config = config.model_copy(update={"guardrails": guardrails})
+    session, agent = _make_agent(session_factory)
+    clients = Clients(github=FakeGitHub(), gojira=FakeGojira(), cloud=None, agent=None,
+                      kubectl=FakeKubectl(), storage=fake_storage)
+    ctx = _make_ctx(session, agent, config, clients)
+    RepoStep().run(ctx)
+    return ctx.workdir / "repo" / "bundle", session
+
+
+def test_a_new_agents_persona_rules_start_its_guardrails(session_factory, config, fake_storage):
+    """Wire shape (what the room writes at birth, issue #524): with guardrails on, the
+    persona's rules move into `bundle/guardrails.md`, each recorded as from that persona,
+    and persona.md keeps who the agent is and what it does with no Rules section, so a
+    rule lives in one place."""
+    from kobo_api.guardrails import parse_rules
+    from kobo_api.models import GuardrailRule
+
+    bundle, session = _born(session_factory, config, fake_storage, guardrails=True)
+
+    rules = parse_rules((bundle / "guardrails.md").read_text())
+    persona = (bundle / "persona.md").read_text()
+    assert len(rules) == 10
+    assert "## Rules" not in persona and "## What you do" in persona
+    rows = session.query(GuardrailRule).filter_by(agent_name=AGENT_NAME).all()
+    assert sorted(row.text for row in rows) == sorted(rules)
+    assert {(row.source_kind, row.source_ref) for row in rows} == {("persona", PERSONA)}
+
+
+def test_without_guardrails_a_new_agent_keeps_its_persona_rules(session_factory, config, fake_storage):
+    """Wire shape (the rollout gate, issue #524): a room whose runtime does not read
+    guardrails composes exactly as before, rules in the persona and no guardrails file,
+    because that runtime would follow none of them from the file."""
+    bundle, _ = _born(session_factory, config, fake_storage, guardrails=False)
+
+    assert "## Rules" in (bundle / "persona.md").read_text()
+    assert not (bundle / "guardrails.md").exists()
+
+
+@pytest.mark.parametrize("has_list", [True, False], ids=["with-guardrails", "from-before-guardrails"])
+def test_a_persona_swap_leaves_an_agents_rules_where_they_live(tmp_path, monkeypatch, fake_storage, has_list):
+    """Wire shape (issue #524): swapping the persona of an agent whose rules live in its
+    guardrails writes persona.md without the new persona's Rules section and leaves the
+    list alone; an agent from before guardrails, with no list yet, keeps the persona's
+    rules, which would otherwise be lost."""
+    from kobo_api.guardrails import render_file
+    from tests.conftest import PERSONAS_BUCKET
+
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    client.app.state.config = client.app.state.config.model_copy(
+        update={"personas_bucket": PERSONAS_BUCKET}
+    )
+    client.app.state.clients.storage = fake_storage
+    if has_list:
+        github._repo_files = {"bundle/guardrails.md": render_file(["Answer in the thread."])}
+
+    response = client.put("/api/agents/gate/persona", json={"persona": "identity-admin"})
+
+    assert response.status_code == 200, response.text
+    persona = github.pushed_file("bundle/persona.md")
+    assert ("## Rules" in persona) is not has_list
+    assert "## What you do" in persona
+    assert len(github.pushes) == 1  # the persona file alone; the list is not rewritten

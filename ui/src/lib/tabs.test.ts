@@ -100,7 +100,7 @@ describe("harnessSections", () => {
     ]);
   });
 
-  it("adds Agent to agent after Tooling for a caller who may administer the agent (issue #368)", () => {
+  it("adds Agent to agent after Guardrails for a caller who may administer the agent (issue #368)", () => {
     // The Other agents block of the Access tab, as a Harness section. The
     // routes behind it answer only the agent's owner and the room's
     // operators, so it is offered only to them: the same probe that shows

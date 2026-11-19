@@ -16,7 +16,7 @@
   //     appear in the table the moment Save is pressed and wear a state
   //     chip (Pending, Building, Rolling, Active, Failed) that follows the
   //     delivery of the sha the save returned; errors show in both lists.
-  //   - "New guardrail skill": opens the shared editor Modal (copied from
+  //   - "Write a skill" (was "New guardrail skill"): opens the shared editor Modal (copied from
   //     MemoryPanel: filename + textarea, review-with-diff, then save).
   //   - Edit / Remove on an existing row: Edit re-opens that same Modal in
   //     edit mode (after fetching the skill's current content — unlike
@@ -612,7 +612,7 @@
       return undefined;
     }
     if (target.kind === "add") {
-      return "New guardrail skill";
+      return "Write a skill";
     }
     if (target.kind === "delete") {
       return `Remove ${target.skill.name}`;
@@ -679,8 +679,11 @@
        change nothing. Every Add inside them is dead. -->
   <div class="panel__toolbar">
     <div class="panel__tools">
+      <!-- Was "New guardrail skill" (issue #524): a skill loads only when the
+           model asks for it, so it was never a guardrail. Rules the agent
+           must always follow live in the Guardrails section. -->
       <button type="button" class="btn" disabled={frozen} onclick={openAdd}>
-        New guardrail skill
+        Write a skill
       </button>
       <button
         type="button"

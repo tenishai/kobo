@@ -9,7 +9,7 @@ This section is the overview. Each part below points at the section that has the
 
 Kobo is one piece of a set of sibling projects. Each owns one job, and the room ties them together.
 
-- **daedalus** (required). Every agent the room builds is a daedalus bundle (persona, skills, tooling, wiring) running on one shared daedalus runtime image the room names in its config.
+- **daedalus** (required). Every agent the room builds is a daedalus bundle (persona, skills, guardrails, checks, wiring) running on one shared daedalus runtime image the room names in its config.
 - **gojira** (required for deployed agents). The deploy service. The room hands it each new agent's repository; it sets up the agent's build pipeline and runs the agent on the cluster. A room set to deliver agents into a folder instead (see below) does not use it.
 - **techne** (comes with every agent). Each agent's own memory store, inside the runtime. Teach this, uploads and approved learnings land there. The room never calls techne itself; it writes notes the agent's store takes in.
 - **cabal** (optional, but most of the room needs it). The switchboard. With it, chat and teaching reach the agent in seconds, the nightly learnings pass runs, agents can ask each other, the agent directory exists, and the room can mint its own token for the tool gateway. Without it, the room talks to agents directly and agents have no colleagues.
@@ -98,7 +98,7 @@ The admin panel, when the room has it turned on, holds the choices an agent's ow
 
 ### The harness
 
-Model, runtime, colleague mode, identity, persona, skills, tooling, memory, learnings and activity. Press **Update to current** when the room moves to a newer runtime. Add or remove **skills** from the catalog; refresh one to the catalog's current version from your assistant. **Tooling** starts with a leak guard and a probe guard; skip them only with `skip_baseline` from your assistant, and only when you know why. See "The harness".
+Model, runtime, colleague mode, identity, persona, skills, guardrails, memory, learnings and activity. Press **Update to current** when the room moves to a newer runtime. Add or remove **skills** from the catalog; refresh one to the catalog's current version from your assistant. **Guardrails** holds the rules the agent follows on every task, one per line, and the checks the room runs: they start with a leak guard and a probe guard; skip them only with `skip_baseline` from your assistant, and only when you know why. See "The harness".
 
 ### Activity
 
