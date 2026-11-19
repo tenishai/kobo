@@ -12,7 +12,11 @@
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import ErrorState from "./ErrorState.svelte";
   import { errorMessage, type GuardrailRule, type GuardrailRuleIn } from "../lib/api";
-  import { guardrailsQuery, saveGuardrailsMutation } from "../lib/queries";
+  import {
+    guardrailsQuery,
+    reportGuardrailBrokenMutation,
+    saveGuardrailsMutation,
+  } from "../lib/queries";
   import { whenDay } from "../lib/time";
 
   let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
@@ -22,6 +26,8 @@
   const guardrails = createQuery(() => guardrailsQuery(agentName));
   // svelte-ignore state_referenced_locally
   const save = createMutation(() => saveGuardrailsMutation(queryClient, agentName));
+  // svelte-ignore state_referenced_locally
+  const report = createMutation(() => reportGuardrailBrokenMutation(queryClient, agentName));
 
   const RULE_MAX_CHARS = 300;
   // A typical rule's share of the limit, for "room for about N more" before
@@ -36,6 +42,8 @@
 
   const rules = $derived(guardrails.data?.rules ?? []);
   const canEdit = $derived(Boolean(guardrails.data?.can_edit) && !frozen);
+  const canReport = $derived(Boolean(guardrails.data?.can_report) && !frozen);
+  const breaksBeforeACheck = $derived(guardrails.data?.breaks_before_a_check ?? 2);
   const busy = $derived(save.isPending);
   const roomLeft = $derived.by(() => {
     const data = guardrails.data;
@@ -102,6 +110,23 @@
     const next = rules.map(asInput);
     next[index] = { ...next[index], text };
     if (await commit(next, "Saved.")) editingIndex = null;
+  }
+
+  async function reportBroken(rule: GuardrailRule) {
+    if (rule.id === null || report.isPending) return;
+    errorText = "";
+    note = "";
+    try {
+      await report.mutateAsync(rule.id);
+      note = "Noted. The count is on the rule.";
+    } catch (error) {
+      errorText = errorMessage(error, "Couldn't record that. Try again.");
+    }
+  }
+
+  function brokenLabel(rule: GuardrailRule): string {
+    const times = rule.breaks === 1 ? "once" : `${rule.breaks} times`;
+    return `Broken ${times}, last ${whenDay(rule.last_broken_at)}`;
   }
 
   async function remove(index: number) {
@@ -209,28 +234,49 @@
             {:else}
               <div class="guardrail__body">
                 <p class="guardrail__text">{rule.text}</p>
-                <p class="guardrail__source">{sourceLabel(rule)}</p>
+                <p class="guardrail__source">
+                  {sourceLabel(rule)}{rule.breaks > 0 ? `. ${brokenLabel(rule)}` : ""}
+                </p>
+                {#if rule.breaks >= breaksBeforeACheck}
+                  <p class="guardrail__nudge">
+                    This keeps breaking. A rule only guides; to make it hold, take the permission
+                    away on the Access tab, or add a check below.
+                  </p>
+                {/if}
               </div>
-              {#if canEdit}
+              {#if canEdit || (canReport && rule.id !== null)}
                 <span class="guardrail__actions">
-                  <button
-                    class="btn btn--quiet"
-                    type="button"
-                    disabled={busy}
-                    aria-label={`Edit the rule: ${rule.text}`}
-                    onclick={() => startEdit(index)}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    class="btn btn--quiet"
-                    type="button"
-                    disabled={busy}
-                    aria-label={`Remove the rule: ${rule.text}`}
-                    onclick={() => remove(index)}
-                  >
-                    Remove
-                  </button>
+                  {#if canReport && rule.id !== null}
+                    <button
+                      class="btn btn--quiet"
+                      type="button"
+                      disabled={report.isPending}
+                      aria-label={`It broke the rule: ${rule.text}`}
+                      onclick={() => reportBroken(rule)}
+                    >
+                      It broke this
+                    </button>
+                  {/if}
+                  {#if canEdit}
+                    <button
+                      class="btn btn--quiet"
+                      type="button"
+                      disabled={busy}
+                      aria-label={`Edit the rule: ${rule.text}`}
+                      onclick={() => startEdit(index)}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      class="btn btn--quiet"
+                      type="button"
+                      disabled={busy}
+                      aria-label={`Remove the rule: ${rule.text}`}
+                      onclick={() => remove(index)}
+                    >
+                      Remove
+                    </button>
+                  {/if}
                 </span>
               {/if}
             {/if}
@@ -292,6 +338,11 @@
     margin: var(--space-2xs) 0 0;
     color: var(--muted);
     font-size: 0.8rem;
+  }
+
+  .guardrail__nudge {
+    margin: var(--space-2xs) 0 0;
+    font-size: 0.85rem;
   }
 
   .guardrail__actions {

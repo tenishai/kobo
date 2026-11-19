@@ -215,6 +215,7 @@ import {
   type Invite,
   type InvitesResult,
   type PairedAgent,
+  type GuardrailRule,
   type GuardrailRuleIn,
   type GuardrailsResponse,
   type KnowledgeFile,
@@ -228,6 +229,7 @@ import {
   listPairs,
   getGuardrails,
   listKnowledge,
+  reportGuardrailBroken,
   listLearnings,
   listSkills,
   listTooling,
@@ -1268,6 +1270,21 @@ export function teachMutation(queryClient: QueryClient, name: string) {
   };
 }
 
+/** Says the agent broke one rule; the answer replaces that rule in the cached
+ * list, so its count shows at once. */
+export function reportGuardrailBrokenMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (ruleId: number) => reportGuardrailBroken(name, ruleId),
+    onSuccess: (rule: GuardrailRule) => {
+      queryClient.setQueryData(
+        ["agents", name, "guardrails"],
+        (data: GuardrailsResponse | undefined) =>
+          data && { ...data, rules: data.rules.map((r) => (r.id === rule.id ? rule : r)) },
+      );
+    },
+  };
+}
+
 export function guardrailsQuery(name: string) {
   return queryOptions({
     queryKey: ["agents", name, "guardrails"] as const,
@@ -1289,6 +1306,8 @@ export function saveGuardrailsMutation(queryClient: QueryClient, name: string) {
         sha: data.sha,
         enabled: data.enabled,
         can_edit: data.can_edit,
+        can_report: data.can_report,
+        breaks_before_a_check: data.breaks_before_a_check,
       });
     },
     onError: () => {

@@ -38,6 +38,9 @@ GUARDRAILS_FILE = "guardrails.md"
 GUARDRAILS_PATH = f"bundle/{GUARDRAILS_FILE}"
 RULES_MAX_CHARS = 4000
 RULE_MAX_CHARS = 300
+# Breaks of one rule before the panel says it wants a check or a permission: the
+# same two techne's lesson review uses before it suggests enforcement.
+BREAKS_BEFORE_A_CHECK = 2
 
 # Where a rule came from. "repository" is never sent: it is what a line written in
 # the repository, with no row in the room, reads as.
@@ -213,7 +216,8 @@ def rule_payload(row: GuardrailRule | None, text: str) -> dict:
     """One rule as the panel and the room's assistant tools read it."""
     if row is None:
         return {"id": None, "text": text, "source": {"kind": SOURCE_REPOSITORY, "ref": None},
-                "added_by": None, "added_at": None, "edited_by": None, "edited_at": None}
+                "added_by": None, "added_at": None, "edited_by": None, "edited_at": None,
+                "breaks": 0, "last_broken_at": None}
     return {
         "id": row.id,
         "text": text,
@@ -222,6 +226,8 @@ def rule_payload(row: GuardrailRule | None, text: str) -> dict:
         "added_at": row.added_at.isoformat() if row.added_at else None,
         "edited_by": row.edited_by,
         "edited_at": row.edited_at.isoformat() if row.edited_at else None,
+        "breaks": row.breaks or 0,
+        "last_broken_at": row.last_broken_at.isoformat() if row.last_broken_at else None,
     }
 
 

@@ -717,6 +717,7 @@ def test_stranger_is_blocked_on_every_other_gated_route(
 READY_GATED_ROUTES = [
     ("GET", f"/api/agents/{AGENT_NAME}/guardrails", {}),
     ("PUT", f"/api/agents/{AGENT_NAME}/guardrails", {"json": {"rules": []}}),
+    ("POST", f"/api/agents/{AGENT_NAME}/guardrails/1/broken", {}),
     ("GET", f"/api/agents/{AGENT_NAME}/knowledge", {}),
     ("PUT", f"/api/agents/{AGENT_NAME}/knowledge/notes.md", {"json": {"content": "hi"}}),
     ("DELETE", f"/api/agents/{AGENT_NAME}/knowledge/notes.md", {}),
@@ -907,6 +908,7 @@ PNG_BYTES = (
 # enough, and a row that starts 422-ing is itself a finding.
 GUARDED_ROUTES = [
     ("PUT", f"/api/agents/{AGENT_NAME}/guardrails", {"json": {"rules": []}}),
+    ("POST", f"/api/agents/{AGENT_NAME}/guardrails/1/broken", {}),
     ("PUT", f"/api/agents/{AGENT_NAME}/knowledge/notes.md", {"json": {"content": "hi"}}),
     ("DELETE", f"/api/agents/{AGENT_NAME}/knowledge/notes.md", {}),
     (
