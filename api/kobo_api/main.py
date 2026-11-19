@@ -274,6 +274,7 @@ from kobo_api.purpose_tags import (
     normalize_tags,
 )
 from kobo_api.redact import redact_secrets
+from kobo_api.repo_lock import repo_write_lock
 from kobo_api.repo_search import MAX_QUERY_CHARS, RepoIndex, RepoWarmer
 from kobo_api.roles import (
     ROLE_ALL,
@@ -7536,6 +7537,62 @@ def create_app(
             "can_edit": can_edit and enabled,
         }
 
+    def _deliver_guardrails(
+        agent: Agent, base_sha: str | None, content: str
+    ) -> tuple[str | None, JSONResponse | None]:
+        """Check the version, relay the list, commit the same bytes: (mode, None), or
+        (None, the refusal). The caller holds `repo_write_lock` around all of it, so
+        two saves of one list cannot both pass the version check."""
+        try:
+            current = read_guardrails(app.state.clients.github, agent.repo_full_name)
+        except ClientError as exc:
+            log.warning("guardrails route failed: %s", exc)
+            return None, JSONResponse(
+                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
+            )
+        if base_sha is not None and base_sha != file_sha(current):
+            return None, JSONResponse(
+                {"error": "the rules changed since you opened them. Here is the current "
+                 "list; make your change again."},
+                status_code=409,
+            )
+
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        mode = "archive"
+        if cabal_enabled(cfg) and clients.cabal is not None:
+            envelope = _build_system_task_envelope(GUARDRAILS_MARKER, content)
+            try:
+                raw = clients.cabal.relay(agent.name, envelope)
+                if _teach_task_not_completed(raw):
+                    # A runtime from before guardrails refuses the marker; the
+                    # commit below still lands the file for its next image.
+                    raise CabalError("agent reply was not a completed task")
+                _extract_relay_reply(raw)
+            except (CabalError, httpx.HTTPError, ValueError) as exc:
+                log.warning(
+                    "guardrails relay failed for agent %s, archive lane instead: %s", agent.name, exc
+                )
+            else:
+                mode = "instant"
+        try:
+            save_guardrails_file(
+                app.state.clients.github,
+                agent.repo_full_name,
+                content,
+                archive_only=mode == "instant",
+            )
+        except ClientError as exc:
+            log.warning("guardrails commit failed for agent %s (%s): %s", agent.name, mode, exc)
+            error = (
+                "your agent took the new rules, but the room couldn't write them to its "
+                "files. Save again."
+                if mode == "instant"
+                else "couldn't reach your agent's files. Try again."
+            )
+            return None, JSONResponse({"error": error}, status_code=502)
+        return mode, None
+
     @app.get("/api/agents/{name}/guardrails")
     def get_guardrails(
         name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
@@ -7591,54 +7648,10 @@ def create_app(
         except GuardrailsError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
         content = render_file(rules)
-        try:
-            current = read_guardrails(app.state.clients.github, agent.repo_full_name)
-        except ClientError as exc:
-            log.warning("guardrails route failed: %s", exc)
-            return JSONResponse(
-                {"error": "couldn't reach your agent's files. Try again."}, status_code=502
-            )
-        if payload.base_sha is not None and payload.base_sha != file_sha(current):
-            return JSONResponse(
-                {"error": "the rules changed since you opened them. Here is the current "
-                 "list; make your change again."},
-                status_code=409,
-            )
-
-        cfg: Config = app.state.config
-        clients = app.state.clients
-        mode = "archive"
-        if cabal_enabled(cfg) and clients.cabal is not None:
-            envelope = _build_system_task_envelope(GUARDRAILS_MARKER, content)
-            try:
-                raw = clients.cabal.relay(agent.name, envelope)
-                if _teach_task_not_completed(raw):
-                    # A runtime from before guardrails refuses the marker; the
-                    # commit below still lands the file for its next image.
-                    raise CabalError("agent reply was not a completed task")
-                _extract_relay_reply(raw)
-            except (CabalError, httpx.HTTPError, ValueError) as exc:
-                log.warning(
-                    "guardrails relay failed for agent %s, archive lane instead: %s", name, exc
-                )
-            else:
-                mode = "instant"
-        try:
-            save_guardrails_file(
-                app.state.clients.github,
-                agent.repo_full_name,
-                content,
-                archive_only=mode == "instant",
-            )
-        except ClientError as exc:
-            log.warning("guardrails commit failed for agent %s (%s): %s", name, mode, exc)
-            error = (
-                "your agent took the new rules, but the room couldn't write them to its "
-                "files. Save again."
-                if mode == "instant"
-                else "couldn't reach your agent's files. Try again."
-            )
-            return JSONResponse({"error": error}, status_code=502)
+        with repo_write_lock(agent.repo_full_name):
+            mode, refused = _deliver_guardrails(agent, payload.base_sha, content)
+        if refused is not None:
+            return refused
 
         email = audit.actor_from(request)[0]
         items = []

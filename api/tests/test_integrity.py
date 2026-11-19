@@ -7327,3 +7327,25 @@ def test_a_guardrails_save_from_a_stale_list_is_refused_not_overwritten(tmp_path
 
     assert response.status_code == 409
     assert cabal.relay_calls == [] and github.pushes == []
+
+
+def test_an_edited_rule_keeps_its_source_when_its_old_text_is_saved_beside_it(tmp_path, monkeypatch):
+    """Integrity (provenance, issue #524): a save that rewords a rule by its id and also
+    carries the rule's old text as a new line keeps the source on the reworded rule; the
+    old text is the new line, recorded as the person's."""
+    from tests.test_wire_bundle import _guardrails_room
+
+    client, _, _ = _guardrails_room(tmp_path, monkeypatch)
+    old = "Never change access without an approved ticket."
+    persona_rule = client.put("/api/agents/gate/guardrails", json={"rules": [
+        {"text": old, "source_kind": "persona", "source_ref": "helpful-generalist"},
+    ]}).json()["rules"][0]
+
+    saved = client.put("/api/agents/gate/guardrails", json={"rules": [
+        {"text": old},
+        {"id": persona_rule["id"], "text": old + " Say which ticket."},
+    ]}).json()["rules"]
+
+    assert saved[1]["id"] == persona_rule["id"]
+    assert saved[1]["source"] == {"kind": "persona", "ref": "helpful-generalist"}
+    assert saved[0]["source"]["kind"] == "person" and saved[0]["id"] != persona_rule["id"]

@@ -32,7 +32,6 @@ from sqlalchemy.orm import Session
 from kobo_api import delivery
 from kobo_api.clients import GitHubClient
 from kobo_api.models import Agent, AgentLearning, GuardrailRule
-from kobo_api.repo_lock import repo_write_lock
 
 GUARDRAILS_MARKER = "guardrails"
 GUARDRAILS_FILE = "guardrails.md"
@@ -182,9 +181,10 @@ def save_guardrails_file(
     """Write `bundle/guardrails.md` and push it; returns the pushed commit's sha.
     `archive_only` as in `kobo_api.knowledge.save_knowledge_file`: after a relay
     the agent already has the list, so the commit only mirrors it (`[skip ci]`);
-    without one, the commit is the delivery and keeps CI. Held under the repo's
-    write lock, clone to push, as the skills and tooling writers are."""
-    with repo_write_lock(repo), tempfile.TemporaryDirectory() as tmp:
+    without one, the commit is the delivery and keeps CI. The caller holds
+    `repo_write_lock(repo)` around its whole save (the version check, the relay
+    and this), so two saves of one list can never both pass the check."""
+    with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         github.clone(repo, workdir)
         bundle_dir = workdir / "bundle"
@@ -264,15 +264,25 @@ def sync_rows(session: Session, agent_name: str, items: list[RuleIn], actor: str
         select(GuardrailRule).where(GuardrailRule.agent_name == agent_name)
     ).all()
     by_id = {row.id: row for row in rows}
-    by_text = {row.text: row for row in rows}
     kept: set[int] = set()
-    now = datetime.now(UTC)
+    # Ids first: an edited line names its row, and a line elsewhere in the same
+    # save that still says the old text must not take that row from it.
+    claimed: list[GuardrailRule | None] = []
     for item in items:
         row = by_id.get(item.id) if item.id is not None else None
-        if row is None or row.id in kept:
-            row = by_text.get(item.text)
-            if row is not None and row.id in kept:
-                row = None
+        if row is not None and row.id not in kept:
+            kept.add(row.id)
+            claimed.append(row)
+        else:
+            claimed.append(None)
+    by_text: dict[str, GuardrailRule] = {}
+    for row in rows:
+        if row.id not in kept:
+            by_text.setdefault(row.text, row)
+    now = datetime.now(UTC)
+    for item, row in zip(items, claimed, strict=True):
+        if row is None:
+            row = by_text.pop(item.text, None)
         if row is None:
             kind = item.source_kind if item.source_kind in SETTABLE_SOURCES else SOURCE_PERSON
             row = GuardrailRule(
