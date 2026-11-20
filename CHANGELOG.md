@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.79] - 2026-11-20
+
 ### Added
 - **Emoji, Slack channels and repositories on a guardrail rule**, beside **People**. A rule's **⋯** menu has all four, and so does a new **⋯** beside **Add**, so a new rule takes them before it is added. Emoji are named as Slack names them (thumbsup is +1) and offered as you type; channels by the name Slack shows; repositories as owner/name, offered from the room's list. Each rides on the rule's own line in the agent's guardrails file, `(These people: ...) (These emoji: ...) (These channels: ...) (These repositories: ...)` in that order, and shows under the rule's words. The agent is told which channel each Slack message came from as well as who sent it, and which emoji woke it, so it can tell when such a rule applies. From an assistant, **get guardrails** gives each list and the rule's whole `line`. Needs the runtime that names each message's channel (tenishai/daedalus#271).
 - **`scripts/remove-retired-checks.py`**, a one-off that takes the retired probe guard off the agents that have it, run inside a room's API pod like the persona-rules move: one commit and one restart per agent, dry run unless `--apply`.
