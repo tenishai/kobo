@@ -5641,10 +5641,52 @@ def test_a_builtin_role_cannot_be_deleted(session__admin_store):
 GATEWAY_REPO = "example-org/gateway-config"
 
 
+def _card(name: str, vendor: str | None, scope: str | None, tools: list[tuple[str, dict]], **labels: str) -> dict:
+    return {"name": name, "card": {
+        "handler": name, "description": name, "required_scope": scope, "activation": "always",
+        "labels": {"vendor": vendor, **labels} if vendor else dict(labels),
+        "tools": [{"name": tool, "description": tool, **extra} for tool, extra in tools]}}
+
+
+# The gateway's handler cards as `GET /admin/cards` answers (liminal 0.10.0), in the shapes an
+# install's handlers declare them: what each permission opens is derived from these.
+GATEWAY_CARDS: list[dict] = [
+    _card("aws", "aws", "aws:read", [("call", {"permissions": ["*"], "risk": "irreversible"})]),
+    _card("datadog", "datadog", "datadog:read", [("metric_query", {"permissions": ["datadog_metrics_read"], "risk": "low"}),
+                                                 ("monitor_get", {"permissions": ["datadog_monitors_read"], "risk": "low"})]),
+    _card("gcp", "gcp", "gcp:read", [("compute_instances", {"permissions": ["gcp_compute_read"], "risk": "low"}),
+                                     ("gke_clusters", {"permissions": ["gcp_gke_read"], "risk": "low"}),
+                                     ("log_entries", {"permissions": ["gcp_logging_read"], "risk": "low"})]),
+    _card("github-clone", "github", "github:read", [("clone_token", {"permissions": ["github_repos_read"], "risk": "low"})],
+          audience="own-code"),
+    _card("github-write", "github", "github:review", [
+        ("comment_on_pull_request", {"permissions": ["github_pulls_review", "github_pulls_write"], "risk": "write"}),
+        ("open_pull_request", {"permissions": ["github_pulls_write"], "required_scope": "github:write", "risk": "write"})]),
+    _card("jira-write", "atlassian", "atlassian:jira-write", [
+        ("create_issue", {"permissions": ["atlassian_jira_issues_write"], "risk": "write"})]),
+    _card("okta", "okta", "okta:read", [
+        ("find_user", {"permissions": ["*"], "risk": "low"}),
+        ("add_user_to_group", {"permissions": ["okta_access_write"], "required_scope": "okta:write", "risk": "write"})]),
+    # No vendor: no permission opens it.
+    _card("scratchpad", None, None, [("write", {})], tier="builtin"),
+]
+
+
+def _lanes(cards: list[dict] | None = None):
+    """The lanes those cards make, as the room derives them."""
+    from kobo_api.gateway_lane import Lanes, parse_cards
+    return Lanes(cards=parse_cards(GATEWAY_CARDS if cards is None else cards), known=True)
+
+
 class FakeLiminalAdmin:
     def __init__(self, grants: list[GatewayGrant] | None = None, *, fail: str | None = None,
-                 targets_unsupported: bool = False, refuse_target: str | None = None):
+                 targets_unsupported: bool = False, refuse_target: str | None = None,
+                 cards: list[dict] | None = None):
         self.grants = {(g.issuer, g.persona): g for g in (grants or [])}
+        # The handlers' cards (liminal 0.10.0); `cards_fail` makes the read fail as a
+        # gateway that cannot answer does.
+        self.cards_listed: list[dict] = GATEWAY_CARDS if cards is None else cards
+        self.cards_fail: str | None = None
         self.writes: list[GatewayGrant] = []
         self.revokes: list[tuple[str, str]] = []
         self._fail = fail
@@ -5692,6 +5734,11 @@ class FakeLiminalAdmin:
     def revoke(self, issuer: str, persona: str) -> None:
         self.revokes.append((issuer, persona))
         self.grants.pop((issuer, persona), None)
+
+    def cards(self) -> list[dict]:
+        if self.cards_fail:
+            raise ClientError(self.cards_fail)
+        return [dict(c) for c in self.cards_listed]
 
 
 def _client__api_admin_connections(tmp_path, fake_storage, *, github: FakeGitHub, admin, config_overrides=None):
@@ -6006,9 +6053,11 @@ def test_the_picker_says_which_permissions_open_no_tool():
     Datadog's SLOs open no tool), AWS serves every permission through one tool,
     GitHub goes by level, and a vendor the room has no lane for (Azure), or a row
     the catalogue gained since, opens nothing until the room learns its tool. And
-    whatever the room says opens a tool has a lane to carry it to the agent."""
-    from kobo_api import gateway_lane
+    whatever the room says opens a tool has a lane to carry it to the agent. Which handler
+    tool a permission opens is the gateway's to say (its cards); before the room has read
+    them no handler opens, so only what the room's own targets serve is offered."""
     from kobo_api.bab import picker
+    from kobo_api.gateway_lane import Lanes
 
     bab = _gcp_bab()
     bab._catalogue["azure"] = {"vendor": "azure", "tiers": [], "groups": [{"name": "Management", "permissions": [
@@ -6016,7 +6065,9 @@ def test_the_picker_says_which_permissions_open_no_tool():
     bab._catalogue["datadog"]["groups"][0]["permissions"].append({"name": "datadog_slos_read", "tier": "read", "description": "SLOs"})
     bab._catalogue["github"]["groups"][0]["permissions"].append({"name": "github_releases_write", "tier": "mutate", "description": "new"})
 
-    tools = {v["id"]: {p["name"]: p["tool"] for g in v["groups"] for p in g["permissions"]} for v in picker(bab, "x")}
+    lanes = _lanes()
+    tools = {v["id"]: {p["name"]: p["tool"] for g in v["groups"] for p in g["permissions"]}
+             for v in picker(bab, "x", lanes=lanes)}
 
     assert tools["gcp"] == {"gcp_compute_read": True, "gcp_logging_read": True, "gcp_vertex_ai_user": False}
     assert tools["datadog"] == {"datadog_monitors_read": True, "datadog_slos_read": False}
@@ -6024,8 +6075,11 @@ def test_the_picker_says_which_permissions_open_no_tool():
     assert tools["github"] == {"github_repos_read": True, "github_pulls_review": True, "github_pulls_write": True,
                                "github_releases_write": False}
     assert tools["azure"] == {"azure_resources_read": False}
-    for vendor, permissions in gateway_lane.TOOLED.items():
-        assert all(gateway_lane.lane_for(vendor, p) for p in permissions), vendor
+    assert all(lanes.lane_for(v, p) for v, ps in tools.items() for p, tool in ps.items() if tool)
+    unread = {v["id"]: {p["name"]: p["tool"] for g in v["groups"] for p in g["permissions"]}
+              for v in picker(bab, "x", lanes=Lanes())}
+    assert not any(unread["gcp"].values()) and not any(unread["aws"].values()) and not any(unread["azure"].values())
+    assert unread["github"]["github_repos_read"] and unread["datadog"] == {"datadog_monitors_read": True, "datadog_slos_read": False}
 
 
 def test_a_google_cloud_project_is_probed_through_the_permission_service_and_held_there_with_the_read_ceiling(tmp_path, fake_storage):
@@ -6410,7 +6464,7 @@ def test_an_atlassian_connection_for_read_and_write_offers_write_issues_and_its_
     ceiling to the catalogue's writing level, so an agent's owner may ask for Write issues; the grant
     earns the `atlassian:jira-write` scope, which the target puts on the four Jira writing tools and
     on nothing else (Confluence's writers and the generic executors stay behind scopes no grant opens)."""
-    from kobo_api import admin_integrations, gateway_lane
+    from kobo_api import admin_integrations
     monkeypatch.setattr(admin_integrations, "_basic_probe", lambda *a: None)
     bab = FakeBab(integrations=[], catalogue=ATLASSIAN_CATALOGUE)
     client, headers = _access_client(tmp_path, fake_storage, bab=bab)
@@ -6421,16 +6475,17 @@ def test_an_atlassian_connection_for_read_and_write_offers_write_issues_and_its_
     assert row["state"] == "applied", row
     (integ,) = bab.integrations("x")
     assert integ["ceiling"] == ["atlassian_jira_issues_read", "atlassian_jira_issues_write"]
-    read = gateway_lane.lane_for("atlassian", "atlassian_jira_issues_read")
-    write = gateway_lane.lane_for("atlassian", "atlassian_jira_issues_write")
-    assert read.scopes == ("atlassian:read",) and write.scopes == ("atlassian:read", "atlassian:jira-write")
+    lanes = _lanes()
+    read = lanes.lane_for("atlassian", "atlassian_jira_issues_read")
+    write = lanes.lane_for("atlassian", "atlassian_jira_issues_write")
+    assert read.scopes == ("atlassian:read",) and write.scopes == ("atlassian:jira-write", "atlassian:read")
     assert read.handlers == ("atlassian",) and write.handlers == ("atlassian", "jira-write")
     assert write.allow == ("atlassian.*", "jira-write.*")
     scopes = client.app.state.clients.liminal_admin.targets["atlassian"]["tool_scopes"]
     assert {t for t, s in scopes.items() if s == "atlassian:jira-write"} == {"editJiraIssue", "transitionJiraIssue"}
     # The words a person reads (a new issue, a comment) only ever come from the signed handler.
     assert scopes["createJiraIssue"] == scopes["addOrEditJiraIssueComment"] == "atlassian:never"
-    assert "atlassian:jira-write" in gateway_lane.MANAGED_SCOPES
+    assert "atlassian:jira-write" in lanes.managed_scopes
 
 
 OKTA_CATALOGUE = {"okta": {"vendor": "okta", "groups": [
@@ -6449,7 +6504,7 @@ def test_okta_connects_with_a_checked_token_the_gateway_reads_and_its_two_levels
     echoes it, writes no gateway target, and holds the connection with the read ceiling: the level
     that changes things is offered only on a connection made for reading and writing, and only that
     level earns the `okta:write` scope the handler's changing tools ask for."""
-    from kobo_api import admin_integrations, gateway_lane
+    from kobo_api import admin_integrations
     probes: list[tuple] = []
     monkeypatch.setattr(admin_integrations, "_okta_probe", lambda name, domain, token: probes.append((name, domain, token)))
     bab = FakeBab(integrations=[], catalogue=OKTA_CATALOGUE)
@@ -6481,11 +6536,12 @@ def test_okta_connects_with_a_checked_token_the_gateway_reads_and_its_two_levels
     assert row["id"] == "okta" and row["state"] == "applied", row
     (integ,) = bab.integrations("x")
     assert sorted(integ["ceiling"]) == ["okta_access_write", "okta_directory_read"]
-    read = gateway_lane.lane_for("okta", "okta_directory_read")
-    write = gateway_lane.lane_for("okta", "okta_access_write")
+    lanes = _lanes()
+    read = lanes.lane_for("okta", "okta_directory_read")
+    write = lanes.lane_for("okta", "okta_access_write")
     assert read.scopes == ("okta:read",) and write.scopes == ("okta:read", "okta:write")
     assert read.handlers == write.handlers == ("okta",) and read.allow == write.allow == ("okta.*",)
-    assert gateway_lane.opens_tool("okta", "okta_directory_read") and "okta:write" in gateway_lane.MANAGED_SCOPES
+    assert lanes.opens_tool("okta", "okta_directory_read") and "okta:write" in lanes.managed_scopes
 
     # A token Okta refuses is stored nowhere, and a domain that is not Okta's is refused before it is asked.
     def refuse(name, domain, token):
@@ -6902,14 +6958,8 @@ def test_a_github_grant_opens_the_lane_its_level_names():
     """Gate (authorization, kobo#365): GitHub's lane is per permission. Read opens the read-only
     target; Review pull requests opens the write target; Open pull requests adds the scope the
     creating tools want. The gateway's `github` handler is in no lane and is withdrawn."""
-    from kobo_api.gateway_lane import (
-        GATEWAY_LANES,
-        MANAGED_HANDLERS,
-        PERMISSION_LANES,
-        lane_for,
-    )
-    assert "github" not in GATEWAY_LANES
-    read, review, write = (PERMISSION_LANES[("github", p)] for p in ("github_repos_read", "github_pulls_review", "github_pulls_write"))
+    lanes = _lanes()
+    read, review, write = (lanes.lane_for("github", p) for p in ("github_repos_read", "github_pulls_review", "github_pulls_write"))
     assert (read.scopes, read.handlers, read.allow) == (("github:read",), ("github-mcp",), ("github-mcp.*",))
     # Review and Open pull requests open the vendor's write target AND the gateway's signing
     # `github-write` handler (comments, reviews and new pull requests carry the agent's name).
@@ -6917,8 +6967,8 @@ def test_a_github_grant_opens_the_lane_its_level_names():
         ("github:review",), ("github-mcp-write", "github-write"), ("github-mcp-write.*", "github-write.*"))
     assert (write.scopes, write.handlers, write.allow) == (
         ("github:review", "github:write"), ("github-mcp-write", "github-write"), ("github-mcp-write.*", "github-write.*"))
-    assert lane_for("datadog", "datadog_monitors_read") is GATEWAY_LANES["datadog"] and lane_for("github", "unknown") is None
-    assert "github" in MANAGED_HANDLERS and not any("github" in lane.handlers for lane in PERMISSION_LANES.values())
+    assert lanes.lane_for("github", "unknown") is None
+    assert "github" in lanes.managed_handlers and not any("github" in lane.handlers for lane in (read, review, write))
 
 
 # ---- GitHub per agent: a repository set, then a level (kobo#365) -----------------
@@ -7188,11 +7238,13 @@ def test_read_opens_the_clone_token_for_an_agent_that_runs_its_own_code_and_for_
     # own code, and takes it from one the room builds.
     admin.grants[("cabal-core", "ledger")] = GatewayGrant(
         issuer="cabal-core", persona="ledger", scopes=("github:read",), allowed_handlers=("github-mcp",))
-    assert gateway_lane.heal(c.app.state.clients, bab, ["ledger"], "room@kobo", own_code=frozenset({"ledger"})) == ["ledger"]
+    lanes = _lanes()
+    assert gateway_lane.heal(c.app.state.clients, bab, ["ledger"], "room@kobo", lanes=lanes,
+                             own_code=frozenset({"ledger"})) == ["ledger"]
     assert set(admin.grants[("cabal-core", "ledger")].allowed_handlers) == {"github-mcp", "github-clone"}
-    assert gateway_lane.heal(c.app.state.clients, bab, ["ledger"], "room@kobo") == ["ledger"]
+    assert gateway_lane.heal(c.app.state.clients, bab, ["ledger"], "room@kobo", lanes=lanes) == ["ledger"]
     assert set(admin.grants[("cabal-core", "ledger")].allowed_handlers) == {"github-mcp"}
-    assert "github-clone" in gateway_lane.MANAGED_HANDLERS
+    assert "github-clone" in lanes.managed_handlers
 
     admin.grants[("cabal-core", "ledger")] = GatewayGrant(
         issuer="cabal-core", persona="ledger", scopes=("x:read", "github:read"),
@@ -7201,6 +7253,93 @@ def test_read_opens_the_clone_token_for_an_agent_that_runs_its_own_code_and_for_
     assert c.delete(f"/api/agents/ledger/access/grants/{read_grant['id']}", headers=h).status_code == 200
     lane = admin.grants[("cabal-core", "ledger")]
     assert set(lane.scopes) == {"x:read"} and set(lane.allowed_handlers) == {"scratchpad"}
+    # A handler whose card names an audience the room does not know opens to nobody: guessing
+    # "any agent" could put a token in a model's context.
+    odd = [_card("github-clone", "github", "github:read", [("clone_token", {"permissions": ["github_repos_read"]})],
+                 audience="agents")]
+    assert _lanes(odd).lane_for("github", "github_repos_read", own_code=True).handlers == ("github-mcp",)
+
+
+GCP_ROW = {"integration": "acme-platform-prod", "vendor": "gcp", "kind": "account", "ceiling": ["gcp_compute_read"],
+           "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"}
+
+
+def test_a_handler_that_leaves_the_cards_is_withdrawn_from_every_agent_that_held_it(tmp_path, fake_storage, monkeypatch):
+    """Gate (authorization, #524 step 5): what a permission opens comes from the gateway's handler
+    cards. When a handler leaves them, a heal pass takes it from every agent that held it, from
+    the gateway grant and from the bundle's allow list, because the room remembers what the
+    cards' lanes named. Nothing else on the grant moves. A gateway that comes back without a
+    handler for less than an hour (one that failed to load) costs no agent a commit."""
+    from kobo_api import gateway_lane
+    from kobo_api.models import GatewayManaged
+
+    c, _, bab, github, admin = _github_room(tmp_path, fake_storage, connected=False)
+    with c.app.state.session_factory() as s:
+        s.add(Agent(name="janus", persona="helpful-generalist", model_id="vertex_ai/claude-sonnet-4-5", skills=[],
+                    status=AgentStatus.READY, repo_full_name="example-org/agent-janus", team="shared",
+                    created_by="ops@example.com"))
+        s.commit()
+    bab._integrations.append(dict(GCP_ROW))
+    for i, name in enumerate(("janus", "ledger"), start=1):
+        bab._grants[i] = {"id": i, "agent": name, "integration": "acme-platform-prod", "permission": "gcp_compute_read",
+                          "state": "active"}
+    admin.grants[("cabal-core", "janus")] = GatewayGrant(issuer="cabal-core", persona="janus", scopes=("x:read",),
+                                                         allowed_handlers=("scratchpad",))
+    assert sorted(gateway_lane._heal_ready_agents(c.app)) == ["janus", "ledger"]
+    assert all({"gcp:read", "x:read"} <= set(admin.grants[("cabal-core", n)].scopes) for n in ("janus", "ledger"))
+    with c.app.state.session_factory() as s:
+        assert s.get(GatewayManaged, ("handler", "gcp")).vendor == "gcp"
+    # Both repositories now read as pushed (the fake's clone otherwise starts from the first bundle).
+    github._extra_clone_files["bundle/agent.yaml"] = github.pushed_file("bundle/agent.yaml")
+    assert "gcp.*" in yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["tools"]["allow"]
+
+    admin.cards_listed = [card for card in GATEWAY_CARDS if card["name"] != "gcp"]
+    pushes = len(github.pushes)
+    assert gateway_lane._heal_ready_agents(c.app) == [] and len(github.pushes) == pushes
+    monkeypatch.setattr(gateway_lane, "VANISHED_GRACE_S", 0.0)
+    assert sorted(gateway_lane._heal_ready_agents(c.app)) == ["janus", "ledger"]
+
+    for name in ("janus", "ledger"):
+        grant = admin.grants[("cabal-core", name)]
+        assert set(grant.scopes) == {"x:read"} and set(grant.allowed_handlers) == {"scratchpad"}, grant
+    assert [message for _, message in github.pushes[-2:]] == ["kobo: withdraw the gcp tools"] * 2
+    assert "gcp.*" not in yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["tools"]["allow"]
+
+
+def test_a_failed_card_read_changes_no_grant(tmp_path, fake_storage):
+    """Gate (authorization, #524 step 5): a gateway that cannot list its cards (restarting, or
+    older than liminal 0.10.0) never reads as "no handlers". The room works from the last cards
+    it kept, in its own memory or, after it restarts, in its database, so no grant and no bundle
+    changes. A room that has never read any manages only its own targets, so it withdraws
+    nothing a card would have named either."""
+    from kobo_api import gateway_lane
+    from kobo_api.models import GatewayCards, GatewayManaged
+
+    c, _, bab, github, admin = _github_room(tmp_path, fake_storage, connected=False)
+    bab._integrations.append(dict(GCP_ROW))
+    bab._grants[1] = {"id": 1, "agent": "ledger", "integration": "acme-platform-prod", "permission": "gcp_compute_read",
+                      "state": "active"}
+    assert gateway_lane._heal_ready_agents(c.app) == ["ledger"]
+    held, writes, pushes = admin.grants[("cabal-core", "ledger")], len(admin.writes), len(github.pushes)
+    assert "gcp" in held.allowed_handlers
+
+    admin.cards_fail = "gateway admin plane unreachable: ConnectError"
+    gateway_lane._READS.clear()  # the room restarted: only its database remembers the cards
+    assert gateway_lane._heal_ready_agents(c.app) == [] and len(github.pushes) == pushes
+    with c.app.state.session_factory() as s:
+        said = gateway_lane.follow(s, c.app.state.clients, bab, agent_name="ledger", actor="room@kobo")
+    assert said.startswith(gateway_lane.UNCHANGED) and "no longer allows gcp" not in said, said
+    pushes = len(github.pushes)  # the fake's every clone is the first bundle, so follow re-adds gcp.*
+
+    with c.app.state.session_factory() as s:
+        s.query(GatewayCards).delete()
+        s.query(GatewayManaged).delete()
+        s.commit()
+    assert gateway_lane._heal_ready_agents(c.app) == []
+    with c.app.state.session_factory() as s:
+        said = gateway_lane.follow(s, c.app.state.clients, bab, agent_name="ledger", actor="room@kobo")
+    assert said.endswith(gateway_lane.CARDS_UNREAD), said
+    assert admin.grants[("cabal-core", "ledger")] == held and len(admin.writes) == writes
 
 
 def test_the_room_puts_a_gateway_target_an_applied_connection_owes_and_the_gateway_lacks(session__admin_store):
@@ -7269,14 +7408,14 @@ def test_the_room_sets_back_a_gateway_grant_something_else_rewrote():
     class _Clients:
         liminal_admin = admin
 
-    healed = gateway_lane.heal(_Clients(), bab, ["ledger", "janus"], "room@kobo")
+    healed = gateway_lane.heal(_Clients(), bab, ["ledger", "janus"], "room@kobo", lanes=_lanes())
 
     assert healed == ["ledger"]
     ledger = admin.grants[("cabal-core", "ledger")]
     assert set(ledger.scopes) == {"atlassian:read", "github:read"}
     assert set(ledger.allowed_handlers) == {"atlassian", "github-mcp", "scratchpad"}
     assert admin.grants[("cabal-core", "janus")].allowed_handlers == ("github", "scratchpad")
-    assert gateway_lane.heal(_Clients(), bab, ["ledger", "janus"], "room@kobo") == []
+    assert gateway_lane.heal(_Clients(), bab, ["ledger", "janus"], "room@kobo", lanes=_lanes()) == []
 
 
 def test_a_google_cloud_project_connected_for_its_models_alone_is_held_with_no_ceiling_and_never_offered(tmp_path, fake_storage):
@@ -7303,19 +7442,18 @@ def test_a_google_cloud_project_connected_for_its_models_alone_is_held_with_no_c
 
 
 def test_a_google_cloud_read_permission_opens_the_gateways_gcp_handler():
-    """Gate (authorization, 2026-11-09): every `gcp_*_read` permission is one lane, `gcp:read`
-    on the `gcp` handler with `gcp.*` allowed, so a grant on any connected project opens the
-    handler that leases that project's token per call."""
-    from kobo_api.gateway_lane import (
-        GATEWAY_LANES,
-        MANAGED_HANDLERS,
-        MANAGED_SCOPES,
-        lane_for,
-    )
-    lane = lane_for("gcp", "gcp_compute_read")
-    assert lane is GATEWAY_LANES["gcp"] and lane_for("gcp", "gcp_gke_read") is lane
+    """Gate (authorization, 2026-11-09): every `gcp_*_read` permission a tool on the `gcp`
+    handler's card names opens the same lane, `gcp:read` on the handler with `gcp.*` allowed,
+    so a grant on any connected project opens the handler that leases that project's token
+    per call. A permission no tool names (the models row) opens nothing."""
+    lanes = _lanes()
+    lane = lanes.lane_for("gcp", "gcp_compute_read")
+    assert lanes.lane_for("gcp", "gcp_gke_read") == lane and lanes.lane_for("gcp", "gcp_vertex_ai_user") is None
+    # A field the room cannot read costs that field, never the read: a list for a risk is no risk.
+    odd = _lanes([_card("gcp", "gcp", "gcp:read", [("compute_instances", {"permissions": ["gcp_compute_read"], "risk": ["low"]})])])
+    assert odd.lane_for("gcp", "gcp_compute_read") == lane and odd.cards[0].tools[0].risk is None
     assert (lane.scopes, lane.handlers, lane.allow) == (("gcp:read",), ("gcp",), ("gcp.*",))
-    assert "gcp:read" in MANAGED_SCOPES and "gcp" in MANAGED_HANDLERS
+    assert "gcp:read" in lanes.managed_scopes and "gcp" in lanes.managed_handlers
 
 def test_an_aws_permission_opens_the_gateways_aws_handler_and_a_cloud_with_no_lane_is_named():
     """Gate (authorization, 2026-11-13): an agent granted CloudTrail read on an account had no
@@ -7324,18 +7462,12 @@ def test_an_aws_permission_opens_the_gateways_aws_handler_and_a_cloud_with_no_la
     session to what is held). A cloud the Access tab can offer and no lane serves is named
     here, so the next one cannot arrive granted and toolless without this test saying so."""
     from kobo_api.bab import CLOUD_LABELS
-    from kobo_api.gateway_lane import (
-        GATEWAY_LANES,
-        MANAGED_ALLOW,
-        MANAGED_HANDLERS,
-        MANAGED_SCOPES,
-        lane_for,
-    )
-    lane = lane_for("aws", "aws_cloudtrail_read")
-    assert lane is GATEWAY_LANES["aws"] and lane_for("aws", "aws_ecs_update_service") is lane
+    lanes = _lanes()
+    lane = lanes.lane_for("aws", "aws_cloudtrail_read")
+    assert lanes.lane_for("aws", "aws_ecs_update_service") == lane
     assert (lane.scopes, lane.handlers, lane.allow) == (("aws:read",), ("aws",), ("aws.*",))
-    assert "aws:read" in MANAGED_SCOPES and "aws" in MANAGED_HANDLERS and "aws.*" in MANAGED_ALLOW
-    assert {v for v in CLOUD_LABELS if lane_for(v, "") is None} == {"azure"}
+    assert "aws:read" in lanes.managed_scopes and "aws" in lanes.managed_handlers and "aws.*" in lanes.managed_allow
+    assert {v for v in CLOUD_LABELS if not any(c.vendor == v for c in lanes.cards)} == {"azure"}
 
 
 def test_a_lane_new_to_a_release_reaches_an_agent_that_already_held_the_permission(tmp_path, fake_storage):

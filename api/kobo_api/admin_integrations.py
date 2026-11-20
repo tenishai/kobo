@@ -160,7 +160,7 @@ MCP_SUFFIX = "/mcp"
 # its v2 endpoint (https://mcp.atlassian.com/v2, the one that serves the Jira and Confluence tools
 # to an API token; v1 serves only the Teamwork Graph four) also lists tools that create, edit,
 # transition and delete. Those sit behind scopes of their own: the Jira writing four behind the one
-# the `atlassian_jira_issues_write` permission opens (gateway_lane.PERMISSION_LANES, 2026-11-03),
+# the `atlassian_jira_issues_write` permission opens (gateway_lane.TARGET_PERMISSION_LANES, 2026-11-03),
 # the Confluence writing two behind a scope no lane grants yet, and the generic executors and the
 # graph writers behind one no lane will ever grant. The read tools stay under the lane's
 # `required_scope`, and the shared credential is the outer wall for all of them.
@@ -489,8 +489,8 @@ def target_spec(row: AdminIntegration) -> dict[str, Any]:
     if auth == BASIC_AUTH:
         out["auth_scheme"] = "basic"  # the env holds `email:token`; the gateway encodes it at the wire
     out.update({k: (dict(v) if isinstance(v, dict) else v) for k, v in TARGET_EXTRAS.get(row.vendor, {}).items()})
-    # A vendor with a gateway lane is open only to an agent whose grant carries the lane's scope.
-    lane = gateway_lane.GATEWAY_LANES.get(row.vendor)
+    # A vendor with a lane to the room's target is open only to an agent whose grant carries its scope.
+    lane = gateway_lane.TARGET_LANES.get(row.vendor)
     if lane is not None:
         out["required_scope"] = lane.scopes[0]
     return out

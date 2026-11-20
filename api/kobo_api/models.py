@@ -1068,3 +1068,34 @@ class MCPRevocation(Base):
     revoked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     revoked_by: Mapped[str] = mapped_column(String(320), nullable=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class GatewayCards(Base):
+    """The gateway's handler cards as the room last read them (`GET
+    /admin/cards`, liminal 0.10.0; issue #524 step 5), exactly as the gateway
+    answered. What each permission opens is derived from them
+    (`gateway_lane.Lanes`). When the gateway cannot answer, the room keeps
+    using this read, so a gateway restart never reads as "no handlers" and
+    never strips an agent's tools. One row, id 1, replaced by the heal pass."""
+
+    __tablename__ = "gateway_cards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cards: Mapped[list] = mapped_column(_JSON_BODY, nullable=False)
+    read_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class GatewayManaged(Base):
+    """Every scope, handler and allow pattern a lane from the gateway's cards
+    has named (issue #524 step 5). The room withdraws what it manages and an
+    agent no longer earns. Without this record, a handler that leaves the cards
+    would stay on every agent that held it, because nothing would name it any
+    more. Rows are only ever added. `kind` is `scope`, `handler` or `allow`;
+    `vendor` names the vendor in the commit that withdraws an allow pattern."""
+
+    __tablename__ = "gateway_managed"
+
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    value: Mapped[str] = mapped_column(String(200), primary_key=True)
+    vendor: Mapped[str] = mapped_column(String(64), nullable=False)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, nullable=False)

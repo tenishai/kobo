@@ -887,6 +887,32 @@ def test_gateway_targets_go_out_as_the_stanza_and_a_plain_404_is_an_older_admin_
     assert captured["url"] == "http://liminal-admin.local/admin/targets/acme-tool"
 
 
+def test_the_gateways_cards_come_back_as_written_and_no_answer_is_never_an_empty_list():
+    """Wire shape (gateway admin plane, liminal 0.10.0): `GET /admin/cards` with the room's token
+    gives each handler's card under its name, labels and tool fields as written. A gateway without
+    the route (FastAPI's plain 404), liminal's own 404, or one that cannot be reached raises: the
+    room keeps the cards it knew rather than read "no handlers"."""
+    card = {"handler": "gcp", "labels": {"vendor": "gcp"},
+            "tools": [{"name": "compute_instances", "permissions": ["gcp_compute_read"], "risk": "low"}]}
+    answers = [httpx.Response(200, json={"cards": [{"name": "gcp", "card": card}]})]
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, str(request.url), request.headers.get("authorization")))
+        return answers[0]
+
+    client = HttpxLiminalAdminClient("http://liminal-admin.local", lambda: "room-token",
+                                     client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert client.cards() == [{"name": "gcp", "card": card}]
+    assert seen == [("GET", "http://liminal-admin.local/admin/cards", "Bearer room-token")]
+    answers[0] = httpx.Response(404, json={"detail": "Not Found"})
+    with pytest.raises(ClientError, match="does not list its handlers' cards yet"):
+        client.cards()
+    answers[0] = httpx.Response(404, json={"detail": "handler cards are not served by this admin plane"})
+    with pytest.raises(ClientError, match="not served by this admin plane"):
+        client.cards()
+
+
 # --- the self-hosted models probe and its gateway registration (kobo#390) ----
 
 

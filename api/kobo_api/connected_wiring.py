@@ -418,13 +418,16 @@ def _offer_once(app, name: str, settled: set[str]) -> None:
     """`offer` for one agent that holds a permission, remembered in
     `settled` once it has an answer a later pass would only repeat."""
     from .bab import ROOM_ACTOR
-    from .gateway_lane import held_lanes
+    from .gateway_lane import current, held_permissions, lanes_of
 
     clients = app.state.clients
     try:
-        if not held_lanes(clients.bab, name, ROOM_ACTOR):
-            return
         with app.state.session_factory() as session:
+            # A permission that needs the gateway: one with a lane. Before the room has read the
+            # gateway's cards it cannot tell which do, and any permission it holds counts.
+            held, lanes = held_permissions(clients.bab, name, ROOM_ACTOR), current(session, clients)
+            if not held or (lanes.known and not lanes_of(held, lanes, own_code=True)):
+                return
             agent = session.query(Agent).filter_by(name=name).one()
             edit = offer(session, clients, app.state.config, agent)
             session.commit()

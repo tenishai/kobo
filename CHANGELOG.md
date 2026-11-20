@@ -12,8 +12,16 @@ All notable changes to kobo are documented here. The format follows
 - **A new agent's persona rules start its Guardrails** in a room where guardrails are on. The persona's rules move into the agent's list, each marked as from the persona, so a rule lives in one place. A rule the list would refuse, or one past its limit, stays in the persona, so nothing is lost. The persona builder calls the field **Starter guardrails** there. Giving an agent another persona later leaves its list alone. An agent made before guardrails keeps its persona's rules until it is moved over.
 
 ### Changed
+- **Which tools a permission opens comes from the gateway** (#524, step 5; needs liminal 0.10.0 on the gateway). The room used to keep its own table of the gateway's handlers, and a new tool or handler waited for a room release. Now each handler says on its own card which vendor's permissions open it, which permission opens each tool, and how risky each tool is. The room reads that from the gateway and puts the tools in front of agents that hold the permission, within a few minutes. The vendors' own servers the room connects (Datadog's, Atlassian's, GitHub's) keep their lanes in the room. Two things keep it safe:
+  - The room remembers everything the cards have ever opened, so a handler that leaves the gateway is taken away from every agent that held it.
+  - A gateway that cannot answer never reads as "no tools": the room keeps the last cards it read, in its database across its own restarts. A handler that leaves the cards keeps its tools for an hour first, so a gateway that restarts without one for a moment restarts no agent.
 - **Tooling** is now the **Checks the room runs** part of Guardrails: the same leak guard, probe guard and uploaded checks, under the rules list.
 - **New guardrail skill** on the Skills section is now **Write a skill**. A skill loads only when the model asks for it, so it never was a guardrail. Rules the agent must always follow go in Guardrails.
+
+### Upgrading
+- Three additive migrations, run at boot: `d7f2a4c6e8b1` (guardrail rules), `e8a3b5c7d9f1` (rule breaks), `f4c6e8a0b2d5` (the gateway's cards and what their lanes have named).
+- `guardrails` (deployment config, default off) turns the Guardrails list on. Turn it on in the same change as a runtime pin that carries tenishai/daedalus#267; a runtime from before it follows none of the list.
+- Upgrade the tool gateway first: liminal 0.10.0, with handler cards that carry `labels.vendor` and each tool's `permissions` and `risk`. Until the room has read the cards once, it offers and changes only the vendors' own servers it connects, and every approve or revoke says so. A permission revoked in that window keeps a handler's tools until the cards are read.
 
 ## [0.3.74] - 2026-11-17
 

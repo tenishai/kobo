@@ -1,4 +1,5 @@
-"""The gateway lane follows the permission (kobo#327, per permission since kobo#365).
+"""The gateway lane follows the permission (kobo#327, per permission since kobo#365,
+read from the gateway's handler cards since #524).
 
 With the permission service on, an agent holds permissions, not lanes: a
 grant on a Datadog connection lets it borrow a scoped application key for an
@@ -9,32 +10,42 @@ decides that from its own grant table: a scope per target and an allowed
 handler list per persona. This module keeps the two in step, so approving
 the permission is the only thing anyone grants.
 
-Two tables. `GATEWAY_LANES` says, per vendor, which scopes and handlers an
-agent needs once it holds ANY active grant on an integration of that vendor
-(Datadog). `PERMISSION_LANES` says it per (vendor, permission), for a vendor
-whose levels open different targets (GitHub: Read opens the read-only
-`github-mcp` target, Review pull requests and Open pull requests open the
-`github-mcp-write` target, the second with the `github:write` scope the
-branch- and pull-request-creating tools need). `follow` recomputes the
-managed part of the agent's gateway grant from its grants in the permission
-service and writes it live through the gateway's admin plane, leaving
-whatever else the grant carries (scopes and handlers the room did not put
-there) alone, and brings the agent's own bundle allow list in step both
-ways: a pattern the agent now earns is added, one it no longer earns is
-withdrawn (one commit, one restart). Best effort: it never raises, it
-answers one sentence for the audit row.
+What a permission opens comes from two places:
 
-A third, small table, `OWN_CODE_LANES`, is what a permission opens on top
-for an agent that runs its team's own code (kobo#483): Read on GitHub also
-opens the gateway's `github-clone` handler, whose one tool hands the agent a
-read-only token `git clone` can use. Never for an agent the room builds: its
-caller is a model, and a credential in a model's context is what every other
-route exists to avoid.
+- **The room's own targets.** The room puts the vendors' MCP servers on the
+  gateway itself (`admin_integrations`), so their lanes are the room's to
+  say: `TARGET_LANES` per vendor (any permission of that vendor), and
+  `TARGET_PERMISSION_LANES` per (vendor, permission) for a vendor whose
+  levels open different targets (GitHub: Read opens the read-only
+  `github-mcp`, Review and Open pull requests open `github-mcp-write`).
+- **The gateway's handlers, as their cards say** (`GET /admin/cards`, liminal
+  0.10.0). A card's `labels.vendor` names the vendor whose permissions open
+  it, each tool's `permissions` the ones that open that tool (`*`: any of the
+  vendor's), and its `required_scope` (else the card's) the scope a grant
+  must hold to call it. `labels.audience: own-code` keeps a handler to agents
+  that run their team's own code (kobo#483: `github-clone` hands its caller a
+  token, which a model must never hold). A new handler, or a new tool, reaches
+  agents with no change to the room.
 
-A lane added to these tables in a release reaches the agents that already
-hold its vendor without anyone granting again: the heal pass finds their
-gateway grant short of what the tables now owe, sets it, and brings the
-bundle allow list in step in the same pass (`_heal_ready_agents`).
+`follow` recomputes the managed part of the agent's gateway grant from its
+grants in the permission service and writes it live through the gateway's
+admin plane, leaving whatever else the grant carries (scopes and handlers the
+room did not put there) alone, and brings the agent's own bundle allow list
+in step both ways: a pattern the agent now earns is added, one it no longer
+earns is withdrawn (one commit, one restart). Best effort: it never raises,
+it answers one sentence for the audit row.
+
+What counts as the room's to withdraw is everything a lane names now, every
+part a card's lane has ever named (`GatewayManaged`, so a handler that leaves
+the cards is still withdrawn from every agent that held it), and the few
+things retired before the room kept that record. A failed card read keeps the
+last cards read (`GatewayCards`): read as "no handlers", one gateway restart
+would strip every agent's tools on the next pass.
+
+A lane new to the cards reaches the agents that already hold its vendor
+without anyone granting again: the heal pass finds their gateway grant short
+of what the lanes now owe, sets it, and brings the bundle allow list in step
+in the same pass (`_heal_ready_agents`).
 
 Import-light on purpose: it takes the clients bag and the permission-service
 client it is handed, and never imports the app.
@@ -44,10 +55,17 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import threading
+import time
+import weakref
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from functools import cached_property
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import yaml
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from . import delivery
@@ -55,7 +73,7 @@ from .clients import ClientError
 from .composer import update_agent_yaml_allow
 from .kinds import KIND_COMPOSED, KIND_CONNECTED
 from .liminal_admin import ISSUER, GatewayGrant
-from .models import Agent, AgentStatus
+from .models import Agent, AgentStatus, GatewayCards, GatewayManaged
 from .repo_lock import repo_write_lock
 
 log = logging.getLogger(__name__)
@@ -71,89 +89,44 @@ class Lane(NamedTuple):
     allow: tuple[str, ...]
 
 
-# vendor -> the lane an agent granted ANY permission of that vendor needs.
-GATEWAY_LANES: dict[str, Lane] = {
-    "datadog": Lane(scopes=("datadog:read",), handlers=("datadog", "datadog-mcp"), allow=("datadog.*", "datadog-mcp.*")),
+# vendor -> the lane to a target the room puts on the gateway, for ANY permission of that vendor.
+TARGET_LANES: dict[str, Lane] = {
+    # Datadog's hosted MCP server (kobo#327), each agent's calls carrying its leased key.
+    "datadog": Lane(scopes=("datadog:read",), handlers=("datadog-mcp",), allow=("datadog-mcp.*",)),
     # Atlassian (2026-11-02): one shared credential on the gateway's `atlassian` target
-    # (`required_scope atlassian:read`, admin_integrations.target_spec); the grant opens the
-    # scope and the handler for the agent, nothing is leased.
+    # (`required_scope atlassian:read`, admin_integrations.target_spec); nothing is leased.
     "atlassian": Lane(scopes=("atlassian:read",), handlers=("atlassian",), allow=("atlassian.*",)),
-    # Google Cloud (2026-11-09): any `gcp_*_read` permission opens the gateway's `gcp` handler,
-    # which leases the project's access token from the permission service per call (the
-    # integration is the project id, so one handler serves every connected project).
-    "gcp": Lane(scopes=("gcp:read",), handlers=("gcp",), allow=("gcp.*",)),
-    # AWS (2026-11-13): any AWS permission opens the gateway's `aws` handler, which leases the
-    # account's session from the permission service per call (the integration is the account).
-    # AWS itself narrows that session to the permissions held, so one handler serves every
-    # permission in the catalogue, the ones that change things included, and every account.
-    "aws": Lane(scopes=("aws:read",), handlers=("aws",), allow=("aws.*",)),
-    # Okta (2026-11-16): any Okta permission opens the gateway's `okta` handler with the scope
-    # its lookups need. One shared token read from the gateway's own Secret; nothing is leased.
-    "okta": Lane(scopes=("okta:read",), handlers=("okta",), allow=("okta.*",)),
 }
-# (vendor, permission) -> the lane that one permission needs; wins over the
-# vendor table for its vendor (kobo#365: GitHub's three levels).
-PERMISSION_LANES: dict[tuple[str, str], Lane] = {
+# (vendor, permission) -> the lane to the room's targets that one permission needs; wins
+# over the vendor's entry above (kobo#365: GitHub's three levels).
+TARGET_PERMISSION_LANES: dict[tuple[str, str], Lane] = {
     ("github", "github_repos_read"): Lane(scopes=("github:read",), handlers=("github-mcp",), allow=("github-mcp.*",)),
-    # Review and Open pull requests open two doors: the vendor's own write target
-    # (branches, commits, edits) and the gateway's `github-write` handler, which
-    # makes the comments, reviews and new pull requests and signs each with the
-    # agent's name and portrait (GitHub shows the room's App as the author).
-    ("github", "github_pulls_review"): Lane(scopes=("github:review",), handlers=("github-mcp-write", "github-write"),
-                                            allow=("github-mcp-write.*", "github-write.*")),
-    ("github", "github_pulls_write"): Lane(scopes=("github:review", "github:write"),
-                                           handlers=("github-mcp-write", "github-write"),
-                                           allow=("github-mcp-write.*", "github-write.*")),
+    # Review and Open pull requests open the vendor's own write target (branches, commits,
+    # edits); Open pull requests also earns the `github:write` scope its creating tools need.
+    ("github", "github_pulls_review"): Lane(scopes=("github:review",), handlers=("github-mcp-write",),
+                                            allow=("github-mcp-write.*",)),
+    ("github", "github_pulls_write"): Lane(scopes=("github:review", "github:write"), handlers=("github-mcp-write",),
+                                           allow=("github-mcp-write.*",)),
     # Atlassian's one writing level (2026-11-03): the target's Jira field tools (edit, transition)
     # sit behind `atlassian:jira-write` (admin_integrations.TARGET_EXTRAS); its read permissions
     # keep the vendor lane above. The shared credential is the outer wall, so a read-only
-    # connection never offers this permission (its ceiling is the read tier). The level also opens
-    # the gateway's `jira-write` handler (2026-11-08), which makes the new issues and comments and
-    # signs each with the agent's name (Jira shows the room's account as the author).
+    # connection never offers this permission (its ceiling is the read tier).
     ("atlassian", "atlassian_jira_issues_write"): Lane(scopes=("atlassian:read", "atlassian:jira-write"),
-                                                       handlers=("atlassian", "jira-write"),
-                                                       allow=("atlassian.*", "jira-write.*")),
-    # Okta's one changing level (2026-11-16): the handler's three tools that change things (add a
-    # person to a group, assign a person to an app, set an allowed profile attribute) each sit
-    # behind `okta:write` on the handler's card; the lookups keep the vendor lane above. A
-    # connection made for reading never offers this permission (its ceiling is the read tier).
-    ("okta", "okta_access_write"): Lane(scopes=("okta:read", "okta:write"), handlers=("okta",), allow=("okta.*",)),
+                                                       handlers=("atlassian",), allow=("atlassian.*",)),
 }
-# (vendor, permission) -> what that permission opens ON TOP of its lane for an agent that runs
-# its team's own code (kobo#483). Its code shells out to `git`, which the tools above cannot
-# serve, so Read also opens the gateway's `github-clone` handler: one tool, `clone_token`, that
-# leases a token for Read alone (never the agent's working lease, which may carry writes) and
-# hands it over. No allow pattern: such an agent has no bundle. The handler is managed like any
-# other, so it leaves with the permission, and an agent the room builds never keeps it.
-OWN_CODE_LANES: dict[tuple[str, str], Lane] = {
-    ("github", "github_repos_read"): Lane(scopes=("github:read",), handlers=("github-clone",), allow=()),
-}
-# What a permission opens (kobo#474). A lane lets an agent's calls through to a handler; whether
-# the handler has a tool for the permission is a separate fact, and for these vendors it is per
-# permission. Google Cloud cannot narrow a borrowed token to what the agent holds, so the
-# gateway's `gcp` handler has its own tools per permission and refuses the rest (its
-# `PERMISSIONS` table; this is that table's keys, kept in step by hand). Datadog's hosted server
-# serves a fixed default set of tools, and the permissions left out here have none in it. A
-# vendor with a lane and no entry serves every permission through what the lane opens (AWS
-# narrows the borrowed session itself; GitHub and Atlassian go by level, above). A vendor with
-# no lane opens nothing.
-TOOLED: dict[str, frozenset[str]] = {
-    "gcp": frozenset({
-        "gcp_artifactregistry_read", "gcp_asset_read", "gcp_bigquery_read", "gcp_billing_read", "gcp_compute_read",
-        "gcp_dataflow_read", "gcp_dns_read", "gcp_functions_read", "gcp_gke_read", "gcp_iam_read", "gcp_kms_read",
-        "gcp_logging_read", "gcp_memorystore_read", "gcp_monitoring_read", "gcp_network_read", "gcp_pubsub_read",
-        "gcp_resourcemanager_read", "gcp_run_read", "gcp_secretmanager_read", "gcp_securitycenter_read",
-        "gcp_spanner_read", "gcp_sql_read", "gcp_storage_read",
-    }),
+# The permissions a room target serves tools for, where that is not every permission of its
+# vendor (kobo#474): Datadog's hosted server serves a fixed default set of tools, and the
+# permissions left out here have none in it. A handler's tools say their own (its card).
+TARGET_TOOLED: dict[str, frozenset[str]] = {
     "datadog": frozenset({
         "datadog_apm_read", "datadog_dashboards_read", "datadog_events_read", "datadog_hosts_read",
         "datadog_incidents_read", "datadog_logs_read", "datadog_metrics_read", "datadog_monitors_read",
         "datadog_rum_read",
     }),
 }
-# What the room used to put there and no lane earns any more: withdrawn on the
-# next `follow` (the gateway's `github` handler and the broker sidecar's tools,
-# kobo#365). Listed here so `follow` keeps managing them until they are gone.
+# What the room put there before it kept a record of what it manages, and no lane earns any
+# more: withdrawn on the next `follow` (the gateway's `github` handler and the broker sidecar's
+# tools, kobo#365). Frozen: from #524 on the room remembers by itself (`GatewayManaged`).
 RETIRED_HANDLERS: tuple[str, ...] = ("github",)
 RETIRED_ALLOW: dict[str, str] = {"github.*": "github"}
 # Allow entries named one by one that the room's own tools used to need and that nothing serves
@@ -164,80 +137,320 @@ RETIRED_ALLOW: dict[str, str] = {"github.*": "github"}
 # match "github.".
 RETIRED_PREFIXES: tuple[str, ...] = ("github.", "jira.")
 
-_ALL_LANES: list[tuple[str, Lane]] = [
-    *GATEWAY_LANES.items(),
-    *((v, lane) for (v, _), lane in PERMISSION_LANES.items()),
-    *((v, lane) for (v, _), lane in OWN_CODE_LANES.items()),
-]
-MANAGED_SCOPES: frozenset[str] = frozenset(s for _, lane in _ALL_LANES for s in lane.scopes)
-MANAGED_HANDLERS: frozenset[str] = frozenset(h for _, lane in _ALL_LANES for h in lane.handlers) | frozenset(RETIRED_HANDLERS)
-# allow pattern -> the vendor it belongs to, for the commit message.
-ALLOW_VENDOR: dict[str, str] = {**{p: v for v, lane in _ALL_LANES for p in lane.allow}, **RETIRED_ALLOW}
-MANAGED_ALLOW: frozenset[str] = frozenset(ALLOW_VENDOR)
+# A card's `labels.audience` for a handler only an agent running its team's own code may hold.
+OWN_CODE = "own-code"
+# A tool's `permissions` entry for "any permission of the card's vendor".
+ANY_PERMISSION = "*"
+# A tool's `risk`, as the platform proposal names them (agora #68): kept with the card for the
+# day calls are registered operations; nothing here decides by it yet.
+RISKS = frozenset({"low", "write", "irreversible"})
+
 ALLOW_COMMIT = "kobo: allow the {vendor} tools"
 WITHDRAW_COMMIT = "kobo: withdraw the {vendor} tools"
 
 NOT_WIRED = "the gateway admin plane is not wired; the lane did not change"
+# Added to `follow`'s sentence while the room has never read the gateway's cards: the room's own
+# targets followed the permission, its handlers did not.
+CARDS_UNREAD = ("; the gateway has not listed its handlers' cards (liminal 0.10.0 or later), "
+                "so no handler's tools changed")
 ALLOW_FAILED = "; the agent's allow list could not be updated"
 UNCHANGED = "gateway lane unchanged"
 REMOVED = "gateway lane removed"
 
 
-def lane_for(vendor: str, permission: str) -> Lane | None:
-    """The lane one active grant earns: the permission's own when the vendor
-    is per permission, else the vendor's; None for a vendor with no lane."""
-    return PERMISSION_LANES.get((vendor, permission)) or GATEWAY_LANES.get(vendor)
+class CardTool(NamedTuple):
+    """One tool as its card says: the scope a grant needs to call it (its own
+    `required_scope`, else the card's), the permissions that open it, its risk."""
+
+    name: str
+    scope: str | None
+    permissions: frozenset[str]
+    risk: str | None
 
 
-def opens_tool(vendor: str, permission: str) -> bool:
-    """Whether holding this permission puts any tool in front of an agent. A
-    permission the tables do not know opens nothing, so a new catalogue row,
-    or a whole new vendor, reads as "no tool yet" until the room learns its
-    tools; the picker greys it instead of offering a grant that does nothing."""
-    if lane_for(vendor, permission) is None:
-        return False
-    tooled = TOOLED.get(vendor)
-    return tooled is None or permission in tooled
+class HandlerCard(NamedTuple):
+    """A handler a permission can open: its name on the gateway (what a grant's
+    `allowed_handlers` and the tool names use), the vendor whose permissions open
+    it, whether only an agent that runs its own code may hold it, and its tools."""
+
+    name: str
+    vendor: str
+    own_code: bool
+    tools: tuple[CardTool, ...]
+
+    def opened_by(self, permission: str) -> list[CardTool]:
+        return [t for t in self.tools if permission in t.permissions or ANY_PERMISSION in t.permissions]
+
+
+def parse_cards(raw: Any) -> tuple[HandlerCard, ...]:
+    """The handlers a permission can open, from `GET /admin/cards` as the
+    gateway answered. A card with no `labels.vendor` is no lane and is left
+    out, as is a tool with no `permissions`. A card whose `audience` is not
+    one the room knows is left out whole: guessing "anyone" could hand a
+    model a credential. Never raises: one bad card costs only its own lane."""
+    out: list[HandlerCard] = []
+    for entry in raw if isinstance(raw, list) else []:
+        name = entry.get("name") if isinstance(entry, dict) else None
+        card = entry.get("card") if isinstance(entry, dict) else None
+        if not isinstance(name, str) or not name or not isinstance(card, dict):
+            log.warning("gateway card skipped: no name or card in %r", str(entry)[:120])
+            continue
+        labels = card.get("labels") if isinstance(card.get("labels"), dict) else {}
+        vendor, audience = labels.get("vendor"), labels.get("audience")
+        if not isinstance(vendor, str) or not vendor:
+            continue
+        if audience not in (None, OWN_CODE):
+            log.warning("gateway card %s skipped: audience %r is not one the room knows", name, audience)
+            continue
+        card_scope = card.get("required_scope") if isinstance(card.get("required_scope"), str) else None
+        tools: list[CardTool] = []
+        for t in card.get("tools") or []:
+            if not isinstance(t, dict) or not isinstance(t.get("name"), str):
+                continue
+            permissions = t.get("permissions")
+            if not isinstance(permissions, list) or not permissions or not all(isinstance(x, str) and x for x in permissions):
+                if permissions is not None:
+                    log.warning("gateway card %s: tool %s has unreadable permissions %r", name, t["name"], permissions)
+                continue
+            scope = t.get("required_scope") if isinstance(t.get("required_scope"), str) else card_scope
+            risk = t.get("risk") if isinstance(t.get("risk"), str) and t.get("risk") in RISKS else None
+            tools.append(CardTool(t["name"], scope, frozenset(permissions), risk))
+        if tools:
+            out.append(HandlerCard(name, vendor, audience == OWN_CODE, tuple(tools)))
+    return tuple(sorted(out, key=lambda c: c.name))
+
+
+def _target_lane(vendor: str, permission: str) -> Lane | None:
+    return TARGET_PERMISSION_LANES.get((vendor, permission)) or TARGET_LANES.get(vendor)
+
+
+def _merged(parts: list[Lane]) -> Lane:
+    return Lane(*(tuple(sorted({x for lane in parts for x in getattr(lane, field)})) for field in Lane._fields))
+
+
+@dataclass(frozen=True)
+class Lanes:
+    """What each permission opens: the room's targets, plus the gateway's
+    handlers as `cards` say. `known` is False when the room has never read
+    the cards (a gateway older than liminal 0.10.0, or one that has not
+    answered since the room first started): then only the targets are
+    managed, so nothing the cards would name is ever withdrawn on a guess.
+    `remembered` is every (kind, value, vendor) a card's lane has named."""
+
+    cards: tuple[HandlerCard, ...] = ()
+    known: bool = False
+    remembered: frozenset[tuple[str, str, str]] = frozenset()
+
+    def lane_for(self, vendor: str, permission: str, *, own_code: bool = False) -> Lane | None:
+        """The lane one active grant earns: the room's target lane for it, and
+        every handler with a tool the permission opens, with the scopes those
+        tools need. `own_code` admits the handlers kept to agents that run
+        their team's own code. None for a permission that opens nothing."""
+        parts = [lane] if (lane := _target_lane(vendor, permission)) is not None else []
+        for card in self.cards:
+            if card.vendor != vendor or (card.own_code and not own_code):
+                continue
+            if opened := card.opened_by(permission):
+                parts.append(Lane(scopes=tuple(sorted({t.scope for t in opened if t.scope})), handlers=(card.name,),
+                                  allow=() if card.own_code else (f"{card.name}.*",)))
+        return _merged(parts) if parts else None
+
+    def opens_tool(self, vendor: str, permission: str) -> bool:
+        """Whether holding this permission puts any tool in front of an agent
+        the room builds (kobo#474), so the picker greys a row that opens
+        nothing instead of offering a grant that does nothing. A room target
+        serves every permission of its vendor unless `TARGET_TOOLED` says
+        otherwise; a handler serves the ones its tools name. Before the room
+        has read any cards no handler opens, so nothing a handler would serve
+        is offered; a grant made anyway opens once the cards are read."""
+        tooled = TARGET_TOOLED.get(vendor)
+        if _target_lane(vendor, permission) is not None and (tooled is None or permission in tooled):
+            return True
+        return any(card.vendor == vendor and not card.own_code and card.opened_by(permission) for card in self.cards)
+
+    def parts(self) -> frozenset[tuple[str, str, str]]:
+        """(kind, value, vendor) for every scope, handler and allow pattern
+        the cards' lanes name now: what `remember` keeps."""
+        out: set[tuple[str, str, str]] = set()
+        for card in self.cards:
+            out.add(("handler", card.name, card.vendor))
+            out.update(("scope", t.scope, card.vendor) for t in card.tools if t.scope)
+            if not card.own_code:
+                out.add(("allow", f"{card.name}.*", card.vendor))
+        return frozenset(out)
+
+    @cached_property
+    def _managed(self) -> frozenset[tuple[str, str, str]]:
+        targets = [*TARGET_LANES.items(), *((v, lane) for (v, _), lane in TARGET_PERMISSION_LANES.items())]
+        out = {(kind, value, vendor) for vendor, lane in targets
+               for kind, values in (("scope", lane.scopes), ("handler", lane.handlers), ("allow", lane.allow))
+               for value in values}
+        out.update(("handler", h, "") for h in RETIRED_HANDLERS)
+        out.update(("allow", p, v) for p, v in RETIRED_ALLOW.items())
+        if self.known:
+            out.update(self.parts() | self.remembered)
+        return frozenset(out)
+
+    @cached_property
+    def managed_scopes(self) -> frozenset[str]:
+        return frozenset(value for kind, value, _ in self._managed if kind == "scope")
+
+    @cached_property
+    def managed_handlers(self) -> frozenset[str]:
+        return frozenset(value for kind, value, _ in self._managed if kind == "handler")
+
+    @cached_property
+    def allow_vendor(self) -> dict[str, str]:
+        """allow pattern -> the vendor it belongs to, for the commit message."""
+        return {value: vendor for kind, value, vendor in sorted(self._managed) if kind == "allow"}
+
+    @property
+    def managed_allow(self) -> frozenset[str]:
+        return frozenset(self.allow_vendor)
+
+
+# How long one ask for the cards serves a process before the next, answered or not. The heal
+# pass always asks (`current(..., refresh=True)`) and is the one that keeps the answer.
+CARDS_FRESH_S = 60.0
+# How long a handler that leaves the cards keeps its lane. A gateway that restarts with a handler
+# that failed to load (discovery skips it and says so only in its log) or a deploy rolled back
+# within the hour costs no agent two commits and two restarts. Keeping a lane to a handler the
+# gateway no longer serves opens nothing: there is nothing there to call.
+VANISHED_GRACE_S = 3600.0
+
+
+class _Read(NamedTuple):
+    asked: float  # monotonic time of this process's last ask
+    raw: list | None  # its last answer, with any handler that left the answer less than the grace ago
+    read_at: datetime | None  # when that answer came
+    missing: dict[str, float]  # handler -> monotonic time it was first missing from an answer
+
+
+# admin client -> this process's last ask; one thread asks at a time, the others use the last answer.
+_READS: weakref.WeakKeyDictionary[Any, _Read] = weakref.WeakKeyDictionary()
+_ASKING = threading.Lock()
+
+
+def _read_cards(admin) -> list | None:
+    """The gateway's cards now, or None when it cannot answer (an older
+    gateway, or one restarting): never an empty list for "unknown"."""
+    cards = getattr(admin, "cards", None)
+    if cards is None:  # an admin client from before liminal 0.10.0
+        return None
+    try:
+        return cards()
+    except ClientError as exc:
+        log.warning("the gateway's handler cards could not be read; keeping the last ones read: %s", exc)
+        return None
+
+
+def _kept_cards(session: Session) -> list | None:
+    row = session.get(GatewayCards, 1)
+    return row.cards if row is not None else None
+
+
+def _with_vanished(answer: list, before: list | None, missing: dict[str, float], now: float) -> tuple[list, dict[str, float]]:
+    """The answer, plus each handler the cards before it had and it lacks,
+    for `VANISHED_GRACE_S` from when it was first missing."""
+    named = {c.get("name") for c in answer if isinstance(c, dict)}
+    kept, still = list(answer), {}
+    for card in before or []:
+        name = card.get("name") if isinstance(card, dict) else None
+        if isinstance(name, str) and name not in named and now - missing.get(name, now) < VANISHED_GRACE_S:
+            kept.append(card)
+            still[name] = missing.get(name, now)
+    for name in still:
+        if name not in missing:
+            log.warning("the gateway's %s handler left its cards; its lane is kept for %d minutes", name, VANISHED_GRACE_S // 60)
+    return kept, still
+
+
+def _ask(admin, last: _Read | None, session: Session | None) -> _Read:
+    got = _read_cards(admin)
+    now = time.monotonic()
+    if got is None:
+        return _Read(now, last.raw if last else None, last.read_at if last else None, last.missing if last else {})
+    before = last.raw if last is not None else (_kept_cards(session) if session is not None else None)
+    raw, missing = _with_vanished(got, before, last.missing if last else {}, now)
+    return _Read(now, raw, datetime.now(UTC).replace(tzinfo=None), missing)
+
+
+def current(session: Session | None, clients, *, refresh: bool = False) -> Lanes:
+    """The lanes as of now. The cards come from the gateway, asked at most
+    once every `CARDS_FRESH_S` per process, answered or not (`refresh` asks
+    now); when it cannot answer, the last cards it gave are kept, this
+    process's or, after a restart, the database's."""
+    admin = getattr(clients, "liminal_admin", None) if clients is not None else None
+    raw: list | None = None
+    if admin is not None:
+        last = _READS.get(admin)
+        due = refresh or last is None or time.monotonic() - last.asked >= CARDS_FRESH_S
+        if due and _ASKING.acquire(blocking=refresh or last is None):
+            try:
+                last = _READS[admin] = _ask(admin, _READS.get(admin), session)
+            finally:
+                _ASKING.release()
+        raw = last.raw if last is not None else None
+    if raw is None and session is not None:
+        raw = _kept_cards(session)
+    remembered = (frozenset((r.kind, r.value, r.vendor) for r in session.query(GatewayManaged).all())
+                  if session is not None else frozenset())
+    return Lanes(cards=parse_cards(raw) if raw is not None else (), known=raw is not None, remembered=remembered)
+
+
+def remember(session: Session, clients, lanes: Lanes) -> None:
+    """Keep this process's last answer from the gateway, when it first came
+    in that shape, and every part its lanes name, on the caller's session
+    (the caller commits). The heal pass calls it after asking afresh."""
+    admin = getattr(clients, "liminal_admin", None) if clients is not None else None
+    last = _READS.get(admin) if admin is not None else None
+    if last is None or last.raw is None or last.read_at is None or not lanes.known:
+        return
+    row = session.get(GatewayCards, 1)
+    if row is None:
+        session.add(GatewayCards(id=1, cards=last.raw, read_at=last.read_at))
+    elif row.cards != last.raw:
+        row.cards, row.read_at = last.raw, last.read_at
+    for kind, value, vendor in sorted(lanes.parts() - lanes.remembered):
+        if session.get(GatewayManaged, (kind, value)) is None:
+            session.add(GatewayManaged(kind=kind, value=value, vendor=vendor, first_seen=last.read_at))
 
 
 def runs_own_code(session: Session, agent_name: str) -> bool:
     """Whether this agent is a team's own code on the team's own runtime, so
-    `OWN_CODE_LANES` applies to it. Compared, never truth-tested: any other
-    kind, and an agent the room does not know, gets what a built one gets."""
+    the handlers kept to such agents (`OWN_CODE`) open for it. Compared, never
+    truth-tested: any other kind, and an agent the room does not know, gets
+    what a built one gets."""
     agent = session.query(Agent).filter_by(name=agent_name).one_or_none()
     return agent is not None and agent.kind == KIND_CONNECTED
 
 
-def held_lanes(bab, agent_name: str, actor: str, *, own_code: bool = False) -> list[Lane]:
-    """The lanes of every (vendor, permission) the agent holds an active grant
-    on. A grant on an integration the permission service no longer lists
-    counts for nothing. `own_code` adds what the same permissions open for an
-    agent that runs its team's own code (`OWN_CODE_LANES`)."""
+def held_permissions(bab, agent_name: str, actor: str) -> list[tuple[str, str]]:
+    """(vendor, permission) for every active grant the agent holds. A grant on
+    an integration the permission service no longer lists counts for nothing."""
     vendor_of = {i.get("integration"): i.get("vendor") for i in bab.integrations(actor)}
-    lanes: list[Lane] = []
+    held: list[tuple[str, str]] = []
     for g in bab.grants(agent_name, actor):
-        if g.get("state", "active") != "active":
-            continue
         vendor = vendor_of.get(g.get("integration"))
-        if not vendor:
-            continue
-        permission = str(g.get("permission") or "")
-        extra = OWN_CODE_LANES.get((str(vendor), permission)) if own_code else None
-        for lane in (lane_for(str(vendor), permission), extra):
-            if lane is not None and lane not in lanes:
-                lanes.append(lane)
-    return lanes
+        if g.get("state", "active") == "active" and vendor and (str(vendor), str(g.get("permission") or "")) not in held:
+            held.append((str(vendor), str(g.get("permission") or "")))
+    return held
 
 
-def desired_lane(bab, agent_name: str, actor: str, *, own_code: bool = False) -> tuple[set[str], set[str]]:
-    """The scopes and handlers the gateway owes this agent: the union over the
-    lanes of every (vendor, permission) it holds an active grant on."""
-    scopes: set[str] = set()
-    handlers: set[str] = set()
-    for lane in held_lanes(bab, agent_name, actor, own_code=own_code):
-        scopes.update(lane.scopes)
-        handlers.update(lane.handlers)
-    return scopes, handlers
+def lanes_of(held: list[tuple[str, str]], lanes: Lanes, *, own_code: bool = False) -> list[Lane]:
+    """The lanes those permissions earn, each once."""
+    out: list[Lane] = []
+    for vendor, permission in held:
+        lane = lanes.lane_for(vendor, permission, own_code=own_code)
+        if lane is not None and lane not in out:
+            out.append(lane)
+    return out
+
+
+def held_lanes(bab, agent_name: str, actor: str, *, lanes: Lanes, own_code: bool = False) -> list[Lane]:
+    """The lanes of every (vendor, permission) the agent holds an active grant
+    on. `own_code` adds the handlers kept to agents that run their own code."""
+    return lanes_of(held_permissions(bab, agent_name, actor), lanes, own_code=own_code)
 
 
 def desired_allow(lanes: list[Lane]) -> set[str]:
@@ -245,21 +458,11 @@ def desired_allow(lanes: list[Lane]) -> set[str]:
     return {p for lane in lanes for p in lane.allow}
 
 
-def held_vendors(bab, agent_name: str, actor: str) -> set[str]:
-    """The vendors of every integration the agent holds an active grant on."""
-    vendor_of = {i.get("integration"): i.get("vendor") for i in bab.integrations(actor)}
-    return {
-        str(vendor_of.get(g.get("integration")))
-        for g in bab.grants(agent_name, actor)
-        if g.get("state", "active") == "active" and vendor_of.get(g.get("integration"))
-    }
+def _vendors_of(patterns: set[str], lanes: Lanes) -> str:
+    return ", ".join(sorted({lanes.allow_vendor.get(p, p.split(".", 1)[0]) for p in patterns}))
 
 
-def _vendors_of(patterns: set[str]) -> str:
-    return ", ".join(sorted({ALLOW_VENDOR.get(p, p.split(".", 1)[0]) for p in patterns}))
-
-
-def sync_allow(session: Session, clients, *, agent_name: str, patterns: set[str]) -> str:
+def sync_allow(session: Session, clients, *, agent_name: str, patterns: set[str], lanes: Lanes) -> str:
     """Make the agent's own bundle admit exactly the managed patterns in
     `patterns` (one commit, one restart): the ones it lacks are added, the
     managed ones it carries and no longer earns are withdrawn; entries the
@@ -272,8 +475,8 @@ def sync_allow(session: Session, clients, *, agent_name: str, patterns: set[str]
         return ""
     if agent.status != AgentStatus.READY:
         return ""
-    wanted = sorted(patterns & MANAGED_ALLOW)
-    withdraw = sorted(MANAGED_ALLOW - patterns)
+    wanted = sorted(patterns & lanes.managed_allow)
+    withdraw = sorted(lanes.managed_allow - patterns)
     repo = agent.repo_full_name
     try:
         with repo_write_lock(repo), tempfile.TemporaryDirectory(prefix="kobo-allow-") as tmp:
@@ -285,7 +488,7 @@ def sync_allow(session: Session, clients, *, agent_name: str, patterns: set[str]
                 return ""
             added = [p for p in wanted if p not in before]
             gone = [p for p in withdraw if p in before]
-            delivery.push(github, workdir, _commit_message(added, gone))
+            delivery.push(github, workdir, _commit_message(added, gone, lanes))
     except (ClientError, OSError) as exc:
         log.warning("allow list for %s could not be updated: %s", agent_name, exc)
         return f"{ALLOW_FAILED}: {exc}"
@@ -297,16 +500,16 @@ def sync_allow(session: Session, clients, *, agent_name: str, patterns: set[str]
     return f"; the agent {' and '.join(said)} (it restarts once)"
 
 
-def _commit_message(added: list[str], gone: list[str]) -> str:
+def _commit_message(added: list[str], gone: list[str], lanes: Lanes) -> str:
     """One commit for both halves: "kobo: allow the github tools",
     "kobo: withdraw the github tools", or both joined when a level change
     opens one target and closes another."""
     parts = []
     if added:
-        parts.append(ALLOW_COMMIT.format(vendor=_vendors_of(set(added))))
+        parts.append(ALLOW_COMMIT.format(vendor=_vendors_of(set(added), lanes)))
     if gone:
-        parts.append(WITHDRAW_COMMIT.format(vendor=_vendors_of(set(gone))) if not added
-                     else f"withdraw the {_vendors_of(set(gone))} tools")
+        parts.append(WITHDRAW_COMMIT.format(vendor=_vendors_of(set(gone), lanes)) if not added
+                     else f"withdraw the {_vendors_of(set(gone), lanes)} tools")
     return "; ".join(parts)
 
 
@@ -320,21 +523,21 @@ def _allow_entries(bundle_dir: Path) -> list[str]:
         return []
 
 
-def _owed_grant(existing: GatewayGrant | None, lanes: list[Lane]):
+def _owed_grant(existing: GatewayGrant | None, held: list[Lane], lanes: Lanes):
     """(old scopes, old handlers, new scopes, new handlers) for one agent:
-    the managed part recomputed from its lanes, everything else kept. A
-    grant that allows every handler (None) is never narrowed."""
-    scopes = {s for lane in lanes for s in lane.scopes}
-    handlers = {h for lane in lanes for h in lane.handlers}
+    the managed part recomputed from the lanes it holds, everything else
+    kept. A grant that allows every handler (None) is never narrowed."""
+    scopes = {s for lane in held for s in lane.scopes}
+    handlers = {h for lane in held for h in lane.handlers}
     old_scopes = set(existing.scopes) if existing is not None else set()
-    new_scopes = (old_scopes - MANAGED_SCOPES) | scopes
+    new_scopes = (old_scopes - lanes.managed_scopes) | scopes
     old_handlers: set[str] | None
     new_handlers: set[str] | None
     if existing is not None and existing.allowed_handlers is None:
         old_handlers = new_handlers = None
     else:
         old_handlers = set(existing.allowed_handlers) if existing is not None else set()
-        new_handlers = (old_handlers - MANAGED_HANDLERS) | handlers
+        new_handlers = (old_handlers - lanes.managed_handlers) | handlers
     return old_scopes, old_handlers, new_scopes, new_handlers
 
 
@@ -348,10 +551,13 @@ def follow(session: Session, clients, bab, *, agent_name: str, actor: str) -> st
     if admin is None:
         return NOT_WIRED
     try:
-        lanes = held_lanes(bab, agent_name, actor, own_code=runs_own_code(session, agent_name))
-        allowed = sync_allow(session, clients, agent_name=agent_name, patterns=desired_allow(lanes))
+        lanes = current(session, clients)
+        held = held_lanes(bab, agent_name, actor, lanes=lanes, own_code=runs_own_code(session, agent_name))
+        allowed = sync_allow(session, clients, agent_name=agent_name, patterns=desired_allow(held), lanes=lanes)
+        if not lanes.known:
+            allowed += CARDS_UNREAD
         existing = next((g for g in admin.list_grants() if g.issuer == ISSUER and g.persona == agent_name), None)
-        old_scopes, old_handlers, new_scopes, new_handlers = _owed_grant(existing, lanes)
+        old_scopes, old_handlers, new_scopes, new_handlers = _owed_grant(existing, held, lanes)
         if new_scopes == old_scopes and new_handlers == old_handlers:
             return UNCHANGED + allowed
         if not new_scopes and new_handlers is not None and not new_handlers:
@@ -375,16 +581,19 @@ def follow(session: Session, clients, bab, *, agent_name: str, actor: str) -> st
 HEAL_INTERVAL_S = 300.0
 
 
-def heal(clients, bab, agent_names: list[str], actor: str, *, own_code: frozenset[str] = frozenset()) -> list[str]:
+def heal(clients, bab, agent_names: list[str], actor: str, *, lanes: Lanes,
+         own_code: frozenset[str] = frozenset()) -> list[str]:
     """Set each agent's gateway grant back to what its permissions owe when
-    something else has changed it, and name the agents it set back. Only the
-    gateway grant: the bundle allow list lives in the agent's repository,
-    which nothing but the room writes, so the caller brings it in step for
-    the agents named here and no others. An agent holding no permission is
-    left alone, so an agent whose grant lives only in the gateway's own
-    file keeps it. `own_code` names the agents that run their team's own
-    code, which the same permissions open a little more for
-    (`OWN_CODE_LANES`). Best effort: one agent's failure never stops the rest."""
+    something else has changed it, or the lanes have, and name the agents it
+    set back. Only the gateway grant: the bundle allow list lives in the
+    agent's repository, which nothing but the room writes, so the caller
+    brings it in step for the agents named here and no others. An agent
+    holding no permission is left alone, so an agent whose grant lives only
+    in the gateway's own file keeps it; one whose permissions open nothing
+    any more (its handler left the cards) is set back like any other.
+    `own_code` names the agents that run their team's own code, which the
+    same permissions open a little more for (`OWN_CODE`). Best effort: one
+    agent's failure never stops the rest."""
     admin = getattr(clients, "liminal_admin", None) if clients is not None else None
     if admin is None or bab is None:
         return []
@@ -396,11 +605,12 @@ def heal(clients, bab, agent_names: list[str], actor: str, *, own_code: frozense
     healed: list[str] = []
     for name in agent_names:
         try:
-            lanes = held_lanes(bab, name, actor, own_code=name in own_code)
-            if not lanes:
+            held = held_permissions(bab, name, actor)
+            if not held:
                 continue
             existing = live.get(name)
-            old_scopes, old_handlers, new_scopes, new_handlers = _owed_grant(existing, lanes)
+            old_scopes, old_handlers, new_scopes, new_handlers = _owed_grant(
+                existing, lanes_of(held, lanes, own_code=name in own_code), lanes)
             if new_scopes == old_scopes and new_handlers == old_handlers:
                 continue
             admin.grant(GatewayGrant(
@@ -434,20 +644,31 @@ def _heal_ready_agents(app) -> list[str]:
         names = [a.name for a in ready]
         own_code = frozenset(a.name for a in ready if a.kind == KIND_CONNECTED)
         reconcile_targets(session, clients)
-    healed = heal(clients, bab, names, ROOM_ACTOR, own_code=own_code)
-    # A grant that was short is also how a lane new to this release shows up on an agent
+        # The pass reads the cards afresh and is the one that keeps the read: a later
+        # request, or a room restarted while the gateway cannot answer, works from it.
+        lanes = current(session, clients, refresh=True)
+    with app.state.session_factory() as session:
+        try:
+            remember(session, clients, lanes)
+            session.commit()
+        except SQLAlchemyError as exc:  # another replica kept the same read a moment before
+            session.rollback()
+            log.info("the gateway cards were not kept this pass: %s", exc)
+    healed = heal(clients, bab, names, ROOM_ACTOR, lanes=lanes, own_code=own_code)
+    # A grant that was short is also how a lane new to the cards shows up on an agent
     # that already held its vendor (AWS, 2026-11-13): the bundle has to admit the lane's
     # tools too, or the agent holds a permission it has no tool for. An agent whose
     # repository could not be written is kept and tried again on the next pass.
     owed: set[str] = (getattr(app.state, "allow_owed", None) or set()) & set(names) | set(healed)
     for name in sorted(owed):
         try:
-            lanes = held_lanes(bab, name, ROOM_ACTOR)
-            if not lanes:
+            held = held_permissions(bab, name, ROOM_ACTOR)
+            if not held:
                 owed.discard(name)  # as `heal`: an agent holding nothing is left alone
                 continue
             with app.state.session_factory() as session:
-                said = sync_allow(session, clients, agent_name=name, patterns=desired_allow(lanes))
+                said = sync_allow(session, clients, agent_name=name, patterns=desired_allow(lanes_of(held, lanes)),
+                                  lanes=lanes)
         except ClientError as exc:
             log.warning("allow list for %s could not be brought in step: %s", name, exc)
             continue
@@ -509,8 +730,8 @@ def tally(sentence: str) -> str:
 
 
 __all__ = [
-    "GATEWAY_LANES", "HEAL_INTERVAL_S", "MANAGED_ALLOW", "MANAGED_HANDLERS", "MANAGED_SCOPES", "OWN_CODE_LANES", "PERMISSION_LANES",
-    "RETIRED_HANDLERS",
-    "RETIRED_PREFIXES", "TOOLED", "Lane", "desired_allow", "desired_lane", "follow", "heal", "heal_loop", "held_lanes", "held_vendors",
-    "lane_for", "opens_tool", "runs_own_code", "sync_allow", "tally",
+    "ANY_PERMISSION", "CARDS_UNREAD", "HEAL_INTERVAL_S", "OWN_CODE", "RETIRED_HANDLERS", "RETIRED_PREFIXES", "RISKS", "TARGET_LANES",
+    "TARGET_PERMISSION_LANES", "TARGET_TOOLED", "CardTool", "HandlerCard", "Lane", "Lanes", "current", "desired_allow",
+    "follow", "heal", "heal_loop", "held_lanes", "held_permissions", "lanes_of", "parse_cards", "remember",
+    "runs_own_code", "sync_allow", "tally",
 ]

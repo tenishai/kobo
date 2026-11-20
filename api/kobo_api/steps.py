@@ -1834,7 +1834,8 @@ def _allow_held_lanes(ctx: Ctx, clone_dir: Path) -> None:
     if bab is None:
         return
     try:
-        patterns = sorted(gateway_lane.desired_allow(gateway_lane.held_lanes(bab, ctx.agent.name, BAB_ROOM_ACTOR)))
+        lanes = gateway_lane.current(ctx.session, ctx.clients)
+        patterns = sorted(gateway_lane.desired_allow(gateway_lane.held_lanes(bab, ctx.agent.name, BAB_ROOM_ACTOR, lanes=lanes)))
         if patterns:
             update_agent_yaml_allow(clone_dir / "bundle", entries=patterns)
     except ClientError as exc:
