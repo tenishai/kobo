@@ -2208,6 +2208,36 @@ def test_a_connected_agents_closed_slack_request_is_opened_again_without_a_secon
     assert (again.status_code, again.json()["pull_request"]) == (200, pr_url)
     assert len(slack.manifests) == 1 and len(github.open_pr_calls) == 2
     assert kubectl.secrets[secret] == before
+    # Not installed yet, so the same press goes on to Slack's install page.
+    assert again.json()["install_url"].startswith("https://slack.com/oauth/v2/authorize?")
+
+
+def test_a_connected_agents_slack_app_goes_on_to_install_when_its_files_must_wait(
+    session_factory__api_slack, config__api_slack
+):
+    """Gate (one press, 2026-11-20): making a connected agent's Slack app is one press to
+    Slack's install page. When the repository's half cannot be done right then (the room
+    cannot clone it, or another request holds the branch), the app and its values exist
+    anyway, so the answer still carries the install link and the row reads the wiring as
+    owed, to be opened again, instead of answering an error after Slack made the app."""
+    from kobo_api.kinds import RUN_MODE_HTTP
+
+    relay_config = config__api_slack.model_copy(update={"slack_relay": True})
+    github = FakeGitHub(repo_files={"gojira.yaml": "name: clio\n"}, clone_error="the repository host is not answering")
+    kubectl = FakeKubectl()
+    client = _make_client__api_slack(
+        session_factory__api_slack, relay_config, github=github, kubectl=kubectl, slack=FakeSlack(app_id="A0MADE")
+    )
+    _seed_agent__api_slack(session_factory__api_slack, relay_config)
+    _connected__api_slack(session_factory__api_slack, run_mode=RUN_MODE_HTTP)
+
+    made = client.post(f"/api/agents/{AGENT_NAME}/slack/app", json={"wake": "thread"})
+
+    assert made.status_code == 200, made.text
+    assert made.json()["install_url"].startswith("https://slack.com/oauth/v2/authorize?")
+    assert made.json()["pull_request"] is None
+    assert "SLACK_RELAY_SECRET" in kubectl.secrets[(AGENT_NAME, f"{AGENT_NAME}-slack")]
+    assert client.get(f"/api/agents/{AGENT_NAME}/slack").json()["wiring"]["state"] == "owed"
 
 
 def test_put_wake_writes_the_env_key_and_says_when_the_manifest_changed(session_factory__api_slack, config__api_slack):

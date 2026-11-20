@@ -9517,9 +9517,12 @@ def create_app(
         which every agent connected since 2026-11-14 does: the app reaches it
         by a restart at install. One connected before gets the line as one
         pull request the room merges (`connected_wiring.propose_slack`); the
-        answer carries its link only when GitHub would not let the room.
-        Calling this again for an app whose request was closed opens it
-        again.
+        answer carries its link only when GitHub would not let the room. A
+        request that cannot be made right then does not fail the create: the
+        app and its values exist, so the answer carries the install link and
+        the row reads the wiring as owed. Calling this again for an app whose
+        request was closed opens it again, and goes on to the install while
+        the app is not installed (one press, 2026-11-20).
         """
         cfg: Config = app.state.config
         if not cfg.slack_relay:
@@ -9581,7 +9584,15 @@ def create_app(
                     return JSONResponse({"error": str(exc)}, status_code=409)
                 except ClientError as exc:
                     return _lane_failed("file write", agent, exc, AGENT_FILES_UNREACHABLE)
-                return JSONResponse({"app_id": row.app_id, "install_url": None, "pull_request": edit.pull_request})
+                # An app not installed yet: the same press goes on to Slack's install page.
+                install = None
+                if row.installed_at is None and row.client_id:
+                    state_token = slack_relay.current_state(row) or slack_relay.mint_state(row)
+                    session.commit()
+                    install = slack_relay.install_url(
+                        row.client_id, state_token, slack_relay.callback_url(slack_relay.public_base_url(request, cfg))
+                    )
+                return JSONResponse({"app_id": row.app_id, "install_url": install, "pull_request": edit.pull_request})
             return JSONResponse({"error": "This agent already has a Slack app."}, status_code=409)
 
         acting_email = getattr(request.state, "iap_email", None) or agent.created_by
@@ -9764,6 +9775,13 @@ def create_app(
                     clients.kubectl, name=agent.name, values=values, sero=clients.sero,
                     acting_email=acting_email, remove_keys=(*remove_keys, *gone),
                 )
+            except ClientError as exc:
+                log.warning("slack app wiring failed for agent %s: %s", agent.name, type(exc).__name__)
+                return JSONResponse({"error": "couldn't set up Slack. Try again."}, status_code=502)
+            # The app and its values exist now. The repository's half (a pull request the room
+            # merges) does not hold up the install: when it cannot be made now, the row reads the
+            # wiring as owed and offers it again, and the person still goes on to Slack in one press.
+            try:
                 if not connected_wiring.slack_follows_room(
                     clients.github, repo=agent.repo_full_name, agent_name=agent.name, settings=settings
                 ):
@@ -9771,11 +9789,8 @@ def create_app(
                         clients.github, repo=agent.repo_full_name, agent_name=agent.name,
                         gojira=clients.gojira, gojira_app_id=agent.gojira_app_id,
                     ).pull_request
-            except RepoBusy as exc:
-                return JSONResponse({"error": str(exc)}, status_code=409)
-            except ClientError as exc:
-                log.warning("slack app wiring failed for agent %s: %s", agent.name, type(exc).__name__)
-                return JSONResponse({"error": "couldn't set up Slack. Try again."}, status_code=502)
+            except (RepoBusy, ClientError) as exc:
+                log.warning("slack app for agent %s: the change to its files waits: %s", agent.name, exc)
             row.wired_at = datetime.now(UTC).replace(tzinfo=None)
             state_token = slack_relay.mint_state(row)
             install = slack_relay.install_url(row.client_id or "", state_token, slack_relay.callback_url(base))

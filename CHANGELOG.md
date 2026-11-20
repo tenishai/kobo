@@ -9,6 +9,9 @@ All notable changes to kobo are documented here. The format follows
 ### Added
 - **Every repository, Read only**, a box in an agent's GitHub step on the Access tab. Ticked, the agent may read every repository the room's GitHub app can see, ones added later included, without a list to keep up to date. The set is for Read alone: Review pull requests and Open pull requests still need picked repositories, so the box is off while the agent holds or has asked for either. Once the agent holds Read on picked repositories, ticking it waits for a reviewer, as any addition does. Review shows "Every repository, Read only". From an assistant: **set agent repositories** takes `every_repository`. Needs bab 0.4.26.
 
+### Fixed
+- **Adding Slack to a connected agent is one press in every case.** **Create Slack app** went on to Slack's install page unless the room could not open the pull request that hands the app to the agent's repository. Then it answered an error after Slack had already made the app, and the row waited for **Install to Slack**. Now the install goes ahead and the row offers **Open it again** for the pull request. **Open it again** on an app not installed yet also goes straight on to Slack's install page.
+
 ## [0.3.75] - 2026-11-19
 
 ### Added
