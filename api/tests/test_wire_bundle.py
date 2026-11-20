@@ -33,6 +33,8 @@ from kobo_api.provisioner import Ctx
 from kobo_api.steps import TECHNE_FS_GROUP, StagedSkill, WireStep
 from tests.fakes import (
     GENERATED_KUSTOMIZATION_RESOURCES,
+    HOUSE_RULES,
+    HOUSE_WHAT_THEY_DO,
     FakeCabal,
     FakeGitHub,
     FakeGojira,
@@ -939,3 +941,225 @@ def test_a_persona_swap_leaves_an_agents_rules_where_they_live(tmp_path, monkeyp
     assert ("## Rules" in persona) is not has_list
     assert "## What you do" in persona
     assert len(github.pushes) == 1  # the persona file alone; the list is not rewritten
+
+
+# --- One agent's own persona, read and edited in place (2026-11-20) ---------
+
+
+def _house_persona(agent_name: str, *, rules: list[str]) -> str:
+    """An agent's persona.md as the room writes it at birth: the catalog render with
+    the agent's name where `{name}` was (`resolve_persona_body`)."""
+    from kobo_api.personas import PersonaFields, render_persona
+
+    fields = PersonaFields(
+        name="alert scribe",
+        who_they_are="a careful keeper of the team's alerts",
+        what_they_do=HOUSE_WHAT_THEY_DO,
+        rules=rules,
+    )
+    return render_persona(fields).replace("{name}", agent_name)
+
+
+@pytest.mark.parametrize("has_list", [True, False], ids=["with-guardrails", "from-before-guardrails"])
+def test_an_agents_persona_reads_back_from_its_own_file(tmp_path, monkeypatch, has_list):
+    """Wire shape (2026-11-20): the Persona section shows the persona the agent runs,
+    read apart from its own persona.md, whose opening line names the agent. Its rules
+    are said to live in the persona only while the agent has no guardrails file."""
+    from kobo_api.guardrails import render_file
+
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    github._repo_files = {"bundle/persona.md": _house_persona("gate", rules=list(HOUSE_RULES))}
+    if has_list:
+        github._repo_files["bundle/guardrails.md"] = render_file(["Answer in the thread."])
+
+    body = client.get("/api/agents/gate/persona").json()
+
+    assert body["persona"] == "helpful-generalist" and body["house_shape"] is True
+    assert body["who_they_are"] == "a careful keeper of the team's alerts"
+    assert body["what_they_do"] == HOUSE_WHAT_THEY_DO.strip("\n")
+    assert body["rules"] == list(HOUSE_RULES) and body["text"] is None
+    assert body["rules_in_persona"] is not has_list
+    assert body["can_edit"] is True
+
+
+def test_an_edit_rewrites_this_agents_persona_and_keeps_its_rules_where_they_live(tmp_path, monkeypatch):
+    """Wire shape (2026-11-20): Edit persona writes the agent's own persona.md the way
+    the room writes it at birth, in one commit that rebuilds the agent. An agent whose
+    rules live in its Guardrails gains no Rules section; the edit cannot add rules to it
+    either, and a refused edit writes nothing."""
+    from kobo_api.guardrails import render_file
+
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    github._repo_files = {
+        "bundle/persona.md": _house_persona("gate", rules=[]),
+        "bundle/guardrails.md": render_file(["Answer in the thread."]),
+    }
+    new_what = HOUSE_WHAT_THEY_DO + "\nTriage pages from the payments API first."
+
+    refused = client.put(
+        "/api/agents/gate/persona/text",
+        json={"who_they_are": "a triager", "what_they_do": new_what, "rules": ["Never guess."]},
+    )
+    assert refused.status_code == 422 and "Guardrails" in refused.json()["error"]
+    assert github.pushes == []
+
+    response = client.put(
+        "/api/agents/gate/persona/text",
+        json={"who_they_are": "You are a calm triager of payments alerts.", "what_they_do": new_what},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["persona"] == "helpful-generalist" and response.json()["sha"]
+    persona = github.pushed_file("bundle/persona.md")
+    assert persona.splitlines()[0] == "You are gate, a calm triager of payments alerts."
+    assert "Triage pages from the payments API first." in persona and "## Rules" not in persona
+    assert [message for _, message in github.pushes] == ["kobo: edit persona"]
+
+
+def test_an_agent_from_before_guardrails_keeps_and_edits_its_persona_rules(tmp_path, monkeypatch):
+    """Wire shape (2026-11-20): an agent with no guardrails file keeps its rules in its
+    persona, so an edit that leaves them out keeps them as they are, and one that sends
+    them replaces them. Neither runs into the catalog's three-rule floor: these are
+    this agent's rules."""
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    github._repo_files = {"bundle/persona.md": _house_persona("gate", rules=list(HOUSE_RULES))}
+
+    kept = client.put(
+        "/api/agents/gate/persona/text",
+        json={"who_they_are": "a triager", "what_they_do": HOUSE_WHAT_THEY_DO},
+    )
+    assert kept.status_code == 200, kept.text
+    assert github.pushed_file("bundle/persona.md").endswith(
+        "## Rules\n\n" + "".join(f"- {rule}\n" for rule in HOUSE_RULES)
+    )
+
+    github._repo_files = {"bundle/persona.md": github.pushed_file("bundle/persona.md")}
+    replaced = client.put(
+        "/api/agents/gate/persona/text",
+        json={"who_they_are": "a triager", "what_they_do": HOUSE_WHAT_THEY_DO, "rules": ["Never guess."]},
+    )
+    assert replaced.status_code == 200, replaced.text
+    assert github.pushed_file("bundle/persona.md").endswith("## Rules\n\n- Never guess.\n")
+
+
+def test_a_persona_not_in_the_house_shape_is_read_and_edited_as_one_text(tmp_path, monkeypatch):
+    """Wire shape (2026-11-20): a persona the room did not write in its shape (an older
+    built-in's plain prose) has no parts to show, so it is read and edited whole, and
+    an edit in parts is refused rather than writing over text the form never showed.
+    The whole text is saved as given."""
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    prose = "You are gate, a helpful assistant. Be concise.\n\nAnswer from what you know.\n"
+    github._repo_files = {"bundle/persona.md": prose}
+
+    body = client.get("/api/agents/gate/persona").json()
+    assert body["house_shape"] is False and body["text"] == prose
+    assert body["who_they_are"] is None and body["rules"] == []
+
+    in_parts = client.put(
+        "/api/agents/gate/persona/text",
+        json={"who_they_are": "a helper", "what_they_do": HOUSE_WHAT_THEY_DO},
+    )
+    assert in_parts.status_code == 422 and "one text" in in_parts.json()["error"]
+    assert github.pushes == []
+
+    whole = client.put(
+        "/api/agents/gate/persona/text", json={"text": prose + "Be brief.\n"}
+    )
+    assert whole.status_code == 200, whole.text
+    assert github.pushed_file("bundle/persona.md") == prose + "Be brief.\n"
+
+
+def test_a_hand_edited_house_persona_is_edited_whole_and_loses_nothing(tmp_path, monkeypatch):
+    """Wire shape (2026-11-20 review): parts are offered only when editing them loses
+    nothing. A persona in the house shape that someone edited by hand (a line under
+    the opening, a rule in another list style, a paragraph after the rules) would be
+    cut down to what the form reads, so it comes back as one text, and saving that
+    text writes it back byte for byte."""
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    born = _house_persona("gate", rules=["Never guess."])
+    lines = born.splitlines()
+    lines.insert(1, "Answer the payments team first.")
+    edited = "\n".join(lines) + "\n* Say what you checked.\n\nWhen unsure, ask in the thread.\n"
+    github._repo_files = {"bundle/persona.md": edited}
+
+    body = client.get("/api/agents/gate/persona").json()
+    assert body["house_shape"] is False and body["text"] == edited
+
+    saved = client.put("/api/agents/gate/persona/text", json={"text": body["text"]})
+    assert saved.status_code == 200, saved.text
+    assert github.pushed_file("bundle/persona.md") == edited
+
+
+def test_the_floor_and_a_pasted_opening_on_an_edit_in_parts(tmp_path, monkeypatch):
+    """Wire shape (2026-11-20): the floor on what-they-do holds for an edit in parts,
+    and a who-line pasted as the section shows it ("You are gate, ...") does not
+    write the agent's name twice, in any case, with or without the comma."""
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    github._repo_files = {"bundle/persona.md": _house_persona("gate", rules=[])}
+
+    thin = client.put(
+        "/api/agents/gate/persona/text",
+        json={"who_they_are": "a helper", "what_they_do": "Helps with alerts."},
+    )
+    assert thin.status_code == 422 and "too short to work from" in thin.json()["error"]
+
+    for pasted in ("You are gate, a calm triager.", "you are GATE a calm triager"):
+        saved = client.put(
+            "/api/agents/gate/persona/text",
+            json={"who_they_are": pasted, "what_they_do": HOUSE_WHAT_THEY_DO},
+        )
+        assert saved.status_code == 200, saved.text
+        assert github.pushed_file("bundle/persona.md").splitlines()[0] == (
+            "You are gate, a calm triager."
+        )
+
+
+def test_a_persona_edit_from_a_stale_copy_is_refused(tmp_path, monkeypatch):
+    """Wire shape (2026-11-20 review): a save names the version it was read at. When
+    the file moved since (another edit, a swap, a hand edit), the save is refused and
+    nothing is written, so nobody's change is lost; the version read now saves."""
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    github._repo_files = {"bundle/persona.md": _house_persona("gate", rules=[])}
+    opened = client.get("/api/agents/gate/persona").json()["sha"]
+    github._repo_files = {"bundle/persona.md": _house_persona("gate", rules=["Never guess."])}
+
+    change = {"who_they_are": "a triager", "what_they_do": HOUSE_WHAT_THEY_DO}
+    stale = client.put("/api/agents/gate/persona/text", json={**change, "base_sha": opened})
+
+    assert stale.status_code == 409
+    assert stale.json()["error"].startswith("the persona changed since you opened it")
+    assert github.pushes == []
+    current = client.get("/api/agents/gate/persona").json()["sha"]
+    fresh = client.put("/api/agents/gate/persona/text", json={**change, "base_sha": current})
+    assert fresh.status_code == 200, fresh.text
+
+
+def test_a_persona_reads_without_a_rules_box_when_the_guardrails_file_cannot_be_read(
+    tmp_path, monkeypatch
+):
+    """Wire shape (2026-11-20 review): reading the persona does not fail because the
+    guardrails file could not be read; it says the rules are not the persona's, so no
+    rules box is offered that could put a rule in two places. The edit itself still
+    refuses until it can tell."""
+    from kobo_api.clients import ClientError as RoomClientError
+    from kobo_api.guardrails import GUARDRAILS_PATH
+
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    github._repo_files = {"bundle/persona.md": _house_persona("gate", rules=[])}
+    read_file = github.read_file
+
+    def guardrails_unreadable(repo, path, ref=None):
+        if path == GUARDRAILS_PATH:
+            raise RoomClientError("down")
+        return read_file(repo, path, ref)
+
+    github.read_file = guardrails_unreadable
+
+    body = client.get("/api/agents/gate/persona")
+    assert body.status_code == 200, body.text
+    assert body.json()["rules_in_persona"] is False and body.json()["house_shape"] is True
+    edit = client.put(
+        "/api/agents/gate/persona/text",
+        json={"who_they_are": "a triager", "what_they_do": HOUSE_WHAT_THEY_DO},
+    )
+    assert edit.status_code == 502 and github.pushes == []

@@ -256,9 +256,12 @@ from kobo_api.personas import (
     PersonaError,
     PersonaExists,
     PersonaFields,
+    agent_persona_parts,
+    clean_persona_text,
     create_persona,
     in_reading_order,
     parse_persona_body,
+    render_agent_persona,
     seed_default_personas,
     set_persona_archived,
     set_persona_team,
@@ -1697,6 +1700,37 @@ class SetPersonaBody(BaseModel):
     cannot resolve, and the parameter silently becomes a query field."""
 
     persona: str = Field(min_length=1, max_length=80)
+
+
+class EditAgentPersonaBody(BaseModel):
+    """`PUT /api/agents/{name}/persona/text`: the agent's own persona, rewritten in
+    place (2026-11-20). A persona in the house shape takes `who_they_are` and
+    `what_they_do`, and `rules` only while the agent's rules still live in its
+    persona; one the room did not write in that shape takes its whole `text`. The
+    bounds are the persona form's walls; `render_agent_persona` is the real check."""
+
+    who_they_are: str | None = Field(default=None, max_length=200)
+    what_they_do: str | None = Field(default=None, max_length=49152)
+    rules: list[str] | None = Field(default=None, max_length=150)
+    text: str | None = Field(default=None, max_length=49152)
+    # The `sha` the persona was read at: when given and the file has moved since,
+    # the save is refused rather than writing over someone else's change.
+    base_sha: str | None = Field(default=None, max_length=64)
+
+
+# The persona file an agent runs from, and the agent-persona routes' own answers.
+PERSONA_FILE = "bundle/persona.md"
+PERSONA_NOT_READY_TO_READ = "this agent is not ready yet, so its persona can't be read here"
+AGENT_FILES_UNREADABLE = "couldn't reach your agent's files. Try again."
+PERSONA_IN_PARTS = "this persona is edited in its parts: who they are and what they do"
+PERSONA_AS_ONE_TEXT = (
+    "this persona was not written with the persona form, so it is edited as one text"
+)
+PERSONA_RULES_IN_GUARDRAILS = "this agent's rules are in its Guardrails, so change them there"
+PERSONA_CHANGED = (
+    "the persona changed since you opened it. Here it is as it stands; make your change again."
+)
+
 RESTART_FAILED = "couldn't ask the cluster to restart this agent. Try again."
 TOO_MANY_RESTARTS = "that is a lot of restarting. Wait a minute"
 
@@ -5416,6 +5450,9 @@ def create_app(
                 fields=payload,
                 team=payload.team,
                 created_by=getattr(request.state, "iap_email", None),
+                # With guardrails on, rules live in each agent's Guardrails, so
+                # a persona people write needs none (2026-11-20).
+                rules_required=not cfg.guardrails,
             )
             # Ingest right away, with the FULL kind->bucket mapping (Task 4
             # controller decision #1) — NOT just {"persona": ...}, since
@@ -5719,6 +5756,7 @@ def create_app(
                 what_they_do=payload.what_they_do,
                 rules=payload.rules,
                 updated_by=getattr(request.state, "iap_email", None),
+                rules_required=not cfg.guardrails,
             )
             # Same instant-ingest idiom as create/move: the FULL
             # kind->bucket mapping, so the new one-line description shows in
@@ -11384,6 +11422,17 @@ def create_app(
             body["pull_request"] = result.pull_request
         return JSONResponse(body)
 
+    def _rules_live_in_guardrails(repo: str) -> bool:
+        """Whether this agent's rules live in its guardrails file rather than its
+        persona: the room has guardrails on and the agent has the file, which marks
+        an agent born with them (one from before guardrails keeps its persona's
+        rules). Used by a persona swap and an edit in place alike. Raises
+        ClientError when the repository cannot be read: not knowing could put a
+        rule in two places."""
+        if not app.state.config.guardrails:
+            return False
+        return bool(read_guardrails(app.state.clients.github, repo))
+
     @app.put("/api/agents/{name}/persona")
     def set_agent_persona(
         name: str,
@@ -11440,31 +11489,33 @@ def create_app(
             rendered = resolve_persona_body(cfg, clients.storage, persona_id, agent.name)
         except RuntimeError:
             return not_found
-        if cfg.guardrails:
+        # The read and the write hold the repository's write lock, so a swap and an
+        # edit in place (`edit_agent_persona`) cannot interleave.
+        with repo_write_lock(agent.repo_full_name):
             # An agent whose rules live in its guardrails keeps them: the new
             # persona brings who it is and what it does, and its rules stay out of
             # persona.md so a rule is never in two places (issue #524). An agent
             # from before guardrails has none yet; it keeps the persona's rules.
             try:
-                has_guardrails = bool(read_guardrails(clients.github, agent.repo_full_name))
+                in_guardrails = _rules_live_in_guardrails(agent.repo_full_name)
             except ClientError:
                 # Not knowing could put the rules in two places or none: say so.
                 return JSONResponse(
                     {"error": "the agent's repository could not be read"}, status_code=502
                 )
-            if has_guardrails:
+            if in_guardrails:
                 rendered = split_rules(rendered)[0]
-        try:
-            sha = write_persona_file(
-                clients.github, agent.repo_full_name, rendered, persona_id=persona_id
-            )
-        except ClientError as exc:
-            log.warning(
-                "persona change failed for agent %s (%s)", agent.name, type(exc).__name__
-            )
-            return JSONResponse(
-                {"error": "the agent's repository could not be updated"}, status_code=502
-            )
+            try:
+                sha = write_persona_file(
+                    clients.github, agent.repo_full_name, rendered, persona_id=persona_id
+                )
+            except ClientError as exc:
+                log.warning(
+                    "persona change failed for agent %s (%s)", agent.name, type(exc).__name__
+                )
+                return JSONResponse(
+                    {"error": "the agent's repository could not be updated"}, status_code=502
+                )
         agent.persona = persona_id
         audit.record(
             session, request=request, action="agent.persona.change", target_kind="agent", target_id=agent.name,
@@ -11474,6 +11525,184 @@ def create_app(
         session.commit()
         log.info("agent %s now wears persona %s", agent.name, persona_id)
         return JSONResponse({"persona": persona_id, "sha": sha})
+
+    # --- One agent's own persona, read and edited in place (2026-11-20) ------
+    #
+    # A teammate tuning an agent could not find where to edit its persona: Edit
+    # details' team field was labelled as the persona's source, and the Persona
+    # section only linked to bundle/persona.md on GitHub. These two routes are
+    # that section's: the persona the agent runs, read from its own file, and an
+    # edit of that file. The catalog persona it was made from stays as it was;
+    # `can_edit_source` tells the room whether the caller may also save the new
+    # text there (`PUT /api/personas/{id}`, the persona form's own edit).
+
+    def _may_edit_catalog_persona(request: Request, persona_id: str) -> bool:
+        """Whether the caller may rewrite the catalog persona `persona_id` with the
+        persona form's own edit: not a built-in, not archived, stored in the form's
+        shape, and the caller passes the edit gate (`_persona_move_block`). Any
+        trouble reading the catalog answers False: the offer is left out, nothing
+        fails."""
+        cfg: Config = app.state.config
+        clients = app.state.clients
+        if clients is None or clients.storage is None or not cfg.personas_bucket:
+            return False
+        try:
+            index = personas_read_index(clients.storage, cfg.personas_bucket, "")
+            entry = next((e for e in index if e.get("id") == persona_id), None)
+            if entry is None or entry.get("archived") or entry.get("builtin"):
+                return False
+            if _persona_move_block(request, entry, verb="edit") is not None:
+                return False
+            raw = clients.storage.read_bytes(cfg.personas_bucket, f"{persona_id}/persona.md")
+        except (ClientError, StorageNotFound):
+            return False
+        return parse_persona_body(raw.decode()).what_they_do is not None
+
+    @app.get("/api/agents/{name}/persona")
+    def get_agent_persona(
+        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """The persona this agent runs, read from its own `bundle/persona.md`: in the
+        house shape exactly (`agent_persona_parts`), who it is, what it does and any
+        rules the file still holds; otherwise the whole text. `sha` is the version a
+        save names as `base_sha`. `rules_in_persona` says whether the agent's rules
+        live there (true in a room without guardrails, or for an agent from before
+        them), so the editor offers them only then; when the guardrails file cannot
+        be read it is false, so nobody is offered a box that could put a rule in two
+        places (the edit itself refuses until it can read the file). Any caller who
+        can see the agent may read it; `can_edit` is the edit route's own gate, and
+        the catalog is read for `can_edit_source` only when that gate passes."""
+        agent = _ready_agent_or_error(
+            session, request, name, not_ready_message=PERSONA_NOT_READY_TO_READ
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        if is_connected(agent):
+            return JSONResponse({"error": PERSONA_OF_A_CONNECTED_AGENT}, status_code=409)
+        try:
+            text = app.state.clients.github.read_file(agent.repo_full_name, PERSONA_FILE) or ""
+        except ClientError as exc:
+            log.warning("agent persona read failed for %s: %s", agent.name, exc)
+            return JSONResponse({"error": AGENT_FILES_UNREADABLE}, status_code=502)
+        try:
+            in_guardrails = _rules_live_in_guardrails(agent.repo_full_name)
+        except ClientError as exc:
+            log.warning("agent guardrails read failed for %s: %s", agent.name, exc)
+            in_guardrails = True
+        parts = agent_persona_parts(text, agent.name)
+        can_edit = _owner_or_operator_or_403(agent, request) is None
+        can_edit_source = (
+            _may_edit_catalog_persona(request, agent.persona) if can_edit else False
+        )
+        return JSONResponse(
+            {
+                "persona": agent.persona,
+                "sha": file_sha(text),
+                "house_shape": parts is not None,
+                "who_they_are": parts.who_they_are if parts else None,
+                "what_they_do": parts.what_they_do if parts else None,
+                "rules": parts.rules if parts else [],
+                "text": None if parts else text,
+                "rules_in_persona": not in_guardrails,
+                "can_edit": can_edit,
+                "can_edit_source": can_edit_source,
+            }
+        )
+
+    @app.put("/api/agents/{name}/persona/text")
+    def edit_agent_persona(
+        name: str,
+        body: EditAgentPersonaBody,
+        request: Request,
+        session: Session = Depends(get_session),  # noqa: B008
+    ) -> JSONResponse:
+        """Rewrite this agent's own persona in place: one commit to its
+        `bundle/persona.md`, written the way the room writes it at birth, and the
+        agent restarts with it (the generated CI rebuilds and rolls, as for a
+        persona change). The agent keeps its persona id, and the catalog persona
+        and every other agent made from it stay as they were.
+
+        A persona in the house shape exactly is edited in its parts, through the
+        persona form's cleaners and its floor on what-they-do
+        (`render_agent_persona`). Its rules are edited here only while they live
+        in the persona; an agent whose rules are in its Guardrails keeps whatever
+        the file holds, never gaining a second copy of a rule. Any other persona
+        is one text, saved as given (`clean_persona_text`), so an edit never drops
+        what the form did not show. A save naming a `base_sha` the file has moved
+        on from is refused with a 409, and nothing is written.
+
+        Owner, manager or operator, READY only, composed only, the same gates as
+        `set_agent_persona`. The read and the write hold the repository's write
+        lock, so another of the room's writes cannot land in between."""
+        agent = _ready_agent_or_error(
+            session, request, name, not_ready_message=PERSONA_NOT_READY
+        )
+        if isinstance(agent, JSONResponse):
+            return agent
+        gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+        if is_connected(agent):
+            return JSONResponse({"error": PERSONA_OF_A_CONNECTED_AGENT}, status_code=409)
+        github = app.state.clients.github
+        with repo_write_lock(agent.repo_full_name):
+            try:
+                current = github.read_file(agent.repo_full_name, PERSONA_FILE) or ""
+                in_guardrails = _rules_live_in_guardrails(agent.repo_full_name)
+            except ClientError as exc:
+                log.warning("agent persona read failed for %s: %s", agent.name, exc)
+                return JSONResponse({"error": AGENT_FILES_UNREADABLE}, status_code=502)
+            if body.base_sha is not None and body.base_sha != file_sha(current):
+                return JSONResponse({"error": PERSONA_CHANGED}, status_code=409)
+            parsed = agent_persona_parts(current, agent.name)
+            try:
+                if parsed is not None:
+                    if body.text is not None:
+                        return JSONResponse({"error": PERSONA_IN_PARTS}, status_code=422)
+                    if body.who_they_are is None or body.what_they_do is None:
+                        return JSONResponse({"error": PERSONA_IN_PARTS}, status_code=422)
+                    if body.rules is not None and in_guardrails:
+                        return JSONResponse(
+                            {"error": PERSONA_RULES_IN_GUARDRAILS}, status_code=422
+                        )
+                    rules = parsed.rules if body.rules is None else body.rules
+                    rendered = render_agent_persona(
+                        agent.name, body.who_they_are, body.what_they_do, rules
+                    )
+                else:
+                    if body.text is None or any(
+                        value is not None
+                        for value in (body.who_they_are, body.what_they_do, body.rules)
+                    ):
+                        return JSONResponse({"error": PERSONA_AS_ONE_TEXT}, status_code=422)
+                    rendered = clean_persona_text(body.text)
+            except ValidationError as exc:
+                return JSONResponse({"error": _validation_error_message(exc)}, status_code=422)
+            except PersonaError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=422)
+            try:
+                sha = write_persona_file(
+                    github,
+                    agent.repo_full_name,
+                    rendered,
+                    persona_id=agent.persona,
+                    message="kobo: edit persona",
+                )
+            except ClientError as exc:
+                log.warning(
+                    "persona edit failed for agent %s (%s)", agent.name, type(exc).__name__
+                )
+                return JSONResponse(
+                    {"error": "the agent's repository could not be updated"}, status_code=502
+                )
+        audit.record(
+            session, request=request, action="agent.persona.edit", target_kind="agent", target_id=agent.name,
+            agent_name=agent.name, summary=f"{audit.who(request)} edited agent {agent.name}'s persona",
+            detail={"persona": agent.persona},
+        )
+        session.commit()
+        log.info("agent %s persona edited in place", agent.name)
+        return JSONResponse({"persona": agent.persona, "sha": sha})
 
     @app.patch("/api/agents/{name}/model")
     def set_agent_model(

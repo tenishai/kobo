@@ -565,7 +565,7 @@ describe("AgentDetail tabs", () => {
     await fireEvent.click(await screen.findByRole("button", { name: /Edit details/ }));
     const dialog = await screen.findByRole("dialog", { name: "Edit details" });
     // What the room composed is not drawn for one.
-    expect(within(dialog).queryByLabelText("Persona source")).toBeNull();
+    expect(within(dialog).queryByLabelText("Team")).toBeNull();
     expect(within(dialog).queryByLabelText("Purpose tags")).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "Regenerate" })).toBeNull();
     expect(within(dialog).getByText("Destroy this agent")).not.toBeNull();

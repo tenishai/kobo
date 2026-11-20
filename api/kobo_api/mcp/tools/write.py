@@ -738,6 +738,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     remove_skill_endpoint = _endpoint(app, "DELETE", "/api/agents/{name}/skills/{skill_id}")
     add_tool_endpoint = _endpoint(app, "POST", "/api/agents/{name}/tooling")
     set_persona_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/persona")
+    edit_persona_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/persona/text")
     set_model_endpoint = _endpoint(app, "PATCH", "/api/agents/{name}/model")
     set_slack_wake_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/slack/wake")
     set_slack_reading_endpoint = _endpoint(app, "PUT", "/api/agents/{name}/slack/reading")
@@ -1622,8 +1623,11 @@ def register(mcp: FastMCP, app: Any) -> None:
         what the persona covers and leaves alone, the kinds of request it
         gets and what each answer contains, what to do when it cannot
         answer, one example. No headings above "###" (they are lowered).
-        `rules` are always/never one-liners, at least 3; most personas
-        carry 8 to 12. The built-in personas are written in this shape.
+        `rules` are always/never one-liners. Where the room's guardrails are
+        on they are optional and best left out: each agent keeps its own
+        rules in its Guardrails. Where they are off, at least 3 (the create
+        says so when it refuses); most personas carry 8 to 12. The built-in
+        personas are written in this shape.
         The merged persona renders to at most 200 lines and 48KB. `team` defaults to "shared", the commons
         anyone may file into; naming any other team requires that you
         are a member of it (a room operator may name any team). The
@@ -1970,6 +1974,58 @@ def register(mcp: FastMCP, app: Any) -> None:
 
         body = _persona_route_result(response)
         return {"agent": agent, "persona": body.get("persona"), "commit": body.get("sha")}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
+    @audited("kobo_edit_agent_persona")
+    async def kobo_edit_agent_persona(
+        ctx: Context,
+        agent: str,
+        who_they_are: str | None = None,
+        what_they_do: str | None = None,
+        rules: list[str] | None = None,
+        text: str | None = None,
+        base_sha: str | None = None,
+    ) -> dict:
+        """Rewrite the persona one running agent wears, in place: the same edit
+        as Edit persona in its Persona section. Read it first with
+        `kobo_get_agent_persona` and pass its `sha` as `base_sha`: a save made
+        from a persona that changed since is refused, so nobody's change is
+        written over; read it again and redo the change. A persona in the room's
+        shape takes
+        `who_they_are` (one line finishing "You are NAME, ...") and
+        `what_they_do` (at least 300 characters), and `rules` only while
+        `rules_in_persona` is true; otherwise the agent's rules are its
+        Guardrails, changed with `kobo_set_guardrails`. A persona not in that
+        shape takes its whole `text`. The agent restarts with the new persona,
+        usually within a minute; it keeps its persona id, and the catalog
+        persona and every other agent made from it stay as they were. Returns
+        the commit that carries the change.
+
+        You must own `agent`, manage it, or be a room operator; `agent` must be
+        READY and one the room composed.
+        """
+        from kobo_api.main import EditAgentPersonaBody
+
+        req = authz.room_request(app, get_user_email(ctx))
+        try:
+            body = EditAgentPersonaBody(
+                who_they_are=who_they_are,
+                what_they_do=what_they_do,
+                rules=rules,
+                text=text,
+                base_sha=base_sha,
+            )
+        except ValidationError as exc:
+            raise ToolError(_bad_request(exc)) from exc
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(
+                edit_persona_endpoint, name=agent, body=body, request=req, session=session
+            )
+        finally:
+            session.close()
+        result = _room_route_result(response, agent)
+        return {"agent": agent, "persona": result.get("persona"), "commit": result.get("sha")}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     @audited("kobo_set_agent_model")

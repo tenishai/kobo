@@ -16,9 +16,16 @@
   //   Rules         one per line
   // and the group it is filed under.
   //
+  // Rules only where an agent keeps its rules in its persona (2026-11-20). With
+  // guardrails on, each agent's rules are its own Guardrails, so people writing
+  // a persona are not asked for any and a draft's are not used: writing them
+  // here only to change them again on each agent was the same work twice. An
+  // edit still shows the box while the persona has rules, so nothing in it is
+  // hidden; the built-ins keep theirs, which start a new agent's Guardrails.
+  //
   // Above them, when making one, a single optional box: describe the job or
   // paste what you already have, press Draft persona, and the room writes
-  // all four parts in that shape (`POST /api/personas/draft`). It is a way
+  // the parts in that shape (`POST /api/personas/draft`). It is a way
   // to fill the form, not a step. A draft fills what is empty and refreshes
   // what an earlier draft wrote; anything a person typed stays
   // (`mergeDraftFields`). A draft that fails says so and leaves the form
@@ -124,6 +131,12 @@
 
   const SHARED_TEAM = "shared";
   const whoami = createQuery(() => whoamiQuery());
+  const guardrailsOn = $derived(whoami.data?.guardrails === true);
+  /** The rules box: always without guardrails; with them, only on an edit of
+   * a persona that still has rules. */
+  const showRules = $derived(
+    !guardrailsOn || (editing && (stored.data?.rules.length ?? 0) > 0),
+  );
   const isOperator = $derived(whoami.data?.operator === true);
   const roomGroups = createQuery(() => ({ ...groupsQuery(), enabled: isOperator }));
   const myGroups = $derived((whoami.data?.groups ?? []).filter((g) => g !== SHARED_TEAM));
@@ -172,7 +185,8 @@
     draftNote = null;
     // Rules the person typed are sent for the draft to keep. Rules an
     // earlier draft wrote are not: they would come back as if hand-typed.
-    const ownRules = text.rules === drafted.rules ? [] : splitLines(text.rules);
+    // With no rules box there are none to keep.
+    const ownRules = !showRules || text.rules === drafted.rules ? [] : splitLines(text.rules);
     draftMutation.mutate(
       { job, rules: ownRules },
       {
@@ -230,7 +244,12 @@
   let submitError = $state<string | null>(null);
   const pending = $derived(createMut.isPending || saveMut.isPending);
   const missing = $derived(
-    personaMissing(text, editing ? (stored.data?.team ?? SHARED_TEAM) : selectedTeam, editing),
+    personaMissing(
+      text,
+      editing ? (stored.data?.team ?? SHARED_TEAM) : selectedTeam,
+      editing,
+      !guardrailsOn,
+    ),
   );
   const canSubmit = $derived(
     missing === null && !pending && (!editing || stored.data !== undefined),
@@ -253,7 +272,9 @@
       return;
     }
     submitError = null;
-    const rules = splitLines(text.rules);
+    // A draft may have filled the rules behind a box that is not shown;
+    // those are never sent.
+    const rules = showRules ? splitLines(text.rules) : [];
     if (editId !== null) {
       saveMut.mutate(
         {
@@ -382,7 +403,7 @@
           </p>
         {:else}
           <p class="field__help" id="persona-builder-source-help">
-            Kobo writes the four parts below from it. Edit anything after.
+            Kobo writes the parts below from it. Edit anything after.
           </p>
         {/if}
       </div>
@@ -439,23 +460,28 @@
       </p>
     </div>
 
-    <div class="field">
-      <Label class="field__label" for="persona-builder-rules">
-        {whoami.data?.guardrails ? "Starter guardrails" : "Rules"}
-      </Label>
-      <textarea
-        id="persona-builder-rules"
-        bind:value={text.rules}
-        rows="6"
-        placeholder={RULES_PLACEHOLDER}
-      ></textarea>
-      <p class="field__help">
-        One per line: things it always or never does. At least 3, most
-        personas have 8 to 12.{whoami.data?.guardrails
-          ? " Each new agent starts its Guardrails with these, and its owners change them there."
-          : ""}
-      </p>
-    </div>
+    {#if showRules}
+      <div class="field">
+        <Label class="field__label" for="persona-builder-rules">
+          {guardrailsOn ? "Starter guardrails" : "Rules"}
+        </Label>
+        <textarea
+          id="persona-builder-rules"
+          bind:value={text.rules}
+          rows="6"
+          placeholder={RULES_PLACEHOLDER}
+        ></textarea>
+        <p class="field__help">
+          {#if guardrailsOn}
+            One per line. Each new agent made from it starts its Guardrails with these,
+            and its owners change them there.
+          {:else}
+            One per line: things it always or never does. At least 3, most personas have 8
+            to 12.
+          {/if}
+        </p>
+      </div>
+    {/if}
 
     {#if !editing}
       <div class="field">

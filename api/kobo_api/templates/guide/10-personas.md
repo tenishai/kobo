@@ -1,7 +1,7 @@
 # Personas
 <!-- summary: Built-in personas, finding one by group, building and editing your own, the naming rule, and which group a persona belongs to. -->
 
-A persona is the soul of an agent: who it is, how it works, and its always and never rules. An agent is built from exactly one. You meet them on the create form, where you pick one.
+A persona is the soul of an agent: who it is and how it works. The built-ins also carry always and never rules; in a room where guardrails are on, those start a new agent's Guardrails, where each agent keeps its own rules. An agent is built from exactly one. You meet them on the create form, where you pick one.
 
 ## Built-in personas
 
@@ -17,18 +17,18 @@ The search box looks across every group at once, by name and description. While 
 
 Rest your pointer on a persona to see its card. **Read the full persona** opens the whole thing in place: who they are, everything they do, every rule, and who made it. **Back** returns you to the list with your pick unchanged.
 
-On an agent's page, the persona name links to the `bundle/persona.md` file in the agent's repository. That file is exactly what the running agent was built from.
+On an agent's page, the persona name opens the **Persona** section of its Harness tab, which shows the persona the agent runs. Its owners edit it there with **Edit persona** (see "The harness").
 
 ## Build your own
 
-From the create form, **Build your own persona** opens the builder. It is one form with four parts:
+From the create form, **Build your own persona** opens the builder. It is one form with these parts:
 
 - **Name.** One or two words. This names the persona, not the agent; the agent gets its own name later.
 - **Who they are.** One line that finishes the sentence "You are (the agent's name), ...".
 - **What they do.** The body of the persona: the work and who it is for, the ground it owns and what it leaves to others, each kind of request and how to handle it, what wins when two of those pull apart, and what to do when unsure. Most personas run 25 to 45 lines. The room asks for at least 300 characters.
-- **Rules.** One per line: things it always or never does. At least 3. Most personas have 8 to 12. In a room where guardrails are on, the form calls them **Starter guardrails**: each new agent starts its Guardrails list with them (see "The harness"), its owners change them there, and giving the agent another persona later leaves them alone.
+- **Rules**, in a room where guardrails are off. One per line: things it always or never does. At least 3. Most personas have 8 to 12. In a room where guardrails are on there is no rules box: each agent keeps its own rules in its Guardrails list (see "The harness"), so they are written once, there. The built-in personas keep their rules, and each new agent made from one starts its list with them.
 
-You do not have to start from a blank form. **Start from a description**, at the top, takes a few sentences about the job, or notes or a document you already have: paste it, or use **Upload a file**. Press **Draft persona** and the room writes the four parts in the same shape the built-ins are written in. A long document keeps its detail: its steps, names and templates are carried over under bold labels, and every rule it states is kept, so a draft made from one runs longer than most. Anything you had already typed stays as you typed it. Read the draft through and change whatever you like.
+You do not have to start from a blank form. **Start from a description**, at the top, takes a few sentences about the job, or notes or a document you already have: paste it, or use **Upload a file**. Press **Draft persona** and the room writes the parts in the same shape the built-ins are written in. A long document keeps its detail: its steps, names and templates are carried over under bold labels, and every rule it states is kept, so a draft made from one runs longer than most. Anything you had already typed stays as you typed it. Read the draft through and change whatever you like.
 
 **Group** is where the persona is filed. It starts on your own group, and its members can edit the persona later. If you are in several groups, you choose one. Choose **Everyone** to share it with the whole room.
 
@@ -42,6 +42,6 @@ A persona name is one or two words, three at most, like `sentinel`, `ledger-keep
 
 At the bottom of the full persona, its maker, a member of its group, or an operator can **Edit** it, **Move to** another group or to Everyone, and **Archive** it. A persona shared with everyone is edited and moved only by its maker or an operator.
 
-**Edit** opens the same form with the persona's text in it. You can change who they are, what they do and the rules; a persona keeps its name. The persona of a team's informational guide has no Edit: the room wrote it whole, not in the form's four parts. An agent copies its persona when it is made, so an edit reaches agents made from then on and an agent already made keeps the persona it was made with.
+**Edit** opens the same form with the persona's text in it. You can change who they are and what they do, and its rules while it has any; a persona keeps its name. The persona of a team's informational guide has no Edit: the room wrote it whole, not in the form's parts. An agent copies its persona when it is made, so an edit reaches agents made from then on and an agent already made keeps the persona it was made with. To change the persona one agent runs, use **Edit persona** on that agent's page.
 
 Archiving takes a persona out of every list without deleting it; agents already built from it keep running. Ask an operator to bring an archived persona back. Built-in personas stay shared, and are never edited or moved.

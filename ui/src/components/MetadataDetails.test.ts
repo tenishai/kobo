@@ -23,7 +23,7 @@ describe("MetadataDetails: the two changes there is no way back from (issue #368
   it("offers neither to a caller who may make neither", async () => {
     renderWithClient(MetadataDetails, BASE_PROPS);
     await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
-    await screen.findByLabelText("Persona source");
+    await screen.findByLabelText("Team");
 
     expect(screen.queryByText("No way back")).toBeNull();
     expect(screen.queryByText("Convert to connected")).toBeNull();
@@ -33,7 +33,7 @@ describe("MetadataDetails: the two changes there is no way back from (issue #368
   it("puts Convert and Destroy at the foot of the dialog, each behind its own confirm", async () => {
     renderWithClient(MetadataDetails, { ...BASE_PROPS, canConvert: true, canDestroy: true, status: "ready" });
     await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
-    await screen.findByLabelText("Persona source");
+    await screen.findByLabelText("Team");
 
     const dialog = screen.getByRole("dialog", { name: "Edit details" });
     expect(within(dialog).getByText("No way back")).not.toBeNull();
@@ -69,7 +69,7 @@ describe("MetadataDetails: the two changes there is no way back from (issue #368
     );
     renderWithClient(MetadataDetails, { ...BASE_PROPS, canConvert: true });
     await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
-    await screen.findByLabelText("Persona source");
+    await screen.findByLabelText("Team");
 
     await fireEvent.click(screen.getByRole("button", { name: "Convert" }));
     expect(
@@ -105,7 +105,7 @@ describe("MetadataDetails — Edit details modal (persona-metadata plan)", () =>
     renderWithClient(MetadataDetails, BASE_PROPS);
     await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
 
-    const teamSelect = (await screen.findByLabelText("Persona source")) as HTMLSelectElement;
+    const teamSelect = (await screen.findByLabelText("Team")) as HTMLSelectElement;
     expect(teamSelect.value).toBe("shared");
     await waitFor(() => {
       const optionValues = Array.from(teamSelect.options).map((o) => o.value);
@@ -125,7 +125,7 @@ describe("MetadataDetails — Edit details modal (persona-metadata plan)", () =>
   it("typed team escape: selecting Other reveals a slug-hinted text input", async () => {
     renderWithClient(MetadataDetails, BASE_PROPS);
     await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
-    const teamSelect = (await screen.findByLabelText("Persona source")) as HTMLSelectElement;
+    const teamSelect = (await screen.findByLabelText("Team")) as HTMLSelectElement;
 
     await fireEvent.change(teamSelect, { target: { value: "__other__" } });
 
@@ -137,7 +137,7 @@ describe("MetadataDetails — Edit details modal (persona-metadata plan)", () =>
   it("chips: add lowercases/dedupes, remove works, caps at 8 with a hint", async () => {
     renderWithClient(MetadataDetails, { ...BASE_PROPS, purposeTags: [] });
     await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
-    await screen.findByLabelText("Persona source");
+    await screen.findByLabelText("Team");
 
     const tagInput = screen.getByLabelText("Purpose tags") as HTMLInputElement;
     const addButton = screen.getByRole("button", { name: "Add" });
@@ -179,7 +179,7 @@ describe("MetadataDetails — Edit details modal (persona-metadata plan)", () =>
     });
     renderWithClient(MetadataDetails, BASE_PROPS);
     await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
-    await screen.findByLabelText("Persona source");
+    await screen.findByLabelText("Team");
 
     const tagInput = screen.getByLabelText("Purpose tags") as HTMLInputElement;
     await fireEvent.input(tagInput, { target: { value: "escalations" } });
@@ -216,7 +216,7 @@ describe("MetadataDetails — Edit details modal (persona-metadata plan)", () =>
 
     renderWithClient(MetadataDetails, BASE_PROPS);
     await fireEvent.click(screen.getByRole("button", { name: "Edit details" }));
-    await screen.findByLabelText("Persona source");
+    await screen.findByLabelText("Team");
 
     await fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
     expect(await screen.findByRole("button", { name: "Regenerating…" })).not.toBeNull();

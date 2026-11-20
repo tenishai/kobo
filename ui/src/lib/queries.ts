@@ -120,6 +120,7 @@ import {
   type AgentEnvWriteResult,
   type AgentListResult,
   type AgentMetadata,
+  type AgentPersonaEdit,
   type AgentSecrets,
   type AgentSecretsWrite,
   type AgentSkill,
@@ -197,6 +198,8 @@ import {
   fetchOrgAccounts,
   fetchOrgStatus,
   fetchPersona,
+  editAgentPersona,
+  getAgentPersona,
   fetchRecommendedSkills,
   fetchRequestable,
   fetchSlackApp,
@@ -532,6 +535,26 @@ export function personaFullQuery(id: string | null) {
     staleTime: 0,
     gcTime: 0,
   });
+}
+
+/** The persona one agent runs (`GET /api/agents/{name}/persona`), for its
+ * Persona section. */
+export function agentPersonaQuery(name: string) {
+  return queryOptions({
+    queryKey: ["agents", name, "persona"] as const,
+    queryFn: () => getAgentPersona(name),
+  });
+}
+
+/** Rewrites the agent's own persona (`PUT /api/agents/{name}/persona/text`).
+ * The section reads the file again, so it shows what was saved. */
+export function editAgentPersonaMutation(queryClient: QueryClient, name: string) {
+  return {
+    mutationFn: (body: AgentPersonaEdit) => editAgentPersona(name, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", name, "persona"] });
+    },
+  };
 }
 
 /** Rewrites one persona's text (`PUT /api/personas/{id}`). The list's one

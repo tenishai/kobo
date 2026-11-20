@@ -380,7 +380,10 @@
   >
     {#if !connected}
     <div class="field">
-      <label class="field__label" for="metadata-team">Persona source</label>
+      <!-- Team, not "Persona source" (2026-11-20): the old label sent a
+           teammate looking here for the agent's persona, which is edited in
+           the Persona section's own Edit persona. -->
+      <label class="field__label" for="metadata-team">Team</label>
       <select
         id="metadata-team"
         class="field__input"
@@ -395,7 +398,7 @@
         <option value={OTHER}>Other...</option>
       </select>
       <p class="field__help">
-        Built-in, or the team whose personas and skills it draws from. Not who can see it: that is its group.
+        The team it works for, shown on its card in the agent directory. Who can see it is its group.
       </p>
       {#if teamMode === "other"}
         <label class="field__sr" for="metadata-team-other">Team name</label>

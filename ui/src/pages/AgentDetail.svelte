@@ -56,6 +56,7 @@
     Users,
   } from "phosphor-svelte";
   import AccessPanel from "../components/AccessPanel.svelte";
+  import AgentPersonaPanel from "../components/AgentPersonaPanel.svelte";
   import BuildLogCard from "../components/BuildLogCard.svelte";
   import ConnectedChat from "../components/ConnectedChat.svelte";
   import ConnectedChecks from "../components/ConnectedChecks.svelte";
@@ -755,24 +756,24 @@
         </div>
         {#if !connected}
           <!-- Soul-line (persona-naming law): the persona's NAME, with
-               who-they-are on the hover. The name opens the bundle's
-               persona.md, exactly what the running agent was built from. -->
+               who-they-are on the hover. The name opens the Harness tab's
+               Persona section, which shows the persona the agent runs and
+               edits it in place (2026-11-20); it used to open the file on
+               GitHub, which sent people out of the room to change it. -->
           <div class="agent-detail__stat">
             <dt>Persona</dt>
             <dd>
-              {#if data.repo_full_name}
-                <a
-                  class="agent-detail__persona"
-                  href={`https://github.com/${data.repo_full_name}/blob/main/bundle/persona.md`}
-                  target="_blank"
-                  rel="noreferrer"
-                  title={personaLine}
-                >
-                  {personaName}
-                </a>
-              {:else}
-                <span class="agent-detail__persona" title={personaLine}>{personaName}</span>
-              {/if}
+              <button
+                type="button"
+                class="agent-detail__persona"
+                title={personaLine}
+                onclick={() => {
+                  activeTab = "harness";
+                  harnessSection = "persona";
+                }}
+              >
+                {personaName}
+              </button>
             </dd>
           </div>
         {/if}
@@ -826,38 +827,25 @@
       <p class="agent-detail__note">{avatarNote}</p>
     {/if}
 
-    <!-- The Harness tab's Persona section: the soul the agent was built
-         from, the facts Edit details writes, and the editor itself. Edit
-         details writes the fields the header shows (team, purpose chips,
-         capability), all of which describe a bundle the room composed, so a
-         connected agent never reaches this -- `harnessSections` leaves the
-         Persona section out for one entirely.
+    <!-- The Harness tab's Persona section: the persona the agent runs, read
+         and edited in place (AgentPersonaPanel), then the facts Edit details
+         writes and the editor itself. Edit details writes the fields the
+         header shows (team, purpose chips, capability), all of which describe
+         a bundle the room composed, so a connected agent never reaches this
+         -- `harnessSections` leaves the Persona section out for one entirely.
          MetadataDetails keeps its own trigger off: the header menu item is
          the trigger, and two would be one too many. -->
     {#snippet personaSection()}
+      <AgentPersonaPanel agentName={data.name} {personaName} {frozen} />
       <section class="panel">
-        <h2 class="panel__heading">Persona</h2>
+        <h2 class="panel__heading">Details</h2>
         <dl class="agent-detail__facts">
-          <dt>Persona</dt>
-          <dd>
-            {personaLine}
-            {#if data.repo_full_name}
-              <a
-                class="agent-detail__repo"
-                href={`https://github.com/${data.repo_full_name}/blob/main/bundle/persona.md`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Open in GitHub
-              </a>
-            {/if}
-          </dd>
-          <dt>Source</dt>
+          <dt>Team</dt>
           <dd>
             {data.team === "shared" || !data.team ? "Built-in" : `${data.team} team`}
             <span class="agent-detail__fact-help">
-              Where its persona and skills come from. Who can see the agent is its group,
-              shown beside the name.
+              The team it works for, shown on its card in the agent directory. Who can see
+              it is its group, shown beside the name.
             </span>
           </dd>
           <dt>Purpose</dt>
@@ -1346,14 +1334,21 @@
     white-space: nowrap;
   }
 
+  /* A button that reads as the link it used to be: it opens the Persona
+     section on this page. */
   .agent-detail__persona {
+    padding: 0;
+    border: 0;
+    background: none;
     color: var(--ink);
+    font: inherit;
     text-decoration: underline;
     text-decoration-color: var(--border);
     text-underline-offset: 3px;
+    cursor: pointer;
   }
 
-  a.agent-detail__persona:hover {
+  .agent-detail__persona:hover {
     text-decoration-color: var(--ink);
   }
 
@@ -1393,11 +1388,6 @@
     color: var(--ink);
     font-size: 0.875rem;
     line-height: 1.6;
-  }
-
-  .agent-detail__facts dd .agent-detail__repo {
-    margin-left: var(--space-2xs);
-    color: var(--link);
   }
 
   .agent-detail__fact-help {

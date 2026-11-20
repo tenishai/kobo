@@ -22,7 +22,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from kobo_api import delivery
 from kobo_api.catalog import _parse_persona_file
@@ -107,7 +107,10 @@ _WHO_PREFIXES = ("you are {name},", "you are {name}", "you are ")
 
 # The fewest characters of what-they-do, and the fewest rules, a new or
 # edited persona may carry. The built-ins run to about 1,700 characters and
-# ten to twelve rules; these are floors, not targets.
+# ten to twelve rules; these are floors, not targets. The rules floor holds
+# only in a room whose agents still keep their rules in their persona: with
+# guardrails on, rules belong in each agent's own Guardrails, so a persona
+# people write needs none (2026-11-20).
 PERSONA_WHAT_MIN_CHARS = 300
 PERSONA_RULES_MIN = 3
 
@@ -298,7 +301,9 @@ def in_reading_order(entries: list[dict]) -> list[dict]:
     return sorted(entries, key=key)
 
 
-def write_persona_file(github, repo: str, body: str, *, persona_id: str) -> str:
+def write_persona_file(
+    github, repo: str, body: str, *, persona_id: str, message: str | None = None
+) -> str:
     """Make `bundle/persona.md` in `repo` say `body`, and push it.
 
     The one file the runtime reads its persona from, rendered by the
@@ -312,7 +317,9 @@ def write_persona_file(github, repo: str, body: str, *, persona_id: str) -> str:
 
     Never `[skip ci]`: the persona reaches the running agent only through
     the rebuild and rollout the generated CI does on every push, which is
-    the delivery, not a side effect of it.
+    the delivery, not a side effect of it. `message` names an edit in place
+    (the agent keeps its persona); without one the commit says which
+    persona the agent wears now.
     """
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
@@ -320,7 +327,7 @@ def write_persona_file(github, repo: str, body: str, *, persona_id: str) -> str:
         bundle = workdir / "bundle"
         bundle.mkdir(parents=True, exist_ok=True)
         (bundle / "persona.md").write_text(body, encoding="utf-8")
-        delivery.push(github, workdir, f"kobo: persona is now {persona_id}")
+        delivery.push(github, workdir, message or f"kobo: persona is now {persona_id}")
         return github.local_head(workdir)
 
 
@@ -522,6 +529,95 @@ def split_rules(body: str) -> tuple[str, list[str]]:
     return "\n".join(kept) + "\n", [rule for rule in rules if rule]
 
 
+# --- one agent's own persona (2026-11-20) -----------------------------------
+#
+# An agent copies its persona when it is made: its `bundle/persona.md` is the
+# catalog text with the agent's own name where `{name}` was. Its owners edit that
+# copy in the room (the Persona section, `PUT /api/agents/{name}/persona/text`),
+# so changing one agent's persona no longer means editing the file on GitHub. The
+# catalog persona stays as it was unless they also save it there.
+
+
+def parse_agent_persona(text: str, agent_name: str) -> ParsedPersona:
+    """`parse_persona_body` for an agent's own persona.md, whose opening line names
+    the agent where the catalog text says `{name}`: the name is put back first, so
+    the same landmarks find the same fields."""
+    lines = text.splitlines()
+    named = f"You are {agent_name}, "
+    for index, line in enumerate(lines):
+        if line == _WHAT_HEADING:
+            break
+        if line.startswith(named):
+            lines[index] = "You are {name}, " + line[len(named):]
+            break
+    return parse_persona_body("\n".join(lines))
+
+
+def _agent_persona_fields(
+    agent_name: str, who_they_are: str, what_they_do: str, rules: list[str]
+) -> PersonaFields:
+    """The form's fields for an agent's own persona. The who-line is shown to people
+    as "You are {agent}, ...", so a pasted copy of that sentence loses its opening
+    here, before `clean_who`, or the name would be written twice."""
+    opening = re.compile(rf"^\s*you are\s+{re.escape(agent_name)}\b\s*,?\s*", re.IGNORECASE)
+    return PersonaFields(
+        name=agent_name[:60],
+        who_they_are=opening.sub("", who_they_are, count=1),
+        what_they_do=what_they_do,
+        rules=rules,
+    )
+
+
+def agent_persona_parts(text: str, agent_name: str) -> ParsedPersona | None:
+    """The parts of an agent's own persona.md, but only when an edit in parts loses
+    nothing: the file is in the house shape exactly, so rendering what was read
+    gives the file back byte for byte. Anything else (a line added by hand, a rule
+    in another list style, a paragraph after the rules, a built-in's plain prose)
+    is None, and the file is edited as one text, so the form can never drop what it
+    does not show."""
+    parsed = parse_agent_persona(text, agent_name)
+    if parsed.who_they_are is None or parsed.what_they_do is None:
+        return None
+    try:
+        fields = _agent_persona_fields(
+            agent_name, parsed.who_they_are, parsed.what_they_do, parsed.rules
+        )
+    except ValidationError:
+        return None
+    if render_persona(fields).replace("{name}", agent_name) != text:
+        return None
+    return parsed
+
+
+def render_agent_persona(
+    agent_name: str, who_they_are: str, what_they_do: str, rules: list[str]
+) -> str:
+    """An agent's own persona.md in the house shape, byte for byte the way the room
+    writes it at birth: `render_persona` with the agent's name in place of `{name}`.
+    The same cleaners and the same floor on what-they-do as a persona edit, and no
+    floor on rules: they are this agent's, and with guardrails on they live in its
+    Guardrails. Raises PersonaError, or pydantic.ValidationError from the fields."""
+    fields = _agent_persona_fields(agent_name, who_they_are, what_they_do, rules)
+    check_substance(fields, rules_required=False)
+    body = render_persona(fields).replace("{name}", agent_name)
+    _check_rendered_size(body)
+    return body
+
+
+def clean_persona_text(text: str) -> str:
+    """A persona.md the room did not write in its shape, saved as one text: exactly
+    as given, with Windows line ends made plain and a newline at the end if it had
+    none. Nothing else is touched, so nothing is lost. Raises PersonaError when it
+    is blank or over the size limit."""
+    body = text.replace("\r\n", "\n")
+    if not body.strip():
+        raise PersonaError("the persona can't be empty")
+    if not body.endswith("\n"):
+        body += "\n"
+    _check_rendered_size(body)
+    return body
+
+
 # The room's real limit on a persona (upload/limits addendum): the MERGED
 # persona.md — render_persona's output, body plus rules section together —
 # tops out at 200 lines and 49152 bytes (48KB, measured on the UTF-8
@@ -556,12 +652,14 @@ def _check_rendered_size(body: str) -> None:
         )
 
 
-def check_substance(fields: PersonaFields) -> None:
+def check_substance(fields: PersonaFields, *, rules_required: bool = True) -> None:
     """Raise PersonaError when `fields` is too thin to be a persona an
-    agent can work from: under `PERSONA_WHAT_MIN_CHARS` of what-they-do, or
-    fewer than `PERSONA_RULES_MIN` rules. Checked at create and at edit,
-    for the form and the MCP tool alike; never on read, so a thin persona
-    already in the catalog keeps working until somebody edits it."""
+    agent can work from: under `PERSONA_WHAT_MIN_CHARS` of what-they-do, or,
+    when `rules_required`, fewer than `PERSONA_RULES_MIN` rules. Checked at
+    create and at edit, for the form and the MCP tool alike; never on read,
+    so a thin persona already in the catalog keeps working until somebody
+    edits it. The routes pass `rules_required` off in a room with guardrails
+    on, where an agent's rules live in its Guardrails instead."""
     if len(fields.what_they_do) < PERSONA_WHAT_MIN_CHARS:
         raise PersonaError(
             "What they do is too short to work from: say what the persona covers, "
@@ -569,7 +667,7 @@ def check_substance(fields: PersonaFields) -> None:
             f"({PERSONA_WHAT_MIN_CHARS} characters at least, it has "
             f"{len(fields.what_they_do)})"
         )
-    if len(fields.rules) < PERSONA_RULES_MIN:
+    if rules_required and len(fields.rules) < PERSONA_RULES_MIN:
         raise PersonaError(
             f"a persona needs at least {PERSONA_RULES_MIN} rules, one line each: "
             "things it always or never does"
@@ -674,6 +772,7 @@ def create_persona(
     fields: PersonaFields,
     team: str,
     created_by: str | None = None,
+    rules_required: bool = True,
 ) -> CatalogEntry:
     """Write a room-authored persona: storage only, never touches search.
 
@@ -708,7 +807,7 @@ def create_persona(
     if existing is not None:
         raise PersonaExists(f"a persona with id {id_!r} already exists", existing)
 
-    check_substance(fields)
+    check_substance(fields, rules_required=rules_required)
     body = render_persona(fields)
     _check_rendered_size(body)
     storage.write_bytes(
@@ -754,6 +853,7 @@ def update_persona(
     what_they_do: str,
     rules: list[str],
     updated_by: str | None = None,
+    rules_required: bool = True,
 ) -> dict:
     """Rewrite a room-authored persona's text in place: who they are, what
     they do, the rules. The id, the name, the group, the tags and the maker
@@ -809,7 +909,7 @@ def update_persona(
         what_they_do=what_they_do,
         rules=rules,
     )
-    check_substance(fields)
+    check_substance(fields, rules_required=rules_required)
     body = render_persona(fields)
     _check_rendered_size(body)
     storage.write_bytes(

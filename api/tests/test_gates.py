@@ -47,9 +47,16 @@ from kobo_api.models import (
     AgentUserGrant,
     Base,
 )
-from kobo_api.personas import seed_default_personas
+from kobo_api.personas import (
+    PersonaFields,
+    create_persona,
+    render_persona,
+    seed_default_personas,
+)
 from kobo_api.slack_state import encode_channels
 from tests.fakes import (
+    HOUSE_RULES,
+    HOUSE_WHAT_THEY_DO,
     FakeAgent,
     FakeCabal,
     FakeCloud,
@@ -439,6 +446,14 @@ def _set_persona(client, headers):
     )
 
 
+def _edit_persona(client, headers):
+    return client.put(
+        f"/api/agents/{AGENT_NAME}/persona/text",
+        json={"who_they_are": "a helper", "what_they_do": "Helps."},
+        headers=headers,
+    )
+
+
 def _restart(client, headers):
     return client.post(f"/api/agents/{AGENT_NAME}/restart", headers=headers)
 
@@ -521,6 +536,7 @@ SMOKE_ROUTES = [
     ("retry", _retry),
     ("directory-sync", _sync_directory),
     ("persona", _set_persona),
+    ("persona-edit", _edit_persona),
     ("restart", _restart),
     ("secrets-read", _read_secrets),
     ("secrets-write", _write_secrets),
@@ -690,6 +706,47 @@ def test_manage_grant_passes_the_ownership_gate_but_not_destroy_or_grants(
     assert _add_grant(client, manager).status_code == 403
 
 
+def test_saving_a_persona_edit_to_the_catalog_is_offered_only_to_who_may_edit_it(
+    session_factory__web_ownership_gate, config__web_ownership_gate
+):
+    """Gate (2026-11-20): Edit persona changes the agent's own copy for anyone who
+    may change the agent, and **Save to {persona} too** is offered only to who may
+    also edit the catalog persona: its maker or an operator for one shared with
+    everyone. A manager of the agent edits the agent and not the catalog."""
+    storage = FakeStorage()
+    fields = PersonaFields(
+        name="alert scribe", who_they_are="a careful keeper of alerts",
+        what_they_do=HOUSE_WHAT_THEY_DO, rules=list(HOUSE_RULES),
+    )
+    create_persona(storage, bucket="personas-bucket", fields=fields, team="shared", created_by=OWNER_EMAIL)
+    github = FakeGitHub(repo_files={"bundle/persona.md": render_persona(fields).replace("{name}", AGENT_NAME)})
+    config = config__web_ownership_gate.model_copy(update={"personas_bucket": "personas-bucket"})
+    private_key, jwk = _generate_jwk()
+    client = TestClient(
+        create_app(
+            session_factory__web_ownership_gate,
+            config=config,
+            clients=Clients(github=github, gojira=FakeGojira(), cloud=FakeCloud(), agent=FakeAgent(),
+                            kubectl=FakeKubectl(), storage=storage),
+            iap_jwks_fetcher=_fetcher(jwk),
+        )
+    )
+    session = session_factory__web_ownership_gate()
+    session.add(Agent(name=AGENT_NAME, persona="alert-scribe", model_id=config.models[0].id,
+                      status=AgentStatus.READY, repo_full_name=REPO, created_by=OWNER_EMAIL, skills=[]))
+    session.commit()
+    session.close()
+    _seed_grant(session_factory__web_ownership_gate, email=MANAGER_EMAIL, role=GRANT_ROLE_MANAGE)
+
+    def offer(email):
+        body = client.get(f"/api/agents/{AGENT_NAME}/persona", headers=_headers(private_key, email=email)).json()
+        return body["can_edit"], body["can_edit_source"]
+
+    assert offer(OWNER_EMAIL) == (True, True)
+    assert offer(OPERATOR_EMAIL) == (True, True)
+    assert offer(MANAGER_EMAIL) == (True, False)
+
+
 @pytest.mark.parametrize("route_name,request_fn", SMOKE_ROUTES, ids=[r for r, _ in SMOKE_ROUTES])
 def test_stranger_is_blocked_on_every_other_gated_route(
     session_factory__web_ownership_gate, config__web_ownership_gate, route_name, request_fn
@@ -752,6 +809,8 @@ READY_GATED_ROUTES = [
     ("DELETE", f"/api/agents/{AGENT_NAME}/slack/app", {}),
     ("POST", f"/api/agents/{AGENT_NAME}/slack/move", {}),
     ("PUT", f"/api/agents/{AGENT_NAME}/persona", {"json": {"persona": PERSONA}}),
+    ("GET", f"/api/agents/{AGENT_NAME}/persona", {}),
+    ("PUT", f"/api/agents/{AGENT_NAME}/persona/text", {"json": {"text": "You are clio."}}),
     ("PATCH", f"/api/agents/{AGENT_NAME}/model", {"json": {"model": "vertex_ai/claude-sonnet-4-5"}}),
     ("POST", f"/api/agents/{AGENT_NAME}/restart", {}),
     ("PATCH", f"/api/agents/{AGENT_NAME}/runtime", {"json": {"runtime_image": "example.dev/runtime:v2"}}),
@@ -1986,6 +2045,8 @@ VISIBILITY_ROUTES = [
     ("GET", "/api/agents/clio/env", {}),
     ("PUT", "/api/agents/clio/env", {"json": {"set": {"MODE": "x"}}}),
     ("PUT", "/api/agents/clio/persona", {"json": {"persona": PERSONA}}),
+    ("GET", "/api/agents/clio/persona", {}),
+    ("PUT", "/api/agents/clio/persona/text", {"json": {"text": "You are clio."}}),
     ("PATCH", "/api/agents/clio/model", {"json": {"model": "vertex_ai/claude-sonnet-4-5"}}),
     ("POST", "/api/agents/clio/restart", {}),
     ("GET", "/api/agents/clio/avatar", {}),

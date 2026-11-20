@@ -26,7 +26,7 @@ Look around:
 
 Create and shape an agent:
 - **create agent**: persona, group, name, tags, skills, model. Same rules as the form, same checklist on the agent's page.
-- **set agent persona**, **set agent skills**, **add agent tool**: change what the agent is and does.
+- **set agent persona**, **set agent skills**, **add agent tool**: change what the agent is and does. **get agent persona** reads the persona it runs, and **edit agent persona** rewrites that copy in place, as **Edit persona** does.
 - **get guardrails**, **set guardrails**: the rules the agent follows on every task, each with where it came from. Set sends the whole list back with your change, so read it first; the agent follows the new list from its next task.
 - **create persona**, **move persona**, **archive persona**: the persona builder and the Manage row from chat.
 - **set agent model**: move a running agent onto another model from the room's list. The agent restarts on it.

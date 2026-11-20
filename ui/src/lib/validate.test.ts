@@ -254,6 +254,13 @@ describe("personaMissing", () => {
     expect(personaMissing(FULL, "sre")).toBeNull();
   });
 
+  it("asks for no rules where agents keep them in their Guardrails", () => {
+    expect(personaMissing({ ...FULL, rules: "" }, "sre", false, false)).toBeNull();
+    expect(personaMissing({ ...FULL, whatTheyDo: "Helps." }, "sre", false, false)).toBe(
+      "Say more about what they do: 6 of at least 300 characters.",
+    );
+  });
+
   it("asks nothing of a name the edit form cannot change", () => {
     const old = { ...FULL, name: "one two three four" };
     expect(personaMissing(old, "sre", true)).toBeNull();

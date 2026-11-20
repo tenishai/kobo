@@ -444,6 +444,7 @@ def register(mcp: FastMCP, app: Any) -> None:
     )
 
     search_personas_endpoint = _endpoint(app, "GET", "/api/personas/search")
+    agent_persona_endpoint = _endpoint(app, "GET", "/api/agents/{name}/persona")
     list_learnings_endpoint = _endpoint(app, "GET", "/api/agents/{name}/learnings")
     list_secrets_endpoint = _endpoint(app, "GET", "/api/agents/{name}/secrets")
     list_env_endpoint = _endpoint(app, "GET", "/api/agents/{name}/env")
@@ -487,6 +488,26 @@ def register(mcp: FastMCP, app: Any) -> None:
         finally:
             session.close()
         return {"result": body["results"]}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    @audited("kobo_get_agent_persona")
+    async def kobo_get_agent_persona(ctx: Context, agent: str) -> dict:
+        """The persona `agent` runs, read from its own files: the catalog id it
+        was made from (`persona`) and, when the persona is exactly in the
+        room's shape (`house_shape`), `who_they_are`, `what_they_do` and any
+        `rules` the file still holds; otherwise the whole `text`. `sha` is the
+        version to pass back as `base_sha`. `rules_in_persona` false means the
+        agent's rules live in its Guardrails (`kobo_get_guardrails`), not here.
+        `can_edit` says whether you may change it with
+        `kobo_edit_agent_persona`. The agent must be ready; one that runs its
+        team's own code keeps its persona in its own repository."""
+        req = authz.room_request(app, get_user_email(ctx))
+        session = app.state.session_factory()
+        try:
+            response = await _off_loop(agent_persona_endpoint, name=agent, request=req, session=session)
+        finally:
+            session.close()
+        return {"agent": agent, **_room_route_result(response, agent)}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     @audited("kobo_list_learnings")
