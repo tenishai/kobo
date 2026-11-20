@@ -2242,7 +2242,14 @@ export type GuardrailRule = {
    * directory. The agent is told who sent each message and matches them by
    * email. */
   people: Person[];
-  /** The rule as the agent reads it: its words, then its people. */
+  /** Emoji the rule is about, as Slack's reaction events name them (no
+   * colons; thumbsup is "+1"). */
+  emoji: string[];
+  /** Slack channels the rule is about, by name without the #. */
+  channels: string[];
+  /** Repositories the rule is about, as owner/name. */
+  repositories: string[];
+  /** The rule as the agent reads it: its words, then what it names. */
   line: string;
   source: { kind: GuardrailSourceKind; ref: string | null };
   added_by: string | null;
@@ -2279,6 +2286,9 @@ export type GuardrailsResponse = {
 export type GuardrailRuleIn = {
   text: string;
   people?: Person[];
+  emoji?: string[];
+  channels?: string[];
+  repositories?: string[];
   id?: number | null;
   source_kind?: Exclude<GuardrailSourceKind, "repository">;
   source_ref?: string | null;

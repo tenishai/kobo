@@ -783,8 +783,8 @@ def register(mcp: FastMCP, app: Any) -> None:
         for you. `skills`, when given, is a list of `{"id", "team"}` picks
         from the room's skills catalog; `tags` is a short list of purpose
         tags. `model` is an id from `kobo_list_models`; leave it out for the
-        room's default. Every new agent ships the baseline tooling pack (leakguard
-        and probe guard) unless skip_baseline is true. This tool builds on
+        room's default. Every new agent ships the room's leak guard, which keeps
+        keys and tokens out of its replies, unless skip_baseline is true. This tool builds on
         the room's one runtime; there is no choice to make here. A team
         that already has an agent in its own repository connects it in the
         room instead, and this tool does not do that.
@@ -1153,12 +1153,14 @@ def register(mcp: FastMCP, app: Any) -> None:
         word keeps where it came from; a new or reworded one is recorded as
         yours. An empty list clears it.
 
-        A rule can name the people it is about: end it with
-        `(These people: Name <email>; Name <email>)`, the way `line` in
-        `kobo_get_guardrails` shows it, so "Only answer these people" knows
-        who they are. The agent is told who sent each Slack message and
-        matches them by email. Send a rule's `line`, not just its `text`, to
-        keep the people it names.
+        A rule can name what it is about, at the end of its line, in this
+        order, each at most once: `(These people: Name <email>; Name <email>)`
+        `(These emoji: :ticket:, :+1:)` `(These channels: #sre-requests)`
+        `(These repositories: owner/name)`, the way `line` in
+        `kobo_get_guardrails` shows them. The agent is told who sent each
+        Slack message and where, and which emoji woke it, and matches them;
+        repositories are the ones its tools act on. Send a rule's `line`, not
+        just its `text`, to keep what it names.
 
         Write rules that make sense on their own ("When searching tickets, use
         the person's full email", not "Use the full email"). Always or never

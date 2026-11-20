@@ -11,6 +11,9 @@ const RULES = {
       id: 4,
       text: "Never change access without an approved ticket.",
       people: [],
+      emoji: [],
+      channels: [],
+      repositories: [],
       line: "Never change access without an approved ticket.",
       source: { kind: "persona", ref: "access-agent" },
       added_by: "room",
@@ -24,6 +27,9 @@ const RULES = {
       id: 5,
       text: "Answer only in the request thread.",
       people: [],
+      emoji: [],
+      channels: [],
+      repositories: [],
       line: "Answer only in the request thread.",
       source: { kind: "person", ref: null },
       added_by: "dana@example.test",
@@ -47,7 +53,12 @@ type SavedRule = {
   id?: number | null;
   text: string;
   people?: Array<{ name: string; email: string }>;
+  emoji?: string[];
+  channels?: string[];
+  repositories?: string[];
 };
+
+const NONE = { people: [], emoji: [], channels: [], repositories: [] };
 
 const ADA = { name: "Ada Lovelace", email: "ada@example.test" };
 
@@ -64,11 +75,30 @@ function savedBody(): {
   return JSON.parse(String((call![1] as RequestInit).body));
 }
 
+/** Tick one list in the ⋯ beside Add, for the new rule. */
+async function openNewRuleList(label: string): Promise<void> {
+  await fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Add people, emoji, channels or repositories to the new rule",
+    }),
+  );
+  await fireEvent.click(screen.getByRole("menuitemcheckbox", { name: label }));
+}
+
 describe("GuardrailsPanel", () => {
   beforeEach(() => {
     stubFetch({
       "/guardrails": { ...RULES, mode: "instant" },
       "/api/people/search": { people: [ADA] },
+      "/github/repositories": {
+        available: true,
+        repositories: [
+          { full_name: "acme/api", private: true, default_branch: "main" },
+          { full_name: "acme/web", private: true, default_branch: "main" },
+        ],
+        selected: ["acme/web"],
+        note: null,
+      },
     });
   });
 
@@ -93,8 +123,8 @@ describe("GuardrailsPanel", () => {
     await screen.findByRole("status");
     expect(savedBody()).toEqual({
       rules: [
-        { id: 4, text: "Never change access without an approved ticket in Jira.", people: [] },
-        { id: 5, text: "Answer only in the request thread.", people: [] },
+        { id: 4, text: "Never change access without an approved ticket in Jira.", ...NONE },
+        { id: 5, text: "Answer only in the request thread.", ...NONE },
       ],
       base_sha: "a".repeat(64),
     });
@@ -114,7 +144,15 @@ describe("GuardrailsPanel", () => {
 
     expect(more.getAttribute("aria-expanded")).toBe("true");
     const items = screen.getAllByRole("menuitem").map((item) => item.textContent?.trim());
-    expect(items).toEqual(["Edit", "People", "It broke this", "Remove"]);
+    expect(items).toEqual([
+      "Edit",
+      "People",
+      "Emoji",
+      "Slack channels",
+      "Repositories",
+      "It broke this",
+      "Remove",
+    ]);
   });
 
   // Wire payload (people on a rule, 2026-11-20): the people picked for a rule
@@ -128,7 +166,9 @@ describe("GuardrailsPanel", () => {
       }),
     );
     await fireEvent.click(screen.getByRole("menuitem", { name: "People" }));
-    await fireEvent.input(screen.getByLabelText("Add a person"), { target: { value: "ada" } });
+    const person = screen.getByLabelText("Add a person");
+    await fireEvent.focus(person);
+    await fireEvent.input(person, { target: { value: "ada" } });
     await fireEvent.click(await screen.findByRole("button", { name: /Ada Lovelace/ }, { timeout: 2000 }));
     await fireEvent.click(screen.getByRole("button", { name: "Save people" }));
 
@@ -136,6 +176,7 @@ describe("GuardrailsPanel", () => {
     expect(savedBody().rules[1]).toEqual({
       id: 5,
       text: "Answer only in the request thread.",
+      ...NONE,
       people: [ADA],
     });
   });
@@ -148,7 +189,7 @@ describe("GuardrailsPanel", () => {
     await fireEvent.input(await screen.findByRole("textbox", { name: "New rule" }), {
       target: { value: "Only answer these people." },
     });
-    await fireEvent.click(screen.getByRole("button", { name: /People/ }));
+    await openNewRuleList("People");
     const box = screen.getByLabelText("Add a person");
     await fireEvent.input(box, { target: { value: "grace@example.test" } });
     await fireEvent.keyDown(box, { key: "Enter" });
@@ -157,6 +198,7 @@ describe("GuardrailsPanel", () => {
     await screen.findByRole("status");
     expect(savedBody().rules[2]).toEqual({
       text: "Only answer these people.",
+      ...NONE,
       people: [{ name: "", email: "grace@example.test" }],
     });
   });
@@ -169,7 +211,7 @@ describe("GuardrailsPanel", () => {
     await fireEvent.input(await screen.findByRole("textbox", { name: "New rule" }), {
       target: { value: "Only answer these people." },
     });
-    await fireEvent.click(screen.getByRole("button", { name: /People/ }));
+    await openNewRuleList("People");
     const add = screen.getByRole("button", { name: "Add" }) as HTMLButtonElement;
     expect(add.disabled).toBe(true);
 
@@ -181,6 +223,58 @@ describe("GuardrailsPanel", () => {
 
     await screen.findByRole("status");
     expect(savedBody().rules[2].people).toEqual([{ name: "", email: "grace@example.test" }]);
+  });
+
+  // Wire payload (2026-11-20): emoji, channels and repositories save with the
+  // rule as Slack and GitHub name them: no colons, thumbsup as +1, a channel
+  // without its #, a repository as owner/name, offered from the room's list.
+  it("saves emoji, channels and repositories with a rule", async () => {
+    renderWithClient(GuardrailsPanel, { agentName: "gate" });
+    const more = await screen.findByRole("button", {
+      name: "More for the rule: Answer only in the request thread.",
+    });
+
+    await fireEvent.click(more);
+    await fireEvent.click(screen.getByRole("menuitem", { name: "Emoji" }));
+    const emoji = screen.getByLabelText("Emoji");
+    await fireEvent.input(emoji, { target: { value: ":thumbsup:" } });
+    await fireEvent.keyDown(emoji, { key: "Enter" });
+    await fireEvent.input(emoji, { target: { value: "ticket" } });
+    await fireEvent.keyDown(emoji, { key: "Enter" });
+    await fireEvent.click(screen.getByRole("button", { name: "Save emoji" }));
+    await screen.findByRole("status");
+    expect(savedBody().rules[1]).toEqual({
+      id: 5,
+      text: "Answer only in the request thread.",
+      ...NONE,
+      emoji: ["+1", "ticket"],
+    });
+  });
+
+  it("adds a new rule with channels and a repository from the room's list", async () => {
+    renderWithClient(GuardrailsPanel, { agentName: "gate" });
+
+    await fireEvent.input(await screen.findByRole("textbox", { name: "New rule" }), {
+      target: { value: "Only open pull requests here when asked in these channels." },
+    });
+    await openNewRuleList("Slack channels");
+    const channels = screen.getByLabelText("Slack channels");
+    await fireEvent.input(channels, { target: { value: "#SRE-Requests" } });
+    await fireEvent.blur(channels);
+    await openNewRuleList("Repositories");
+    const repos = screen.getByLabelText("Repositories");
+    await fireEvent.focus(repos);
+    await fireEvent.input(repos, { target: { value: "web" } });
+    await fireEvent.click(await screen.findByRole("button", { name: "acme/web" }, { timeout: 2000 }));
+    await fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    await screen.findByRole("status");
+    expect(savedBody().rules[2]).toEqual({
+      text: "Only open pull requests here when asked in these channels.",
+      ...NONE,
+      channels: ["sre-requests"],
+      repositories: ["acme/web"],
+    });
   });
 
   it("shows the people a rule is about under it", async () => {

@@ -17,12 +17,19 @@ longer list instead of letting the runtime cut it. A rule's words are at most
 RULE_MAX_CHARS and the whole line, people included, at most RULE_LINE_MAX_CHARS,
 so neither a paragraph nor a crowd can eat the list.
 
-A rule can name the people it is about (Kyle, 2026-11-20: "only respond to these
-people"). They ride on the rule's own line, after its words, as
-`(These people: Name <email>; Name <email>)`, so the file stays the one record and
-the runtime needs no new format: it tells the model who sent each message
-(`(From Name <email>.)`, daedalus's Slack transport) and the model matches the two
-by email. Like every rule, it guides; it locks nothing.
+A rule can name what it is about (Kyle, 2026-11-20: "only respond to these people",
+then "other things we want rules based off of, like emoji types"): people, emoji,
+Slack channels and repositories. Each list rides on the rule's own line, after its
+words, in that order and each at most once:
+
+    Only act on these. (These people: Ada <ada@example.com>; Al <al@example.com>)
+    (These emoji: :ticket:, :+1:) (These channels: #sre-requests) (These repositories: acme/api)
+
+(one line in the file), so the file stays the one record. The runtime tells the
+model who sent each Slack message and where (`(From Name <email>, in #channel.)`,
+daedalus's Slack transport) and which emoji woke it, and its rules intro says a
+rule's lists are matched against those; repositories are the ones its tools act on.
+Like every rule, it guides; it locks nothing.
 """
 
 from __future__ import annotations
@@ -56,15 +63,21 @@ SOURCE_PERSON = "person"
 SOURCE_REPOSITORY = "repository"
 SETTABLE_SOURCES = ("person", "persona", "skill", "correction")
 
-# The people a rule names: at most this many, each a name and an email, written at
-# the end of the rule's line (`compose_line`).
-RULE_MAX_PEOPLE = 20
+# What a rule can name, in the order its line carries them (`compose_line`), at most
+# RULE_MAX_LIST of each.
+LIST_KINDS = ("people", "emoji", "channels", "repositories")
+RULE_MAX_LIST = 20
 RULE_LINE_MAX_CHARS = 1000
-PEOPLE_MARKER = "(These people:"
-_PEOPLE_SUFFIX = re.compile(r"^(?P<text>.*?)\s*\(These people:(?P<people>[^()]*)\)$")
+_LIST_SUFFIX = re.compile(
+    r"\s*\(These (?P<kind>people|emoji|channels|repositories):(?P<items>[^()]*)\)$"
+)
+_LIST_MARKER = re.compile(r"\(These (?:people|emoji|channels|repositories):")
 _PERSON = re.compile(r"^(?P<name>[^<>;()]*?)\s*<(?P<email>[^<>\s;()]+)>$")
 _EMAIL = re.compile(r"^[^@\s<>;()]+@[^@\s<>;()]+\.[^@\s<>;()]+$")
 _NAME_DROP = re.compile(r"[<>;()\r\n]")
+# Slack's channel names: lower case letters, digits, hyphens and underscores.
+_CHANNEL_NAME = re.compile(r"^[a-z0-9_\-]{1,80}$")
+_REPOSITORY = re.compile(r"^[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}$")
 
 _HEADER = (
     "<!-- This agent's guardrails: one rule per line, followed on every task. "
@@ -88,6 +101,33 @@ class Person:
     email: str
 
 
+@dataclass(frozen=True)
+class RuleLists:
+    """What a rule names, by kind (LIST_KINDS). Empty when it names nothing."""
+
+    people: tuple[Person, ...] = ()
+    emoji: tuple[str, ...] = ()
+    channels: tuple[str, ...] = ()
+    repositories: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.people or self.emoji or self.channels or self.repositories)
+
+
+def _emoji_rule():
+    # Read here, not at import: the names and aliases are slack_setup's, the ones
+    # Slack's reaction events carry and the wake emoji field takes.
+    from kobo_api.slack_setup import _EMOJI_ALIASES, _EMOJI_NAME
+
+    return _EMOJI_NAME, _EMOJI_ALIASES
+
+
+def _capped(items: list, kind: str) -> list:
+    if len(items) > RULE_MAX_LIST:
+        raise GuardrailsError(f"a rule names at most {RULE_MAX_LIST} {kind}")
+    return items
+
+
 def clean_people(people: list[Person]) -> list[Person]:
     """`people` as a rule's line will carry them: names on one line without the
     characters the line's own shape uses, each email once whatever its case. Emails
@@ -104,34 +144,128 @@ def clean_people(people: list[Person]) -> list[Person]:
         seen.add(email.lower())
         name = " ".join(_NAME_DROP.sub(" ", person.name).split())[:100]
         cleaned.append(Person(name=name, email=email))
-    if len(cleaned) > RULE_MAX_PEOPLE:
-        raise GuardrailsError(f"a rule names at most {RULE_MAX_PEOPLE} people")
-    return cleaned
+    return _capped(cleaned, "people")
 
 
-def compose_line(text: str, people: list[Person]) -> str:
-    """The rule's line in the file: its words, then the people it names, if any."""
-    if not people:
-        return text
-    named = "; ".join(f"{p.name} <{p.email}>" if p.name else f"<{p.email}>" for p in people)
-    return f"{text} {PEOPLE_MARKER} {named})"
+def clean_emoji(names: list[str]) -> list[str]:
+    """Emoji as Slack's reaction events name them: no colons, lower case, no skin
+    tone, thumbsup as +1, each once."""
+    pattern, aliases = _emoji_rule()
+    cleaned: list[str] = []
+    for raw in names:
+        name = raw.strip().strip(":").split("::", 1)[0].lower()
+        name = aliases.get(name, name)
+        if not pattern.match(name):
+            raise GuardrailsError(
+                f"{raw.strip() or 'an empty name'} isn't an emoji name; use the name Slack "
+                "shows for it, like ticket"
+            )
+        if name not in cleaned:
+            cleaned.append(name)
+    return _capped(cleaned, "emoji")
 
 
-def split_line(line: str) -> tuple[str, list[Person]]:
-    """A line's words and the people it names. A line whose ending only looks like a
-    people list (an entry without an email) is all words, as written."""
-    match = _PEOPLE_SUFFIX.match(line)
-    if match is None:
-        return line, []
-    people: list[Person] = []
-    for entry in match.group("people").split(";"):
-        person = _PERSON.match(entry.strip())
-        if person is None or not _EMAIL.match(person.group("email")):
-            return line, []
-        people.append(Person(name=person.group("name").strip(), email=person.group("email")))
-    if not people:
-        return line, []
-    return match.group("text"), people
+def clean_channels(names: list[str]) -> list[str]:
+    """Slack channels by name, without the #, lower case, each once."""
+    cleaned: list[str] = []
+    for raw in names:
+        name = raw.strip().lstrip("#").lower()
+        if not _CHANNEL_NAME.match(name):
+            raise GuardrailsError(
+                f"{raw.strip() or 'an empty name'} isn't a Slack channel name; use the name "
+                "Slack shows, like sre-requests"
+            )
+        if name not in cleaned:
+            cleaned.append(name)
+    return _capped(cleaned, "channels")
+
+
+def clean_repositories(names: list[str]) -> list[str]:
+    """Repositories as owner/name, each once whatever its case, keeping the case
+    they came with."""
+    cleaned: list[str] = []
+    for raw in names:
+        name = raw.strip()
+        if not _REPOSITORY.match(name):
+            raise GuardrailsError(f"{name or 'an empty name'} isn't a repository; use owner/name")
+        if name.lower() not in {done.lower() for done in cleaned}:
+            cleaned.append(name)
+    return _capped(cleaned, "repositories")
+
+
+def clean_lists(lists: RuleLists) -> RuleLists:
+    """Every list of a rule, cleaned as its kind's cleaner says."""
+    return RuleLists(
+        people=tuple(clean_people(list(lists.people))),
+        emoji=tuple(clean_emoji(list(lists.emoji))),
+        channels=tuple(clean_channels(list(lists.channels))),
+        repositories=tuple(clean_repositories(list(lists.repositories))),
+    )
+
+
+def compose_line(text: str, lists: RuleLists) -> str:
+    """The rule's line in the file: its words, then each list it names, in
+    LIST_KINDS order."""
+    parts = [text]
+    if lists.people:
+        named = "; ".join(f"{p.name} <{p.email}>" if p.name else f"<{p.email}>" for p in lists.people)
+        parts.append(f"(These people: {named})")
+    if lists.emoji:
+        parts.append("(These emoji: " + ", ".join(f":{name}:" for name in lists.emoji) + ")")
+    if lists.channels:
+        parts.append("(These channels: " + ", ".join(f"#{name}" for name in lists.channels) + ")")
+    if lists.repositories:
+        parts.append("(These repositories: " + ", ".join(lists.repositories) + ")")
+    return " ".join(parts)
+
+
+def _parse_items(kind: str, raw: str) -> tuple | None:
+    """One list's entries as `compose_line` writes them, or None when any entry is
+    not one (the line is then words up to there, as written)."""
+    entries = [entry.strip() for entry in raw.split(";" if kind == "people" else ",")]
+    if not entries or not all(entries):
+        return None
+    if kind == "people":
+        people = []
+        for entry in entries:
+            person = _PERSON.match(entry)
+            if person is None or not _EMAIL.match(person.group("email")):
+                return None
+            people.append(Person(name=person.group("name").strip(), email=person.group("email")))
+        return tuple(people)
+    if kind == "emoji":
+        pattern, _aliases = _emoji_rule()
+        names = [entry[1:-1] for entry in entries if len(entry) > 2 and entry[0] == entry[-1] == ":"]
+        return tuple(names) if len(names) == len(entries) and all(pattern.match(n) for n in names) else None
+    if kind == "channels":
+        names = [entry[1:] for entry in entries if entry.startswith("#")]
+        return tuple(names) if len(names) == len(entries) and all(_CHANNEL_NAME.match(n) for n in names) else None
+    return tuple(entries) if all(_REPOSITORY.match(entry) for entry in entries) else None
+
+
+def split_line(line: str) -> tuple[str, RuleLists]:
+    """A line's words and the lists it names, read from its end. A list out of
+    LIST_KINDS order, a kind twice, or an entry that is not one ends the reading:
+    from there leftwards the line is words, as written."""
+    found: dict[str, tuple] = {}
+    rest = line
+    bound = len(LIST_KINDS)
+    while True:
+        match = _LIST_SUFFIX.search(rest)
+        if match is None:
+            break
+        index = LIST_KINDS.index(match.group("kind"))
+        if index >= bound:
+            break
+        items = _parse_items(match.group("kind"), match.group("items"))
+        if items is None:
+            break
+        found[match.group("kind")] = items
+        bound = index
+        rest = rest[: match.start()]
+    if not found:
+        return line, RuleLists()
+    return rest, RuleLists(**found)
 
 
 def parse_rules(text: str) -> list[str]:
@@ -162,16 +296,16 @@ def validate_rules(rules: list[str]) -> list[str]:
             raise GuardrailsError("a rule can't be empty")
         if "\n" in rule or "\r" in rule:
             raise GuardrailsError("a rule is one line; put each rule on its own line")
-        words, people = split_line(rule)
+        words, lists = split_line(rule)
         if not words.strip():
-            raise GuardrailsError("a rule needs words as well as people")
-        if people and PEOPLE_MARKER in words:
-            # Two people lists on one line: the model would read both and the panel
-            # would show one. A line from the repository whose ending only looks like
-            # a list has no people and passes as written.
-            raise GuardrailsError("a rule names its people once")
-        if len(people) > RULE_MAX_PEOPLE:
-            raise GuardrailsError(f"a rule names at most {RULE_MAX_PEOPLE} people")
+            raise GuardrailsError("a rule needs words as well as what it names")
+        if lists and _LIST_MARKER.search(words):
+            # A list left in the words: the model would read both and the panel would
+            # show one. A line from the repository whose ending only looks like a
+            # list names nothing and passes as written.
+            raise GuardrailsError("a rule names each list once")
+        for kind in LIST_KINDS:
+            _capped(list(getattr(lists, kind)), kind)
         if len(rule) > RULE_LINE_MAX_CHARS:
             raise GuardrailsError(
                 f"a rule and its people are at most {RULE_LINE_MAX_CHARS:,} characters; "
@@ -302,18 +436,24 @@ class RuleIn:
 
 def rule_payload(row: GuardrailRule | None, line: str) -> dict:
     """One rule as the panel and the room's assistant tools read it: `text` is its
-    words and `people` who it names, both from `line`, the rule as the file has it."""
-    text, people = split_line(line)
-    named = [{"name": p.name, "email": p.email} for p in people]
+    words and `people`, `emoji`, `channels` and `repositories` what it names, all
+    from `line`, the rule as the file has it."""
+    text, lists = split_line(line)
+    named = {
+        "people": [{"name": p.name, "email": p.email} for p in lists.people],
+        "emoji": list(lists.emoji),
+        "channels": list(lists.channels),
+        "repositories": list(lists.repositories),
+    }
     if row is None:
-        return {"id": None, "text": text, "people": named, "line": line,
+        return {"id": None, "text": text, **named, "line": line,
                 "source": {"kind": SOURCE_REPOSITORY, "ref": None},
                 "added_by": None, "added_at": None, "edited_by": None, "edited_at": None,
                 "breaks": 0, "last_broken_at": None}
     return {
         "id": row.id,
         "text": text,
-        "people": named,
+        **named,
         "line": line,
         "source": {"kind": row.source_kind, "ref": row.source_ref},
         "added_by": row.added_by,

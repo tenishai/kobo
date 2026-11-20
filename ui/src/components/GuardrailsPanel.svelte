@@ -10,21 +10,25 @@
   // One line per rule (Kyle, 2026-11-20: the list was too busy to scroll):
   // the rule's words, a short tag for where it came from (the whole sentence
   // on hover), and one ⋯ button that is always on screen, not only on hover.
-  // The menu holds Edit, People, It broke this and Remove. Clicking the words
-  // edits them too. A long list gets a box to find a rule in.
+  // The menu holds Edit, the four lists below, It broke this and Remove.
+  // Clicking the words edits them too. A long list gets a box to find a rule in.
   //
-  // People: a rule can name who it is about ("Only answer these people").
-  // They ride on the rule's own line (`kobo_api.guardrails.compose_line`); the
-  // agent is told who sent each message and matches them by email. A new
-  // rule can take its people before it is added, so a rule like that is never
-  // live for a moment without them.
+  // What a rule is about (Kyle, same day: "other things we want rules based
+  // off of, like emoji types"): people, emoji, Slack channels and
+  // repositories. They ride on the rule's own line
+  // (`kobo_api.guardrails.compose_line`); the agent is told who sent each Slack
+  // message and where, and which emoji woke it, and repositories are the ones
+  // its tools act on. A new rule takes its lists from the ⋯ beside Add before
+  // it is added, so a rule like "Only answer these people" is never live for a
+  // moment without them.
   //
   // `agentName` is read once, as in the other Harness panels: AgentDetail
   // remounts this component per agent.
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
-  import { DotsThree, Users } from "phosphor-svelte";
+  import { Check, DotsThree, GitBranch, Hash, Smiley, Users } from "phosphor-svelte";
   import ErrorState from "./ErrorState.svelte";
   import PeoplePicker from "./PeoplePicker.svelte";
+  import TokenPicker from "./TokenPicker.svelte";
   import {
     errorMessage,
     type GuardrailRule,
@@ -32,10 +36,12 @@
     type Person,
   } from "../lib/api";
   import {
+    githubRepositoriesQuery,
     guardrailsQuery,
     reportGuardrailBrokenMutation,
     saveGuardrailsMutation,
   } from "../lib/queries";
+  import { channelName, COMMON_EMOJI, emojiName, repositoryName } from "../lib/ruleLists";
   import { whenDay } from "../lib/time";
 
   let { agentName, frozen = false }: { agentName: string; frozen?: boolean } = $props();
@@ -55,15 +61,45 @@
   // From this many rules on, a box to find one.
   const FIND_FROM = 12;
 
+  // What a rule can name, in the order its line carries them.
+  type Kind = "people" | "emoji" | "channels" | "repositories";
+  type Lists = { people: Person[]; emoji: string[]; channels: string[]; repositories: string[] };
+  const KINDS: Array<{ kind: Kind; label: string; hint: string }> = [
+    {
+      kind: "people",
+      label: "People",
+      hint: "Who this rule is about. It is told who sent each Slack message and matches them by email.",
+    },
+    {
+      kind: "emoji",
+      label: "Emoji",
+      hint: "Emoji this rule is about. It is told which emoji a reaction that woke it used.",
+    },
+    {
+      kind: "channels",
+      label: "Slack channels",
+      hint: "Slack channels this rule is about. It is told which channel each message came from.",
+    },
+    {
+      kind: "repositories",
+      label: "Repositories",
+      hint: "Repositories this rule is about, as owner/name. It names the repository in all it does there.",
+    },
+  ];
+  const noLists = (): Lists => ({ people: [], emoji: [], channels: [], repositories: [] });
+
   let draft = $state("");
-  let draftPeople = $state<Person[]>([]);
-  let draftPeopleOpen = $state(false);
+  let draftLists = $state<Lists>(noLists());
+  // The lists open for the new rule, in KINDS order.
+  let draftOpen = $state<Kind[]>([]);
+  let addMenuOpen = $state(false);
   // An open editor names its rule by key, not by place: a save refused because the
   // list changed underneath reloads it, and a place could then be another rule.
   let editingKey = $state<string | null>(null);
   let editText = $state("");
-  let peopleKey = $state<string | null>(null);
-  let peopleDraft = $state<Person[]>([]);
+  let listKey = $state<string | null>(null);
+  let listKind = $state<Kind>("people");
+  let listDraft = $state<Lists>(noLists());
   let menuIndex = $state<number | null>(null);
   let find = $state("");
   let note = $state("");
@@ -83,22 +119,55 @@
   // The box shows from FIND_FROM rules; below that nothing filters, so a removal
   // that hides the box can't leave rules hidden behind it.
   const findTerm = $derived(rules.length >= FIND_FROM ? find.trim().toLowerCase() : "");
-  // People open for a new rule with nobody in it: Add waits, so a rule like "Only
-  // answer these people" is never live without them.
-  const addNeedsPeople = $derived(draftPeopleOpen && draftPeople.length === 0);
+  // A list open for the new rule with nothing in it: Add waits, so a rule like
+  // "Only answer these people" is never live without them.
+  const addNeedsLists = $derived(draftOpen.some((kind) => draftLists[kind].length === 0));
+  // The room's repositories, offered as someone types, read only once a
+  // Repositories list is open.
+  const reposWanted = $derived(
+    draftOpen.includes("repositories") || (listKey !== null && listKind === "repositories"),
+  );
+  // svelte-ignore state_referenced_locally
+  const repositories = createQuery(() => ({
+    ...githubRepositoriesQuery(agentName),
+    enabled: reposWanted,
+  }));
+  const repoSuggestions = $derived.by((): string[] => {
+    const data = repositories.data;
+    if (!data?.available) return [];
+    const selected = new Set(data.selected);
+    const names = data.repositories.map((repo) => repo.full_name);
+    return [...names.filter((n) => selected.has(n)), ...names.filter((n) => !selected.has(n))];
+  });
 
   function matches(rule: GuardrailRule): boolean {
     if (!findTerm) return true;
     if (rule.text.toLowerCase().includes(findTerm)) return true;
-    return rule.people.some(
-      (person) =>
-        person.name.toLowerCase().includes(findTerm) ||
-        person.email.toLowerCase().includes(findTerm),
+    if (
+      rule.people.some(
+        (person) =>
+          person.name.toLowerCase().includes(findTerm) ||
+          person.email.toLowerCase().includes(findTerm),
+      )
+    ) {
+      return true;
+    }
+    return [...rule.emoji, ...rule.channels, ...rule.repositories].some((value) =>
+      value.toLowerCase().includes(findTerm),
     );
   }
 
+  function listsOf(rule: GuardrailRule): Lists {
+    return {
+      people: rule.people,
+      emoji: rule.emoji,
+      channels: rule.channels,
+      repositories: rule.repositories,
+    };
+  }
+
   function asInput(rule: GuardrailRule): GuardrailRuleIn {
-    return { id: rule.id, text: rule.text, people: rule.people };
+    return { id: rule.id, text: rule.text, ...listsOf(rule) };
   }
 
   /** A rule's key: its row's id, or for a line written in the repository, the
@@ -119,6 +188,10 @@
 
   function names(people: Person[]): string {
     return people.map((p) => p.name || p.email).join(", ");
+  }
+
+  function countOf(rule: GuardrailRule, kind: Kind): number {
+    return rule[kind].length;
   }
 
   /** The whole sentence on where a rule came from, shown on hover. */
@@ -163,13 +236,23 @@
   async function add(event: SubmitEvent) {
     event.preventDefault();
     const text = draft.trim();
-    if (!text || busy || addNeedsPeople) return;
-    const added = { text, people: draftPeopleOpen ? draftPeople : [] };
+    if (!text || busy || addNeedsLists) return;
+    const added: GuardrailRuleIn = { text, ...noLists() };
+    for (const kind of draftOpen) {
+      (added as Record<Kind, unknown>)[kind] = draftLists[kind];
+    }
     if (await commit([...rules.map(asInput), added], "Added.")) {
       draft = "";
-      draftPeople = [];
-      draftPeopleOpen = false;
+      draftLists = noLists();
+      draftOpen = [];
     }
+  }
+
+  function toggleDraftKind(kind: Kind): void {
+    addMenuOpen = false;
+    draftOpen = draftOpen.includes(kind)
+      ? draftOpen.filter((open) => open !== kind)
+      : KINDS.map((k) => k.kind).filter((k) => k === kind || draftOpen.includes(k));
   }
 
   function closeMenu() {
@@ -178,7 +261,7 @@
 
   function startEdit(rule: GuardrailRule) {
     closeMenu();
-    peopleKey = null;
+    listKey = null;
     editingKey = keyOf(rule);
     editText = rule.text;
   }
@@ -186,7 +269,7 @@
   function gone(): void {
     errorText = "That rule changed or went while you had it open. Here is the list as it stands.";
     editingKey = null;
-    peopleKey = null;
+    listKey = null;
   }
 
   async function saveEdit() {
@@ -199,20 +282,21 @@
     if (await commit(next, "Saved.")) editingKey = null;
   }
 
-  function startPeople(rule: GuardrailRule) {
+  function startList(rule: GuardrailRule, kind: Kind) {
     closeMenu();
     editingKey = null;
-    peopleKey = keyOf(rule);
-    peopleDraft = [...rule.people];
+    listKey = keyOf(rule);
+    listKind = kind;
+    listDraft = { ...listsOf(rule), [kind]: [...rule[kind]] };
   }
 
-  async function savePeople() {
+  async function saveList() {
     if (busy) return;
-    const index = placeOf(peopleKey);
+    const index = placeOf(listKey);
     if (index < 0) return gone();
     const next = rules.map(asInput);
-    next[index] = { ...next[index], people: peopleDraft };
-    if (await commit(next, "Saved.")) peopleKey = null;
+    next[index] = { ...next[index], [listKind]: listDraft[listKind] };
+    if (await commit(next, "Saved.")) listKey = null;
   }
 
   async function reportBroken(rule: GuardrailRule) {
@@ -245,11 +329,78 @@
   }
 
   function onKeydown(event: KeyboardEvent): void {
-    if (event.key === "Escape" && menuIndex !== null) closeMenu();
+    if (event.key !== "Escape") return;
+    if (menuIndex !== null) closeMenu();
+    addMenuOpen = false;
   }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
+
+<!-- One kind's picker. Given the lists and how to change them, so the new
+     rule and a rule being edited share it. -->
+{#snippet picker(kind: Kind, lists: Lists, set: (kind: Kind, values: Person[] | string[]) => void, id: string)}
+  {#if kind === "people"}
+    <PeoplePicker {id} people={lists.people} onchange={(v) => set("people", v)} disabled={busy} />
+  {:else if kind === "emoji"}
+    <TokenPicker
+      {id}
+      label="Emoji"
+      values={lists.emoji}
+      onchange={(v) => set("emoji", v)}
+      normalize={emojiName}
+      show={(v) => `:${v}:`}
+      placeholder="An emoji name, like ticket or +1"
+      invalid="That isn't an emoji name. Use the name Slack shows for it, like ticket."
+      suggestions={COMMON_EMOJI}
+      disabled={busy}
+    />
+  {:else if kind === "channels"}
+    <TokenPicker
+      {id}
+      label="Slack channels"
+      values={lists.channels}
+      onchange={(v) => set("channels", v)}
+      normalize={channelName}
+      show={(v) => `#${v}`}
+      placeholder="A channel name, like sre-requests"
+      invalid="That isn't a Slack channel name. Use the name Slack shows, like sre-requests."
+      disabled={busy}
+    />
+  {:else}
+    <TokenPicker
+      {id}
+      label="Repositories"
+      values={lists.repositories}
+      onchange={(v) => set("repositories", v)}
+      normalize={repositoryName}
+      placeholder="owner/name"
+      invalid="That isn't a repository. Use owner/name, like the Access tab shows."
+      suggestions={repoSuggestions}
+      disabled={busy}
+    />
+  {/if}
+{/snippet}
+
+<!-- What a rule names, on one wrapped line under its words. -->
+{#snippet named(lists: Lists)}
+  {#if lists.people.length + lists.emoji.length + lists.channels.length + lists.repositories.length > 0}
+    <p class="guardrail__lists">
+      {#if lists.people.length > 0}
+        <span class="guardrail__list"><Users size={14} aria-hidden="true" />These people: {names(lists.people)}</span>
+      {/if}
+      {#if lists.emoji.length > 0}
+        <span class="guardrail__list"><Smiley size={14} aria-hidden="true" />These emoji: {lists.emoji.map((e) => `:${e}:`).join(" ")}</span>
+      {/if}
+      {#if lists.channels.length > 0}
+        <span class="guardrail__list"><Hash size={14} aria-hidden="true" />These channels: {lists.channels.map((c) => `#${c}`).join(", ")}</span>
+      {/if}
+      {#if lists.repositories.length > 0}
+        <span class="guardrail__list"><GitBranch size={14} aria-hidden="true" />These repositories: {lists.repositories.join(", ")}</span>
+      {/if}
+    </p>
+  {/if}
+{/snippet}
 
 <section class="panel" aria-labelledby="guardrails-panel-heading">
   <div class="panel__header">
@@ -296,33 +447,67 @@
             aria-label="New rule"
             disabled={busy}
           />
-          <button
-            class="btn"
-            type="button"
-            aria-expanded={draftPeopleOpen}
-            disabled={busy}
-            onclick={() => (draftPeopleOpen = !draftPeopleOpen)}
-          >
-            <Users size={16} aria-hidden="true" />
-            People{draftPeopleOpen && draftPeople.length > 0 ? ` (${draftPeople.length})` : ""}
-          </button>
+          <div class="guardrail__more-wrap">
+            <button
+              type="button"
+              class="guardrail__more"
+              aria-haspopup="menu"
+              aria-expanded={addMenuOpen}
+              aria-label="Add people, emoji, channels or repositories to the new rule"
+              title="People, emoji, channels or repositories"
+              disabled={busy}
+              onclick={() => (addMenuOpen = !addMenuOpen)}
+            >
+              <DotsThree size={18} weight="bold" aria-hidden="true" />
+            </button>
+            {#if addMenuOpen}
+              <button
+                type="button"
+                class="guardrail__scrim"
+                aria-label="Close the menu"
+                onclick={() => (addMenuOpen = false)}
+              ></button>
+              <div class="guardrail__menu" role="menu" aria-label="The new rule">
+                {#each KINDS as item (item.kind)}
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={draftOpen.includes(item.kind)}
+                    class="guardrail__item"
+                    onclick={() => toggleDraftKind(item.kind)}
+                  >
+                    <span class="guardrail__tick" aria-hidden="true">
+                      {#if draftOpen.includes(item.kind)}<Check size={14} weight="bold" />{/if}
+                    </span>
+                    {item.label}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
           <button
             class="btn btn--primary"
             type="submit"
-            disabled={busy || !draft.trim() || addNeedsPeople}
+            disabled={busy || !draft.trim() || addNeedsLists}
           >
             Add
           </button>
         </div>
-        {#if draftPeopleOpen}
+        {#each KINDS.filter((k) => draftOpen.includes(k.kind)) as item (item.kind)}
           <div class="guardrails__people-box">
             <p class="guardrails__hint">
-              Who this rule is about. Write the rule around them, like "Only answer these
-              people".{addNeedsPeople ? " Add someone, or close People, to add the rule." : ""}
+              <strong>{item.label}.</strong> {item.hint}{draftLists[item.kind].length === 0
+                ? ` Add at least one, or untick ${item.label} in the ⋯ menu, to add the rule.`
+                : ""}
             </p>
-            <PeoplePicker id="guardrails-new-people" bind:people={draftPeople} disabled={busy} />
+            {@render picker(
+              item.kind,
+              draftLists,
+              (kind, values) => (draftLists = { ...draftLists, [kind]: values }),
+              `guardrails-new-${item.kind}`,
+            )}
           </div>
-        {/if}
+        {/each}
         <p class="guardrails__hint">
           Write each rule so it makes sense on its own: "When searching tickets, use the
           person's full email", not "Use the full email". How to do a job belongs in a skill.
@@ -395,36 +580,32 @@
                   <p class="guardrail__text">{rule.text}</p>
                 {/if}
 
-                {#if peopleKey === keyOf(rule)}
+                {#if listKey === keyOf(rule)}
+                  {@const item = KINDS.find((k) => k.kind === listKind) ?? KINDS[0]}
                   <div class="guardrails__people-box">
-                    <p class="guardrails__hint">
-                      Who this rule is about. {agentName} is told who sent each message and
-                      matches them by email.
-                    </p>
-                    <PeoplePicker
-                      id={`guardrail-people-${index}`}
-                      bind:people={peopleDraft}
-                      disabled={busy}
-                    />
+                    <p class="guardrails__hint"><strong>{item.label}.</strong> {item.hint}</p>
+                    {@render picker(
+                      listKind,
+                      listDraft,
+                      (kind, values) => (listDraft = { ...listDraft, [kind]: values }),
+                      `guardrail-${listKind}-${index}`,
+                    )}
                     <div class="guardrail__edit-actions">
-                      <button class="btn btn--quiet" type="button" onclick={() => (peopleKey = null)}>
+                      <button class="btn btn--quiet" type="button" onclick={() => (listKey = null)}>
                         Cancel
                       </button>
                       <button
                         class="btn btn--primary"
                         type="button"
                         disabled={busy}
-                        onclick={() => savePeople()}
+                        onclick={() => saveList()}
                       >
-                        Save people
+                        Save {item.label.toLowerCase()}
                       </button>
                     </div>
                   </div>
-                {:else if rule.people.length > 0}
-                  <p class="guardrail__people">
-                    <Users size={14} aria-hidden="true" />
-                    <span>These people: {names(rule.people)}</span>
-                  </p>
+                {:else}
+                  {@render named(listsOf(rule))}
                 {/if}
 
                 {#if rule.breaks >= breaksBeforeACheck}
@@ -470,15 +651,19 @@
                           >
                             Edit
                           </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            class="guardrail__item"
-                            disabled={busy}
-                            onclick={() => startPeople(rule)}
-                          >
-                            People{rule.people.length > 0 ? ` (${rule.people.length})` : ""}
-                          </button>
+                          <span class="guardrail__menu-sep" role="separator"></span>
+                          {#each KINDS as item (item.kind)}
+                            <button
+                              type="button"
+                              role="menuitem"
+                              class="guardrail__item"
+                              disabled={busy}
+                              onclick={() => startList(rule, item.kind)}
+                            >
+                              {item.label}{countOf(rule, item.kind) > 0 ? ` (${countOf(rule, item.kind)})` : ""}
+                            </button>
+                          {/each}
+                          <span class="guardrail__menu-sep" role="separator"></span>
                         {/if}
                         {#if canReport && rule.id !== null}
                           <button
@@ -634,14 +819,34 @@
     justify-content: flex-end;
   }
 
-  .guardrail__people {
+  .guardrail__lists {
     display: flex;
-    gap: var(--space-2xs);
-    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2xs) var(--space-md);
     margin: 0;
     color: var(--ink);
     font-size: 0.85rem;
   }
+
+  .guardrail__list {
+    display: inline-flex;
+    gap: var(--space-2xs);
+    align-items: center;
+  }
+
+  .guardrail__tick {
+    display: inline-flex;
+    width: 1rem;
+    margin-right: var(--space-2xs);
+    vertical-align: -0.125rem;
+  }
+
+  .guardrail__menu-sep {
+    height: 1px;
+    margin: var(--space-2xs) 0;
+    background: var(--border);
+  }
+
 
   .guardrail__nudge {
     margin: 0;

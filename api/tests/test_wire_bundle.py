@@ -792,7 +792,7 @@ def test_an_assistant_keeps_a_rules_people_by_sending_its_line(tmp_path, monkeyp
 
     assert kept.status_code == 200, kept.text
     assert kept.json()["rules"][0]["people"] == [{"name": "Ada Lovelace", "email": "ada@example.com"}]
-    assert twice.status_code == 422 and twice.json() == {"error": "a rule names its people once"}
+    assert twice.status_code == 422 and twice.json() == {"error": "a rule names each list once"}
     assert not_an_email.status_code == 422
     assert not_an_email.json() == {"error": "ada isn't an email address"}
     assert too_long.status_code == 422
@@ -801,6 +801,47 @@ def test_an_assistant_keeps_a_rules_people_by_sending_its_line(tmp_path, monkeyp
     assert read[0]["text"] == written and read[0]["people"] == []
     assert resaved.status_code == 200, resaved.text
     assert github.pushed_file("bundle/guardrails.md").endswith(f"- {written}\n")
+
+
+def test_a_rule_names_people_emoji_channels_and_repositories_on_its_line(tmp_path, monkeypatch):
+    """Wire shape (daedalus's rules intro and sender line, which names the channel too):
+    a rule's lists ride on its own line in one order, people, emoji, channels,
+    repositories, each at most once, written the way the runtime names them: emoji as
+    Slack's reaction events do (thumbsup is +1), channels by name with a #, repositories
+    as owner/name. The panel reads each list apart and the line whole; an assistant
+    sending the line back keeps them all."""
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+
+    saved = client.put("/api/agents/gate/guardrails", json={"rules": [{
+        "text": "Act only on these.",
+        "people": [PEOPLE[0]],
+        "emoji": [":thumbsup:", "ticket"],
+        "channels": ["#SRE-Requests", "ops"],
+        "repositories": ["acme/api"],
+    }]})
+    line = ("Act only on these. (These people: Ada Lovelace <ada@example.com>) "
+            "(These emoji: :+1:, :ticket:) (These channels: #sre-requests, #ops) "
+            "(These repositories: acme/api)")
+    resent = client.put("/api/agents/gate/guardrails", json={"rules": [{"text": line}]})
+    bad = [
+        client.put("/api/agents/gate/guardrails", json={"rules": [{"text": "X.", **body}]}).json()
+        for body in ({"emoji": ["not an emoji"]}, {"channels": ["sre requests"]},
+                     {"repositories": ["acme"]})
+    ]
+
+    assert saved.status_code == 200, saved.text
+    assert github.pushed_file("bundle/guardrails.md").endswith(f"- {line}\n")
+    rule = saved.json()["rules"][0]
+    assert rule["text"] == "Act only on these." and rule["line"] == line
+    assert rule["emoji"] == ["+1", "ticket"]
+    assert rule["channels"] == ["sre-requests", "ops"]
+    assert rule["repositories"] == ["acme/api"]
+    assert resent.status_code == 200 and resent.json()["rules"][0]["line"] == line
+    assert [body["error"].split(";")[0] for body in bad] == [
+        "not an emoji isn't an emoji name",
+        "sre requests isn't a Slack channel name",
+        "acme isn't a repository",
+    ]
 
 
 def test_changing_a_rules_people_keeps_where_it_came_from(tmp_path, monkeypatch):

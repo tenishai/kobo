@@ -13,8 +13,8 @@
 - **Harness.** Everything that runs an agent: model and runtime, identity, persona, skills, guardrails, memory, learnings, activity.
 - **Runtime.** The one shared image every room-built agent runs on. The room updates it; you press Update to current.
 - **Skill.** An ability from your organization's catalog that an agent picks up on its next build.
-- **Guardrails.** The rules an agent follows on every task, one per line, each saying where it came from. A rule can name the people it is about. Rules guide; Access and checks enforce.
-- **Check.** A small program the room runs on every task, which can stop a request or change a reply. Every agent starts with a leak guard and a probe guard, listed under Always on.
+- **Guardrails.** The rules an agent follows on every task, one per line, each saying where it came from. A rule can name the people, emoji, Slack channels and repositories it is about. Rules guide; Access and checks enforce.
+- **Check.** A small program that runs on every task and can stop a request or change a reply. Every agent keeps keys and tokens out of its replies this way; checks written for one agent are listed under Always on.
 - **Memory.** Notes taught to an agent and files uploaded for it. Stays with the agent.
 - **Teach this.** The link on any chat message that files it into the agent's memory.
 - **Learnings.** One-line statements an agent proposes daily from its conversations, kept only when you press Remember.

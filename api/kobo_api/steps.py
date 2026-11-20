@@ -499,7 +499,8 @@ def _stage_baseline_tools(
     The pack is every `tools/<id>/<id>.py` in the marketplace repo whose id
     starts with `marketplace.BASELINE_TOOL_PREFIX` -- matched by that shape
     exactly, so a non-baseline tool, a `TOOL.md`, and a stray helper module
-    sitting beside a baseline tool's own entrypoint are all left behind.
+    sitting beside a baseline tool's own entrypoint are all left behind, and
+    so is a check the room has retired (`marketplace.RETIRED_BASELINE_CHECKS`).
     Files land FLAT in `bundle_dir/tools/` under their own basename (the
     layout `kobo_api.tooling.upload_tooling_file` and the runtime's
     enforcement envelope both already expect), never as the per-tool
@@ -543,7 +544,11 @@ def _stage_baseline_tools(
     # `kobo_api.skills`, which imports THIS module (`_materialize_catalog_
     # skill`) -- a top-level import would be a cycle that fails at import
     # time, since that name is defined below where the import would sit.
-    from kobo_api.marketplace import BASELINE_TOOL_PREFIX, marketplace_repo
+    from kobo_api.marketplace import (
+        BASELINE_TOOL_PREFIX,
+        RETIRED_BASELINE_CHECKS,
+        marketplace_repo,
+    )
 
     if not config.skills_repo:
         return []
@@ -560,6 +565,8 @@ def _stage_baseline_tools(
 
             collected: list[tuple[str, bytes]] = []
             for src in sorted((workdir / "tools").glob(pattern)):
+                if src.name in RETIRED_BASELINE_CHECKS:
+                    continue
                 if not src.is_file():
                     skipped.append(f"{src.name} (not a regular file)")
                     continue
