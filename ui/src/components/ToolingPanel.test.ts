@@ -33,10 +33,10 @@ describe("ToolingPanel", () => {
     });
   });
 
-  // Always on (2026-11-20): an owner reads what each check does and whether it
-  // is on; adding one is an engineer's job from their own assistant, so the
-  // page has no upload, and a check this caller may not remove has no Remove.
-  it("says what each check does and whether it is on, with no upload", async () => {
+  // Always on (2026-11-20): the room's own checks are plumbing and are not
+  // listed; an engineer's check says what it does and whether it is on. There
+  // is no upload, and no Remove where the room would refuse it.
+  it("lists the agent's own checks, not the room's, with no upload", async () => {
     stubFetch({
       "/api/agents/warden/tooling": {
         files: [BASELINE, { ...FILE, delivered: false }],
@@ -46,33 +46,62 @@ describe("ToolingPanel", () => {
     });
     renderWithClient(ToolingPanel, { agentName: "warden", frozen: false });
 
-    expect(await screen.findByText(BASELINE.description)).not.toBeNull();
-    expect(screen.getByText("On")).not.toBeNull();
-    expect(screen.getByText(FILE.description)).not.toBeNull();
+    expect(await screen.findByText(FILE.description)).not.toBeNull();
     expect(screen.getByText("Starts at its next restart")).not.toBeNull();
-    expect(screen.queryByRole("button", { name: `Remove ${BASELINE.name}` })).toBeNull();
+    expect(screen.queryByText(BASELINE.description)).toBeNull();
     expect(screen.getByRole("button", { name: `Remove ${FILE.name}` })).not.toBeNull();
     expect(screen.queryByRole("button", { name: "+ Tool" })).toBeNull();
-    expect(screen.queryByLabelText("Content")).toBeNull();
+    expect(screen.queryByText(/add agent tool/)).toBeNull();
   });
 
-  // A lock stops every check: the banner names the one that failed and every
-  // row says why it isn't on, never a guess like "waits for a newer runtime".
-  it("says a broken check stopped the rest", async () => {
+  it("draws nothing when the only checks are the room's", async () => {
     stubFetch({
-      // Locked, the server marks no file enforced.
       "/api/agents/warden/tooling": {
-        files: [{ ...BASELINE, status: undefined }, FILE],
-        enforcement: { attested: true, locked: true, locked_file: FILE.name },
+        files: [BASELINE],
+        enforcement: { attested: true, locked: false, locked_file: null },
       },
       "/api/": {},
     });
     renderWithClient(ToolingPanel, { agentName: "warden", frozen: false });
 
-    expect((await screen.findByRole("alert")).textContent).toContain(`${FILE.name} failed to load`);
-    expect(screen.getByText("Failed to load")).not.toBeNull();
+    await vi.waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByRole("heading", { name: "Always on" })).toBeNull();
+  });
+
+  // A lock stops every check: the banner names the one that failed, even one
+  // of the room's own that is never listed, and every listed row says why it
+  // isn't on, never a guess like "waits for a newer runtime".
+  it("says a broken check stopped the rest, even one of the room's own", async () => {
+    stubFetch({
+      // Locked, the server marks no file enforced.
+      "/api/agents/warden/tooling": {
+        files: [{ ...BASELINE, status: undefined }, FILE],
+        enforcement: { attested: true, locked: true, locked_file: BASELINE.name },
+      },
+      "/api/": {},
+    });
+    renderWithClient(ToolingPanel, { agentName: "warden", frozen: false });
+
+    expect((await screen.findByRole("alert")).textContent).toContain(`${BASELINE.name} failed to load`);
     expect(screen.getByText("Paused while a check is broken")).not.toBeNull();
     expect(screen.queryByText("On")).toBeNull();
+    // The failing one is listed, so whoever may remove it can; here, nobody.
+    expect(screen.getByText("Failed to load")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: `Remove ${BASELINE.name}` })).toBeNull();
+  });
+
+  it("offers an operator Remove on a room check that failed to load", async () => {
+    stubFetch({
+      "/api/agents/warden/tooling": {
+        files: [{ ...BASELINE, status: undefined, can_remove: true }],
+        enforcement: { attested: true, locked: true, locked_file: BASELINE.name },
+      },
+      "/api/": {},
+    });
+    renderWithClient(ToolingPanel, { agentName: "warden", frozen: false });
+
+    expect(await screen.findByRole("button", { name: `Remove ${BASELINE.name}` })).not.toBeNull();
   });
 
   it("asks before removing, in the room's own dialog, and never through the browser", async () => {

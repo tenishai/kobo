@@ -2286,6 +2286,24 @@ def test_stage_baseline_tools_never_follows_a_symlink_out_of_the_clone(
     assert "baseline tooling skipped" in caplog.text
 
 
+def test_a_new_agent_never_gets_a_retired_check(config, tmp_path):
+    """Data integrity (2026-11-20): the room retired the probe guard, so a new agent
+    gets the rest of the baseline pack without it, even while the marketplace still
+    carries it."""
+    config.skills_repo = "org-skills"
+    hook = '"""A check."""\ndef post_draft(draft):\n    return draft\n'
+    github = FakeGitHub(clone_tree={
+        "tools/baseline-leakguard/baseline-leakguard.py": hook,
+        "tools/baseline-probe-guard/baseline-probe-guard.py": hook,
+    })
+    bundle_dir = tmp_path / "repo" / "bundle"
+
+    staged = _stage_baseline_tools(github, config, bundle_dir)
+
+    assert staged == ["baseline-leakguard.py"]
+    assert sorted(p.name for p in (bundle_dir / "tools").iterdir()) == ["baseline-leakguard.py"]
+
+
 def test_repo_step_rmtrees_stale_compose_dir_before_recomposing(session_factory, config, fake_storage):
     """Data integrity: Repo step rmtrees stale compose dir before recomposing.
 

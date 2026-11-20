@@ -4232,7 +4232,7 @@ def test_each_check_says_what_it_does():
     front dropped; a check with nothing to say carries None, and the page shows its file
     name instead."""
     github = FakeGitHub(tooling_files={
-        "baseline-probe-guard.py": "def pre_task(message):\n    return None\n",
+        "baseline-leakguard.py": "def post_draft(draft):\n    return draft\n",
         "reply-tidy.py": '"""Reply tidy -- whitespace hygiene for outgoing drafts. Trims lines."""\n',
         "quiet.py": "def post_draft(draft):\n    return draft\n",
     })
@@ -4243,7 +4243,7 @@ def test_each_check_says_what_it_does():
     )
 
     assert {f["name"]: (f["description"], f["baseline"]) for f in files} == {
-        "baseline-probe-guard.py": ("Asks for its own keys are refused before it reads them.", True),
+        "baseline-leakguard.py": ("Keys and tokens are cut out of its replies before they're sent.", True),
         "quiet.py": (None, False),
         "reply-tidy.py": ("Whitespace hygiene for outgoing drafts.", False),
     }

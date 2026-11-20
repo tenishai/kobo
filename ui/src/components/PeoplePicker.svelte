@@ -7,7 +7,9 @@
   // The rule's own words say what to do about them; the agent is told who
   // sent each message and matches by email.
   //
-  // `people` is bound: the panel that holds the rule saves it.
+  // `people` is bound, or read and given back through `onchange`: the panel
+  // that holds the rule saves it.
+  import { untrack } from "svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import { X } from "phosphor-svelte";
   import type { Person } from "../lib/api";
@@ -17,14 +19,25 @@
   let {
     id,
     people = $bindable([]),
+    onchange,
+    onpending,
     disabled = false,
-  }: { id: string; people?: Person[]; disabled?: boolean } = $props();
+  }: {
+    id: string;
+    people?: Person[];
+    onchange?: (people: Person[]) => void;
+    /** Whether the box holds text that is not yet a person (a search not
+     * picked, or an email not finished): the panel's Save or Add waits. */
+    onpending?: (pending: boolean) => void;
+    disabled?: boolean;
+  } = $props();
 
   // The same email shape the server takes (kobo_api.guardrails._EMAIL).
   const EMAIL = /^[^@\s<>;()]+@[^@\s<>;()]+\.[^@\s<>;()]+$/;
 
   let term = $state("");
   let searchTerm = $state("");
+  let focused = $state(false);
   const results = createQuery(() => peopleSearchQuery(searchTerm));
   const commitSearch = debounced((value: string) => {
     searchTerm = value;
@@ -43,11 +56,21 @@
     (results.data?.people ?? []).filter((person) => !picked.has(person.email.toLowerCase())),
   );
   const unavailable = $derived(results.data?.unavailable === true);
-  const showSuggestions = $derived(term.trim().length >= 2 && suggestions.length > 0);
+  const showSuggestions = $derived(
+    focused && term.trim().length >= 2 && suggestions.length > 0,
+  );
+  const unfinished = $derived(term.trim() !== "" && !EMAIL.test(term.trim()));
+
+  // Reported when it changes, not when the panel hands down a new callback.
+  $effect(() => {
+    const now = unfinished;
+    untrack(() => onpending?.(now));
+  });
 
   function add(person: Person): void {
     if (!picked.has(person.email.toLowerCase())) {
       people = [...people, { name: person.name, email: person.email }];
+      onchange?.(people);
     }
     term = "";
     searchTerm = "";
@@ -55,6 +78,7 @@
 
   function remove(email: string): void {
     people = people.filter((person) => person.email !== email);
+    onchange?.(people);
   }
 
   /** A full email typed in, as a person: the directory's match when there is one. */
@@ -110,11 +134,23 @@
       placeholder="Add a person by name or email"
       bind:value={term}
       onkeydown={onKeydown}
-      onblur={addTyped}
+      onfocus={() => (focused = true)}
+      onblur={() => {
+        focused = false;
+        addTyped();
+      }}
+      aria-invalid={unfinished && !focused}
       {disabled}
     />
     {#if showSuggestions}
-      <ul class="people__suggestions" role="listbox" aria-label="People found">
+      <!-- Pressing a match keeps the focus in the box, so the list is still
+           there for the click. -->
+      <ul
+        class="people__suggestions"
+        role="listbox"
+        aria-label="People found"
+        onpointerdown={(event) => event.preventDefault()}
+      >
         {#each suggestions as person (person.email)}
           <li role="option" aria-selected="false">
             <button
@@ -186,6 +222,10 @@
 
   .people__search input {
     width: 100%;
+  }
+
+  .people__search input[aria-invalid="true"] {
+    border-color: var(--fail);
   }
 
   .people__suggestions {

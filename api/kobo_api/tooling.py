@@ -107,7 +107,6 @@ _TOOLING_EXTENSIONS = (".py", ".go")
 # first sentence of its module docstring (`describe_check`).
 BASELINE_DESCRIPTIONS = {
     "baseline-leakguard.py": "Keys and tokens are cut out of its replies before they're sent.",
-    "baseline-probe-guard.py": "Asks for its own keys are refused before it reads them.",
 }
 
 

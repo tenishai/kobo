@@ -1,9 +1,15 @@
 <script lang="ts">
-  // "Always on": the checks the room runs on every task, at the foot of an
-  // agent's Guardrails (Kyle, 2026-11-20: "Checks the room runs" asked an owner
-  // to upload Python, and nobody would). A check is a file in the agent's
+  // "Always on": the checks an engineer wrote for this agent, at the foot of
+  // its Guardrails (Kyle, 2026-11-20: "Checks the room runs" asked an owner to
+  // upload Python, and nobody would). A check is a file in the agent's
   // `bundle/tools/` with a pre_task or post_draft hook (the 2026-08-13
   // addendum); the runtime runs every one around each task and reply.
+  //
+  // The room's own checks (`baseline: true`, the leak guard every agent gets)
+  // are plumbing, not something an owner manages (Kyle, same day: "do we even
+  // need these?"), so they are not listed. With nothing else to show, the
+  // section is not drawn at all; a check that failed to load still is, since
+  // then the agent answers every message with a refusal and someone must know.
   //
   // Each row says what the check does in one sentence (`description`, from the
   // server: the room's own words for its baseline pack, else the check's
@@ -12,9 +18,8 @@
   // whoever wrote it.
   // There is no upload here: a check is code, and an engineer adds one from
   // their own assistant (`kobo_add_agent_tool`). Remove shows only when the
-  // server says this caller may (`can_remove`): the room's own checks are a
-  // room operator's to remove, any other the agent's owners'. It asks in the
-  // room's own Modal first.
+  // server says this caller may (`can_remove`). It asks in the room's own
+  // Modal first.
   //
   // The banner is the server's enforcement envelope, probed from the running
   // agent's card and never guessed here: `locked` (a check failed to load, and
@@ -28,7 +33,6 @@
   import { CheckCircle, Clock } from "phosphor-svelte";
   import ErrorState from "./ErrorState.svelte";
   import Modal from "./Modal.svelte";
-  import Skeleton from "./Skeleton.svelte";
   import { errorMessage, type ToolingFile } from "../lib/api";
   import { deleteToolingMutation, deliveryQuery, toolingQuery } from "../lib/queries";
 
@@ -42,6 +46,13 @@
   const deleteMutation = createMutation(() => deleteToolingMutation(queryClient, agentName));
 
   const locked = $derived(tooling.data?.enforcement?.locked ? tooling.data.enforcement : null);
+  // The checks this page lists: the agent's own, and one of the room's only when
+  // it is the one that failed to load, so whoever may remove it can.
+  const checks = $derived(
+    (tooling.data?.files ?? []).filter(
+      (file) => !file.baseline || file.name === locked?.locked_file,
+    ),
+  );
 
   type RowState = { on: boolean; text: string };
 
@@ -69,6 +80,12 @@
   const delivery = createQuery(() => deliveryQuery(agentName, deliverySha));
 
   let clearTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // Drawn while there is a check to list, a lock to explain, a load that
+  // failed, or a removal still landing (the last check's included).
+  const shown = $derived(
+    checks.length > 0 || locked !== null || tooling.isError || deliverySha !== null,
+  );
 
   function beginDelivery(sha: string): void {
     if (clearTimer !== undefined) {
@@ -151,12 +168,13 @@
   }
 </script>
 
+{#if shown}
 <section class="panel" aria-labelledby="tooling-panel-heading">
   <div class="panel__header">
     <h2 id="tooling-panel-heading" class="panel__heading">Always on</h2>
     <p class="panel__lead">
-      Checks the room runs on every task. A check can stop a request or change a reply,
-      which a rule can't.
+      Checks written for {agentName}. They run on every task and can stop a request or
+      change a reply, which a rule can't.
     </p>
   </div>
 
@@ -167,9 +185,7 @@
     </div>
   {/if}
 
-  {#if tooling.isPending}
-    <Skeleton rows={2} />
-  {:else if tooling.isError}
+  {#if tooling.isError}
     <ErrorState
       message={errorMessage(tooling.error, "Couldn't load this agent's checks.")}
       onretry={() => tooling.refetch()}
@@ -178,11 +194,9 @@
     {#if removeError && removeTarget === null}
       <p class="panel__note panel__note--fail" role="alert">{removeError}</p>
     {/if}
-    {#if tooling.data.files.length === 0}
-      <p class="panel__empty">No checks run on {agentName}.</p>
-    {:else}
+    {#if checks.length > 0}
       <ul class="checks">
-        {#each tooling.data.files as file (file.name)}
+        {#each checks as file (file.name)}
           {@const state = rowState(file)}
           <li class="check">
             <span class="check__mark check__mark--{state.on ? 'on' : 'wait'}" aria-hidden="true">
@@ -216,10 +230,6 @@
         {/each}
       </ul>
     {/if}
-    <p class="tooling-panel__how">
-      A check is a small program. An engineer adds one from their own assistant, with
-      <strong>add agent tool</strong>.
-    </p>
   {/if}
 
   {#if deliverySha !== null}
@@ -235,6 +245,7 @@
     </div>
   {/if}
 </section>
+{/if}
 
 <Modal
   open={removeTarget !== null}
@@ -322,11 +333,6 @@
 
   .check__file {
     font-size: 0.8rem;
-  }
-
-  .tooling-panel__how {
-    margin: 0;
-    font-size: 0.85rem;
   }
 
   .tooling-modal__confirm-text {

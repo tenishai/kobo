@@ -98,7 +98,7 @@ The admin panel, when the room has it turned on, holds the choices an agent's ow
 
 ### The harness
 
-Model, runtime, colleague mode, identity, persona, skills, guardrails, memory, learnings and activity. Press **Update to current** when the room moves to a newer runtime. Add or remove **skills** from the catalog; refresh one to the catalog's current version from your assistant. **Guardrails** holds the rules the agent follows on every task, one per line, and a rule can name the people it is about. Below them, **Always on** lists the checks the room runs, starting with a leak guard and a probe guard; skip those only with `skip_baseline` from your assistant, and only when you know why. See "The harness".
+Model, runtime, colleague mode, identity, persona, skills, guardrails, memory, learnings and activity. Press **Update to current** when the room moves to a newer runtime. Add or remove **skills** from the catalog; refresh one to the catalog's current version from your assistant. **Guardrails** holds the rules the agent follows on every task, one per line, and a rule can name the people, emoji, Slack channels and repositories it is about. Every agent keeps keys and tokens out of its replies, and **Always on**, below the rules, lists any check written for it; skip the room's leak guard only with `skip_baseline` from your assistant, and only when you know why. See "The harness".
 
 ### Activity
 

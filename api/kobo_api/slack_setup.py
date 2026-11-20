@@ -244,6 +244,15 @@ def wake_emoji(agent) -> list[str]:
     return [name for name in (getattr(agent, "slack_wake_emoji", None) or "").split(",") if name]
 
 
+def emoji_name(raw: str) -> str | None:
+    """One emoji as Slack's reaction events name it: no colons, lower case, no
+    skin tone, the thumbs as +1 and -1. None when it cannot be one. The wake
+    field and a guardrail rule's emoji both read names through this."""
+    name = raw.strip().strip(":").split("::", 1)[0].lower()
+    name = _EMOJI_ALIASES.get(name, name)
+    return name if _EMOJI_NAME.match(name) else None
+
+
 def clean_wake_emoji(given: list[str]) -> tuple[list[str], str | None]:
     """What a person typed, as the names Slack's reaction events carry: no
     colons, lower case, no skin tone, each once. The second value is the
@@ -251,11 +260,10 @@ def clean_wake_emoji(given: list[str]) -> tuple[list[str], str | None]:
     names: list[str] = []
     for raw in given:
         for piece in re.split(r"[,\s]+", raw):
-            name = piece.strip().strip(":").split("::", 1)[0].lower()
-            if not name:
+            if not piece.strip().strip(":"):
                 continue
-            name = _EMOJI_ALIASES.get(name, name)
-            if not _EMOJI_NAME.match(name):
+            name = emoji_name(piece)
+            if name is None:
                 return [], (
                     f"{piece.strip()!r} is not an emoji name. Use the name Slack shows "
                     "for the emoji, like ticket or rotating_light."

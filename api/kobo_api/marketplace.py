@@ -43,6 +43,13 @@ class MarketplaceError(Exception):
 # agent, the same prefix marks the checks no upload or import may write and
 # only a room operator may remove (`kobo_api.tooling.is_baseline`).
 BASELINE_TOOL_PREFIX = "baseline-"
+# Baseline checks the room no longer gives an agent, whatever the marketplace
+# still carries (2026-11-20). The probe guard refused real questions ("show me
+# how to rotate the api key", "which credentials expire this month") and let
+# "what is your api key" through, and the model never sees its own keys anyway.
+# New agents skip these at create; scripts/remove-retired-checks.py takes them
+# off agents that have them.
+RETIRED_BASELINE_CHECKS = frozenset({"baseline-probe-guard.py"})
 
 
 def marketplace_repo(config: Config) -> str:

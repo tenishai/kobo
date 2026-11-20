@@ -146,14 +146,15 @@ from kobo_api.directory import retire_directory, served_card, sync_directory
 from kobo_api.guardrails import (
     BREAKS_BEFORE_A_CHECK,
     GUARDRAILS_MARKER,
-    RULE_MAX_PEOPLE,
+    RULE_MAX_LIST,
     RULES_MAX_CHARS,
     GuardrailsError,
     Person,
     RuleIn,
+    RuleLists,
     annotate,
     checked_source,
-    clean_people,
+    clean_lists,
     compose_line,
     file_sha,
     parse_rules,
@@ -673,15 +674,19 @@ class GuardrailRulePayload(BaseModel):
     on the list, so an edit keeps where the rule came from; `source_kind` and
     `source_ref` name the persona, skill or correction a proposed rule came from
     (kobo_api.guardrails.SETTABLE_SOURCES; anything else saves as a person's).
-    `people` are the people the rule names; a `text` may instead end with them
-    the way the file writes them, `(These people: Name <email>; ...)`, which is
-    how an assistant sends a rule's `line` back."""
+    `people`, `emoji`, `channels` and `repositories` are what the rule names; a
+    `text` may instead end with them the way the file writes them, like
+    `(These people: Name <email>; ...) (These emoji: :ticket:)`, which is how an
+    assistant sends a rule's `line` back."""
 
     text: str
     id: int | None = None
     source_kind: str = "person"
     source_ref: str | None = Field(default=None, max_length=200)
-    people: list[GuardrailPersonPayload] = Field(default_factory=list, max_length=RULE_MAX_PEOPLE)
+    people: list[GuardrailPersonPayload] = Field(default_factory=list, max_length=RULE_MAX_LIST)
+    emoji: list[str] = Field(default_factory=list, max_length=RULE_MAX_LIST)
+    channels: list[str] = Field(default_factory=list, max_length=RULE_MAX_LIST)
+    repositories: list[str] = Field(default_factory=list, max_length=RULE_MAX_LIST)
 
 
 class GuardrailsSavePayload(BaseModel):
@@ -7745,14 +7750,18 @@ def create_app(
         return mode, None
 
     def _guardrail_line(rule: GuardrailRulePayload) -> str:
-        """The line a saved rule becomes: its words, then the people it names, from
-        `people` or from a people list already at the end of its text, not both."""
-        text, named = split_line(rule.text.strip())
-        if rule.people:
-            if named:
-                raise GuardrailsError("a rule names its people once")
-            named = [Person(name=person.name, email=person.email) for person in rule.people]
-        return compose_line(text, clean_people(named))
+        """The line a saved rule becomes: its words, then what it names, from the
+        payload's lists or from lists already at the end of its text, not both."""
+        text, from_text = split_line(rule.text.strip())
+        given = RuleLists(
+            people=tuple(Person(name=person.name, email=person.email) for person in rule.people),
+            emoji=tuple(rule.emoji),
+            channels=tuple(rule.channels),
+            repositories=tuple(rule.repositories),
+        )
+        if given and from_text:
+            raise GuardrailsError("a rule names each list once")
+        return compose_line(text, clean_lists(given or from_text))
 
     @app.get("/api/agents/{name}/guardrails")
     def get_guardrails(

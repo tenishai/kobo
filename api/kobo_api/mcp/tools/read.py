@@ -691,10 +691,11 @@ def register(mcp: FastMCP, app: Any) -> None:
         Each rule has its `text` and `source`, where it came from: `person`
         (with `added_by`), `persona`, `skill` or `correction` (with `ref`
         naming which), or `repository` for a line someone wrote straight into
-        the agent's repository. `people` are the people a rule is about, each
-        a `name` and `email` (a rule like "Only answer these people"), and
-        `line` is the rule as the agent reads it, people included: send
-        `line` back to `kobo_set_guardrails` to keep them. `used_chars` against `limit_chars` says how
+        the agent's repository. What a rule names comes beside its words:
+        `people` (each a `name` and `email`, for a rule like "Only answer
+        these people"), `emoji`, `channels` and `repositories`. `line` is the
+        rule as the agent reads it, lists included: send `line` back to
+        `kobo_set_guardrails` to keep them. `used_chars` against `limit_chars` says how
         much room is left (about 30 to 40 rules fit), `sha` is the version to
         pass back as `base_sha`, and `can_edit` says whether you may change the
         list with `kobo_set_guardrails`. `enabled` false means the room's
