@@ -7014,7 +7014,7 @@ def test_an_assistant_reads_an_agents_access_picks_its_repositories_and_asks(tmp
     page = _call_tool(mcp, "kobo_get_agent_access", ops, agent="ledger", repository_search="ACME")
     assert (page["grants"], page["pending"], page["can_request"]) == ([], [], True)
     assert "github" in {v["id"] for v in page["vendors"]}
-    assert page["github"] == {"available": True, "selected": [], "waiting": None, "total": 3, "note": None,
+    assert page["github"] == {"available": True, "selected": [], "every_repository": False, "waiting": None, "total": 3, "note": None,
                               "matches": ["acme/infra", "acme/web"]}
 
     saved = _call_tool(mcp, "kobo_set_agent_repositories", ops, agent="ledger", repositories=["acme/web"])

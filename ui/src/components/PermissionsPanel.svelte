@@ -184,6 +184,7 @@
     query = "";
     picked = [];
     repoDraft = null;
+    everyDraft = null;
     repoError = null;
     repoSaved = false;
     // A service vendor is one connection: go straight to its permissions.

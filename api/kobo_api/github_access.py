@@ -193,10 +193,15 @@ def write_child(bab: BabClient, actor: str, conn: Connection, agent: str, reposi
                                  parent=conn.id) or {}
     waiting = waiting_pick(answer.get("pending"))
     if waiting is not None:
-        now_every = bool(answer.get("all_repositories"))
+        now_every = child_every(answer)
         in_force = [] if now_every else sorted(answer.get("repositories") or before)
         return Saved(cid, (in_force, now_every) != (before, was_every), in_force, waiting, every=now_every)
     after = spec.get("repositories", [])
+    if every and answer.get("all_repositories") is not True:
+        # Only a service that keeps every repository to Read alone (bab 0.4.26) says so back.
+        # An older one stored what it does not understand; say it plainly rather than claim it.
+        raise ClientError("the permission service did not confirm every repository (it needs bab 0.4.26 or "
+                          "later, which keeps that set to Read alone); pick repositories instead")
     return Saved(cid, existing is None or (before, was_every) != (after, every), after, every=every)
 
 

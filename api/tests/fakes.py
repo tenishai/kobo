@@ -2919,7 +2919,8 @@ class FakeBab:
                                    "parent": parent, "name": spec.get("name") or integration, "account_id": spec.get("account_id"),
                                    "hub_role_arn": spec.get("hub_role_arn") if kind == "org" else None,
                                    "spec": dict(spec), "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"})
-        return {"integration": integration, "vendor": vendor, "ceiling": list(ceiling), "teams": [], "parent": parent, "kind": kind}
+        return {"integration": integration, "vendor": vendor, "ceiling": list(ceiling), "teams": [], "parent": parent, "kind": kind,
+                "all_repositories": every}
 
     # The projects under any Google Cloud folder or organization the fake holds (kobo#390),
     # the whole tree down since bab 0.4.18: the fourth sits in a sub-folder.

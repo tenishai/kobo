@@ -4332,7 +4332,8 @@ def create_app(
             + ("" if changed else " (unchanged)"),
         )
         session.commit()
-        return JSONResponse({"integration": integration, "repositories": wanted, "all": every, "changed": changed})
+        return JSONResponse({"integration": integration, "repositories": saved.repositories, "all": saved.every,
+                             "changed": changed})
 
     @app.get("/api/agents/{name}/leases")
     def agent_leases(
@@ -4397,13 +4398,17 @@ def create_app(
             return JSONResponse({"error": "a denial needs a reason"}, status_code=422)
         try:
             pending = {r.get("id"): r for r in bab.requests("pending", None, _bab_actor(request))}
-            children = _github_children(bab, _bab_actor(request))
         except ClientError:
-            pending, children = {}, {}
+            pending = {}
         try:
             results = bab.decide(payload.ids, payload.verdict, payload.reason, _bab_actor(request))
         except ClientError as exc:
             return _bab_refused(exc)
+        # The sets as they stand after the decision: an approved pick has changed its own.
+        try:
+            children = _github_children(bab, _bab_actor(request))
+        except ClientError:
+            children = {}
         for result in results:
             integration = pending.get(result.get("id"), {}).get("integration")
             if integration in children:
@@ -4426,7 +4431,9 @@ def create_app(
             agent_name = asked.get("agent")
             wanted = ", ".join(asked.get("permissions") or []) or f"request {result.get('id')}"
             pick = github_access.waiting_pick(asked)
-            if pick is not None:
+            if pick is not None and pick.get("all"):
+                wanted = "every repository, Read only,"
+            elif pick is not None:
                 wanted = (f"adding {', '.join(pick['added'])}"
                           + (f" and removing {', '.join(pick['removed'])}" if pick["removed"] else ""))
             where = f" on {asked['integration']}" if asked.get("integration") else ""

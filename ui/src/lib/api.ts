@@ -2051,7 +2051,7 @@ export async function decideAccessRequests(
 export type AgentVendorHoldings = {
   vendor: string;
   label: string;
-  connections: { id: string; name: string; repositories: string[] }[];
+  connections: { id: string; name: string; repositories: string[]; all_repositories?: boolean }[];
   grants: {
     id: number;
     integration: string;
