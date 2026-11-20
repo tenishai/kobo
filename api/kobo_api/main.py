@@ -1800,26 +1800,49 @@ def _namespace_taken_block(app: FastAPI, name: str) -> JSONResponse | None:
     An agent's name is its namespace, and the deploy platform adopts a
     namespace that is already there. Called after the name-taken check, so
     a namespace found here is recorded on no row in this room: a platform
-    service's, another team's, or a destroyed agent's still terminating.
+    service's, another team's, or a destroyed agent's still being cleared
+    (`_namespace_in_the_way` says which, as the 409's `code`).
     """
-    clients: Clients | None = app.state.clients
-    # `Clients.real` always wires kubectl; only a test's wiring leaves it out.
-    if clients is None or clients.kubectl is None:
-        return None
     try:
-        exists = clients.kubectl.namespace_created_at(name) is not None
+        in_the_way = _namespace_in_the_way(app, name)
     except ClientError:
         log.warning("could not check the cluster for namespace %s", name, exc_info=True)
         return JSONResponse(
             {"error": f"couldn't check the cluster for a namespace named {name!r}. Try again."},
             status_code=503,
         )
-    if exists:
-        return JSONResponse(
-            {"error": f"name taken: a Kubernetes namespace named {name!r} already exists"},
-            status_code=409,
-        )
+    if in_the_way is not None:
+        code, sentence = in_the_way
+        return JSONResponse({"error": sentence, "code": code}, status_code=409)
     return None
+
+
+# The two ways a Kubernetes namespace stands in a new agent's way, as the 409's
+# `code` and as a scan finding: a destroyed agent's, still being cleared away,
+# which frees itself; and one something outside this room keeps.
+NAME_CLEARING = "name_clearing"
+NAMESPACE_IN_USE = "namespace_in_use"
+
+
+def _namespace_in_the_way(app: FastAPI, name: str) -> tuple[str, str] | None:
+    """(code, sentence) when a namespace named `name` stands in the way of a new
+    agent by that name; None when none does. Raises `ClientError` when the
+    cluster cannot be asked.
+
+    A destroyed agent's namespace outlives its row by a minute or so while the
+    cluster clears what was in it, so the same name asked for again right after
+    a destroy meets it. That one is said as a wait, not a taken name: it frees
+    itself (reported on dev, 2026-11-20: reconnecting a removed agent's
+    repository read as "already taken in this room")."""
+    clients: Clients | None = app.state.clients
+    # `Clients.real` always wires kubectl; only a test's wiring leaves it out.
+    if clients is None or clients.kubectl is None:
+        return None
+    if clients.kubectl.namespace_created_at(name) is None:
+        return None
+    if clients.kubectl.namespace_deleting(name):
+        return NAME_CLEARING, f"{name} was just removed and is still being cleared away. Try again in a minute."
+    return NAMESPACE_IN_USE, f"Something outside this room already uses the name {name}."
 
 
 def _group_choice_block(
@@ -6100,7 +6123,7 @@ def create_app(
             # unreordered, for the non-archetype path).
             if session.query(Agent).filter_by(name=payload.name).first() is not None:
                 return JSONResponse(
-                    {"error": f"name taken: {payload.name!r}"}, status_code=409
+                    {"error": f"name taken: {payload.name!r}", "code": NAME_TAKEN}, status_code=409
                 )
 
             # The PICKED group is the team this guide serves. Normalized to
@@ -6306,7 +6329,7 @@ def create_app(
         # is a 422 regardless of whether the name happens to collide too.
         existing = session.query(Agent).filter_by(name=payload.name).first()
         if existing is not None:
-            return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
+            return JSONResponse({"error": f"name taken: {payload.name!r}", "code": NAME_TAKEN}, status_code=409)
         if cfg.delivery_backend == "directory":
             # The folder is the artifact (issue #207): a folder nobody
             # recorded is someone else's, the #193 rule for folders. No
@@ -6383,7 +6406,7 @@ def create_app(
             # surface as a 500 — same idiom as retry_agent's FAILED gate,
             # just enforced by the DB instead of a status column.
             session.rollback()
-            return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
+            return JSONResponse({"error": f"name taken: {payload.name!r}", "code": NAME_TAKEN}, status_code=409)
         audit.record(
             session, request=request, action="agent.create", target_kind="agent", target_id=agent.name,
             agent_name=agent.name, summary=f"{audit.who(request)} created agent {agent.name}",
@@ -6561,6 +6584,19 @@ def create_app(
             log.warning("connect scan could not read %s: %s", payload.repo, exc)
             return JSONResponse({"error": REPO_UNREADABLE}, status_code=502)
 
+        # The scan's own name question asks this room's rows. The cluster can
+        # still hold the name, most often for a minute after a destroy, and a
+        # form told nothing is in the way should not then meet Connect's 409.
+        # An unaskable cluster adds nothing here: Connect asks again and
+        # answers that itself.
+        if not any(finding.code == NAME_TAKEN for finding in report.blockers):
+            try:
+                in_the_way = _namespace_in_the_way(app, payload.name)
+            except ClientError:
+                log.warning("connect scan could not check the cluster for namespace %s", payload.name)
+                in_the_way = None
+            if in_the_way is not None:
+                report.blockers.append(Finding(*in_the_way))
         return JSONResponse(_scan_report_body(report))
 
     @app.post("/api/agents/connect", status_code=201)
@@ -6654,7 +6690,7 @@ def create_app(
 
         existing = session.query(Agent).filter_by(name=payload.name).first()
         if existing is not None:
-            return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
+            return JSONResponse({"error": f"name taken: {payload.name!r}", "code": NAME_TAKEN}, status_code=409)
         blocked = _namespace_taken_block(app, payload.name)
         if blocked is not None:
             return blocked
@@ -6693,7 +6729,7 @@ def create_app(
             # Same read-then-act race the create route has, answered the
             # same way: the unique constraint is the real gate.
             session.rollback()
-            return JSONResponse({"error": f"name taken: {payload.name!r}"}, status_code=409)
+            return JSONResponse({"error": f"name taken: {payload.name!r}", "code": NAME_TAKEN}, status_code=409)
         audit.record(
             session, request=request, action="agent.connect", target_kind="agent", target_id=agent.name,
             agent_name=agent.name, detail={"repo": agent.repo_full_name, "group": agent.group_name},

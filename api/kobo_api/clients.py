@@ -2462,6 +2462,13 @@ class KubectlClient(Protocol):
         be asked, which callers treat as "not known to be safe"."""
         ...
 
+    def namespace_deleting(self, namespace: str) -> bool:
+        """Whether `namespace` exists and is being deleted. A destroyed agent's
+        namespace is, for a minute or so after the destroy asked for it, while
+        the cluster clears what was in it. Raises `ClientError` when the
+        cluster cannot be asked."""
+        ...
+
     def external_secret_status(self, namespace: str, name: str) -> dict | None:
         """The ExternalSecret `name`'s own `.status` as a decoded dict, or
         None when there is no such object in `namespace`.
@@ -2606,6 +2613,15 @@ class KubectlCLI:
         if moment.tzinfo is not None:
             moment = moment.astimezone(UTC).replace(tzinfo=None)
         return moment
+
+    def namespace_deleting(self, namespace: str) -> bool:
+        out = self._runner.run(
+            [
+                self._kubectl, "get", "namespace", namespace, "--ignore-not-found",
+                "-o", "jsonpath={.metadata.deletionTimestamp}",
+            ]
+        ).strip()
+        return bool(out)
 
     def external_secret_status(self, namespace: str, name: str) -> dict | None:
         # `--ignore-not-found` is what makes "there is no such object" an

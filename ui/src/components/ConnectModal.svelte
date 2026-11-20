@@ -395,6 +395,9 @@
     scanError = null;
     submitError = null;
     connectBlockers = [];
+    // A scan asks the room again, so an earlier Connect's refusal stops
+    // standing: the report that comes back is the room's word now.
+    nameTaken = null;
     // Captured before the request, so a report can never be credited to
     // field values typed while it was in flight.
     const scannedFor = fields;
@@ -446,8 +449,16 @@
         onError: (error: unknown) => {
           if (error instanceof ApiError) {
             if (error.status === 409) {
-              // The name was free when the form scanned and is not now.
-              nameTaken = connectedName;
+              const code = (error.body as { code?: unknown } | undefined)?.code;
+              if (code === undefined || code === "name_taken") {
+                // The name was free when the form scanned and is not now.
+                nameTaken = connectedName;
+                return;
+              }
+              // Something else holds the name, most often a removed agent the
+              // room is still clearing away: the room's own sentence says
+              // which, and a scan a minute later answers again.
+              submitError = errorMessage(error, "Something went wrong. Try again.");
               return;
             }
             const body = error.body as { blockers?: unknown } | undefined;

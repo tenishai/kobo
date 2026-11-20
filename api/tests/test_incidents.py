@@ -833,6 +833,29 @@ def test_connect_refuses_a_name_whose_namespace_already_exists(
     assert _row(session_factory__api_connect) is None
 
 
+def test_reconnecting_right_after_a_destroy_says_the_name_is_still_clearing(
+    session_factory__api_connect, config__api_connect, clients__api_connect
+):
+    """Dev bug 2026-11-20: reconnecting a removed agent's repository read as "already taken".
+
+    The destroy had removed the agent's row, but its namespace was still being
+    deleted. The scan said nothing was in the way, then Connect's 409 showed as
+    a taken name and kept Connect off after the namespace had gone. The scan
+    now says the name is still being cleared, and the 409 says so by its code."""
+    clients__api_connect.kubectl.namespaces[AGENT_NAME] = datetime(2026, 1, 1, tzinfo=UTC).replace(tzinfo=None)
+    clients__api_connect.kubectl.namespaces_deleting.add(AGENT_NAME)
+    client__api_connect = TestClient(create_app(session_factory__api_connect, config=config__api_connect, clients=clients__api_connect))
+
+    scan = client__api_connect.post("/api/connect/scan", json=_payload())
+    connect = client__api_connect.post("/api/agents/connect", json=_payload())
+
+    assert [b["code"] for b in scan.json()["blockers"]] == ["name_clearing"]
+    assert connect.status_code == 409
+    assert connect.json()["code"] == "name_clearing"
+    assert "still being cleared away" in connect.json()["error"]
+    assert _row(session_factory__api_connect) is None
+
+
 # --- from test_api_runtime.py ---
 
 
