@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.80] - 2026-11-20
+
 ### Changed
 - **The dashboard's pictures load once.** Every card fetched its agent's full picture, a 1024px PNG of about a megabyte, on every page load, and every list of agents read each one from the database. Now each picture is kept with a version and a 160px copy: the cards and the page header ask for the small copy by version, and a browser keeps it until the picture changes, so a reload shows the faces at once. The full picture is still what **Download the portrait** gets.
 
