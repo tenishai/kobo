@@ -7229,14 +7229,21 @@ def test_a_save_the_build_skipped_is_delivered_by_the_restart_that_names_it():
         rolling.template_annotations[("acme-agent", "acme-agent")] = named
         assert delivery_state(FakeGitHub(head_sha=newer), rolling, sha=sha, **where)["state"] == "rolling"
 
-        # A later save restarted it with the head: this one rode along.
+        # A later save's restart named a commit that carries this one: it rode along.
         later = FakeKubectl()
         later.template_annotations[("acme-agent", "acme-agent")] = {delivery.BUNDLE_COMMIT_ANNOTATION: newer}
-        assert delivery_state(FakeGitHub(head_sha=newer), later, sha=sha, **where)["state"] == "delivered"
+        assert delivery_state(FakeGitHub(ancestor_pairs={(sha, newer)}), later, sha=sha, **where)["state"] == "delivered"
 
         older = FakeKubectl()
         older.template_annotations[("acme-agent", "acme-agent")] = {delivery.BUNDLE_COMMIT_ANNOTATION: "1" * 40}
         assert delivery_state(FakeGitHub(head_sha=newer), older, sha=sha, **where)["state"] == "building"
+
+        # GitHub that cannot be asked is a poll that says building, never an error.
+        class _Silent(FakeGitHub):
+            def includes(self, repo, tip, commit):
+                raise ClientError("GitHub did not answer")
+
+        assert delivery_state(_Silent(), later, sha=sha, **where)["state"] == "building"
     finally:
         delivery.configure(None)
 

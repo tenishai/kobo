@@ -45,6 +45,18 @@ class GitHub:
     def local_head(self, workdir: Path) -> str:
         return _git(workdir, "rev-parse", "HEAD")
 
+    def rev_parse_prefix(self, workdir: Path, prefix: str) -> str | None:
+        try:
+            return _git(workdir, "rev-parse", f"{prefix}^{{commit}}")
+        except subprocess.CalledProcessError:
+            return None
+
+    def is_ancestor(self, workdir: Path, ancestor: str, descendant: str) -> bool:
+        return subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=workdir).returncode == 0
+
+    def commit_shas_for_paths(self, workdir: Path, paths: list[str]) -> dict[str, str]:
+        return {path: _git(workdir, "log", "-1", "--format=%H", "--", path) for path in paths}
+
 
 class Publisher:
     def __init__(self):
@@ -523,3 +535,10 @@ def test_an_image_that_bakes_its_bundle_in_is_restarted_by_its_build_alone(tmp_p
     gh = GitHub()
     delivery.push(gh, baked, "kobo: persona")
     assert gh.messages == ["kobo: persona"] and kube.restarts == []
+
+
+def test_a_room_that_builds_each_change_names_no_restart(tmp_path):
+    """Without bundles as artifacts no restart delivers a bundle (the build does), so
+    none names a commit: the Slack steps' restart reads this before naming one."""
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")
+    assert delivery.delivered_by_restart(GitHub(), work) is None

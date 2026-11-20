@@ -262,11 +262,6 @@ def deploy_files_behind(workdir: Path) -> bool:
     return contract_behind(text, workflow) is not None
 
 
-def _git(workdir: Path, *args: str) -> str | None:
-    proc = subprocess.run(["git", *args], cwd=workdir, capture_output=True, text=True, check=False)
-    return proc.stdout.strip() if proc.returncode == 0 else None
-
-
 def bakes_bundle(workdir: Path) -> bool:
     """Whether the agent's Dockerfile reads the commit into its image (COPY, ADD,
     a bind mount; the old shape bakes its bundle in): only a build delivers a
@@ -278,40 +273,49 @@ def bakes_bundle(workdir: Path) -> bool:
     return bool(_READS_CONTEXT.search(text))
 
 
-def needs_build(workdir: Path, name: str) -> bool:
-    """Whether the working copy's commit must build the agent's image: the
-    Dockerfile reads the commit or changed, or the image running now predates the
-    Dockerfile's last change (a runtime build that failed or never ran, which any
-    later save used to retry). Otherwise the generated build makes the same image
-    again and its deploy rolls the agent a second time for nothing, so the commit
-    skips it. Whatever cannot be read counts as a build."""
-    if bakes_bundle(workdir):
+def needs_build(github: GitHubClient, workdir: Path, name: str, *, baked: bool) -> bool:
+    """Whether the working copy's commit must build the agent's image: it bakes
+    its bundle in (`bakes_bundle`), its Dockerfile changed, or the image running
+    now predates the Dockerfile's last change (a runtime build that failed or
+    never ran, which any later save used to retry). Otherwise the generated
+    build makes the same image again and its deploy rolls the agent a second
+    time for nothing, so the commit skips it. Whatever cannot be read counts as
+    a build."""
+    if baked:
         return True
-    if _git(workdir, "status", "--porcelain", "--", "Dockerfile") != "":
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--", "Dockerfile"], cwd=workdir, capture_output=True, text=True, check=False,
+    )
+    if status.returncode != 0 or status.stdout.strip():
         return True
-    return not _image_has_dockerfile(workdir, name)
+    return not _image_has_dockerfile(github, workdir, name)
 
 
-def _image_has_dockerfile(workdir: Path, name: str) -> bool:
+def _image_has_dockerfile(github: GitHubClient, workdir: Path, name: str) -> bool:
     """Whether the agent's running image was built from a commit that carries the
     Dockerfile's last change (the generated build tags it with its commit)."""
     assert _delivery is not None
     try:
         tag = image_tag(_delivery.kubectl.deploy_image(name, name))
-    except Exception:  # noqa: BLE001 -- no deployment yet, or no cluster to ask: build
+        built = github.rev_parse_prefix(workdir, tag) if tag else None
+        changed_in = github.commit_shas_for_paths(workdir, ["Dockerfile"]).get("Dockerfile")
+        return bool(built and changed_in) and github.is_ancestor(workdir, changed_in, built)
+    except Exception:  # noqa: BLE001 -- no deployment yet, or nothing to ask: build
         return False
-    built = _git(workdir, "rev-parse", "--verify", "--quiet", f"{tag}^{{commit}}") if tag else None
-    changed_in = _git(workdir, "log", "-1", "--format=%H", "--", "Dockerfile")
-    if not built or not changed_in:
-        return False
-    return _git(workdir, "merge-base", "--is-ancestor", changed_in, built) is not None
 
 
 def delivered_by_restart(github: GitHubClient, workdir: Path) -> str | None:
     """The commit a restart of the agent now delivers (HEAD's bundle, which a
-    publish just made current), for the restart to name; None for an image that
-    bakes its bundle in, which only its own build delivers."""
-    return None if bakes_bundle(workdir) else (github.local_head(workdir) or None)
+    publish made current), for the restart to name; None in a room that builds
+    each change, and for an image that bakes its bundle in: only a build
+    delivers those."""
+    return _delivered(github, workdir, baked=bakes_bundle(workdir))
+
+
+def _delivered(github: GitHubClient, workdir: Path, *, baked: bool) -> str | None:
+    if _delivery is None or baked:
+        return None
+    return github.local_head(workdir) or None
 
 
 def publish(workdir: Path, name: str, *, head_sha: str) -> str | None:
@@ -399,7 +403,8 @@ def push(
         if built:
             message = f"{message}{CONVERTED_NOTE}"
     behind = (asks_platform or _delivery.reprovision is not None) and deploy_files_behind(workdir)
-    builds = not behind and needs_build(workdir, name)
+    baked = bakes_bundle(workdir)
+    builds = not behind and needs_build(github, workdir, name, baked=baked)
     if not builds and "[skip ci]" not in message:
         message = f"{message} [skip ci]"
     pushed = github.commit_push(workdir, message)
@@ -409,8 +414,7 @@ def push(
         publish(workdir, name, head_sha=head)
     # What a restart now delivers, which it names; an image that bakes its bundle
     # in takes a change only from its own build, whose deploy is then the restart.
-    baked = bakes_bundle(workdir)
-    delivered = head if changed and not baked else None
+    delivered = _delivered(github, workdir, baked=baked) if changed else None
     if behind:
         if asks_platform or _delivery.reprovision is None:
             return pushed

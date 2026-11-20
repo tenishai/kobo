@@ -1438,6 +1438,20 @@ def test_a_named_restart_is_one_patch_that_still_restarts():
     assert annotations["kubectl.kubernetes.io/restartedAt"].endswith("Z")
 
 
+def test_includes_reads_ancestry_from_githubs_compare_with_no_clone():
+    """Gate (2026-11-20): whether a restart's named commit carries the polled one is
+    GitHub's compare status from the polled commit to the named one: identical or
+    ahead carries it, behind or diverged does not."""
+    from kobo_api.clients import GhCLI
+
+    runner = RecordingRunner(results=[(0, "ahead", ""), (0, "identical", ""), (0, "behind", "")])
+    gh = GhCLI(runner=runner)
+    assert gh.includes("acme/agent-clio", "b" * 40, "a" * 12) is True
+    assert gh.includes("acme/agent-clio", "a" * 40, "a" * 40) is True
+    assert gh.includes("acme/agent-clio", "a" * 40, "b" * 40) is False
+    assert runner.calls[0][-3:] == ["repos/acme/agent-clio/compare/" + "a" * 12 + "..." + "b" * 40, "--jq", ".status"]
+
+
 def test_cached_token_never_outlives_a_short_lived_token():
     """Production bug: Cached token never outlives a short lived token.
 

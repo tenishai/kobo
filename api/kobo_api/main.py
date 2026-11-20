@@ -9231,6 +9231,9 @@ def create_app(
         already landed on the agent's volume; only the repo's own copy is
         missing until a later upload lands it."""
         if not _room_may_commit_to_repo(app, repo):
+            if delivery.configured():
+                # No archive push to restart the agent: the tool loads by this one.
+                _request_tool_restart(agent_name)
             return
         pin = delivery.save_pin(_runtime_image_for_repo(app, repo))
         try:
@@ -9246,9 +9249,10 @@ def create_app(
             log.warning(
                 "tooling archive commit failed for %s (%s): %s", repo, filename, exc
             )
-            if delivery.configured():
+            if delivery.configured() and not str(exc).startswith(delivery.PLATFORM_NOT_ASKED):
                 # The tool is on the agent's volume; the restart that loads it
-                # was this push's to make.
+                # was this push's to make. A push that only failed to ask the
+                # deploy platform had restarted the agent already.
                 _request_tool_restart(agent_name)
         else:
             if pin is not None:

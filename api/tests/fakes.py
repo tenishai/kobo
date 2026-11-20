@@ -1071,6 +1071,14 @@ class FakeGitHub:
             return True
         return (ancestor, descendant) in self._ancestor_pairs
 
+    def includes(self, repo: str, tip: str, commit: str) -> bool:
+        """`is_ancestor`'s answer read the remote way: equal (a prefix names a
+        commit), or a pair in `ancestor_pairs`."""
+        self.calls.append(f"includes:{repo}:{tip}:{commit}")
+        if tip.startswith(commit) or commit.startswith(tip):
+            return True
+        return any(a.startswith(commit) and d == tip for a, d in self._ancestor_pairs)
+
     def rev_parse_prefix(self, workdir: Path, prefix: str) -> str | None:
         self.calls.append(f"rev_parse_prefix:{prefix}")
         if prefix in self._rev_parse_results:

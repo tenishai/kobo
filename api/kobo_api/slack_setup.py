@@ -863,7 +863,8 @@ def allow_slack_tools(
     restart delivers the tools with, for it to name
     (`delivery.delivered_by_restart`), and None when nothing changed or a
     restart cannot deliver them (an image that bakes its bundle in, whose own
-    build does). Raises `ClientError`.
+    build does). A change is logged here, since the answer alone cannot say
+    one happened. Raises `ClientError`.
 
     The clone and the push are tried `_ALLOW_TRIES` times, since nothing asks
     for this a second time once the app holds its scopes. A try that finds the
@@ -891,6 +892,7 @@ def allow_slack_tools(
             except ClientError as exc:
                 failed = exc
                 continue
+            log.info("%s now allows the Slack tools", repo)
             return delivery.delivered_by_restart(github, workdir)
     assert failed is not None
     raise failed

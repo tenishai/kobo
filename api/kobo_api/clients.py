@@ -521,6 +521,13 @@ class GitHubClient(Protocol):
         """
         ...
 
+    def includes(self, repo: str, tip: str, commit: str) -> bool:
+        """Whether `tip` is `commit` (or a sha prefix of it names it) or
+        descends from it in `repo`, read from GitHub's compare (`identical`
+        or `ahead`), with no clone. Raises `ClientError` when GitHub cannot
+        be asked."""
+        ...
+
     def head_sha(self, repo: str) -> str:
         """The current head commit sha of `repo`'s default branch.
 
@@ -1154,6 +1161,17 @@ class GhCLI:
         return self._runner.run(
             [self._gh, "api", f"repos/{repo}/commits", "--jq", ".[0].sha"], env=self._env()
         )
+
+    def includes(self, repo: str, tip: str, commit: str) -> bool:
+        status = self._runner.run(
+            [
+                self._gh, "api",
+                f"repos/{repo}/compare/{quote(commit, safe='')}...{quote(tip, safe='')}",
+                "--jq", ".status",
+            ],
+            env=self._env(),
+        )
+        return status.strip() in ("identical", "ahead")
 
     def runs_for_commit(self, repo: str, sha: str) -> list[dict]:
         out = self._runner.run(

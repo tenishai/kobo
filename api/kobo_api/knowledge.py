@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kobo_api import delivery
-from kobo_api.clients import GitHubClient, KubectlClient, image_tag
+from kobo_api.clients import ClientError, GitHubClient, KubectlClient, image_tag
 
 # 1-40 chars: a lowercase letter, then lowercase/digit/hyphen, ".md" — no path
 # separators, no leading dot/digit/hyphen, nothing that could escape
@@ -181,10 +181,10 @@ def delivery_state(
       - no runs, with bundles as artifacts: a save that cannot change the
         image skips the build (`kobo_api.delivery.push`, 2026-11-20), and the
         room's restart names the commit it delivered on the pod template
-        (`delivery.named_commit`). Named this commit (`sha` may be a prefix),
-        or the repository's head (one branch, so the head carries this one):
-        "rolling" while that restart runs, then "delivered". Anything else
-        falls through below. One read of the Deployment answers both.
+        (`delivery.named_commit`). Named this commit (`sha` may be a prefix)
+        or one that carries it (`github.includes`): "rolling" while that
+        restart runs, then "delivered". Anything else, or a GitHub that
+        cannot be asked, is "building" until the next poll.
       - no runs yet: "building" — registration lag, the same grace BuildStep
         extends CI before treating an empty list as anything but "not yet".
       - newest run not completed (queued or in_progress): "building".
@@ -234,7 +234,7 @@ def delivery_state(
             except Exception:  # noqa: BLE001 -- no claim about what was not seen
                 dep = None
             named = delivery.named_commit(dep)
-            if named is not None and (named.startswith(sha) or named == github.head_sha(repo)):
+            if named is not None and _carries(github, repo, named, sha):
                 if _rollout_unfinished(dep):
                     return {"state": "rolling", "detail": None}
                 return {"state": "delivered", "detail": None}
@@ -273,6 +273,16 @@ def delivery_state(
             return {"state": "rolling", "detail": None}
         return {"state": "delivered", "detail": None}
     return {"state": "rolling", "detail": None}
+
+
+def _carries(github: GitHubClient, repo: str, named: str, sha: str) -> bool:
+    """Whether the commit a restart named is `sha` or descends from it."""
+    if named.startswith(sha):
+        return True
+    try:
+        return github.includes(repo, named, sha)
+    except ClientError:
+        return False
 
 
 def rollout_in_progress(kubectl: KubectlClient, *, namespace: str, deploy: str) -> bool:
