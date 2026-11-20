@@ -51,7 +51,8 @@ def main(argv: list[str]) -> int:
     config, _ = load_org_config(local, github)
     engine = make_engine(config.db_url)
     init_db(engine)
-    session = make_session_factory(engine)()
+    session_factory = make_session_factory(engine)
+    session = session_factory()
     clients = Clients.real(config)
     # The same delivery the room wires at boot: with a registry, a commit publishes
     # the bundle and restarts the agent instead of building it.
@@ -61,9 +62,7 @@ def main(argv: list[str]) -> int:
             runtime_image=config.runtime_image, replica_bucket=config.memory_replica_bucket,
             # A push that converts an older agent changes its gojira.yaml: ask the
             # platform to deploy it, as the room does (kobo_api.delivery.push).
-            reprovision=lambda name: clients.gojira.reprovision(
-                session.query(Agent).filter(Agent.name == name).one().gojira_app_id
-            ),
+            reprovision=delivery.reprovisioner(session_factory, clients.gojira),
         ) if config.bundle_registry else None
     )
 

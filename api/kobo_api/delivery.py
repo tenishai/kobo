@@ -15,9 +15,10 @@ the new shape by the first `push` that touches it, provided its Dockerfile alrea
 pins the room's current runtime (the one that knows how to pull a bundle): the
 Dockerfile shrinks to its FROM line, litestream and the entrypoint leave the
 repository (the runtime carries them), and gojira.yaml gains the environment the
-runtime reads. That one commit builds, as the last one that ever will for that
-agent. An agent on an older runtime is left as it is and converts after its next
-re-pin.
+runtime reads. A changed gojira.yaml fails the generated build's contract check,
+so that commit skips the build and the deploy platform is asked to render the deploy
+files again, which deploys the new shape (`push`). An agent on an older runtime is
+left as it is and converts after its next re-pin.
 
 Unconfigured (no registry), `push` is `commit_push` and nothing else: every path
 behaves exactly as it did.
@@ -30,9 +31,11 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
+from kobo_api.agent_env import CI_WORKFLOW, GOJIRA_YAML, contract_behind
 from kobo_api.bundle_publish import (
     POINTER_TAG,
     BundlePublisher,
@@ -41,7 +44,9 @@ from kobo_api.bundle_publish import (
     bundle_reference,
     publish_if_changed,
 )
-from kobo_api.clients import ClientError, GitHubClient, KubectlClient
+from kobo_api.clients import ClientError, GitHubClient, GojiraClient, KubectlClient
+from kobo_api.kinds import is_connected
+from kobo_api.models import Agent
 
 log = logging.getLogger(__name__)
 
@@ -64,9 +69,10 @@ class Delivery:
     registry: str
     runtime_image: str
     replica_bucket: str = ""
-    # Asks the deploy platform to regenerate an agent's deploy files, by name,
-    # after the conversion commit changed its gojira.yaml (see `push`). The room
-    # wires it at boot; without it a conversion lands and nothing deploys it.
+    # Asks the deploy platform to render an agent's deploy files again, by name
+    # (`reprovisioner`), for a push whose gojira.yaml they no longer match (see
+    # `push`). Without it such a push builds, and the build's contract check
+    # holds the agent where it is.
     reprovision: Callable[[str], None] | None = None
 
 
@@ -81,6 +87,35 @@ def configure(delivery: Delivery | None) -> None:
 
 def configured() -> bool:
     return _delivery is not None
+
+
+def save_pin(runtime_image: str | None) -> str | None:
+    """The runtime a save may pin its agent's Dockerfile to on the way past
+    (an upload, a check, a teach note, Slack wiring): `runtime_image` in a room
+    that builds an image per change, where a save is a build anyway, and None
+    in a room that delivers bundles as artifacts. There the runtime route is the
+    one place a pin moves: a re-pin riding a save moved an agent onto a runtime
+    nobody chose, and rebuilt and restarted it a second time (a teach note moved
+    johnny-bravo, 2026-11-20)."""
+    return None if configured() else runtime_image
+
+
+def reprovisioner(session_factory: Callable[[], Any], gojira: GojiraClient | None) -> Callable[[str], None]:
+    """`Delivery.reprovision` for a room or a script: finds the agent's deploy
+    platform app by name and asks for its deploy files again, as a hand-over
+    for a connected agent (`kobo_api.agent_env.regenerate_handed_over`). Raises
+    ClientError when there is no app to ask or the platform refuses."""
+
+    def reprovision(name: str) -> None:
+        with session_factory() as session:
+            agent = session.query(Agent).filter_by(name=name).first()
+            app_id = agent.gojira_app_id if agent is not None else None
+            handed_over = agent is not None and is_connected(agent)
+        if gojira is None or app_id is None:
+            raise ClientError(f"no deploy platform app to ask for {name}")
+        gojira.reprovision(app_id, handed_over=handed_over)
+
+    return reprovision
 
 
 def bundle_artifact(registry: str, name: str) -> str:
@@ -186,6 +221,20 @@ def _bundle_changed(workdir: Path) -> bool:
     return bool(bundle_changed_paths(workdir))
 
 
+def deploy_files_behind(workdir: Path) -> bool:
+    """True when the working copy's deploy files were rendered from a gojira.yaml
+    other than the one it holds: its build fails the contract check, and only the
+    platform rendering them again deploys it (ledger, 2026-11-04 to 11-20: its
+    conversion changed gojira.yaml and every later build failed). False when
+    either file is missing or unreadable."""
+    try:
+        text = (workdir / GOJIRA_YAML).read_text()
+        workflow = (workdir / CI_WORKFLOW).read_text()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return contract_behind(text, workflow) is not None
+
+
 def publish(workdir: Path, name: str, *, head_sha: str) -> str | None:
     """Publish the working copy's bundle (HEAD's) and move the agent's pointer.
     Returns the pointer, or None when HEAD has no bundle. Raises ClientError."""
@@ -201,11 +250,24 @@ def publish(workdir: Path, name: str, *, head_sha: str) -> str | None:
     return published.pointer if published else None
 
 
-def push(github: GitHubClient, workdir: Path, message: str, *, restart: bool = True, force_restart: bool = False) -> bool:
+def push(
+    github: GitHubClient, workdir: Path, message: str, *,
+    restart: bool = True, force_restart: bool = False, asks_platform: bool = False,
+) -> bool:
     """Commit and push `workdir`, then deliver: publish the bundle when the commit
     changed it and restart the agent, when the room is configured for artifacts.
     `force_restart` restarts even when the bundle did not change (a Secret the pod
-    reads changed). Returns whether anything was pushed, like `commit_push`."""
+    reads changed). Returns whether anything was pushed, like `commit_push`.
+
+    When the deploy files no longer match gojira.yaml (the conversion below just
+    changed it, or an earlier ask never reached the platform), a restart delivers
+    nothing: the commit skips the build their contract check would fail, and the
+    platform is asked to render them again, which builds and rolls the agent. It
+    is asked whether or not anything was pushed, so asking again after a failure
+    repairs the agent (`kobo_api.agent_env.edit_gojira_yaml` does the same).
+    `asks_platform` is for a caller that changed gojira.yaml itself and asks the
+    platform right after: the commit skips the build all the same, and is not
+    asked twice. Raises ClientError when the publish, the restart or the ask fails."""
     if _delivery is None:
         return github.commit_push(workdir, message)
     name = agent_name_of(workdir)
@@ -218,26 +280,23 @@ def push(github: GitHubClient, workdir: Path, message: str, *, restart: bool = T
             registry=_delivery.registry, replica_bucket=_delivery.replica_bucket,
         )
         if built:
-            message = f"{message}{CONVERTED_NOTE} [skip ci]"
+            message = f"{message}{CONVERTED_NOTE}"
+    behind = (asks_platform or _delivery.reprovision is not None) and deploy_files_behind(workdir)
+    if behind and "[skip ci]" not in message:
+        message = f"{message} [skip ci]"
     pushed = github.commit_push(workdir, message)
-    if not pushed and not force_restart:
-        return False
     changed = pushed and (built or _bundle_changed(workdir))
     if changed:
         publish(workdir, name, head_sha=github.local_head(workdir) or "")
-    if built:
-        # The conversion commit builds, as the last one that will: the roll is the restart.
-        # It changed gojira.yaml (the bundle image and the runtime's environment), so the
-        # generated workflow's contract check fails it until the platform renders the deploy
-        # files again: the commit skips CI and the platform is asked here, the way every
-        # other gojira.yaml change asks (`kobo_api.agent_env.edit_gojira_yaml`). Without the
-        # ask the agent kept its old image while every later build failed the check (ledger,
-        # 2026-11-04 to 11-20).
-        if pushed and _delivery.reprovision is not None:
+    if behind:
+        if not asks_platform and _delivery.reprovision is not None:
             try:
                 _delivery.reprovision(name)
-            except Exception as exc:  # noqa: BLE001 -- the commit landed; the ask can be made again
-                log.warning("%s converted, but the platform was not asked to deploy it: %s", name, exc)
+            except ClientError as exc:
+                raise ClientError(f"{NOT_DELIVERED}: the deploy platform was not asked to deploy it ({exc}); try again") from exc
+        return pushed
+    if built:
+        # Nobody to ask: the conversion commit builds, and the roll is the restart.
         return pushed
     if (changed and restart) or force_restart:
         _restart(name)
@@ -381,13 +440,16 @@ __all__ = [
     "configure",
     "configured",
     "convert_to_runtime_only",
+    "deploy_files_behind",
     "join_restarts",
     "legacy_shape",
     "optional_secrets",
     "publish",
     "push",
+    "reprovisioner",
     "restart_once_secret_carries",
     "runtime_env",
+    "save_pin",
     "secret_carries",
     "wait_for_secret",
     "wire_gojira_yaml",

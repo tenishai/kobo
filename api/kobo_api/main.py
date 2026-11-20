@@ -3233,41 +3233,56 @@ def _directory_resync(app, repo: str) -> Callable[[], None]:
     return resync
 
 
-def _reprovision_by_name(app: FastAPI, name: str) -> None:
-    """Ask the deploy platform to render `name`'s deploy files again: what the
-    delivery's conversion commit needs (it changed gojira.yaml), by the agent's
-    name because that is all the delivery knows. Raises ClientError when the
-    platform refuses; a room with no platform or an agent it never onboarded has
-    nothing to ask."""
-    gojira = getattr(app.state.clients, "gojira", None)
-    session = app.state.session_factory()
-    try:
-        agent = session.query(Agent).filter_by(name=name).first()
-        app_id = agent.gojira_app_id if agent is not None else None
-    finally:
-        session.close()
-    if gojira is None or app_id is None:
-        log.info("%s converted; no deploy platform app to ask", name)
-        return
-    gojira.reprovision(app_id)
-
-
 # How old the stored health verdict may be before an agent's own page asks the
 # cluster again (`_fresh_health_body`): a detail poll every few seconds during a
 # restart then costs at most one cluster read per agent per ten seconds.
 LIVE_HEALTH_MAX_AGE_S = 10.0
 
 
+def _health_stale(verdict: AgentHealth | None) -> bool:
+    if verdict is None:
+        return True
+    try:
+        checked = datetime.fromisoformat(verdict.checked_at)
+    except ValueError:
+        return True
+    return (datetime.now(UTC) - checked).total_seconds() > LIVE_HEALTH_MAX_AGE_S
+
+
+def _probe_health_soon(app: FastAPI, kubectl, name: str) -> None:
+    """Ask the cluster about `name` on a thread, once at a time per agent, and
+    store the verdict where the sweep keeps its own. Nothing waits on it: the
+    request that asked answers with what was stored, and the page's next poll
+    reads the new verdict. A probe inside the request would hold its database
+    connection for as long as the cluster takes, the way the pool ran dry once
+    (2026-10-01)."""
+    probing: set[str] = app.state.health_probing
+    with app.state.health_probing_lock:
+        if name in probing:
+            return
+        probing.add(name)
+
+    def run() -> None:
+        try:
+            app.state.health[name] = probe_health(kubectl, name)
+        except Exception:  # the sweep asks again within a minute
+            log.exception("health probe for %s failed", name)
+        finally:
+            with app.state.health_probing_lock:
+                probing.discard(name)
+
+    threading.Thread(target=run, name=f"health-{name}", daemon=True).start()
+
+
 def _record_save_pin(agent: Agent, cfg: Config) -> None:
     """After a save that may re-pin the agent's Dockerfile (an upload, a check,
-    a teach note, Slack wiring), the row's fact follows the file: in a room that
-    builds an image per change the save re-pinned it to the agent's runtime
-    choice. In a room that delivers bundles as artifacts nothing re-pinned (the
-    runtime route is the one place a pin moves there, 2026-11-20), so the fact
-    stays as it is; recording the room's pin there made an agent read as up to
-    date while it still ran the runtime it had."""
-    if not delivery.configured():
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+    a teach note, Slack wiring), the row's fact follows the file: whatever the
+    save pinned (`delivery.save_pin`). Where it pinned nothing the fact stays;
+    recording the room's pin there made an agent read as up to date while it
+    still ran the runtime it had (2026-11-20)."""
+    pin = delivery.save_pin(agent.runtime_image or cfg.runtime_image)
+    if pin is not None:
+        agent.built_runtime_image = pin
 
 
 def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> None:
@@ -3296,7 +3311,7 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
     """
     if not _room_may_commit_to_repo(app, repo):
         return
-    pin = _runtime_image_for_repo(app, repo)
+    pin = delivery.save_pin(_runtime_image_for_repo(app, repo))
     try:
         upload_intake_file(
             app.state.clients.github,
@@ -3312,10 +3327,9 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
             "teach archive commit failed for %s (%s): %s", repo, filename, exc
         )
     else:
-        # The commit re-pinned the Dockerfile to `pin` (or found it there) in a
-        # room that builds per change; the row's fact follows the file
-        # (kobo_api.runtime_truth). With artifacts nothing moved.
-        if not delivery.configured():
+        # The commit re-pinned the Dockerfile to `pin` (or found it there);
+        # the row's fact follows the file (kobo_api.runtime_truth).
+        if pin is not None:
             record_built_runtime(app.state.session_factory, repo, pin)
 
 
@@ -3610,7 +3624,7 @@ def create_app(
         delivery.Delivery(
             kubectl=clients.kubectl, publisher=RegistryPublisher(), registry=config.bundle_registry,
             runtime_image=config.runtime_image, replica_bucket=config.memory_replica_bucket,
-            reprovision=lambda name: _reprovision_by_name(app, name),
+            reprovision=delivery.reprovisioner(session_factory, getattr(clients, "gojira", None)),
         ) if config.bundle_registry else None
     )
     app.state.session_factory = session_factory
@@ -3620,6 +3634,10 @@ def create_app(
     # Live health per ready agent (kobo_api.health): filled by the sweep,
     # read by the list and detail routes, never persisted.
     app.state.health = {}
+    # The agents whose own page is having the cluster asked right now
+    # (`_probe_health_soon`), so a burst of polls asks once.
+    app.state.health_probing = set()
+    app.state.health_probing_lock = threading.Lock()
     # The repository typeahead's cache (kobo_api.repo_search): one listing
     # for the whole room, so it lives on the app rather than being rebuilt
     # per request. None when the room has no GitHub client, which is the
@@ -7053,21 +7071,17 @@ def create_app(
         """The agent's own page wants the cluster's word now, not the sweep's
         from up to a minute ago (2026-11-20: a restart showed Ready, then sat on
         Restarting long after the agent was back). A ready agent whose last
-        verdict is older than LIVE_HEALTH_MAX_AGE_S is asked again, once, here;
-        the dashboard's list keeps the sweep's minute."""
+        verdict is older than LIVE_HEALTH_MAX_AGE_S is asked again, off the
+        request (`_probe_health_soon`); the page polls every few seconds while it
+        watches a restart, so the next poll carries the new verdict. The
+        dashboard's list keeps the sweep's minute."""
         verdict: AgentHealth | None = getattr(app.state, "health", {}).get(agent.name)
         clients = app.state.clients
-        if agent.status == AgentStatus.READY and clients is not None and clients.kubectl is not None:
-            age = None
-            if verdict is not None:
-                try:
-                    checked = datetime.fromisoformat(verdict.checked_at)
-                    age = (datetime.now(UTC) - checked).total_seconds()
-                except ValueError:
-                    age = None
-            if age is None or age > LIVE_HEALTH_MAX_AGE_S:
-                verdict = probe_health(clients.kubectl, agent.name)
-                app.state.health[agent.name] = verdict
+        if (
+            agent.status == AgentStatus.READY and clients is not None and clients.kubectl is not None
+            and _health_stale(verdict)
+        ):
+            _probe_health_soon(app, clients.kubectl, agent.name)
         return verdict.body() if verdict is not None else None
 
     @app.get("/api/agents")
@@ -9196,7 +9210,7 @@ def create_app(
         missing until a later upload lands it."""
         if not _room_may_commit_to_repo(app, repo):
             return
-        pin = _runtime_image_for_repo(app, repo)
+        pin = delivery.save_pin(_runtime_image_for_repo(app, repo))
         try:
             upload_tooling_file(
                 app.state.clients.github,
@@ -9211,7 +9225,7 @@ def create_app(
                 "tooling archive commit failed for %s (%s): %s", repo, filename, exc
             )
         else:
-            if not delivery.configured():
+            if pin is not None:
                 record_built_runtime(app.state.session_factory, repo, pin)
 
     def _request_tool_restart(agent_name: str) -> None:

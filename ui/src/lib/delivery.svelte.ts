@@ -50,50 +50,75 @@ export function isUpdating(agent: string, now: number = Date.now()): boolean {
 
 // --- Restarts this page asked for -----------------------------------------
 //
-// A Wakes on save (SlackVendor, SlackPanel) restarts the agent at once. The
-// room's own health check catches up within a minute and says `rolling`;
-// until it does, this page already knows, so the header reads Restarting
-// instead of Down from the first second. Same honesty rules as above: only
-// a restart this page saw start, forgotten after `STALE_MS` so a watcher
-// that stopped without saying so can never mask a real outage for long.
+// A change that restarts the agent (`restarted` in lib/queries.ts, and a Wakes
+// on save in SlackVendor and SlackPanel) says so here the moment it lands, so
+// the header reads Restarting from the first second instead of Ready, or Down,
+// until the room's health check catches up. Same honesty rules as above: only
+// a restart this page saw start, forgotten after `STALE_MS` so a watcher that
+// stopped without saying so can never mask a real outage for long.
 
-const restarts = $state<Record<string, number>>({});
+type Restart = { id: number; at: number; rolled: boolean; since?: string | null };
 
-/** A panel just restarted `agent` with a change. */
-export function beginRestart(agent: string): void {
-  restarts[agent] = Date.now();
+const restarts = $state<Record<string, Restart>>({});
+let lastRestart = 0;
+
+/** A change just restarted `agent`, or will within minutes. Returns the
+ * watch's id, for `endRestart`. */
+export function beginRestart(agent: string): number {
+  lastRestart += 1;
+  restarts[agent] = { id: lastRestart, at: Date.now(), rolled: false };
+  return lastRestart;
 }
 
-/** The watch over that restart ended (live, gave up, or unmounted). */
-export function endRestart(agent: string): void {
-  delete restarts[agent];
+/** The watch over that restart ended (live, gave up, or unmounted). Given an
+ * id, only that watch ends, never one a later change began. */
+export function endRestart(agent: string, id?: number): void {
+  if (id === undefined || restarts[agent]?.id === id) {
+    delete restarts[agent];
+  }
 }
 
 /** True while a restart this page asked for is still being watched. */
 export function isRestarting(agent: string, now: number = Date.now()): boolean {
-  const at = restarts[agent];
-  return at !== undefined && now - at <= STALE_MS;
+  const restart = restarts[agent];
+  return restart !== undefined && now - restart.at <= STALE_MS;
 }
 
-// A reading counts as "back" only once it was taken this long after the
-// restart began: the old pod answers for a moment after a restart is asked
-// for, and an up, not-rolling reading from that moment would end the watch
-// before the restart even started.
-const SETTLE_MS = 15_000;
+// How long a restart may take to begin. Most begin at once; one the deploy
+// platform or a build delivers (a model, a runtime, the env panel, any change
+// in a room that builds each one) rolls the agent minutes later. A watch that
+// has seen none by then ends: none is coming.
+const ROLL_WAIT_MS = 8 * 60_000;
 
-/** Ends the watch over a restart this page asked for once a reading taken
- * well after it began says the agent is up and not mid-restart (2026-11-20:
- * the header used to keep saying Restarting until a hard refresh). */
+type Reading = { state: string; rolling?: boolean; ready_since?: string | null; unread?: boolean };
+
+/** Ends the watch over a restart this page asked for once the agent has been
+ * through it and is back: up and settled after a reading that said it was
+ * rolling or down, or with a `ready_since` other than the first reading's
+ * (a restart between two polls). A reading the room could not take counts for
+ * nothing, and no reading is compared with this browser's clock (2026-11-20:
+ * the header kept saying Restarting until a hard refresh). */
 export function settleRestart(
   agent: string,
-  health: { state: string; rolling?: boolean; checked_at: string } | null | undefined,
+  health: Reading | null | undefined,
+  now: number = Date.now(),
 ): void {
-  const at = restarts[agent];
-  if (at === undefined || !health) {
+  const restart = restarts[agent];
+  if (restart === undefined || !health || health.unread === true) {
     return;
   }
-  const checked = Date.parse(health.checked_at);
-  if (checked - at >= SETTLE_MS && health.state === "up" && health.rolling !== true) {
+  if (health.rolling === true || health.state !== "up") {
+    if (!restart.rolled) {
+      restart.rolled = true;
+    }
+    return;
+  }
+  const since = health.ready_since ?? null;
+  if (restart.since === undefined) {
+    // The first reading: the agent as the change found it.
+    restart.since = since;
+  }
+  if (restart.rolled || since !== restart.since || now - restart.at > ROLL_WAIT_MS) {
     delete restarts[agent];
   }
 }

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from kobo_api import connected_wiring
+from kobo_api import agent_env, connected_wiring
 from kobo_api.clients import Clients
 from kobo_api.kinds import KIND_CONNECTED, RUN_MODE_HTTP
 from kobo_api.models import Agent, AgentStatus
@@ -246,9 +246,9 @@ def _workflow(stamp: str) -> str:
 def test_the_fingerprint_is_the_one_the_teams_build_computes():
     """Wire shape: the room and the build must agree on what "changed" means, or the room
     asks for a regeneration nobody needs, or never asks for one a red build is waiting on."""
-    assert connected_wiring.contract_fingerprint(SAMPLE) == SAMPLE_FINGERPRINT
+    assert agent_env.contract_fingerprint(SAMPLE) == SAMPLE_FINGERPRINT
     reordered = "service_account: agent-clio   # ours\n" + SAMPLE.replace("service_account: agent-clio\n", "")
-    assert connected_wiring.contract_fingerprint(reordered) == SAMPLE_FINGERPRINT
+    assert agent_env.contract_fingerprint(reordered) == SAMPLE_FINGERPRINT
 
 
 def test_a_merged_request_is_followed_through_once_per_version_of_the_file():

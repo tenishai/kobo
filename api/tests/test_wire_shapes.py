@@ -35,7 +35,7 @@ from kobo_api.bundle_publish import bundle_reference
 from kobo_api.clients import ClientError, Clients, _build_learnings_envelope
 from kobo_api.config import Config, GroupChoice, MCPConfig, ModelChoice
 from kobo_api.directory import sync_directory
-from kobo_api.health import probe_health
+from kobo_api.health import AgentHealth, probe_health
 from kobo_api.iap import ASSERTION_HEADER, IAP_ISSUER
 from kobo_api.kinds import KIND_COMPOSED
 from kobo_api.liminal_admin import GatewayGrant
@@ -1857,6 +1857,29 @@ def test_a_connected_agents_page_says_what_is_missing(session_factory__api_slack
     assert refused["line"].startswith("It refused the last message from Slack.")
 
 
+def test_an_agents_own_page_has_the_cluster_asked_again_off_the_request(
+    session_factory__api_slack, config__api_slack
+):
+    """Wire shape (2026-11-20): the agent's page answers at once with the stored
+    reading and, when that is older than ten seconds, has the cluster asked again on a
+    thread, so its next poll is current and no request holds a database connection
+    while the cluster answers."""
+    import threading
+
+    client = _make_client__api_slack(session_factory__api_slack, config__api_slack, kubectl=FakeKubectl())
+    _seed_agent__api_slack(session_factory__api_slack, config__api_slack)
+    old = AgentHealth("down", "0 of 1 running", "2026-11-20T20:00:00Z", rolling=True)
+    client.app.state.health = {AGENT_NAME: old}
+
+    assert client.get(f"/api/agents/{AGENT_NAME}").json()["health"] == old.body()
+    for thread in threading.enumerate():
+        if thread.name == f"health-{AGENT_NAME}":
+            thread.join(5)
+    health = client.get(f"/api/agents/{AGENT_NAME}").json()["health"]
+    assert (health["state"], health["rolling"]) == ("up", False)
+    assert health["checked_at"] != old.checked_at
+
+
 def test_a_connected_agents_page_claims_nothing_it_could_not_see(
     session_factory__api_slack, config__api_slack, monkeypatch
 ):
@@ -3489,9 +3512,7 @@ def test_get_agent_carries_the_detail_routes_full_field_set(session_factory__mcp
     }
     # What the page's header and Harness tab show, which this tool had
     # fallen behind: it answers from the page's own route now.
-    # The agent's own page asks the cluster when its reading is older than ten
-    # seconds (2026-11-20), so a ready agent's detail carries a verdict at once.
-    assert result["health"]["state"] == "up" and result["health"]["rolling"] is False
+    assert result["health"] is None
     assert result["identity"]["service_account"] == "agent-agent-a"
     assert result["colleague_mode"] == "default"
     assert result["runtime_pinned"] is False

@@ -813,10 +813,10 @@ def wire_slack_values(
         contract_changed = (gojira_yaml_path.read_text() if gojira_yaml_path.exists() else "") != contract_before
         previous = None
         note = ""
-        if not delivery.configured():
-            # With bundles as artifacts the runtime route is the one place a pin moves.
-            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
-            note = repin_commit_note(repo, previous, runtime_image)
+        pin = delivery.save_pin(runtime_image)
+        if pin is not None:
+            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", pin)
+            note = repin_commit_note(repo, previous, pin)
         by_restart = delivery.configured() and not contract_changed
 
         if by_restart:
@@ -828,7 +828,7 @@ def wire_slack_values(
             delivery.restart_once_secret_carries(kubectl, name, f"{name}-slack", list(values))
             changed = False
         else:
-            changed = delivery.push(github, workdir, f"{message}{note}")
+            changed = delivery.push(github, workdir, f"{message}{note}", asks_platform=True)
         if changed:
             gojira.reprovision(gojira_app_id)
         # Always confirm active, even on the no-change path — see the

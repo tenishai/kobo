@@ -159,6 +159,8 @@
   // agent once it has landed, a minute or two after the save.
   let wakeRestartsSoon = $state(false);
   let stopWakeWatch: (() => void) | null = null;
+  // The restart this panel's own watch began, so leaving ends only that one.
+  let wakeRestart: number | undefined;
   const wakeLocked = $derived(
     frozen || saveWake.isPending || saveEmoji.isPending || savePublic.isPending || saveBots.isPending ||
       saveRead.isPending || create.isPending || wakeApplying,
@@ -167,11 +169,12 @@
   function watchWake(result: { applied_at?: string | null }): void {
     stopWakeWatch?.();
     wakeApplying = true;
-    beginRestart(agentName);
+    const restart = beginRestart(agentName);
+    wakeRestart = restart;
     const settle = () => {
       wakeApplying = false;
       stopWakeWatch = null;
-      endRestart(agentName);
+      endRestart(agentName, restart);
     };
     stopWakeWatch = watchWakeLive({
       baseline: agent.data?.health?.checked_at ?? null,
@@ -183,7 +186,9 @@
   }
   $effect(() => () => {
     stopWakeWatch?.();
-    endRestart(agentName);
+    if (wakeRestart !== undefined) {
+      endRestart(agentName, wakeRestart);
+    }
   });
 
   async function pickWake(next: SlackWake): Promise<void> {

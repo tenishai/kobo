@@ -1251,7 +1251,7 @@ export function updateAgentModelMutation(queryClient: QueryClient, name: string)
     mutationFn: (model: string) => patchAgentModel(name, model),
     onSuccess: () => {
       restarted(queryClient, name);
-      queryClient.invalidateQueries({ queryKey: ["agents"] });
+      queryClient.invalidateQueries({ queryKey: ["agents"], exact: true });
     },
   };
 }
@@ -1384,7 +1384,7 @@ export function saveKnowledgeMutation(queryClient: QueryClient, name: string) {
       filename: string;
       content: string;
     }) => saveKnowledgeFile(name, filename, content),
-    onSuccess: (result: { mode?: "instant" | "archive" }) => {
+    onSuccess: (result: { sha?: string; mode?: "instant" | "archive" }) => {
       if (result.mode === "archive") {
         restarted(queryClient, name);
       } else {
@@ -1623,7 +1623,14 @@ export function uploadIntakeMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: ({ filename, content }: { filename: string; content: string }) =>
       uploadIntake(name, filename, content),
-    onSuccess: () => restarted(queryClient, name),
+    onSuccess: (result: { sha?: string; mode?: "instant" | "archive" }) => {
+      // Handed over live, the file restarts nothing (as a teach note).
+      if (result.mode === "instant") {
+        queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      } else {
+        restarted(queryClient, name);
+      }
+    },
   };
 }
 

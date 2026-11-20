@@ -15,7 +15,9 @@ import pytest
 import yaml
 
 from kobo_api import delivery
+from kobo_api.agent_env import CI_WORKFLOW, contract_fingerprint
 from kobo_api.bundle_publish import LAYER_MEDIA_TYPE, RegistryPublisher, bundle_tarball
+from kobo_api.clients import ClientError
 from kobo_api.composer import _agent_yaml_data, _dockerfile
 
 RUNTIME = "reg.example/agents/daedalus-runtime@sha256:" + "a" * 64
@@ -77,6 +79,9 @@ def _repo(tmp_path: Path, *, dockerfile: str, gojira: dict | None = None) -> Pat
     (work / "Dockerfile").write_text(dockerfile)
     (work / "gojira.yaml").write_text(yaml.safe_dump(gojira or {"app": "ledger", "secrets_from": ["ledger-cabal", "ledger-slack"]}))
     (work / "entrypoint.sh").write_text("#!/bin/sh\n")
+    # The deploy files the platform rendered from that gojira.yaml.
+    (work / CI_WORKFLOW).parent.mkdir(parents=True)
+    (work / CI_WORKFLOW).write_text(f"env:\n  GOJIRA_CONTRACT: {contract_fingerprint((work / 'gojira.yaml').read_text())}\n")
     _git(work, "init", "-q", "-b", "main")
     _git(work, "config", "user.email", "t@example.com")
     _git(work, "config", "user.name", "t")
@@ -154,6 +159,64 @@ def test_an_old_shape_agent_on_the_rooms_runtime_converts_in_the_one_commit_that
     assert data["env"] == {"AGENT_NAME": "ledger", "MEMORY_REPLICA_BUCKET": "mem-bucket"}
     assert data["secrets_from"] == ["ledger-cabal"]
     assert data["secrets_from_optional"] == ["ledger-slack", "ledger-env"]
+    assert len(pub.pushed) == 1 and kube.restarts == []
+
+
+def test_a_conversion_whose_ask_failed_is_asked_again_by_the_next_push(tmp_path, configured):
+    """Gate (integrity): the conversion's commit lands with CI skipped, so if the platform
+    cannot be asked, nothing else would ever deploy it. The push says the change did not
+    reach the agent, and the next push asks again, even with nothing to commit; so does a
+    save to an agent left that way before this (ledger, 2026-11-04 to 11-20)."""
+    pub, kube = configured
+    asked: list[str] = []
+
+    def reprovision(name: str) -> None:
+        asked.append(name)
+        if len(asked) == 1:
+            raise ClientError("reprovision(7) failed (503): down")
+
+    delivery.configure(delivery.Delivery(kubectl=kube, publisher=pub, registry=REGISTRY, runtime_image=RUNTIME,
+                                         replica_bucket="mem-bucket", reprovision=reprovision))
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\nCOPY bundle/ /bundle\n")
+    (work / "bundle" / "persona.md").write_text("two\n")
+    gh = GitHub()
+    with pytest.raises(ClientError, match=delivery.NOT_DELIVERED):
+        delivery.push(gh, work, "kobo: persona")
+    assert gh.messages == [f"kobo: persona{delivery.CONVERTED_NOTE} [skip ci]"]
+
+    assert delivery.push(gh, work, "kobo: persona") is False
+    (work / "bundle" / "persona.md").write_text("three\n")
+    assert delivery.push(gh, work, "kobo: persona") is True
+    assert asked == ["ledger", "ledger", "ledger"]
+    assert gh.messages[-1] == "kobo: persona [skip ci]"
+    # The platform's deploy is the restart; the room adds none of its own.
+    assert kube.restarts == []
+
+
+def test_a_caller_that_asks_the_platform_itself_is_not_asked_for_twice(tmp_path, configured):
+    """A model change or Slack wiring edits gojira.yaml and asks the platform right
+    after: its commit skips the build that would fail, the room asks nothing on top,
+    and the platform's deploy is the one restart."""
+    pub, kube = configured
+    asked: list[str] = []
+    delivery.configure(delivery.Delivery(kubectl=kube, publisher=pub, registry=REGISTRY, runtime_image=RUNTIME,
+                                         reprovision=asked.append))
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")
+    (work / "gojira.yaml").write_text(yaml.safe_dump({"app": "ledger", "secrets_from": ["ledger-models"]}))
+    (work / "bundle" / "persona.md").write_text("two\n")
+    gh = GitHub()
+    assert delivery.push(gh, work, "kobo: model", asks_platform=True) is True
+    assert gh.messages == ["kobo: model [skip ci]"]
+    assert asked == [] and kube.restarts == [] and len(pub.pushed) == 1
+
+
+def test_without_the_platform_to_ask_a_conversion_builds_as_it_did(tmp_path, configured):
+    pub, kube = configured
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\nCOPY bundle/ /bundle\n")
+    (work / "bundle" / "persona.md").write_text("two\n")
+    gh = GitHub()
+    assert delivery.push(gh, work, "kobo: persona") is True
+    assert gh.messages == [f"kobo: persona{delivery.CONVERTED_NOTE}"]
     assert len(pub.pushed) == 1 and kube.restarts == []
 
 

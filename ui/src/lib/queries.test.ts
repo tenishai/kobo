@@ -1,7 +1,7 @@
 import { QueryClient } from "@tanstack/svelte-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { endRestart, isRestarting } from "./delivery.svelte";
-import { teachMutation } from "./queries";
+import { teachMutation, uploadIntakeMutation } from "./queries";
 
 describe("teachMutation", () => {
   afterEach(() => endRestart("gate"));
@@ -18,6 +18,18 @@ describe("teachMutation", () => {
     expect(isRestarting("gate")).toBe(false);
 
     teachMutation(client, "gate").onSuccess({ filename: "note.md", mode: "archive", sha: "abc" });
+    expect(isRestarting("gate")).toBe(true);
+  });
+});
+
+describe("uploadIntakeMutation", () => {
+  afterEach(() => endRestart("gate"));
+
+  it("restarts the agent only when the room had to commit the file", () => {
+    const client = new QueryClient();
+    uploadIntakeMutation(client, "gate").onSuccess({ mode: "instant" });
+    expect(isRestarting("gate")).toBe(false);
+    uploadIntakeMutation(client, "gate").onSuccess({ mode: "archive", sha: "abc" });
     expect(isRestarting("gate")).toBe(true);
   });
 });
