@@ -10,7 +10,7 @@ Below that sits one sentence about what the agent can do. It reads "Not written 
 While an agent builds, a checklist sits at the top of its page and clears on its own once every step is green. The steps, in order:
 
 1. **Repository.** The agent's files are written and pushed to a new repository.
-2. **Paint the portrait.** The agent gets a face. If this fails, the agent still builds.
+2. **Paint the portrait.** The agent gets a face. A name an image model won't draw, like a famous character's, is tried again without the name, and when no face can be painted the agent gets a placeholder of its initials, so every agent has one. **New face** on the portrait tries again.
 3. **Deployment setup.** The repository is connected to the service that deploys it.
 4. **Access.** The agent's identity is allowed to call the model you chose. When the room reaches its models through the model gateway, nothing is granted to the agent here: the gateway holds the access, and the agent gets its own key to the gateway in the next step. When the room's permission service is on and GitHub is connected, the agent is also given **Read** on its own repository, so it can see its own files from the start; its owner adds repositories or raises the level on the Access tab. The room allows that one read itself. If the step says the read **waits for a reviewer**, a reviewer approves it under **Admin, Review**.
 5. **Deploy wiring.** The agent's identity, storage and colleague pass are put in place.

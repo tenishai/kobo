@@ -606,6 +606,8 @@ describe("AgentDetail tabs", () => {
     })) as HTMLAnchorElement;
     expect(link.getAttribute("download")).toBe("warden-portrait.png");
     expect(link.getAttribute("href")).toContain("/api/agents/warden/avatar");
+    // The download is the full picture; the header shows the small copy.
+    expect(link.getAttribute("href")).not.toContain("size=small");
   });
 
   it('hides "Download the portrait" when has_avatar is false (nothing to download yet)', async () => {
@@ -711,6 +713,68 @@ describe("AgentDetail tabs", () => {
     expect(putCall).toBeDefined();
     const sentBody = (putCall as [RequestInfo | URL, RequestInit])[1].body as ArrayBuffer;
     expect(new Uint8Array(sentBody)).toEqual(pngBytes);
+  });
+});
+
+describe("AgentDetail portrait (2026-11-20)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal("EventSource", NoopEventSource);
+    location.hash = "#/agents/warden";
+    window.dispatchEvent(new Event("hashchange"));
+  });
+
+  // Always a portrait: when the room could only draw its placeholder, the page
+  // says so, and shows the new picture under its own version at once.
+  it("says a new face came out as the placeholder and shows it by its version", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/agents/warden/avatar") && init?.method === "POST") {
+          return new Response(
+            JSON.stringify({ sha: "0a1b2c3d4e5f", version: "0a1b2c3d4e5f", how: "placeholder" }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        const routes: Record<string, unknown> = {
+          "/api/colleagues/feed": { entries: [], truncated: false },
+          "/api/agents/warden/knowledge": { files: [] },
+          "/api/agents/warden/intake": { files: [] },
+          "/api/agents/warden/skills": { skills: [] },
+          "/api/agents/warden/tooling": {
+            files: [],
+            enforcement: { attested: false, locked: false, locked_file: null },
+          },
+          "/api/agents/warden/invites": { incoming: [], outgoing: [] },
+          "/api/agents/warden/grants": { grants: [] },
+          "/api/agents/warden": READY_AGENT,
+          "/api/personas/search": { results: [] },
+        };
+        for (const [needle, payload] of Object.entries(routes)) {
+          if (url.includes(needle)) {
+            return new Response(JSON.stringify(payload), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      }),
+    );
+
+    renderWithClient(AgentDetail);
+    await screen.findByRole("tab", { name: "Chat" });
+    await openHeaderMenu();
+    await fireEvent.click(screen.getByRole("button", { name: "Give warden a face" }));
+
+    expect(
+      await screen.findByText(
+        "Couldn't paint a face this time, so it has a placeholder. Try New face again later.",
+      ),
+    ).not.toBeNull();
+    const img = screen.getByRole("img", { name: "warden's picture" }) as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe("/api/agents/warden/avatar?v=0a1b2c3d4e5f&size=small");
   });
 });
 

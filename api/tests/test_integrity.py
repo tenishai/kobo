@@ -1272,14 +1272,10 @@ def test_retry_after_fixing_failure_reaches_ready_without_rerunning_done_steps(
 
     second_body = _poll_until(client__api_agents, AGENT_NAME, {"ready", "failed"})
     assert second_body["status"] == "ready"
-    # AvatarStep SKIPPED (best-effort, no image backend in this fixture)
-    # back on the first run, before onboard ever failed -- the resume-skip
-    # rule (DONE/SKIPPED steps never re-run) keeps it skipped on retry too.
-    steps_by_name = {s["name"]: s for s in second_body["steps"]}
-    assert steps_by_name["avatar"]["status"] == "skipped"
-    assert all(
-        s["status"] == "done" for s in second_body["steps"] if s["name"] != "avatar"
-    )
+    # AvatarStep drew the placeholder (no image backend in this fixture) back
+    # on the first run, before onboard ever failed -- the resume-skip rule
+    # (DONE/SKIPPED steps never re-run) keeps it done on retry too.
+    assert all(s["status"] == "done" for s in second_body["steps"])
     assert second_body["first_reply"] == fake_agent._reply
 
     # Still only the one create_repo_from_dir call across both runs: RepoStep's
@@ -2117,15 +2113,10 @@ def test_a_connected_agent_provisions_to_ready_without_the_room_touching_its_rep
     steps, error = _poll_until__connected_pipeline(session_factory, AGENT_NAME, {"ready", "failed"})
     assert error is None, f"steps: {steps}"
     assert [name for name, _, _ in steps] == CONNECTED_STEP_NAMES
-    # The avatar is best effort and this wiring carries no image backend, so
-    # it skips with its fixed reason; every other step must have run.
-    by_name = {name: (status, step_error) for name, status, step_error in steps}
-    assert by_name["avatar"] == (
-        StepStatus.SKIPPED, "picture generation is not available",
-    )
-    assert all(
-        status == StepStatus.DONE for name, status, _ in steps if name != "avatar"
-    ), f"steps: {steps}"
+    # This wiring carries no image backend, so the agent gets the room's
+    # placeholder portrait, kept in the room and never pushed to the team's
+    # repository (asserted just below); every step runs.
+    assert all(status == StepStatus.DONE for _, status, _ in steps), f"steps: {steps}"
     assert _repo_mutations(github) == []
     assert github.created_from_dir == []
 

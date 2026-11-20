@@ -34,6 +34,7 @@ import uvicorn
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from kobo_api.avatars import cache_portrait
 from kobo_api.clients import Clients
 from kobo_api.config import Config, GroupChoice, ModelChoice
 from kobo_api.kinds import KIND_CONNECTED
@@ -420,7 +421,7 @@ def _seed(session_factory) -> None:
             (atlas, 0.75),
             (scribe, 0.13),
         ):
-            agent.avatar_png = _portrait(hue)
+            cache_portrait(agent, base64.b64decode(_portrait(hue)))
         s.add_all([clio, ward, ledger, forge, atlas, prudence, scribe])
         s.flush()
         for a in (clio, ward, ledger, scribe):

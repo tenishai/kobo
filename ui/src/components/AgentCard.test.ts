@@ -143,3 +143,24 @@ describe("AgentCard — the observability link (card wave 2026-09-23)", () => {
     expect(container.querySelector(".agent-card__observability .agent-card__sr")).toBeNull();
   });
 });
+
+// Portraits (2026-11-20): a card asks for the small copy by version, so a
+// browser keeps it until the picture changes, and loads it lazily at the size
+// it is drawn.
+describe("AgentCard portrait", () => {
+  it("asks for the small copy by version, lazily, at its drawn size", () => {
+    render(AgentCard, { agent: { ...BASE_AGENT, has_avatar: true, avatar_version: "0a1b2c3d4e5f" } });
+
+    const img = document.querySelector("img.agent-card__avatar") as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe("/api/agents/warden/avatar?v=0a1b2c3d4e5f&size=small");
+    expect(img.getAttribute("loading")).toBe("lazy");
+    expect(img.getAttribute("width")).toBe("28");
+  });
+
+  it("asks without a version for a picture kept before versions", () => {
+    render(AgentCard, { agent: { ...BASE_AGENT, has_avatar: true, avatar_version: null } });
+
+    const img = document.querySelector("img.agent-card__avatar") as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe("/api/agents/warden/avatar?size=small");
+  });
+});

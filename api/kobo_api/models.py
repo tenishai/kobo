@@ -237,7 +237,17 @@ class Agent(Base):
     # won't have generated one. NOTE: this column postdates create_all on
     # any already-running dev DB — those need a manual `ALTER TABLE agents
     # ADD COLUMN avatar_png TEXT;` (fresh DBs get it for free via create_all).
-    avatar_png: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Deferred (2026-11-20): a painted picture is about a megabyte of base64,
+    # and the agent list loaded every one of them to draw 28px faces. Only
+    # the picture routes (the room's and Slack's icon) and the paths that
+    # change a picture read it now.
+    avatar_png: Mapped[str | None] = mapped_column(Text, nullable=True, deferred=True)
+    # The picture's version (`kobo_api.avatars.portrait_version`, a short
+    # digest of its bytes) and its small copy (WebP, base64), written with the
+    # picture (`cache_portrait`). The page asks for the small copy by version,
+    # so a browser keeps it until the picture changes.
+    avatar_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    avatar_small: Mapped[str | None] = mapped_column(Text, nullable=True, deferred=True)
     first_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Access control (access-control arc, Task A2): who made this agent, and

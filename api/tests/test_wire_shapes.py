@@ -76,6 +76,7 @@ from tests.fakes import (
     FakeCloud,
     FakeGitHub,
     FakeGojira,
+    FakeImage,
     FakeKubectl,
     FakeModelsGateway,
     FakeName,
@@ -244,13 +245,13 @@ def test_create_agent_returns_201_pending_then_provisions_to_ready(client__api_a
     assert body["status"] == "ready"
     assert [s["name"] for s in body["steps"]] == ALL_STEP_NAMES
     steps_by_name = {s["name"]: s for s in body["steps"]}
-    # AvatarStep is best-effort: this fixture's `clients` carries no image
-    # backend at all, so it SKIPS with a one-line reason instead of blocking
-    # READY -- every other step still runs and completes normally.
-    assert steps_by_name["avatar"]["status"] == "skipped"
-    assert steps_by_name["avatar"]["error"] == "picture generation is not available"
-    assert all(s["status"] == "done" for s in body["steps"] if s["name"] != "avatar")
-    assert all(s["error"] is None for s in body["steps"] if s["name"] != "avatar")
+    # Always a portrait (2026-11-20): this fixture's `clients` carries no image
+    # backend at all, so AvatarStep draws the room's placeholder instead of
+    # skipping, and every step completes.
+    assert steps_by_name["avatar"]["status"] == "done"
+    assert all(s["status"] == "done" for s in body["steps"])
+    assert all(s["error"] is None for s in body["steps"])
+    assert body["has_avatar"] is True and body["avatar_version"]
     assert body["first_reply"] == "hello yourself, human"
 
 
@@ -5407,3 +5408,134 @@ def test_a_broken_rule_carries_its_count(tmp_path, monkeypatch):
     assert body["rules"][0]["breaks"] == 2 and body["breaks_before_a_check"] == 2
     assert body["can_report"] is True
     assert client.post("/api/agents/gate/guardrails/999/broken").status_code == 404
+
+
+# --- portraits (2026-11-20) ---
+
+
+def _portrait_png(color: tuple[int, int, int], side: int = 300) -> bytes:
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (side, side), color).save(out, format="PNG")
+    return out.getvalue()
+
+
+def _portrait_room(path, *, image, avatar_png=None):
+    """One ready composed agent, `clio`, in a room with `image` as its image
+    backend (None for none) and the portrait fixtures test_gates keeps."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from tests.test_gates import _make_client__api_avatars, _seed_agent__api_avatars
+
+    path.mkdir(parents=True, exist_ok=True)
+    engine = create_engine(f"sqlite:///{path}/kobo.db", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    config = Config(
+        workdir=path / "work", skills_bucket="skills-bucket", personas_bucket="personas-bucket"
+    )
+    github = FakeGitHub()
+    client = _make_client__api_avatars(factory, config, github=github, image=image)
+    _seed_agent__api_avatars(factory, config, avatar_png=avatar_png)
+    return client, github
+
+
+def test_a_portrait_is_kept_by_its_version_and_checked_otherwise(tmp_path):
+    """Wire shape (the cards and the page header read it, 2026-11-20): the list
+    carries each picture's version; asked for by that version, the small copy
+    is a 160px WebP a browser keeps for good, and asking again with its ETag is
+    a 304. Without a version the full PNG is checked every time, and a new
+    picture has a new version, so a browser's old copy is never shown."""
+    import io
+
+    from PIL import Image
+
+    client, _ = _portrait_room(tmp_path, image=None)
+    first = _portrait_png((10, 120, 200))
+    client.put("/api/agents/clio/avatar", content=first, headers={"Content-Type": "image/png"})
+    version = client.get("/api/agents").json()["agents"][0]["avatar_version"]
+
+    small = client.get(f"/api/agents/clio/avatar?v={version}&size=small")
+    again = client.get(
+        f"/api/agents/clio/avatar?v={version}&size=small",
+        headers={"If-None-Match": small.headers["etag"]},
+    )
+    plain = client.get("/api/agents/clio/avatar")
+    client.put(
+        "/api/agents/clio/avatar", content=_portrait_png((200, 40, 10)),
+        headers={"Content-Type": "image/png"},
+    )
+    newer = client.get("/api/agents").json()["agents"][0]["avatar_version"]
+    stale = client.get("/api/agents/clio/avatar?size=small", headers={"If-None-Match": small.headers["etag"]})
+
+    assert small.status_code == 200 and small.headers["content-type"] == "image/webp"
+    assert small.headers["cache-control"] == "private, max-age=31536000, immutable"
+    assert Image.open(io.BytesIO(small.content)).size == (160, 160)
+    assert again.status_code == 304 and again.content == b""
+    assert plain.headers["content-type"] == "image/png" and plain.content == first
+    assert plain.headers["cache-control"] == "private, no-cache"
+    assert newer != version
+    assert stale.status_code == 200
+
+
+def test_a_picture_kept_before_versions_gets_one_when_asked(tmp_path):
+    """Wire shape: a picture the room kept before versions shows on the list
+    without one, and the first time it is asked for it gets one, which the
+    list then carries."""
+    import base64
+
+    from kobo_api.avatars import portrait_version
+
+    png = _portrait_png((90, 90, 90))
+    client, _ = _portrait_room(tmp_path, image=None, avatar_png=base64.b64encode(png).decode())
+    before = client.get("/api/agents").json()["agents"][0]
+
+    served = client.get("/api/agents/clio/avatar?size=small")
+
+    assert before["has_avatar"] is True and before["avatar_version"] is None
+    assert served.status_code == 200
+    assert served.headers["etag"] == f'"{portrait_version(png)}-small"'
+    assert client.get("/api/agents").json()["agents"][0]["avatar_version"] == portrait_version(png)
+
+
+class _RefusesNames(FakeImage):
+    """An image backend that refuses any prompt naming the agent, the way a
+    model refuses a famous character's name."""
+
+    def generate(self, prompt: str) -> bytes:
+        self.prompts.append(prompt)
+        if "clio" in prompt:
+            raise ClientError("the picture didn't come through")
+        return self._image_bytes
+
+
+def test_an_agent_always_gets_a_portrait(tmp_path):
+    """Wire shape (2026-11-20, "we should always generate an image"): a refused
+    prompt is tried again without the agent's name; when that fails too, or the
+    room has no image backend, the agent gets a placeholder, a 512px PNG of its
+    initials, kept in the room and never pushed to its repository."""
+    import io
+
+    from PIL import Image
+
+    refusing = _RefusesNames()
+    named, _ = _portrait_room(tmp_path / "named", image=refusing)
+    blocked, blocked_github = _portrait_room(
+        tmp_path / "blocked", image=FakeImage(generate_error="blocked")
+    )
+    none, _ = _portrait_room(tmp_path / "none", image=None)
+
+    painted = named.post("/api/agents/clio/avatar").json()
+    stand_in = blocked.post("/api/agents/clio/avatar").json()
+    no_backend = none.post("/api/agents/clio/avatar").json()
+    picture = blocked.get("/api/agents/clio/avatar").content
+
+    assert painted["how"] == "painted-without-name"
+    assert "clio" in refusing.prompts[0] and "clio" not in refusing.prompts[1]
+    assert stand_in["how"] == "placeholder" and no_backend["how"] == "placeholder"
+    assert Image.open(io.BytesIO(picture)).size == (512, 512)
+    assert [call for call in blocked_github.calls if "avatar" in call] == []
