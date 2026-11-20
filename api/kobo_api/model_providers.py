@@ -601,7 +601,9 @@ def commit_gateway_model(
             if touched:
                 gojira_yaml.write_text(yaml.safe_dump(data, sort_keys=False))
                 changed = True
-        pushed = delivery.push(github, workdir, f"kobo: model is now {gateway_model} through the room's model gateway") if changed else False
+        pushed = delivery.push(
+            github, workdir, f"kobo: model is now {gateway_model} through the room's model gateway", asks_platform=True,
+        ) if changed else False
     if gojira is not None and gojira_app_id is not None:
         gojira.reprovision(gojira_app_id)
     return "committed" if pushed else "unchanged"

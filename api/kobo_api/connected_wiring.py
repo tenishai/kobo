@@ -42,22 +42,21 @@ was closed.
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 import logging
-import re
 import tempfile
 from pathlib import Path
 
 import yaml
 
 from kobo_api.agent_env import (
+    CI_WORKFLOW,
     GOJIRA_YAML,
     ROOM_MERGES,
     UNCHANGED,
     RepoBusy,
     RepoEdit,
     _propose,
+    contract_behind,
     edit_gojira_yaml,
     merge_ours,
     parse_gojira_yaml,
@@ -90,11 +89,6 @@ from kobo_api.steps import (
 
 log = logging.getLogger(__name__)
 
-# The generated deploy workflow, and the line in it that says which version
-# of gojira.yaml the deploy files were rendered from.
-CI_WORKFLOW = ".github/workflows/gojira-ci.yaml"
-_STAMP = re.compile(r"^\s*GOJIRA_CONTRACT:\s*([0-9a-f]{64})\s*$", re.MULTILINE)
-
 CATCH_UP_TITLE = "kobo: storage and gateway access"
 CATCH_UP_BODY = (
     "The room now gives an agent that runs its team's own code the same "
@@ -125,15 +119,6 @@ WAITING = "waiting"
 OWED = "owed"
 
 
-def contract_fingerprint(gojira_yaml_text: str) -> str:
-    """The deploy platform's own hash of what gojira.yaml MEANS (parsed,
-    dumped as sorted JSON), which its build recomputes and compares with the
-    one stamped into the workflow. Kept byte-for-byte the same as theirs."""
-    doc = yaml.safe_load(gojira_yaml_text)
-    canon = json.dumps(doc, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(canon.encode()).hexdigest()
-
-
 def stale_contract(github, repo: str) -> str | None:
     """The fingerprint of the default branch's gojira.yaml when the deploy
     files were rendered from a different one; None when they agree, or when
@@ -142,14 +127,7 @@ def stale_contract(github, repo: str) -> str | None:
     workflow = github.read_file(repo, CI_WORKFLOW)
     if not text or not workflow:
         return None
-    stamp = _STAMP.search(workflow)
-    if stamp is None:
-        return None
-    try:
-        actual = contract_fingerprint(text)
-    except yaml.YAMLError:
-        return None
-    return actual if actual != stamp.group(1) else None
+    return contract_behind(text, workflow)
 
 
 def follow_through(github, gojira, *, repo: str, gojira_app_id: int | None, asked: dict[str, str]) -> bool:

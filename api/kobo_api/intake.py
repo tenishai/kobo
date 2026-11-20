@@ -109,7 +109,9 @@ def upload_intake_file(
     same idempotent, raise-on-unrecognized-FROM edit `kobo_api.slack_setup.
     wire_slack` already makes for the sibling runtime-bump incident there.
     `None` (the default) skips the edit entirely, unchanged from before this
-    parameter existed — every pre-existing caller is unaffected.
+    parameter existed — every pre-existing caller is unaffected. In a room
+    that delivers bundles as artifacts the edit is skipped too
+    (`delivery.save_pin`): the runtime route is the one place a pin moves there.
 
     `archive_only` (the rebuild-per-memory fix): every agent repo's
     generated CI runs build-and-deploy on EVERY push, and the Deployment
@@ -153,10 +155,11 @@ def upload_intake_file(
 
         pin_changed = False
         note = ""
-        if runtime_image is not None:
-            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
+        pin = delivery.save_pin(runtime_image)
+        if pin is not None:
+            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", pin)
             pin_changed = previous is not None
-            note = repin_commit_note(repo, previous, runtime_image)
+            note = repin_commit_note(repo, previous, pin)
 
         if archive_only and not pin_changed:
             message = f"kobo: archive intake/{filename} [skip ci]"

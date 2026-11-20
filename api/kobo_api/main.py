@@ -168,7 +168,7 @@ from kobo_api.guardrails import (
     validate_rules,
 )
 from kobo_api.guide import find_section, load_guide
-from kobo_api.health import AgentHealth, health_sweep_loop
+from kobo_api.health import AgentHealth, health_sweep_loop, keep_newer, probe_health
 from kobo_api.iap import HttpsOnlyMiddleware, IapMiddleware, IapVerifier
 from kobo_api.intake import (
     INTAKE_MAX_BYTES,
@@ -3233,6 +3233,58 @@ def _directory_resync(app, repo: str) -> Callable[[], None]:
     return resync
 
 
+# How old the stored health verdict may be before an agent's own page asks the
+# cluster again (`_fresh_health_body`): a detail poll every few seconds during a
+# restart then costs at most one cluster read per agent per ten seconds.
+LIVE_HEALTH_MAX_AGE_S = 10.0
+
+
+def _health_stale(verdict: AgentHealth | None) -> bool:
+    if verdict is None:
+        return True
+    try:
+        checked = datetime.fromisoformat(verdict.checked_at)
+    except ValueError:
+        return True
+    return (datetime.now(UTC) - checked).total_seconds() > LIVE_HEALTH_MAX_AGE_S
+
+
+def _probe_health_soon(app: FastAPI, kubectl, name: str) -> None:
+    """Ask the cluster about `name` on a thread, once at a time per agent, and
+    store the verdict where the sweep keeps its own. Nothing waits on it: the
+    request that asked answers with what was stored, and the page's next poll
+    reads the new verdict. A probe inside the request would hold its database
+    connection for as long as the cluster takes, the way the pool ran dry once
+    (2026-10-01)."""
+    probing: set[str] = app.state.health_probing
+    with app.state.health_probing_lock:
+        if name in probing:
+            return
+        probing.add(name)
+
+    def run() -> None:
+        try:
+            keep_newer(app.state.health, name, probe_health(kubectl, name))
+        except Exception:  # the sweep asks again within a minute
+            log.exception("health probe for %s failed", name)
+        finally:
+            with app.state.health_probing_lock:
+                probing.discard(name)
+
+    threading.Thread(target=run, name=f"health-{name}", daemon=True).start()
+
+
+def _record_save_pin(agent: Agent, cfg: Config) -> None:
+    """After a save that may re-pin the agent's Dockerfile (an upload, a check,
+    a teach note, Slack wiring), the row's fact follows the file: whatever the
+    save pinned (`delivery.save_pin`). Where it pinned nothing the fact stays;
+    recording the room's pin there made an agent read as up to date while it
+    still ran the runtime it had (2026-11-20)."""
+    pin = delivery.save_pin(agent.runtime_image or cfg.runtime_image)
+    if pin is not None:
+        agent.built_runtime_image = pin
+
+
 def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> None:
     """The background archive lane. Failure is logged, never surfaced: the
     memory is already stored in the agent; only the repo copy is missing,
@@ -3259,7 +3311,7 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
     """
     if not _room_may_commit_to_repo(app, repo):
         return
-    pin = _runtime_image_for_repo(app, repo)
+    pin = delivery.save_pin(_runtime_image_for_repo(app, repo))
     try:
         upload_intake_file(
             app.state.clients.github,
@@ -3277,7 +3329,8 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
     else:
         # The commit re-pinned the Dockerfile to `pin` (or found it there);
         # the row's fact follows the file (kobo_api.runtime_truth).
-        record_built_runtime(app.state.session_factory, repo, pin)
+        if pin is not None:
+            record_built_runtime(app.state.session_factory, repo, pin)
 
 
 def _learning_dict(row: AgentLearning) -> dict:
@@ -3439,7 +3492,7 @@ def _decide_learning(
                 {"error": "couldn't deliver the approved learning. Try again."},
                 status_code=502,
             )
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
     row.status = LEARNING_APPROVED
     row.decided_by = email
     row.decided_at = datetime.now(UTC)
@@ -3571,6 +3624,7 @@ def create_app(
         delivery.Delivery(
             kubectl=clients.kubectl, publisher=RegistryPublisher(), registry=config.bundle_registry,
             runtime_image=config.runtime_image, replica_bucket=config.memory_replica_bucket,
+            reprovision=delivery.reprovisioner(session_factory, getattr(clients, "gojira", None)),
         ) if config.bundle_registry else None
     )
     app.state.session_factory = session_factory
@@ -3580,6 +3634,10 @@ def create_app(
     # Live health per ready agent (kobo_api.health): filled by the sweep,
     # read by the list and detail routes, never persisted.
     app.state.health = {}
+    # The agents whose own page is having the cluster asked right now
+    # (`_probe_health_soon`), so a burst of polls asks once.
+    app.state.health_probing = set()
+    app.state.health_probing_lock = threading.Lock()
     # The repository typeahead's cache (kobo_api.repo_search): one listing
     # for the whole room, so it lives on the app rather than being rebuilt
     # per request. None when the room has no GitHub client, which is the
@@ -7009,6 +7067,24 @@ def create_app(
         verdict: AgentHealth | None = getattr(app.state, "health", {}).get(name)
         return verdict.body() if verdict is not None else None
 
+    def _fresh_health_body(agent: Agent, live: bool) -> dict | None:
+        """While the agent's own page watches a restart (`live`) it wants the
+        cluster's word now, not the sweep's from up to a minute ago (2026-11-20:
+        a restart showed Ready, then sat on Restarting long after the agent was
+        back). A ready agent whose last verdict is older than
+        LIVE_HEALTH_MAX_AGE_S is asked again then, off the request
+        (`_probe_health_soon`); the page polls every few seconds while it
+        watches, so the next poll carries the new verdict. Otherwise, and on
+        the dashboard's list, the sweep's minute stands."""
+        verdict: AgentHealth | None = getattr(app.state, "health", {}).get(agent.name)
+        clients = app.state.clients
+        if (
+            live and agent.status == AgentStatus.READY and clients is not None and clients.kubectl is not None
+            and _health_stale(verdict)
+        ):
+            _probe_health_soon(app, clients.kubectl, agent.name)
+        return verdict.body() if verdict is not None else None
+
     @app.get("/api/agents")
     def list_agents(request: Request, session: Session = Depends(get_session)) -> dict:  # noqa: B008
         cfg: Config = app.state.config
@@ -7079,7 +7155,7 @@ def create_app(
 
     @app.get("/api/agents/{name}")
     def get_agent(
-        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+        name: str, request: Request, session: Session = Depends(get_session), live: bool = False  # noqa: B008
     ) -> JSONResponse:
         cfg: Config = app.state.config
         agent = _visible_agent_or_404(session, request, name)
@@ -7148,7 +7224,7 @@ def create_app(
                 "slack": slack,
                 "destroy_visible": _operator_block(request, cfg) is None,
                 "has_avatar": agent.avatar_png is not None,
-                "health": _health_body(agent.name),
+                "health": _fresh_health_body(agent, live),
                 "created_by": agent.created_by,
                 "group_name": agent.group_name,
                 "archetype": agent.archetype,
@@ -8655,7 +8731,7 @@ def create_app(
 
         # The commit re-pinned the Dockerfile to this value (or found it
         # there already); the row's fact follows the file.
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
         session.commit()
         return JSONResponse({"sha": sha, "mode": "archive"})
 
@@ -8828,7 +8904,7 @@ def create_app(
             return JSONResponse(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
 
         # The durable record behind the row the panel shows (issue #269):
         # recorded only once the note has landed on one lane or the other,
@@ -9135,7 +9211,7 @@ def create_app(
         missing until a later upload lands it."""
         if not _room_may_commit_to_repo(app, repo):
             return
-        pin = _runtime_image_for_repo(app, repo)
+        pin = delivery.save_pin(_runtime_image_for_repo(app, repo))
         try:
             upload_tooling_file(
                 app.state.clients.github,
@@ -9150,7 +9226,8 @@ def create_app(
                 "tooling archive commit failed for %s (%s): %s", repo, filename, exc
             )
         else:
-            record_built_runtime(app.state.session_factory, repo, pin)
+            if pin is not None:
+                record_built_runtime(app.state.session_factory, repo, pin)
 
     def _request_tool_restart(agent_name: str) -> None:
         """Ask the platform to roll the agent's Deployment so the
@@ -9347,7 +9424,7 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
         audit.record(
             session, request=request, action="tooling.upload", target_kind="tool", target_id=payload.filename,
             agent_name=agent.name, detail={"mode": "archive", "sha": sha},
@@ -9402,7 +9479,7 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
         session.commit()
         return JSONResponse(result)
 
@@ -9960,7 +10037,7 @@ def create_app(
             log.warning("slack app wiring failed for agent %s: %s", agent.name, type(exc).__name__)
             return JSONResponse({"error": "couldn't set up Slack. Try again."}, status_code=502)
         row.wired_at = datetime.now(UTC).replace(tzinfo=None)
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
         # The wiring commit above starts the agent's build; it answers in Slack only
         # once that build has rolled. Remember what runs now, so the row can say
         # Rebuilding until the deployment moves off it (`_slack_rebuilding`).
@@ -10232,7 +10309,7 @@ def create_app(
         agent.slack_app_id = payload.app_id
         agent.slack_app_self_service = True
         agent.slack_wired = True
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
         audit.record(
             session, request=request, action="slack.connect", target_kind="agent", target_id=agent.name,
             agent_name=agent.name, summary=f"{audit.who(request)} connected agent {agent.name} to Slack",

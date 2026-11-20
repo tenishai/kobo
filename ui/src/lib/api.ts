@@ -21,6 +21,10 @@ export type AgentHealth = {
   rolling?: boolean;
   /** When the agent last came back, null while it is not up. */
   ready_since?: string | null;
+  /** The cluster could not be asked; `state` says up all the same. */
+  unread?: boolean;
+  /** The deployment's generation: every restart moves it on (2026-11-20). */
+  generation?: number | null;
 };
 
 export type AgentSummary = {
@@ -611,8 +615,10 @@ export async function listAgents(): Promise<AgentListResult> {
   return parse<AgentListResult>(res);
 }
 
-export async function getAgent(name: string): Promise<AgentDetail> {
-  const res = await fetch(`/api/agents/${encodeURIComponent(name)}`);
+/** `live`: this page is watching a restart, so the room asks the cluster
+ * again when its reading is more than a few seconds old. */
+export async function getAgent(name: string, live = false): Promise<AgentDetail> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}${live ? "?live=true" : ""}`);
   return parse<AgentDetail>(res);
 }
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -14,7 +15,9 @@ import pytest
 import yaml
 
 from kobo_api import delivery
+from kobo_api.agent_env import CI_WORKFLOW, contract_fingerprint
 from kobo_api.bundle_publish import LAYER_MEDIA_TYPE, RegistryPublisher, bundle_tarball
+from kobo_api.clients import ClientError
 from kobo_api.composer import _agent_yaml_data, _dockerfile
 
 RUNTIME = "reg.example/agents/daedalus-runtime@sha256:" + "a" * 64
@@ -76,6 +79,9 @@ def _repo(tmp_path: Path, *, dockerfile: str, gojira: dict | None = None) -> Pat
     (work / "Dockerfile").write_text(dockerfile)
     (work / "gojira.yaml").write_text(yaml.safe_dump(gojira or {"app": "ledger", "secrets_from": ["ledger-cabal", "ledger-slack"]}))
     (work / "entrypoint.sh").write_text("#!/bin/sh\n")
+    # The deploy files the platform rendered from that gojira.yaml.
+    (work / CI_WORKFLOW).parent.mkdir(parents=True)
+    (work / CI_WORKFLOW).write_text(f"env:\n  GOJIRA_CONTRACT: {contract_fingerprint((work / 'gojira.yaml').read_text())}\n")
     _git(work, "init", "-q", "-b", "main")
     _git(work, "config", "user.email", "t@example.com")
     _git(work, "config", "user.name", "t")
@@ -131,14 +137,21 @@ def test_a_commit_outside_the_bundle_neither_publishes_nor_restarts_and_a_live_l
 def test_an_old_shape_agent_on_the_rooms_runtime_converts_in_the_one_commit_that_builds(tmp_path, configured):
     """Gate (integrity): the first change to an agent of the old shape moves it: the
     Dockerfile is its FROM line alone, litestream and the entrypoint leave, gojira.yaml
-    gains the runtime's env and the optional Secret references. That commit builds, so
-    the roll is the restart and the room does not restart it on top."""
+    gains the runtime's env and the optional Secret references. The platform builds
+    that commit from the deploy files it renders again, so the room asks it to (the
+    commit itself skips CI, whose contract check would fail it until then), and the roll
+    is the restart: the room does not restart it on top. Without the ask, ledger kept
+    its old image for two weeks while every later build failed the check."""
     pub, kube = configured
+    asked: list[str] = []
+    delivery.configure(delivery.Delivery(kubectl=kube, publisher=pub, registry=REGISTRY, runtime_image=RUNTIME,
+                                         replica_bucket="mem-bucket", reprovision=asked.append))
     work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\nCOPY bundle/ /bundle\nENTRYPOINT [\"/entrypoint.sh\"]\n")
     (work / "bundle" / "persona.md").write_text("two\n")
     gh = GitHub()
     delivery.push(gh, work, "kobo: persona")
-    assert gh.messages[-1].endswith(delivery.CONVERTED_NOTE)
+    assert gh.messages[-1].endswith(f"{delivery.CONVERTED_NOTE} [skip ci]")
+    assert asked == ["ledger"]
     assert "COPY" not in (work / "Dockerfile").read_text() and f"FROM {RUNTIME}" in (work / "Dockerfile").read_text()
     assert not (work / "entrypoint.sh").exists()
     data = yaml.safe_load((work / "gojira.yaml").read_text())
@@ -146,6 +159,66 @@ def test_an_old_shape_agent_on_the_rooms_runtime_converts_in_the_one_commit_that
     assert data["env"] == {"AGENT_NAME": "ledger", "MEMORY_REPLICA_BUCKET": "mem-bucket"}
     assert data["secrets_from"] == ["ledger-cabal"]
     assert data["secrets_from_optional"] == ["ledger-slack", "ledger-env"]
+    assert len(pub.pushed) == 1 and kube.restarts == []
+
+
+def test_a_conversion_whose_ask_failed_is_asked_again_by_the_next_push(tmp_path, configured):
+    """Gate (integrity): the conversion's commit lands with CI skipped, so if the platform
+    cannot be asked, nothing else would ever deploy it. The push says so (a timeout as
+    much as a refusal), and the next push asks again, even with nothing to commit; so
+    does a save to an agent left that way before this (ledger, 2026-11-04 to 11-20). A
+    restart still delivers what it can on the way, except to the conversion's own image,
+    which still carries its old bundle."""
+    pub, kube = configured
+    asked: list[str] = []
+
+    def reprovision(name: str) -> None:
+        asked.append(name)
+        if len(asked) == 1:
+            raise httpx.ReadTimeout("timed out")
+
+    delivery.configure(delivery.Delivery(kubectl=kube, publisher=pub, registry=REGISTRY, runtime_image=RUNTIME,
+                                         replica_bucket="mem-bucket", reprovision=reprovision))
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\nCOPY bundle/ /bundle\n")
+    (work / "bundle" / "persona.md").write_text("two\n")
+    gh = GitHub()
+    with pytest.raises(ClientError, match=delivery.PLATFORM_NOT_ASKED):
+        delivery.push(gh, work, "kobo: persona")
+    assert kube.restarts == []
+    assert gh.messages == [f"kobo: persona{delivery.CONVERTED_NOTE} [skip ci]"]
+
+    assert delivery.push(gh, work, "kobo: persona") is False
+    (work / "bundle" / "persona.md").write_text("three\n")
+    assert delivery.push(gh, work, "kobo: persona") is True
+    assert asked == ["ledger", "ledger", "ledger"]
+    assert gh.messages[-1] == "kobo: persona [skip ci]"
+    assert kube.restarts == [("ledger", "ledger")]
+
+
+def test_a_caller_that_asks_the_platform_itself_is_not_asked_for_twice(tmp_path, configured):
+    """A model change or Slack wiring edits gojira.yaml and asks the platform right
+    after: its commit skips the build that would fail, the room asks nothing on top,
+    and the platform's deploy is the one restart."""
+    pub, kube = configured
+    asked: list[str] = []
+    delivery.configure(delivery.Delivery(kubectl=kube, publisher=pub, registry=REGISTRY, runtime_image=RUNTIME,
+                                         reprovision=asked.append))
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")
+    (work / "gojira.yaml").write_text(yaml.safe_dump({"app": "ledger", "secrets_from": ["ledger-models"]}))
+    (work / "bundle" / "persona.md").write_text("two\n")
+    gh = GitHub()
+    assert delivery.push(gh, work, "kobo: model", asks_platform=True) is True
+    assert gh.messages == ["kobo: model [skip ci]"]
+    assert asked == [] and kube.restarts == [] and len(pub.pushed) == 1
+
+
+def test_without_the_platform_to_ask_a_conversion_builds_as_it_did(tmp_path, configured):
+    pub, kube = configured
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\nCOPY bundle/ /bundle\n")
+    (work / "bundle" / "persona.md").write_text("two\n")
+    gh = GitHub()
+    assert delivery.push(gh, work, "kobo: persona") is True
+    assert gh.messages == [f"kobo: persona{delivery.CONVERTED_NOTE}"]
     assert len(pub.pushed) == 1 and kube.restarts == []
 
 
@@ -316,3 +389,45 @@ def test_a_key_that_never_lands_still_restarts_when_the_wait_runs_out(monkeypatc
     monkeypatch.setattr(delivery, "SECRET_WAIT", 0.0)  # the restart's own wait runs on the real clock
     delivery.restart_once_secret_carries(kubectl, "ledger", "ledger-slack", ["SLACK_BOT_TOKEN"], background=False)
     assert kubectl.restarts == [("ledger", "ledger")]
+
+
+class _CloningGitHub(GitHub):
+    """Clones by copying a local repository, and keeps what each commit's
+    Dockerfile said, since the clone itself is thrown away."""
+
+    def __init__(self, source: Path):
+        super().__init__()
+        self.source = source
+        self.dockerfiles: list[str] = []
+
+    def clone(self, repo: str, dest: Path) -> None:
+        shutil.copytree(self.source, dest, dirs_exist_ok=True)
+
+    def commit_push(self, workdir: Path, message: str) -> bool:
+        self.dockerfiles.append((workdir / "Dockerfile").read_text())
+        return super().commit_push(workdir, message)
+
+
+def test_a_save_never_moves_the_runtime_when_bundles_are_artifacts(tmp_path, configured):
+    """Gate (integrity, 2026-11-20): with bundles delivered as artifacts, a teach
+    note's archive, an upload or a check leaves the agent's Dockerfile on the runtime
+    it has; only the runtime route moves it. A re-pin riding a teach note moved
+    johnny-bravo onto a new runtime the moment the room's pin changed, rebuilding and
+    restarting it twice, and an archive meant to restart nothing did."""
+    from kobo_api.intake import upload_intake_file
+    from kobo_api.tooling import upload_tooling_file
+
+    _pub, kube = configured
+    old = "reg.example/agents/daedalus-runtime@sha256:" + "b" * 64
+    source = _repo(tmp_path, dockerfile=f"FROM {old}\n")
+    gh = _CloningGitHub(source)
+
+    upload_intake_file(gh, "acme/agent-ledger", "note.md", "remember this", runtime_image=RUNTIME, archive_only=True)
+    upload_tooling_file(gh, "acme/agent-ledger", "check.py", "def post_draft(draft):\n    return draft\n",
+                        runtime_image=RUNTIME)
+
+    assert gh.dockerfiles == [f"FROM {old}\n", f"FROM {old}\n"]
+    assert gh.messages[0] == "kobo: archive intake/note.md [skip ci]"
+    assert gh.messages[1] == "kobo: add tools/check.py"
+    # The archive restarts nothing; the check is delivered by one restart.
+    assert kube.restarts == [("ledger", "ledger")]

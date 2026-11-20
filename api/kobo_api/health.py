@@ -72,6 +72,10 @@ class AgentHealth:
     # `probe_health`), so nothing is refused on a guess; a line that would
     # say "running" as a fact reads this first and says nothing.
     unread: bool = False
+    # The deployment's generation, which every restart and every new spec
+    # moves on: the page compares two readings by it to tell that a restart
+    # it asked for has happened, without a clock (2026-11-20).
+    generation: int | None = None
 
     def body(self) -> dict:
         return asdict(self)
@@ -168,8 +172,10 @@ def probe_health(kubectl: KubectlClient, name: str, *, now: datetime | None = No
     available = status.get("availableReplicas") or 0
     rolling, ready_since = _rollout(dep)
     image = _image(dep)
+    generation = (dep.get("metadata") or {}).get("generation")
+    generation = generation if isinstance(generation, int) else None
     if wanted == 0 or available >= wanted:
-        return AgentHealth(UP, None, checked_at, rolling, ready_since, image)
+        return AgentHealth(UP, None, checked_at, rolling, ready_since, image, generation=generation)
 
     reason = f"{available} of {wanted} running"
     try:
@@ -178,7 +184,7 @@ def probe_health(kubectl: KubectlClient, name: str, *, now: datetime | None = No
         trouble = None
     if trouble:
         reason = f"{reason}; {trouble}"
-    return AgentHealth(DOWN, reason, checked_at, rolling, ready_since, image)
+    return AgentHealth(DOWN, reason, checked_at, rolling, ready_since, image, generation=generation)
 
 
 def _image(dep: dict) -> str | None:
@@ -196,15 +202,35 @@ def sweep_health(
 ) -> int:
     """Probe every ready agent and rewrite `store` to exactly that set, so
     a destroyed or re-provisioning agent drops out rather than keeping a
-    stale verdict. Returns how many were probed."""
+    stale verdict, keeping a reading taken since this sweep's own
+    (`keep_newer`). Returns how many were probed."""
     with session_factory() as session:
         names = list(
             session.scalars(select(Agent.name).where(Agent.status == AgentStatus.READY))
         )
     fresh = {name: probe_health(kubectl, name) for name in names}
-    store.clear()
-    store.update(fresh)
+    for name in [n for n in store if n not in fresh]:
+        store.pop(name, None)
+    for name, verdict in fresh.items():
+        keep_newer(store, name, verdict)
     return len(fresh)
+
+
+def keep_newer(store: dict[str, AgentHealth], name: str, verdict: AgentHealth) -> None:
+    """Store `verdict` unless the one there was taken later: an agent's own page
+    has the cluster asked between sweeps (`kobo_api.main._probe_health_soon`),
+    and a sweep that read the agent before that must not put the older reading
+    back."""
+    current = store.get(name)
+    if current is None or _taken(current) <= _taken(verdict):
+        store[name] = verdict
+
+
+def _taken(verdict: AgentHealth) -> datetime:
+    try:
+        return datetime.fromisoformat(verdict.checked_at)
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
 
 
 async def health_sweep_loop(
