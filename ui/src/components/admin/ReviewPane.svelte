@@ -171,7 +171,12 @@
                   {@const adds = r.proposal?.added ?? []}
                   {@const drops = r.proposal?.removed ?? []}
                   <details open>
+                    {#if r.proposal?.all}
+                      <!-- Every repository the room's GitHub app can see, for Read alone. -->
+                      <summary>Every repository, Read only{#if r.outcome?.["every repository"]}<span class="quiet"> · {r.outcome["every repository"]}</span>{/if}</summary>
+                    {:else}
                     <summary>Add {adds.length} repositor{adds.length === 1 ? "y" : "ies"}{drops.length > 0 ? `, remove ${drops.length}` : ""}</summary>
+                    {/if}
                     <ul class="perms">
                       {#each adds as repo (repo)}<li><code>{repo}</code>{#if r.outcome?.[repo]}<span class="quiet"> · {r.outcome[repo]}</span>{/if}</li>{/each}
                       {#each drops as repo (repo)}<li><code>{repo}</code><span class="quiet"> · {r.outcome?.[repo] ?? "to remove"}</span></li>{/each}
@@ -189,7 +194,9 @@
                     {#if r.note}<p class="quiet">“{r.note}”</p>{/if}
                   </details>
                 {/if}
-                {#if r.repositories && r.repositories.length > 0}
+                {#if r.all_repositories}
+                  <p class="reach">On every repository the room's GitHub app can see, Read only</p>
+                {:else if r.repositories && r.repositories.length > 0}
                   <!-- A GitHub request (issue #365) is for a repository set: the reviewer sees which. -->
                   <details class="repos">
                     <summary>{r.repositories.length} repositor{r.repositories.length === 1 ? "y" : "ies"}{r.kind === "repositories" ? " now" : ""}</summary>

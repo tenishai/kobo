@@ -428,13 +428,14 @@ ACCOUNT_NOUN = {"aws": "account", "gcp": "project", "azure": "subscription"}
 
 def _add_account(accounts: list[dict], iid: str, name: str, row: dict | None, org: str | None,
                  account_id: str | None = None, *, repositories: list[str] | None = None,
-                 has_repo_set: bool = False) -> None:
+                 has_repo_set: bool = False, every: bool = False) -> None:
     if any(a["id"] == iid for a in accounts):
         return
     accounts.append({"id": iid, "name": name, "connected": row is not None,
                      "ceiling": sorted(row.get("ceiling") or []) if row else [],
                      "organization": org, "account_id": account_id or (row or {}).get("account_id"),
-                     "repositories": sorted(repositories or []), "has_repo_set": has_repo_set})
+                     "repositories": sorted(repositories or []), "has_repo_set": has_repo_set,
+                     "all_repositories": every})
 
 
 def child_id(connection: str, agent: str) -> str:
@@ -450,6 +451,13 @@ def child_repositories(row: dict | None) -> list[str]:
     row = row or {}
     repos = row.get("repositories") or (row.get("spec") or {}).get("repositories") or []
     return sorted(str(r) for r in repos)
+
+
+def child_every(row: dict | None) -> bool:
+    """Whether a child is every repository the connection can see, for Read
+    alone (bab 0.4.26: `all_repositories`), instead of a named set."""
+    row = row or {}
+    return bool(row.get("all_repositories") or (row.get("spec") or {}).get("all_repositories"))
 
 
 def _labelled(tree: dict, vendor: str, lanes: Lanes) -> dict:
@@ -522,7 +530,7 @@ def picker(bab: BabClient, actor: str, agent: str | None = None, *, lanes: Lanes
                 child = connected.get(child_id(iid, agent)) if agent else None
                 if child is not None and child.get("parent") == iid:
                     _add_account(accounts, child["integration"], row.get("name") or iid, child, None,
-                                 repositories=child_repositories(child), has_repo_set=True)
+                                 repositories=child_repositories(child), has_repo_set=True, every=child_every(child))
                 else:
                     _add_account(accounts, iid, row.get("name") or iid, row, None)
             if not accounts:
@@ -780,7 +788,7 @@ def agent_connections(bab: BabClient, agents: list[dict], actor: str, *, now: da
             parent = by_id.get(row.get("parent") or "", {})
             at(row["vendor"])["connections"].append({
                 "id": row["integration"], "name": row.get("name") or parent.get("name") or row["integration"],
-                "repositories": child_repositories(row)})
+                "repositories": child_repositories(row), "all_repositories": child_every(row)})
             stamps.append(str(row.get("updated_at") or row.get("created_at") or ""))
         for g in grants[name]:
             at(vendor_of(g.get("integration")))["grants"].append({
@@ -819,7 +827,7 @@ __all__ = [
     "all_permissions",
     "build_bab",
     "child_id",
-    "child_repositories",
+    "child_every", "child_repositories",
     "ensure_agent_integrations",
     "last_failures",
     "picker",
