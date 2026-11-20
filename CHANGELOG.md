@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.76] - 2026-11-20
+
 ### Added
 - **Every repository, Read only**, a box in an agent's GitHub step on the Access tab. Ticked, the agent may read every repository the room's GitHub app can see, ones added later included, without a list to keep up to date. The set is for Read alone: Review pull requests and Open pull requests still need picked repositories, so the box is off while the agent holds or has asked for either. Once the agent holds Read on picked repositories, ticking it waits for a reviewer, as any addition does. Review shows "Every repository, Read only". From an assistant: **set agent repositories** takes `every_repository`. Needs bab 0.4.26.
 
