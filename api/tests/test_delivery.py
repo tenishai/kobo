@@ -52,7 +52,7 @@ class GitHub:
             return None
 
     def is_ancestor(self, workdir: Path, ancestor: str, descendant: str) -> bool:
-        return subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=workdir).returncode == 0
+        return subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=workdir, check=False).returncode == 0
 
     def commit_shas_for_paths(self, workdir: Path, paths: list[str]) -> dict[str, str]:
         return {path: _git(workdir, "log", "-1", "--format=%H", "--", path) for path in paths}
