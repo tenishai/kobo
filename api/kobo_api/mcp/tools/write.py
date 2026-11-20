@@ -1623,10 +1623,11 @@ def register(mcp: FastMCP, app: Any) -> None:
         what the persona covers and leaves alone, the kinds of request it
         gets and what each answer contains, what to do when it cannot
         answer, one example. No headings above "###" (they are lowered).
-        `rules` are always/never one-liners. In a room with guardrails on
-        (`kobo_whoami` says so) leave them out: each agent keeps its own rules
-        in its Guardrails. Without guardrails at least 3; most personas
-        carry 8 to 12. The built-in personas are written in this shape.
+        `rules` are always/never one-liners. Where the room's guardrails are
+        on they are optional and best left out: each agent keeps its own
+        rules in its Guardrails. Where they are off, at least 3 (the create
+        says so when it refuses); most personas carry 8 to 12. The built-in
+        personas are written in this shape.
         The merged persona renders to at most 200 lines and 48KB. `team` defaults to "shared", the commons
         anyone may file into; naming any other team requires that you
         are a member of it (a room operator may name any team). The
