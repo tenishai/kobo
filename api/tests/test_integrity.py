@@ -5995,6 +5995,34 @@ def test_a_persona_too_thin_to_work_from_is_refused_at_create_and_at_edit():
     assert storage.read_bytes("b", "aria-the-assistant/persona.md") == before
 
 
+@pytest.mark.parametrize("guardrails", [True, False], ids=["guardrails-on", "guardrails-off"])
+def test_a_persona_needs_rules_only_where_agents_keep_their_rules_in_it(
+    config__api_personas, clients__api_personas, tmp_path, guardrails
+):
+    """Data integrity (2026-11-20): with guardrails on, an agent's rules live in its own
+    Guardrails, so a persona people write is made and edited with no rules at all. In a
+    room without guardrails a persona's rules are its agents' only rules, and the floor
+    of three still holds there. The floor on what-they-do holds in both."""
+    config = config__api_personas.model_copy(update={"guardrails": guardrails})
+    client = _make_client__api_personas(config, clients__api_personas, tmp_path)
+
+    made = client.post("/api/personas", json={**VALID_PAYLOAD, "rules": []})
+
+    if guardrails:
+        assert made.status_code == 201, made.text
+        storage = clients__api_personas.storage
+        update_persona(
+            storage, bucket="personas-bucket", persona_id=made.json()["id"],
+            who_they_are="a calmer troubleshooter", what_they_do=HOUSE_WHAT_THEY_DO, rules=[],
+            rules_required=False,
+        )
+        assert "## Rules" not in storage.read_bytes("personas-bucket", "aria-the-assistant/persona.md").decode()
+    else:
+        assert made.status_code == 422 and "at least 3 rules" in made.json()["error"]
+    thin = client.post("/api/personas", json={**VALID_PAYLOAD, "name": "thin", "what_they_do": "Helps."})
+    assert thin.status_code == 422 and "too short to work from" in thin.json()["error"]
+
+
 def test_an_edit_never_replaces_text_the_form_could_not_read_and_survives_a_restart():
     """Data integrity (2026-11-17 review): an edit only ever rewrites what the form showed.
 

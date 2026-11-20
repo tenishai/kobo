@@ -193,11 +193,14 @@ export const PERSONA_NAME_MAX_WORDS = 3;
  * while no group has been chosen. `nameFixed` is the edit form, where the
  * name is not a field: a persona made before the three-word rule keeps its
  * name, and a line about it would be one nobody could act on.
+ * `rulesRequired` is off in a room with guardrails on (2026-11-20): each
+ * agent keeps its rules in its own Guardrails, so a persona needs none.
  */
 export function personaMissing(
   text: PersonaText,
   team: string | null,
   nameFixed = false,
+  rulesRequired = true,
 ): string | null {
   const words = (text.name.toLowerCase().match(/[a-z0-9]+/g) ?? []).length;
   if (!nameFixed && words === 0) {
@@ -217,7 +220,7 @@ export function personaMissing(
     return `Say more about what they do: ${length} of at least ${PERSONA_WHAT_MIN_CHARS} characters.`;
   }
   const rules = splitLines(text.rules).length;
-  if (rules < PERSONA_RULES_MIN) {
+  if (rulesRequired && rules < PERSONA_RULES_MIN) {
     return `Add at least ${PERSONA_RULES_MIN} rules, one per line.`;
   }
   if (rules > PERSONA_RULES_MAX) {

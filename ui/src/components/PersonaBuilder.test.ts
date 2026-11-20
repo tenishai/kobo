@@ -6,7 +6,8 @@
 // form and never takes what they typed, Create stays off with one sentence
 // saying why until the persona is enough to work from, a new persona is
 // filed under its maker's group, a taken name says where the persona is,
-// and an edit saves the text and nothing else. `mergeDraftFields`,
+// an edit saves the text and nothing else, and with guardrails on nobody is
+// asked for rules that belong in each agent's Guardrails. `mergeDraftFields`,
 // `personaMissing` and `personaGroups` have their own cases in
 // ../lib/validate.test.ts.
 import { fireEvent, screen, waitFor } from "@testing-library/svelte";
@@ -47,7 +48,7 @@ type Call = { method: string; url: string; body: Record<string, unknown> | null 
 /** Answers whoami, the group catalog, the draft, the create and the edit
  * routes, and records every call. `draft: null` is a route that is down. */
 function stubRoom(
-  whoami: { groups: string[]; operator?: boolean },
+  whoami: { groups: string[]; operator?: boolean; guardrails?: boolean },
   answers: {
     draft?: unknown | null;
     create?: { status: number; body: unknown };
@@ -72,6 +73,7 @@ function stubRoom(
           operator: whoami.operator ?? false,
           groups: whoami.groups,
           groups_unavailable: false,
+          guardrails: whoami.guardrails ?? false,
         });
       }
       if (url.includes("/api/catalog/groups")) {
@@ -158,6 +160,51 @@ describe("PersonaBuilder", () => {
       purpose_tags: DRAFT.purpose_tags,
       team: "sre",
     });
+  });
+
+  it("with guardrails on, a new persona asks for no rules and sends none, even after a draft wrote some", async () => {
+    const calls = stubRoom({ groups: ["sre"], guardrails: true });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, oncreated: () => {} });
+
+    await type("Name", "ledger");
+    await type(/Start from a description/, "Help customers with billing questions.");
+    await fireEvent.click(screen.getByRole("button", { name: "Draft persona" }));
+    await waitFor(() => expect(field("What they do").value).toBe(BODY));
+
+    expect(screen.queryByLabelText(/Rules|Starter guardrails/)).toBeNull();
+    await waitFor(() => expect(createButton().disabled).toBe(false));
+    await fireEvent.click(createButton());
+
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === "POST" && c.url === "/api/personas")?.body?.rules).toEqual(
+        [],
+      ),
+    );
+  });
+
+  it("with guardrails on, an edit shows a persona's rules only while it has some", async () => {
+    const stored = {
+      id: "ledger",
+      name: "ledger",
+      team: "sre",
+      builtin: false,
+      tags: [],
+      who_they_are: DRAFT.who_they_are,
+      what_they_do: BODY,
+      rules: RULES,
+      created_by: "me@example.com",
+      created_at: null,
+      truncated: false,
+    };
+    stubRoom({ groups: ["sre"], guardrails: true }, { stored });
+    const first = renderWithClient(PersonaBuilder, { oncancel: () => {}, editId: "ledger" });
+    await waitFor(() => expect(field("Starter guardrails").value).toBe(RULES.join("\n")));
+    first.unmount();
+
+    stubRoom({ groups: ["sre"], guardrails: true }, { stored: { ...stored, rules: [] } });
+    renderWithClient(PersonaBuilder, { oncancel: () => {}, editId: "ledger" });
+    await waitFor(() => expect(field("What they do").value).toBe(BODY));
+    expect(screen.queryByLabelText("Starter guardrails")).toBeNull();
   });
 
   it("a draft that fails says so and leaves the form as it was", async () => {

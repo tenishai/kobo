@@ -39,7 +39,7 @@ A connected agent's setup arrives as pull requests on its repository, and the ro
 - **Harness.** Everything the agent runs on, and which agents it may talk to. See "The harness".
 - **Secrets.** Secrets and variables. See "Secrets and variables".
 
-Who can see and manage the agent is under **Owners** in the header, not on a tab. **Edit details** changes a room-built agent's team, purpose and description. On a connected agent it holds one line on what the agent does, which its owner writes and the page shows under its name. For both it holds **Destroy this agent** at its bottom.
+Who can see and manage the agent is under **Owners** in the header, not on a tab. **Edit details** changes a room-built agent's team, purpose and description; its persona is changed with **Edit persona**, in the Harness tab's Persona section. On a connected agent it holds one line on what the agent does, which its owner writes and the page shows under its name. For both it holds **Destroy this agent** at its bottom.
 
 ## Destroy
 

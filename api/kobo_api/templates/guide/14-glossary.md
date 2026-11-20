@@ -8,7 +8,7 @@
 - **Shared.** The group everyone is in. Agents and personas filed there are visible to the whole company.
 - **Operator.** A person who runs the room. Sees everything, moves agents, decides repository access, destroys agents.
 - **Reader.** A member of a group configured to see every agent and change none.
-- **Persona.** Who an agent is: one line of identity, what it does, and its rules. An agent is built from one.
+- **Persona.** Who an agent is: one line of identity and what it does. A built-in also brings rules, which start a new agent's Guardrails where guardrails are on. An agent is built from one, and its owners can edit the copy it runs.
 - **Built-in persona.** A persona the room ships for a common kind of agent. Shared with everyone, never moved.
 - **Harness.** Everything that runs an agent: model and runtime, identity, persona, skills, guardrails, memory, learnings, activity.
 - **Runtime.** The one shared image every room-built agent runs on. The room updates it; you press Update to current.
