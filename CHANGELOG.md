@@ -7,7 +7,7 @@ All notable changes to kobo are documented here. The format follows
 ## [Unreleased]
 
 ### Added
-- **Moving older agents onto guardrails.** `scripts/move-persona-rules.py` moves the persona rules of agents made before guardrails into their lists, once, from inside a room's API pod after the room turns guardrails on. It leaves alone an agent not yet on the room's runtime, because an older runtime ignores the list, and names it so it can be moved first. Without `--apply` it only says what it would do.
+- **Moving older agents onto guardrails.** `scripts/move-persona-rules.py` moves the persona rules of agents made before guardrails into their lists, once, from inside a room's API pod after the room turns guardrails on. It leaves alone an agent not yet on the room's runtime, because an older runtime ignores the list, and names it so it can be moved first. An agent whose owners already started a list gets its persona's rules after theirs, which stay as they are. Without `--apply` it only says what it would do.
 
 ### Fixed
 - **A removed agent's name, asked for again right away.** For a minute or so after a destroy, the room is still clearing the old agent away. Connect's scan said nothing was in the way, Connect then answered "That name is already taken in this room", and the form kept Connect off even after the name came free. Now the scan says the name is still being cleared away and to try again in a minute, and Connect and New agent say the same without calling the name taken. A new scan clears an earlier refusal, and a name something outside the room uses is said as that.
