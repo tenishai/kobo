@@ -14,8 +14,8 @@ would read to it as a newer edit made in the repository.
 
 The limit is the runtime's: 4,000 characters of "- rule" lines. The room refuses a
 longer list instead of letting the runtime cut it. A rule's words are at most
-RULE_MAX_CHARS and the whole line, people included, at most RULE_LINE_MAX_CHARS,
-so neither a paragraph nor a crowd can eat the list.
+RULE_MAX_CHARS and the whole line, with what it names, at most RULE_LINE_MAX_CHARS,
+so neither a paragraph nor a long list can eat the rest.
 
 A rule can name what it is about (Kyle, 2026-11-20: "only respond to these people",
 then "other things we want rules based off of, like emoji types"): people, emoji,
@@ -71,7 +71,9 @@ RULE_LINE_MAX_CHARS = 1000
 _LIST_SUFFIX = re.compile(
     r"\s*\(These (?P<kind>people|emoji|channels|repositories):(?P<items>[^()]*)\)$"
 )
-_LIST_MARKER = re.compile(r"\(These (?:people|emoji|channels|repositories):")
+# A list left in a rule's words (not `_LIST_MARKER` below, which is a markdown
+# bullet at the start of a line).
+_NAMED_LIST = re.compile(r"\(These (?:people|emoji|channels|repositories):")
 _PERSON = re.compile(r"^(?P<name>[^<>;()]*?)\s*<(?P<email>[^<>\s;()]+)>$")
 _EMAIL = re.compile(r"^[^@\s<>;()]+@[^@\s<>;()]+\.[^@\s<>;()]+$")
 _NAME_DROP = re.compile(r"[<>;()\r\n]")
@@ -114,12 +116,18 @@ class RuleLists:
         return bool(self.people or self.emoji or self.channels or self.repositories)
 
 
-def _emoji_rule():
-    # Read here, not at import: the names and aliases are slack_setup's, the ones
-    # Slack's reaction events carry and the wake emoji field takes.
-    from kobo_api.slack_setup import _EMOJI_ALIASES, _EMOJI_NAME
+def _emoji_name(raw: str) -> str | None:
+    # Read here, not at import: the rule is slack_setup's, the names Slack's
+    # reaction events carry and the wake emoji field takes.
+    from kobo_api.slack_setup import emoji_name
 
-    return _EMOJI_NAME, _EMOJI_ALIASES
+    return emoji_name(raw)
+
+
+def _channel_name(raw: str) -> str | None:
+    """A Slack channel as Slack names it: no #, lower case, a space as a hyphen."""
+    name = re.sub(r"\s+", "-", raw.strip().lstrip("#").strip()).lower()
+    return name if _CHANNEL_NAME.match(name) else None
 
 
 def _capped(items: list, kind: str) -> list:
@@ -150,12 +158,10 @@ def clean_people(people: list[Person]) -> list[Person]:
 def clean_emoji(names: list[str]) -> list[str]:
     """Emoji as Slack's reaction events name them: no colons, lower case, no skin
     tone, thumbsup as +1, each once."""
-    pattern, aliases = _emoji_rule()
     cleaned: list[str] = []
     for raw in names:
-        name = raw.strip().strip(":").split("::", 1)[0].lower()
-        name = aliases.get(name, name)
-        if not pattern.match(name):
+        name = _emoji_name(raw)
+        if name is None:
             raise GuardrailsError(
                 f"{raw.strip() or 'an empty name'} isn't an emoji name; use the name Slack "
                 "shows for it, like ticket"
@@ -169,8 +175,8 @@ def clean_channels(names: list[str]) -> list[str]:
     """Slack channels by name, without the #, lower case, each once."""
     cleaned: list[str] = []
     for raw in names:
-        name = raw.strip().lstrip("#").lower()
-        if not _CHANNEL_NAME.match(name):
+        name = _channel_name(raw)
+        if name is None:
             raise GuardrailsError(
                 f"{raw.strip() or 'an empty name'} isn't a Slack channel name; use the name "
                 "Slack shows, like sre-requests"
@@ -233,13 +239,18 @@ def _parse_items(kind: str, raw: str) -> tuple | None:
                 return None
             people.append(Person(name=person.group("name").strip(), email=person.group("email")))
         return tuple(people)
+    # Read as the runtime names them, so a line written by hand means what it says:
+    # :thumbsup: is the +1 the runtime reports, #SRE is #sre.
     if kind == "emoji":
-        pattern, _aliases = _emoji_rule()
-        names = [entry[1:-1] for entry in entries if len(entry) > 2 and entry[0] == entry[-1] == ":"]
-        return tuple(names) if len(names) == len(entries) and all(pattern.match(n) for n in names) else None
+        if not all(len(entry) > 2 and entry[0] == entry[-1] == ":" for entry in entries):
+            return None
+        emoji = [_emoji_name(entry) for entry in entries]
+        return None if None in emoji else tuple(emoji)
     if kind == "channels":
-        names = [entry[1:] for entry in entries if entry.startswith("#")]
-        return tuple(names) if len(names) == len(entries) and all(_CHANNEL_NAME.match(n) for n in names) else None
+        if not all(entry.startswith("#") for entry in entries):
+            return None
+        channels = [_channel_name(entry) for entry in entries]
+        return None if None in channels else tuple(channels)
     return tuple(entries) if all(_REPOSITORY.match(entry) for entry in entries) else None
 
 
@@ -299,7 +310,7 @@ def validate_rules(rules: list[str]) -> list[str]:
         words, lists = split_line(rule)
         if not words.strip():
             raise GuardrailsError("a rule needs words as well as what it names")
-        if lists and _LIST_MARKER.search(words):
+        if lists and _NAMED_LIST.search(words):
             # A list left in the words: the model would read both and the panel would
             # show one. A line from the repository whose ending only looks like a
             # list names nothing and passes as written.
@@ -308,8 +319,8 @@ def validate_rules(rules: list[str]) -> list[str]:
             _capped(list(getattr(lists, kind)), kind)
         if len(rule) > RULE_LINE_MAX_CHARS:
             raise GuardrailsError(
-                f"a rule and its people are at most {RULE_LINE_MAX_CHARS:,} characters; "
-                "name fewer people"
+                f"a rule and what it names are at most {RULE_LINE_MAX_CHARS:,} characters; "
+                "name fewer"
             )
         if len(words) > RULE_MAX_CHARS:
             raise GuardrailsError(

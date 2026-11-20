@@ -11,28 +11,32 @@ hand, outside the room's UI. Run it inside a kobo API pod:
     kubectl --context <ctx> -n <ns> exec -i deploy/<kobo-api> -- python - --apply < scripts/remove-retired-checks.py
     ... python - --apply --agent ledger < scripts/remove-retired-checks.py    (one agent)
 
-Without --apply it changes nothing and prints what it would do. Per agent the room
-built (READY, composed, with a repository) that still carries a retired check: one
-commit removes the file, which restarts the agent once, and the room's audit log
-says what went. The leak guard and any check an engineer added stay. An agent with
-nothing retired is skipped, so a second run does nothing.
+Without --apply it changes nothing and prints what it would do. Per READY agent
+that still carries a retired check: a composed one gets one commit removing the
+file, which restarts it once; a directory one (issue #207) has the file deleted
+from its folder and is reloaded the way the room's load step does it. The room's
+audit log says what went, one row per file, as the panel's own removal records it.
+The leak guard and any check an engineer added stay. An agent with nothing retired
+is skipped, so a second run does nothing.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from types import SimpleNamespace
 
 from kobo_api import audit, delivery
 from kobo_api.bundle_publish import RegistryPublisher
 from kobo_api.clients import Clients, CommandRunner, GhCLI, installation_token_provider
 from kobo_api.config import Config
 from kobo_api.db import init_db, make_engine, make_session_factory
-from kobo_api.kinds import KIND_COMPOSED
+from kobo_api.kinds import KIND_COMPOSED, KIND_DIRECTORY
 from kobo_api.marketplace import RETIRED_BASELINE_CHECKS
 from kobo_api.models import Agent, AgentStatus
 from kobo_api.org import load_org_config
-from kobo_api.tooling import delete_tooling_file, existing_tool_filenames
+from kobo_api.steps import LoadStep, agent_directory
+from kobo_api.tooling import delete_tooling_file
 
 
 def main(argv: list[str]) -> int:
@@ -63,10 +67,20 @@ def main(argv: list[str]) -> int:
         query = query.filter(Agent.name == args.agent)
     removed = skipped = failed = 0
     for agent in query.order_by(Agent.name):
-        if (agent.kind or KIND_COMPOSED) != KIND_COMPOSED or not agent.repo_full_name:
+        kind = agent.kind or KIND_COMPOSED
+        directory = kind == KIND_DIRECTORY and bool(config.directory_root)
+        if not directory and (kind != KIND_COMPOSED or not agent.repo_full_name):
             continue
         try:
-            retired = sorted(existing_tool_filenames(clients.github, agent.repo_full_name) & RETIRED_BASELINE_CHECKS)
+            if directory:
+                tools = agent_directory(config, agent.name) / "bundle" / "tools"
+                retired = sorted(name for name in RETIRED_BASELINE_CHECKS if (tools / name).is_file())
+            else:
+                # One file read each, no clone: the removal below clones once.
+                retired = sorted(
+                    name for name in RETIRED_BASELINE_CHECKS
+                    if clients.github.read_file(agent.repo_full_name, f"bundle/tools/{name}") is not None
+                )
         except Exception as exc:  # noqa: BLE001 -- one agent's trouble never stops the rest
             failed += 1
             print(f"{agent.name}: could not read its files ({exc})")
@@ -75,23 +89,29 @@ def main(argv: list[str]) -> int:
             skipped += 1
             print(f"{agent.name}: nothing retired, skipped")
             continue
+        how = "deleted from its folder, then reloaded" if directory else "one commit, one restart"
         if not args.apply:
             removed += 1
-            print(f"{agent.name}: would remove {', '.join(retired)} (one commit, one restart)")
+            print(f"{agent.name}: would remove {', '.join(retired)} ({how})")
             continue
         try:
             for filename in retired:
-                delete_tooling_file(clients.github, agent.repo_full_name, filename)
+                if directory:
+                    (tools / filename).unlink()
+                else:
+                    delete_tooling_file(clients.github, agent.repo_full_name, filename)
+            if directory:
+                LoadStep().run(SimpleNamespace(config=config, agent=agent))
         except Exception as exc:  # noqa: BLE001
             failed += 1
             print(f"{agent.name}: could not remove {', '.join(retired)} ({exc})")
             continue
-        audit.record(
-            session, action="tooling.delete", target_kind="agent", target_id=agent.name,
-            agent_name=agent.name, actor=audit.ROOM_ACTOR,
-            summary=f"the room removed the retired check(s) {', '.join(retired)} from agent {agent.name}",
-            detail={"removed": retired},
-        )
+        for filename in retired:
+            audit.record(
+                session, action="tooling.delete", target_kind="tool", target_id=filename,
+                agent_name=agent.name, actor=audit.ROOM_ACTOR,
+                summary=f"the room removed the retired check {filename} from agent {agent.name}",
+            )
         session.commit()
         removed += 1
         print(f"{agent.name}: removed {', '.join(retired)}")

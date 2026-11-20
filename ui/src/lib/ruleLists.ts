@@ -17,9 +17,10 @@ export function emojiName(raw: string): string | null {
   return EMOJI_NAME.test(canonical) ? canonical : null;
 }
 
-/** A Slack channel's name without the #, lower case, or null. */
+/** A Slack channel's name without the #, lower case, a space as a hyphen
+ * (Slack's own rule), or null. */
 export function channelName(raw: string): string | null {
-  const name = raw.trim().replace(/^#+/, "").toLowerCase();
+  const name = raw.trim().replace(/^#+/, "").trim().replace(/\s+/g, "-").toLowerCase();
   return CHANNEL_NAME.test(name) ? name : null;
 }
 

@@ -100,6 +100,10 @@
   let listKey = $state<string | null>(null);
   let listKind = $state<Kind>("people");
   let listDraft = $state<Lists>(noLists());
+  // Pickers holding text they can't add (a search not picked, a name that isn't
+  // one): Add or Save waits, so typed text is never dropped without a word.
+  let draftPending = $state<Kind[]>([]);
+  let editPending = $state(false);
   let menuIndex = $state<number | null>(null);
   let find = $state("");
   let note = $state("");
@@ -122,6 +126,14 @@
   // A list open for the new rule with nothing in it: Add waits, so a rule like
   // "Only answer these people" is never live without them.
   const addNeedsLists = $derived(draftOpen.some((kind) => draftLists[kind].length === 0));
+  const addPending = $derived(draftPending.some((kind) => draftOpen.includes(kind)));
+
+  function setDraftPending(kind: Kind, pending: boolean): void {
+    // Only on a change: a new array each time would hand every picker a fresh
+    // callback and have it report again, without end.
+    if (draftPending.includes(kind) === pending) return;
+    draftPending = pending ? [...draftPending, kind] : draftPending.filter((k) => k !== kind);
+  }
   // The room's repositories, offered as someone types, read only once a
   // Repositories list is open.
   const reposWanted = $derived(
@@ -236,7 +248,7 @@
   async function add(event: SubmitEvent) {
     event.preventDefault();
     const text = draft.trim();
-    if (!text || busy || addNeedsLists) return;
+    if (!text || busy || addNeedsLists || addPending) return;
     const added: GuardrailRuleIn = { text, ...noLists() };
     for (const kind of draftOpen) {
       (added as Record<Kind, unknown>)[kind] = draftLists[kind];
@@ -245,14 +257,18 @@
       draft = "";
       draftLists = noLists();
       draftOpen = [];
+      draftPending = [];
     }
   }
 
   function toggleDraftKind(kind: Kind): void {
     addMenuOpen = false;
-    draftOpen = draftOpen.includes(kind)
-      ? draftOpen.filter((open) => open !== kind)
-      : KINDS.map((k) => k.kind).filter((k) => k === kind || draftOpen.includes(k));
+    if (draftOpen.includes(kind)) {
+      draftOpen = draftOpen.filter((open) => open !== kind);
+      setDraftPending(kind, false);
+    } else {
+      draftOpen = KINDS.map((k) => k.kind).filter((k) => k === kind || draftOpen.includes(k));
+    }
   }
 
   function closeMenu() {
@@ -288,10 +304,11 @@
     listKey = keyOf(rule);
     listKind = kind;
     listDraft = { ...listsOf(rule), [kind]: [...rule[kind]] };
+    editPending = false;
   }
 
   async function saveList() {
-    if (busy) return;
+    if (busy || editPending) return;
     const index = placeOf(listKey);
     if (index < 0) return gone();
     const next = rules.map(asInput);
@@ -339,15 +356,28 @@
 
 <!-- One kind's picker. Given the lists and how to change them, so the new
      rule and a rule being edited share it. -->
-{#snippet picker(kind: Kind, lists: Lists, set: (kind: Kind, values: Person[] | string[]) => void, id: string)}
+{#snippet picker(
+  kind: Kind,
+  lists: Lists,
+  set: (kind: Kind, values: Person[] | string[]) => void,
+  pend: (kind: Kind, pending: boolean) => void,
+  id: string,
+)}
   {#if kind === "people"}
-    <PeoplePicker {id} people={lists.people} onchange={(v) => set("people", v)} disabled={busy} />
+    <PeoplePicker
+      {id}
+      people={lists.people}
+      onchange={(v) => set("people", v)}
+      onpending={(p) => pend("people", p)}
+      disabled={busy}
+    />
   {:else if kind === "emoji"}
     <TokenPicker
       {id}
       label="Emoji"
       values={lists.emoji}
       onchange={(v) => set("emoji", v)}
+      onpending={(p) => pend("emoji", p)}
       normalize={emojiName}
       show={(v) => `:${v}:`}
       placeholder="An emoji name, like ticket or +1"
@@ -361,6 +391,7 @@
       label="Slack channels"
       values={lists.channels}
       onchange={(v) => set("channels", v)}
+      onpending={(p) => pend("channels", p)}
       normalize={channelName}
       show={(v) => `#${v}`}
       placeholder="A channel name, like sre-requests"
@@ -373,6 +404,7 @@
       label="Repositories"
       values={lists.repositories}
       onchange={(v) => set("repositories", v)}
+      onpending={(p) => pend("repositories", p)}
       normalize={repositoryName}
       placeholder="owner/name"
       invalid="That isn't a repository. Use owner/name, like the Access tab shows."
@@ -488,7 +520,7 @@
           <button
             class="btn btn--primary"
             type="submit"
-            disabled={busy || !draft.trim() || addNeedsLists}
+            disabled={busy || !draft.trim() || addNeedsLists || addPending}
           >
             Add
           </button>
@@ -496,14 +528,17 @@
         {#each KINDS.filter((k) => draftOpen.includes(k.kind)) as item (item.kind)}
           <div class="guardrails__people-box">
             <p class="guardrails__hint">
-              <strong>{item.label}.</strong> {item.hint}{draftLists[item.kind].length === 0
-                ? ` Add at least one, or untick ${item.label} in the ⋯ menu, to add the rule.`
-                : ""}
+              <strong>{item.label}.</strong> {item.hint}{draftPending.includes(item.kind)
+                ? " Finish or clear what's typed here, to add the rule."
+                : draftLists[item.kind].length === 0
+                  ? ` Add at least one, or untick ${item.label} in the ⋯ menu, to add the rule.`
+                  : ""}
             </p>
             {@render picker(
               item.kind,
               draftLists,
               (kind, values) => (draftLists = { ...draftLists, [kind]: values }),
+              setDraftPending,
               `guardrails-new-${item.kind}`,
             )}
           </div>
@@ -588,16 +623,20 @@
                       listKind,
                       listDraft,
                       (kind, values) => (listDraft = { ...listDraft, [kind]: values }),
+                      (_kind, pending) => (editPending = pending),
                       `guardrail-${listKind}-${index}`,
                     )}
                     <div class="guardrail__edit-actions">
+                      {#if editPending}
+                        <span class="guardrail__pending">Finish or clear what's typed, to save.</span>
+                      {/if}
                       <button class="btn btn--quiet" type="button" onclick={() => (listKey = null)}>
                         Cancel
                       </button>
                       <button
                         class="btn btn--primary"
                         type="button"
-                        disabled={busy}
+                        disabled={busy || editPending}
                         onclick={() => saveList()}
                       >
                         Save {item.label.toLowerCase()}
@@ -811,6 +850,12 @@
     display: flex;
     gap: var(--space-xs);
     align-items: center;
+  }
+
+  .guardrail__pending {
+    margin-right: auto;
+    color: var(--fail);
+    font-size: 0.85rem;
   }
 
   .guardrail__edit-actions {

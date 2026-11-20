@@ -46,8 +46,13 @@
   const deleteMutation = createMutation(() => deleteToolingMutation(queryClient, agentName));
 
   const locked = $derived(tooling.data?.enforcement?.locked ? tooling.data.enforcement : null);
-  // The checks this page lists: the agent's own, never the room's.
-  const checks = $derived((tooling.data?.files ?? []).filter((file) => !file.baseline));
+  // The checks this page lists: the agent's own, and one of the room's only when
+  // it is the one that failed to load, so whoever may remove it can.
+  const checks = $derived(
+    (tooling.data?.files ?? []).filter(
+      (file) => !file.baseline || file.name === locked?.locked_file,
+    ),
+  );
 
   type RowState = { on: boolean; text: string };
 

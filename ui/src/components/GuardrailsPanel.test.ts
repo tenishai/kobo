@@ -277,6 +277,29 @@ describe("GuardrailsPanel", () => {
     });
   });
 
+  // Text a picker can't add (here a repository without its owner) holds Save
+  // back instead of being dropped without a word.
+  it("waits to save while a picker holds text it can't add", async () => {
+    renderWithClient(GuardrailsPanel, { agentName: "gate" });
+    await fireEvent.click(
+      await screen.findByRole("button", {
+        name: "More for the rule: Answer only in the request thread.",
+      }),
+    );
+    await fireEvent.click(screen.getByRole("menuitem", { name: "Repositories" }));
+    const repos = screen.getByLabelText("Repositories");
+    await fireEvent.input(repos, { target: { value: "acme" } });
+    await fireEvent.blur(repos);
+
+    const save = screen.getByRole("button", { name: "Save repositories" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect(screen.getByText("Finish or clear what's typed, to save.")).not.toBeNull();
+    expect(repos.getAttribute("aria-invalid")).toBe("true");
+
+    await fireEvent.input(repos, { target: { value: "acme/api" } });
+    expect(save.disabled).toBe(false);
+  });
+
   it("shows the people a rule is about under it", async () => {
     stubFetch({
       "/guardrails": {

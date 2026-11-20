@@ -85,8 +85,23 @@ describe("ToolingPanel", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain(`${BASELINE.name} failed to load`);
     expect(screen.getByText("Paused while a check is broken")).not.toBeNull();
-    expect(screen.queryByText(BASELINE.description)).toBeNull();
     expect(screen.queryByText("On")).toBeNull();
+    // The failing one is listed, so whoever may remove it can; here, nobody.
+    expect(screen.getByText("Failed to load")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: `Remove ${BASELINE.name}` })).toBeNull();
+  });
+
+  it("offers an operator Remove on a room check that failed to load", async () => {
+    stubFetch({
+      "/api/agents/warden/tooling": {
+        files: [{ ...BASELINE, status: undefined, can_remove: true }],
+        enforcement: { attested: true, locked: true, locked_file: BASELINE.name },
+      },
+      "/api/": {},
+    });
+    renderWithClient(ToolingPanel, { agentName: "warden", frozen: false });
+
+    expect(await screen.findByRole("button", { name: `Remove ${BASELINE.name}` })).not.toBeNull();
   });
 
   it("asks before removing, in the room's own dialog, and never through the browser", async () => {

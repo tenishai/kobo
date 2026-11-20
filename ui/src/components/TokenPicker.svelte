@@ -6,11 +6,14 @@
   // the `suggestions` that match what is typed while it has focus. `normalize`
   // is the kind's own rule (lib/ruleLists.ts, mirroring the server); a name it
   // refuses on Enter stays in the box with `invalid` under it. Leaving the box
-  // never shows that line: it would move the page under the pointer between
-  // the press and the click.
+  // never shows that line (it would move the page under the pointer between the
+  // press and the click): the box is marked instead, and `onpending` tells the
+  // panel there is text it can't add, so its Save or Add waits rather than
+  // dropping the text without a word.
   //
   // `values` is bound, or read and given back through `onchange`: the panel
   // that holds the rule saves it.
+  import { untrack } from "svelte";
   import { X } from "phosphor-svelte";
 
   let {
@@ -18,6 +21,7 @@
     label,
     values = $bindable([]),
     onchange,
+    onpending,
     normalize,
     show = (value: string) => value,
     placeholder,
@@ -29,6 +33,8 @@
     label: string;
     values?: string[];
     onchange?: (values: string[]) => void;
+    /** Whether the box holds text this picker can't add. */
+    onpending?: (invalid: boolean) => void;
     normalize: (raw: string) => string | null;
     show?: (value: string) => string;
     placeholder: string;
@@ -42,6 +48,13 @@
   let focused = $state(false);
 
   const picked = $derived(new Set(values.map((value) => value.toLowerCase())));
+  const unusable = $derived(term.trim() !== "" && normalize(term) === null);
+
+  // Reported when it changes, not when the panel hands down a new callback.
+  $effect(() => {
+    const now = unusable;
+    untrack(() => onpending?.(now));
+  });
   const matches = $derived.by((): string[] => {
     const typed = term.trim().replace(/^[:#]+|:+$/g, "").toLowerCase();
     if (!typed) return [];
@@ -123,6 +136,7 @@
       onkeydown={onKeydown}
       onfocus={() => (focused = true)}
       onblur={onBlur}
+      aria-invalid={unusable && !focused}
       {disabled}
     />
     {#if focused && matches.length > 0}
@@ -197,6 +211,10 @@
 
   .tokens__search input {
     width: 100%;
+  }
+
+  .tokens__search input[aria-invalid="true"] {
+    border-color: var(--fail);
   }
 
   .tokens__suggestions {
