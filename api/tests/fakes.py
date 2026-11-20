@@ -1607,6 +1607,7 @@ class FakeKubectl:
         external_secret_error: str | None = None,
         namespaces: dict[str, datetime] | None = None,
         namespace_error: str | None = None,
+        namespaces_deleting: set[str] | None = None,
         deployments: set[tuple[str, str]] | None = None,
         deployment_exists_error: str | None = None,
     ):
@@ -1614,6 +1615,9 @@ class FakeKubectl:
         # with no entry does not exist, which is the cluster a new agent's
         # name usually meets.
         self.namespaces = dict(namespaces or {})
+        # The namespaces among those being deleted: a destroyed agent's,
+        # still clearing.
+        self.namespaces_deleting = set(namespaces_deleting or set())
         # `deployment_exists`'s world: the `(namespace, deploy)` pairs that
         # exist (default none), and the knob that makes the cluster
         # unaskable (the directory sweep's "retire nothing" seam, #274).
@@ -1756,6 +1760,11 @@ class FakeKubectl:
         if self.namespace_error is not None:
             raise ClientError(self.namespace_error)
         return self.namespaces.get(namespace)
+
+    def namespace_deleting(self, namespace: str) -> bool:
+        if self.namespace_error is not None:
+            raise ClientError(self.namespace_error)
+        return namespace in self.namespaces and namespace in self.namespaces_deleting
 
 
 class FakeSlack:

@@ -273,6 +273,74 @@ describe("ConnectModal — connecting", () => {
     });
   });
 
+  /** Fetch for a form whose scan comes back clean and whose Connect answers
+   * `status` with `body`. */
+  function stubConnectAnswer(status: number, body: unknown): void {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/agents/connect") && init?.method === "POST") {
+          return new Response(JSON.stringify(body), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const routes: Record<string, unknown> = {
+          "/api/catalog/groups": { groups: [] },
+          "/api/connect/scan": CLEAN_REPORT,
+          "/api/": {},
+        };
+        for (const [needle, payload] of Object.entries(routes)) {
+          if (url.includes(needle)) {
+            return new Response(JSON.stringify(payload), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+        throw new Error(`unstubbed fetch: ${url}`);
+      }),
+    );
+  }
+
+  async function scanThenConnect(): Promise<void> {
+    await fillTheForm();
+    await fireEvent.click(scanButton());
+    await screen.findByText("Nothing is in the way.");
+    await fireEvent.click(screen.getByRole("checkbox", { name: OWNER_CHECKBOX }));
+    await fireEvent.click(connectButton());
+  }
+
+  it("says a removed agent's name is still being cleared, in the room's words, not that it is taken", async () => {
+    // Dev, 2026-11-20: reconnecting right after a destroy read as a taken name.
+    const sentence =
+      "release-bot was just removed and is still being cleared away. Try again in a minute.";
+    stubConnectAnswer(409, { error: sentence, code: "name_clearing" });
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await scanThenConnect();
+
+    expect(await screen.findByText(sentence)).not.toBeNull();
+    expect(screen.queryByText("That name is already taken in this room.")).toBeNull();
+  });
+
+  it("lets a new scan clear an earlier Connect's taken name", async () => {
+    stubConnectAnswer(409, { error: "name taken: 'release-bot'", code: "name_taken" });
+    renderWithClient(ConnectModal, { open: true, onclose: () => {} });
+
+    await scanThenConnect();
+    expect(await screen.findByText("That name is already taken in this room.")).not.toBeNull();
+    expect(connectButton().disabled).toBe(true);
+
+    await fireEvent.click(scanButton());
+
+    await waitFor(() => {
+      expect(screen.queryByText("That name is already taken in this room.")).toBeNull();
+      expect(connectButton().disabled).toBe(false);
+    });
+  });
+
   it("renders the server's own blockers when its re-scan refuses the connect", async () => {
     vi.stubGlobal(
       "fetch",

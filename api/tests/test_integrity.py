@@ -1156,7 +1156,7 @@ def test_create_agent_name_toctou_maps_integrity_error_to_409(
     )
 
     assert response.status_code == 409
-    assert response.json() == {"error": f"name taken: {AGENT_NAME!r}"}
+    assert response.json() == {"error": f"name taken: {AGENT_NAME!r}", "code": "name_taken"}
 
 
 def test_list_agents_tolerates_null_created_by_and_group_name_on_pre_existing_rows(

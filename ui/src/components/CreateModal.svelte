@@ -628,7 +628,13 @@
             // check and now. Flip availability to match reality so the
             // "Available" line next to the field can't keep claiming it
             // right above an error that says otherwise.
-            availability = { status: "unavailable", reason: "Taken" };
+            // A removed agent's name the room is still clearing away is not
+            // taken: the error says to try again in a minute, so the field
+            // keeps its answer.
+            const code = (error.body as { code?: unknown } | undefined)?.code;
+            if (code !== "name_clearing") {
+              availability = { status: "unavailable", reason: "Taken" };
+            }
           }
         },
       },
