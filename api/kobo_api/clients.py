@@ -41,6 +41,7 @@ import httpx
 
 from kobo_api.config import Config, GroupChoice
 from kobo_api.groups import GroupResolver, OktaGroupResolver, OktaPeopleSearch
+from kobo_api.timefmt import rfc3339
 
 if TYPE_CHECKING:
     # kobo_api.sero and kobo_api.github_app import ClientError from this
@@ -2417,7 +2418,9 @@ class KubectlClient(Protocol):
         list, and to retire nothing at all when the cluster is silent."""
         ...
 
-    def restart_deploy(self, namespace: str, deploy: str) -> None:
+    def restart_deploy(
+        self, namespace: str, deploy: str, *, annotations: dict[str, str] | None = None
+    ) -> None:
         """Ask kubectl to roll the Deployment's pods now (`kubectl rollout
         restart`).
 
@@ -2427,6 +2430,11 @@ class KubectlClient(Protocol):
         re-reads its tools directories at boot -- no hot reload into the
         running process. This is the exact nudge that makes the boot
         happen, requested once per successful delivery.
+
+        `annotations` go on the pod template in the same change, beside the
+        restart stamp `rollout restart` writes, so the roll is still one: a
+        delivery names the commit it restarts the agent with
+        (`kobo_api.delivery.BUNDLE_COMMIT_ANNOTATION`).
         """
         ...
 
@@ -2489,6 +2497,10 @@ class KubectlClient(Protocol):
         other failure raises `ClientError`.
         """
         ...
+
+
+# What `kubectl rollout restart` writes on a pod template to roll it.
+RESTARTED_AT_ANNOTATION = "kubectl.kubernetes.io/restartedAt"
 
 
 def image_tag(image: str) -> str | None:
@@ -2576,9 +2588,19 @@ class KubectlCLI:
         )
         return bool(out.strip())
 
-    def restart_deploy(self, namespace: str, deploy: str) -> None:
+    def restart_deploy(
+        self, namespace: str, deploy: str, *, annotations: dict[str, str] | None = None
+    ) -> None:
+        if not annotations:
+            self._runner.run(
+                [self._kubectl, "-n", namespace, "rollout", "restart", f"deploy/{deploy}"]
+            )
+            return
+        # What `rollout restart` writes, plus the caller's, in one patch: one roll.
+        stamped = {RESTARTED_AT_ANNOTATION: rfc3339(datetime.now(UTC)), **annotations}
+        patch = {"spec": {"template": {"metadata": {"annotations": stamped}}}}
         self._runner.run(
-            [self._kubectl, "-n", namespace, "rollout", "restart", f"deploy/{deploy}"]
+            [self._kubectl, "-n", namespace, "patch", f"deploy/{deploy}", "--type", "merge", "-p", json.dumps(patch)]
         )
 
     def set_env(self, namespace: str, deploy: str, name: str, value: str) -> None:

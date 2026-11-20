@@ -1418,6 +1418,26 @@ def test_namespace_created_at_reads_absent_as_none_and_a_time_as_naive_utc():
     assert client.namespace_created_at("cabal") == datetime(2026, 10, 24, 12, tzinfo=UTC).replace(tzinfo=None)
 
 
+def test_a_named_restart_is_one_patch_that_still_restarts():
+    """Gate (2026-11-20): a delivery's restart names its commit on the pod template in
+    the same change as the restart stamp `rollout restart` writes, so it is one roll and
+    still a roll when the commit is the one already named; without a name it is the
+    plain `rollout restart` it always was."""
+    import json as _json
+
+    runner = RecordingRunner()
+    client = KubectlCLI(runner=runner)
+    client.restart_deploy("clio", "clio")
+    client.restart_deploy("clio", "clio", annotations={"kobo/bundle-commit": "a" * 40})
+
+    assert runner.calls[0][-3:] == ["rollout", "restart", "deploy/clio"]
+    patch = runner.calls[1]
+    assert patch[patch.index("patch") + 1] == "deploy/clio" and patch[patch.index("--type") + 1] == "merge"
+    annotations = _json.loads(patch[patch.index("-p") + 1])["spec"]["template"]["metadata"]["annotations"]
+    assert annotations["kobo/bundle-commit"] == "a" * 40
+    assert annotations["kubectl.kubernetes.io/restartedAt"].endswith("Z")
+
+
 def test_cached_token_never_outlives_a_short_lived_token():
     """Production bug: Cached token never outlives a short lived token.
 

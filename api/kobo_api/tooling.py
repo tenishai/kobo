@@ -75,7 +75,6 @@ from kobo_api.clients import (
     ClientError,
     GitHubClient,
     KubectlClient,
-    image_tag,
 )
 from kobo_api.composer import repin_commit_note, update_dockerfile_runtime_image
 from kobo_api.repo_lock import repo_write_lock
@@ -560,12 +559,11 @@ def list_tooling(
     algorithm and the reasoning behind every step — repeated here, not
     imported, per the module docstring's note on why): clone once; for every
     tooling file, get its last-touch commit via
-    `github.commit_shas_for_paths`; read the live Deployment's image tag via
-    `kubectl.deploy_image` + `image_tag`; resolve that tag to a full commit
-    sha inside THIS clone via `github.rev_parse_prefix` (`None` if it
-    doesn't resolve); a file is "delivered" iff the tag resolved AND that
-    commit is the file's last-touch commit or a descendant of it
-    (`github.is_ancestor`, equality counts).
+    `github.commit_shas_for_paths`; take the live commit, the later of the
+    image tag's commit and the one the room last restarted the agent with
+    (`kobo_api.delivery.live_commit`), resolved inside THIS clone; a file is
+    "delivered" iff it resolved AND that commit is the file's last-touch
+    commit or a descendant of it (`github.is_ancestor`, equality counts).
 
     This function never adds an "enforced" status to a file's own dict —
     "delivered" here still means only "reached a running pod", same as
@@ -590,12 +588,10 @@ def list_tooling(
         rel_paths = [f"bundle/tools/{p.name}" for p in paths]
         commit_shas = github.commit_shas_for_paths(workdir, rel_paths)
 
-        image = kubectl.deploy_image(namespace, deploy)
-        tag = image_tag(image)
-        # None means a tagless digest-only image — every file below falls
-        # through to "not delivered", the honest state (same as
-        # list_intake's identical branch).
-        live_commit = github.rev_parse_prefix(workdir, tag) if tag is not None else None
+        # The image's tag or the room's last named restart, whichever is
+        # later (`delivery.live_commit`, as list_intake reads it); neither
+        # resolving leaves every file "not delivered", the honest state.
+        live_commit = delivery.live_commit(github, kubectl, workdir, namespace=namespace, deploy=deploy)
 
         results = []
         for path, rel_path in zip(paths, rel_paths):

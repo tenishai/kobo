@@ -12,6 +12,7 @@ tests can assert on side effects without touching a real subprocess or network.
 from __future__ import annotations
 
 import base64
+import copy
 import json
 from datetime import datetime
 from pathlib import Path
@@ -1649,6 +1650,7 @@ class FakeKubectl:
         # deliberately NOT `.calls`, which pre-existing tests assert on
         # exactly for rollout_ok alone (see the class docstring above).
         self.restarts: list[tuple[str, str]] = []
+        self.template_annotations: dict[tuple[str, str], dict[str, str]] = {}
         # `set_env`'s record (the Slack wake route's live apply, 2026-11-01):
         # `(namespace, deploy, name, value)`; `set_env_error` is the
         # cluster refusing, which the route reports as `applied_now: false`.
@@ -1723,7 +1725,14 @@ class FakeKubectl:
     def deployment_status_json(self, namespace: str, deploy: str) -> dict:
         if self._deployment_status_error is not None:
             raise ClientError(self._deployment_status_error)
-        return self._deployment_status.get((namespace, deploy), FAKE_DEPLOYMENT_STATUS_SETTLED)
+        status = self._deployment_status.get((namespace, deploy), FAKE_DEPLOYMENT_STATUS_SETTLED)
+        annotations = self.template_annotations.get((namespace, deploy))
+        if not annotations:
+            return status
+        status = copy.deepcopy(status)
+        template = status.setdefault("spec", {}).setdefault("template", {})
+        template.setdefault("metadata", {}).setdefault("annotations", {}).update(annotations)
+        return status
 
     def pods_json(self, namespace: str) -> list[dict]:
         # Set `fake.pods = {namespace: [pod, ...]}` on the instance; the
@@ -1735,10 +1744,16 @@ class FakeKubectl:
             raise ClientError(self.deployment_exists_error)
         return (namespace, deploy) in self.deployments
 
-    def restart_deploy(self, namespace: str, deploy: str) -> None:
+    def restart_deploy(
+        self, namespace: str, deploy: str, *, annotations: dict[str, str] | None = None
+    ) -> None:
         if self._restart_error is not None:
             raise ClientError(self._restart_error)
         self.restarts.append((namespace, deploy))
+        # The template's annotations as a restart leaves them, read back by
+        # `deployment_status_json` (the commit a delivery restarted with).
+        if annotations:
+            self.template_annotations.setdefault((namespace, deploy), {}).update(annotations)
 
     def set_env(self, namespace: str, deploy: str, name: str, value: str) -> None:
         if self._set_env_error is not None:
