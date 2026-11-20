@@ -196,6 +196,17 @@ itself. "Request" opens the permission requests already filled in.
   gateway restart would strip every agent's tools on the next sync.
 - A room-config lane block is not needed once this lands.
 
+As built (liminal 0.10.0, `GET /admin/cards`): a card says `labels.vendor`, and
+each tool its `permissions` (`["*"]` for any of the vendor's) and `risk`. One
+more label covers `github-clone`: `labels.audience: own-code` keeps a handler
+to agents that run their team's own code, and the room skips a card with an
+audience it does not know. The room keeps one record for every agent rather
+than one per grant: every scope, handler and allow pattern a card's lane has
+ever named (`gateway_managed`). It withdraws those like the targets' own, so
+a handler that leaves the cards is taken off every agent that held it. The
+last read lives in `gateway_cards` and is used across the room's own restarts.
+A room that has never read the cards manages its targets alone.
+
 ### 6. Ask a person before
 
 A guardrail names actions that wait for a person ("changing access"). The

@@ -4023,13 +4023,14 @@ def create_app(
                 if i.get("vendor") == github_access.GITHUB_VENDOR and i.get("parent")}
 
     @app.get("/api/access/picker")
-    def access_picker(request: Request) -> JSONResponse:
+    def access_picker(request: Request, session: Session = Depends(get_session)) -> JSONResponse:  # noqa: B008
         """Every connected integration with its permission tree, for the picker."""
         bab, blocked = _bab_or_404()
         if blocked is not None:
             return blocked
         try:
-            return JSONResponse({"vendors": bab_picker(bab, _bab_actor(request))})
+            lanes = gateway_lane.current(session, app.state.clients)
+            return JSONResponse({"vendors": bab_picker(bab, _bab_actor(request), lanes=lanes)})
         except ClientError as exc:
             return _bab_refused(exc)
 
@@ -4052,7 +4053,7 @@ def create_app(
             pending = [r for r in bab.requests("pending", agent.name, actor)]
             # Given the agent (kobo#365): GitHub shows as this agent's own repository
             # set (its child), or the connection as a placeholder; never another's.
-            vendors = bab_picker(bab, actor, agent=agent.name)
+            vendors = bab_picker(bab, actor, agent=agent.name, lanes=gateway_lane.current(session, app.state.clients))
         except ClientError as exc:
             return _bab_refused(exc)
         # The vendor row's failure line (kobo#382): the newest failed or refused

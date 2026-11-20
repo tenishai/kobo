@@ -19,6 +19,11 @@ replaces a live target, `DELETE` removes it, and a target the gateway's own
 config file owns answers 409. An older gateway has no such routes and
 answers FastAPI's plain 404; `put_target` turns that into the sentence
 `TARGETS_UNSUPPORTED`, so the caller can fall back to the pull request.
+
+The handlers' cards come the same way from liminal 0.10.0 (`GET
+/admin/cards`): every loaded handler's capability card under its name, labels
+and all, which `gateway_lane` derives what each permission opens from. An
+older gateway answers the plain 404, and `cards` raises `CARDS_UNSUPPORTED`.
 """
 
 from __future__ import annotations
@@ -42,6 +47,8 @@ TOKEN_RENEW_BEFORE_S = 24 * 3600
 ISSUER = "cabal-core"
 # What `put_target` says when the gateway has no target routes (before liminal 0.9.0).
 TARGETS_UNSUPPORTED = "the gateway's admin plane does not take targets yet (liminal 0.9.0 or later)"
+# What `cards` says when the gateway does not list its handlers' cards (before liminal 0.10.0).
+CARDS_UNSUPPORTED = "the gateway's admin plane does not list its handlers' cards yet (liminal 0.10.0 or later)"
 
 
 class TargetNotFound(ClientError):
@@ -71,6 +78,7 @@ class LiminalAdminClient(Protocol):
     def list_targets(self) -> list[dict]: ...
     def put_target(self, name: str, spec: dict) -> dict: ...
     def delete_target(self, name: str) -> dict: ...
+    def cards(self) -> list[dict]: ...
 
 
 class RoomAdminToken:
@@ -221,6 +229,25 @@ class HttpxLiminalAdminClient:
         return self._check(resp, f"removing target {name}")
 
 
+    def cards(self) -> list[dict]:
+        """Every loaded handler's capability card as `{"name", "card"}`, as
+        written (labels, a tool's `permissions` and `risk`). Any failure raises
+        `ClientError`, never an empty list: the caller keeps what it knew."""
+        try:
+            resp = self._client.get(f"{self._base_url}/admin/cards", headers=self._headers())
+        except httpx.HTTPError as exc:
+            raise ClientError(f"gateway admin plane unreachable: {exc.__class__.__name__}") from exc
+        if resp.status_code == 404:
+            # FastAPI's plain "Not Found" is a gateway without the route; liminal's own 404
+            # says why (an admin plane built without the handler registry).
+            detail = _detail(resp, "")
+            raise ClientError(CARDS_UNSUPPORTED if detail.strip().lower() in ("", "not found") else detail)
+        cards = self._check(resp, "cards").get("cards")
+        if not isinstance(cards, list):
+            raise ClientError("gateway admin plane answered cards without a list")
+        return [c for c in cards if isinstance(c, dict)]
+
+
 def _about_target(detail: str, name: str) -> bool:
     """Whether a 404's detail is the gateway talking about the target (unknown
     name) rather than FastAPI's plain `Not Found` for a route it lacks."""
@@ -247,6 +274,6 @@ def build_liminal_admin(config, cabal: CabalClient | None) -> LiminalAdminClient
 
 
 __all__ = [
-    "ADMIN_SCOPE", "ISSUER", "ROOM_PERSONA", "TARGETS_UNSUPPORTED", "CabalError", "GatewayGrant", "HttpxLiminalAdminClient",
+    "ADMIN_SCOPE", "CARDS_UNSUPPORTED", "ISSUER", "ROOM_PERSONA", "TARGETS_UNSUPPORTED", "CabalError", "GatewayGrant", "HttpxLiminalAdminClient",
     "LiminalAdminClient", "RoomAdminToken", "TargetNotFound", "build_liminal_admin", "targets_unsupported",
 ]

@@ -29,7 +29,7 @@ from typing import Protocol
 import httpx
 
 from .clients import ClientError
-from .gateway_lane import opens_tool
+from .gateway_lane import Lanes
 from .kinds import KIND_CONNECTED
 from .models import AgentStatus
 from .timefmt import rfc3339, stamp_strings
@@ -452,19 +452,19 @@ def child_repositories(row: dict | None) -> list[str]:
     return sorted(str(r) for r in repos)
 
 
-def _labelled(tree: dict, vendor: str) -> dict:
+def _labelled(tree: dict, vendor: str, lanes: Lanes) -> dict:
     """The catalogue tree with `label` on every permission: bab's when it sends one
     (0.4.12), null before that, so the UI reads one shape either way. And `tool`
     (kobo#474): whether holding the permission puts any tool in front of an agent
-    (`gateway_lane.opens_tool`); the picker greys a row that opens nothing, so a
+    (`gateway_lane.Lanes.opens_tool`); the picker greys a row that opens nothing, so a
     grant that would do nothing is never asked for."""
-    groups = [{**g, "permissions": [{**p, "label": p.get("label"), "tool": opens_tool(vendor, p["name"])}
+    groups = [{**g, "permissions": [{**p, "label": p.get("label"), "tool": lanes.opens_tool(vendor, p["name"])}
                                     for p in g.get("permissions", [])]}
               for g in tree.get("groups", [])]
     return {**tree, "groups": groups}
 
 
-def picker(bab: BabClient, actor: str, agent: str | None = None) -> list[dict]:
+def picker(bab: BabClient, actor: str, agent: str | None = None, *, lanes: Lanes) -> list[dict]:
     """The tree the Permissions section walks: vendor, then (for a cloud) the account,
     project or subscription, then the vendor's permissions grouped its way with the tier
     as a column. A cloud's accounts are the rows connected in bab, with their ceiling and
@@ -528,7 +528,7 @@ def picker(bab: BabClient, actor: str, agent: str | None = None) -> list[dict]:
             if not accounts:
                 accounts.append({"id": vendor, "name": meta["label"], "connected": False, "ceiling": [],
                                  "organization": None, "account_id": None, "repositories": [], "has_repo_set": False})
-        tree = _labelled(tree, vendor)
+        tree = _labelled(tree, vendor, lanes)
         # Whether the ROOM is connected to this vendor (kobo#371): a cloud when at
         # least one account row is connected; a service (GitHub included) when a
         # parentless row exists. An agent's child alone is not a connection. The
