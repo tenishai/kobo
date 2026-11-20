@@ -83,3 +83,15 @@ describe("isFrozen", () => {
     expect(isFrozen("provisioning")).toBe(false);
   });
 });
+
+// 2026-11-20: a restart showed Ready, then sat on Restarting until a hard
+// refresh. The detail poll runs fast while the cluster says the agent is
+// rolling or while this page watches a restart it asked for.
+describe("detailRefetchInterval while an agent restarts", () => {
+  it("polls fast while rolling or watched, and slows once the agent is back", () => {
+    expect(detailRefetchInterval({ status: "ready", health: { rolling: true } })).toBe(3500);
+    expect(detailRefetchInterval({ status: "ready", health: { rolling: false } }, true)).toBe(3500);
+    expect(detailRefetchInterval({ status: "ready", health: { rolling: false } })).toBe(60_000);
+    expect(detailRefetchInterval({ status: "provisioning" })).toBe(3500);
+  });
+});

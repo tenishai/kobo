@@ -3489,7 +3489,9 @@ def test_get_agent_carries_the_detail_routes_full_field_set(session_factory__mcp
     }
     # What the page's header and Harness tab show, which this tool had
     # fallen behind: it answers from the page's own route now.
-    assert result["health"] is None
+    # The agent's own page asks the cluster when its reading is older than ten
+    # seconds (2026-11-20), so a ready agent's detail carries a verdict at once.
+    assert result["health"]["state"] == "up" and result["health"]["rolling"] is False
     assert result["identity"]["service_account"] == "agent-agent-a"
     assert result["colleague_mode"] == "default"
     assert result["runtime_pinned"] is False

@@ -64,6 +64,10 @@ class Delivery:
     registry: str
     runtime_image: str
     replica_bucket: str = ""
+    # Asks the deploy platform to regenerate an agent's deploy files, by name,
+    # after the conversion commit changed its gojira.yaml (see `push`). The room
+    # wires it at boot; without it a conversion lands and nothing deploys it.
+    reprovision: Callable[[str], None] | None = None
 
 
 _delivery: Delivery | None = None
@@ -214,7 +218,7 @@ def push(github: GitHubClient, workdir: Path, message: str, *, restart: bool = T
             registry=_delivery.registry, replica_bucket=_delivery.replica_bucket,
         )
         if built:
-            message = f"{message}{CONVERTED_NOTE}"
+            message = f"{message}{CONVERTED_NOTE} [skip ci]"
     pushed = github.commit_push(workdir, message)
     if not pushed and not force_restart:
         return False
@@ -223,6 +227,17 @@ def push(github: GitHubClient, workdir: Path, message: str, *, restart: bool = T
         publish(workdir, name, head_sha=github.local_head(workdir) or "")
     if built:
         # The conversion commit builds, as the last one that will: the roll is the restart.
+        # It changed gojira.yaml (the bundle image and the runtime's environment), so the
+        # generated workflow's contract check fails it until the platform renders the deploy
+        # files again: the commit skips CI and the platform is asked here, the way every
+        # other gojira.yaml change asks (`kobo_api.agent_env.edit_gojira_yaml`). Without the
+        # ask the agent kept its old image while every later build failed the check (ledger,
+        # 2026-11-04 to 11-20).
+        if pushed and _delivery.reprovision is not None:
+            try:
+                _delivery.reprovision(name)
+            except Exception as exc:  # noqa: BLE001 -- the commit landed; the ask can be made again
+                log.warning("%s converted, but the platform was not asked to deploy it: %s", name, exc)
         return pushed
     if (changed and restart) or force_restart:
         _restart(name)

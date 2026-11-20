@@ -56,7 +56,8 @@ whose runtime never runs the enforcement contract once it exists, yet
 `list_tooling`'s ancestor derivation would still call the file "delivered"
 the instant the live commit descends from this push. See
 `kobo_api.intake`'s module docstring for the full incident this pattern
-closes.
+closes. In a room that delivers bundles as artifacts (`delivery.configured()`)
+neither re-pins: the runtime route is the one place a pin moves there.
 """
 
 from __future__ import annotations
@@ -354,7 +355,7 @@ def upload_tooling_file(
         (tools_dir / filename).write_text(content, encoding="utf-8")
         note = ""
         previous = None
-        if runtime_image is not None:
+        if runtime_image is not None and not delivery.configured():
             previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
             note = repin_commit_note(repo, previous, runtime_image)
         delivery.push(github, workdir, f"kobo: add tools/{filename}{note}")
@@ -478,7 +479,7 @@ def import_tooling(
             (tools_dir / name).write_bytes(raw)
         note = ""
         previous = None
-        if runtime_image is not None:
+        if runtime_image is not None and not delivery.configured():
             previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
             note = repin_commit_note(repo, previous, runtime_image)
         delivery.push(

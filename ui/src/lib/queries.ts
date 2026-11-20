@@ -220,6 +220,7 @@ import {
   type GuardrailRule,
   type GuardrailRuleIn,
   type GuardrailsResponse,
+  type TeachResult,
   type KnowledgeFile,
   type Learning,
   listAgentEnv,
@@ -311,6 +312,7 @@ import {
   checkSelfHostedModels,
   type OrgAccountsCheck,
 } from "./api";
+import { beginRestart, isRestarting } from "./delivery.svelte";
 import { detailRefetchInterval, listRefetchInterval } from "./status";
 
 /**
@@ -349,8 +351,19 @@ export function agentQuery(name: string) {
   return queryOptions({
     queryKey: ["agents", name] as const,
     queryFn: () => getAgent(name),
-    refetchInterval: (query) => detailRefetchInterval(query.state.data),
+    refetchInterval: (query) => detailRefetchInterval(query.state.data, isRestarting(name)),
   });
+}
+
+/**
+ * A change that restarts the agent (2026-11-20): the header says Restarting
+ * from that moment, the page polls until the agent is back (status.ts,
+ * lib/delivery.svelte), and every list on the agent's page is fetched again,
+ * since what restarted it usually changed one of them too.
+ */
+function restarted(queryClient: QueryClient, name: string): void {
+  beginRestart(name);
+  queryClient.invalidateQueries({ queryKey: ["agents", name] });
 }
 
 /** How long a catalog search result (skill or persona) is considered fresh
@@ -551,9 +564,7 @@ export function agentPersonaQuery(name: string) {
 export function editAgentPersonaMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (body: AgentPersonaEdit) => editAgentPersona(name, body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "persona"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -597,6 +608,7 @@ export function archivePersonaMutation(queryClient: QueryClient) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["catalog", "personas"] });
       queryClient.invalidateQueries({ queryKey: ["personas", "archived"] });
+      queryClient.invalidateQueries({ queryKey: ["personas", "movable"] });
     },
   };
 }
@@ -608,6 +620,7 @@ export function unarchivePersonaMutation(queryClient: QueryClient) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["catalog", "personas"] });
       queryClient.invalidateQueries({ queryKey: ["personas", "archived"] });
+      queryClient.invalidateQueries({ queryKey: ["personas", "movable"] });
     },
   };
 }
@@ -1106,6 +1119,8 @@ export function createPersonaMutation(queryClient: QueryClient) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["catalog", "personas"] });
       queryClient.invalidateQueries({ queryKey: ["catalog", "teams"] });
+      // Its maker may edit and move it: its Edit and Move show at once.
+      queryClient.invalidateQueries({ queryKey: ["personas", "movable"] });
     },
   };
 }
@@ -1235,7 +1250,7 @@ export function updateAgentModelMutation(queryClient: QueryClient, name: string)
   return {
     mutationFn: (model: string) => patchAgentModel(name, model),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      restarted(queryClient, name);
       queryClient.invalidateQueries({ queryKey: ["agents"] });
     },
   };
@@ -1244,18 +1259,14 @@ export function updateAgentModelMutation(queryClient: QueryClient, name: string)
 export function colleagueModeMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (mode: ColleagueMode) => putColleagueMode(name, mode),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
 export function updateAgentRuntimeMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (runtimeImage: string) => patchAgentRuntime(name, runtimeImage),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1286,8 +1297,15 @@ export function chatMutation(name: string) {
 export function teachMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (text: string) => teachAgent(name, text),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "intake"] });
+    onSuccess: (result: TeachResult) => {
+      // Learnings and Memory both list what was taught (2026-11-20: Learnings
+      // showed it only after a refresh). A note handed over live restarts
+      // nothing; one the room had to commit restarts the agent.
+      if (result.mode === "instant") {
+        queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      } else {
+        restarted(queryClient, name);
+      }
     },
   };
 }
@@ -1320,7 +1338,7 @@ export function saveGuardrailsMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: ({ rules, baseSha }: { rules: GuardrailRuleIn[]; baseSha: string | null }) =>
       saveGuardrails(name, rules, baseSha),
-    onSuccess: (data: GuardrailsResponse) => {
+    onSuccess: (data: GuardrailsResponse & { mode: "instant" | "archive" }) => {
       queryClient.setQueryData(["agents", name, "guardrails"], {
         rules: data.rules,
         limit_chars: data.limit_chars,
@@ -1331,6 +1349,9 @@ export function saveGuardrailsMutation(queryClient: QueryClient, name: string) {
         can_report: data.can_report,
         breaks_before_a_check: data.breaks_before_a_check,
       });
+      if (data.mode === "archive") {
+        restarted(queryClient, name);
+      }
     },
     onError: () => {
       // A refused save (someone changed the list, a rule over the limit)
@@ -1363,10 +1384,12 @@ export function saveKnowledgeMutation(queryClient: QueryClient, name: string) {
       filename: string;
       content: string;
     }) => saveKnowledgeFile(name, filename, content),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["agents", name, "knowledge"],
-      });
+    onSuccess: (result: { mode?: "instant" | "archive" }) => {
+      if (result.mode === "archive") {
+        restarted(queryClient, name);
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["agents", name, "knowledge"] });
+      }
     },
   };
 }
@@ -1600,9 +1623,7 @@ export function uploadIntakeMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: ({ filename, content }: { filename: string; content: string }) =>
       uploadIntake(name, filename, content),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "intake"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1613,9 +1634,7 @@ export function uploadIntakeMutation(queryClient: QueryClient, name: string) {
 export function deleteIntakeMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (filename: string) => deleteIntake(name, filename),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "intake"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1659,9 +1678,7 @@ export function toolingQuery(name: string) {
 export function deleteToolingMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (filename: string) => deleteTooling(name, filename),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "tooling"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1868,9 +1885,7 @@ export function agentSecretsQuery(
 export function restartAgentMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: () => restartAgent(name),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "secrets"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1923,9 +1938,7 @@ export function saveAgentEnvMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: ({ set, remove }: { set: Record<string, string>; remove: string[] }) =>
       saveAgentEnv(name, set, remove),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "env"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -2177,6 +2190,8 @@ export function patchMetadataMutation(queryClient: QueryClient, name: string) {
     }) => patchAgentMetadata(name, body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      // The cards on the main page show the same tags and line.
+      queryClient.invalidateQueries({ queryKey: ["agents"], exact: true });
     },
   };
 }
@@ -2195,6 +2210,7 @@ export function regenerateMetadataMutation(
     mutationFn: () => regenerateAgentMetadata(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      queryClient.invalidateQueries({ queryKey: ["agents"], exact: true });
     },
   };
 }

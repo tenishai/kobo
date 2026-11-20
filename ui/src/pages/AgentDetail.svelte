@@ -86,7 +86,7 @@
     uploadAvatarMutation,
   } from "../lib/queries";
   import { formatHash, navigate, route } from "../lib/router.svelte";
-  import { isRestarting, isUpdating } from "../lib/delivery.svelte";
+  import { isRestarting, isUpdating, settleRestart } from "../lib/delivery.svelte";
   import { isDestroyComplete, isFrozen } from "../lib/status";
   import {
     DEFAULT_HARNESS_SECTION,
@@ -271,6 +271,13 @@
   const restarting = $derived.by((): boolean => {
     void agent.data?.health?.checked_at;
     return agent.data?.health?.rolling === true || isRestarting(name);
+  });
+
+  // A restart this page asked for ends once a reading taken well after it
+  // began says the agent is back (lib/delivery.svelte); until then the detail
+  // poll runs fast (status.ts), so the header leaves Restarting on its own.
+  $effect(() => {
+    settleRestart(name, agent.data?.health);
   });
 
   // The hash decides, when it names a tab this agent actually has; otherwise

@@ -74,3 +74,26 @@ export function isRestarting(agent: string, now: number = Date.now()): boolean {
   const at = restarts[agent];
   return at !== undefined && now - at <= STALE_MS;
 }
+
+// A reading counts as "back" only once it was taken this long after the
+// restart began: the old pod answers for a moment after a restart is asked
+// for, and an up, not-rolling reading from that moment would end the watch
+// before the restart even started.
+const SETTLE_MS = 15_000;
+
+/** Ends the watch over a restart this page asked for once a reading taken
+ * well after it began says the agent is up and not mid-restart (2026-11-20:
+ * the header used to keep saying Restarting until a hard refresh). */
+export function settleRestart(
+  agent: string,
+  health: { state: string; rolling?: boolean; checked_at: string } | null | undefined,
+): void {
+  const at = restarts[agent];
+  if (at === undefined || !health) {
+    return;
+  }
+  const checked = Date.parse(health.checked_at);
+  if (checked - at >= SETTLE_MS && health.state === "up" && health.rolling !== true) {
+    delete restarts[agent];
+  }
+}

@@ -59,6 +59,11 @@ def main(argv: list[str]) -> int:
         delivery.Delivery(
             kubectl=clients.kubectl, publisher=RegistryPublisher(), registry=config.bundle_registry,
             runtime_image=config.runtime_image, replica_bucket=config.memory_replica_bucket,
+            # A push that converts an older agent changes its gojira.yaml: ask the
+            # platform to deploy it, as the room does (kobo_api.delivery.push).
+            reprovision=lambda name: clients.gojira.reprovision(
+                session.query(Agent).filter(Agent.name == name).one().gojira_app_id
+            ),
         ) if config.bundle_registry else None
     )
 
