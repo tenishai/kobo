@@ -1449,7 +1449,7 @@ def test_includes_reads_ancestry_from_githubs_compare_with_no_clone():
     assert gh.includes("acme/agent-clio", "b" * 40, "a" * 12) is True
     assert gh.includes("acme/agent-clio", "a" * 40, "a" * 40) is True
     assert gh.includes("acme/agent-clio", "a" * 40, "b" * 40) is False
-    assert runner.calls[0][-3:] == ["repos/acme/agent-clio/compare/" + "a" * 12 + "..." + "b" * 40, "--jq", ".status"]
+    assert runner.calls[0][-3:] == ["repos/acme/agent-clio/compare/" + "a" * 12 + "..." + "b" * 40 + "?per_page=1", "--jq", ".status"]
 
 
 def test_cached_token_never_outlives_a_short_lived_token():

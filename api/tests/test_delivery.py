@@ -86,6 +86,14 @@ class Kubectl:
             raise ClientError(f"deployments.apps {deploy!r} not found")
         return self.image
 
+    # The agent's Deployment mounts its bundle image (False: an old-shape agent
+    # still on its baked image).
+    mounted = True
+
+    def deployment_status_json(self, ns, deploy):
+        volumes = [{"name": "bundle", "image": {"reference": f"{REGISTRY}/{deploy}-bundle:current"}}] if self.mounted else []
+        return {"spec": {"template": {"spec": {"volumes": volumes}}}}
+
     def restart_deploy(self, ns, deploy, *, annotations=None):
         self.restarts.append((ns, deploy))
         self.named.append((annotations or {}).get(delivery.BUNDLE_COMMIT_ANNOTATION))
@@ -512,7 +520,7 @@ def test_a_save_after_a_build_that_never_landed_builds_again(tmp_path, configure
     """Gate (integrity): a save used to retry a runtime build that failed, by being
     a commit that builds. It still does: when the image running predates the
     Dockerfile's last change, the next save builds, and the room's restart still
-    delivers its bundle (named) on the image the agent has."""
+    delivers its bundle on the image the agent has."""
     _pub, kube = configured
     work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")
     _built(kube, work)
@@ -522,7 +530,8 @@ def test_a_save_after_a_build_that_never_landed_builds_again(tmp_path, configure
     (work / "bundle" / "persona.md").write_text("two\n")
     delivery.push(gh, work, "kobo: persona")
     assert gh.messages == ["kobo: runtime image", "kobo: persona"]
-    assert kube.named == [gh.local_head(work)]
+    # Restarted for its bundle, named by its image's tag once its build deploys.
+    assert kube.restarts == [("ledger", "ledger")] and kube.named == [None]
 
 
 def test_an_image_that_bakes_its_bundle_in_is_restarted_by_its_build_alone(tmp_path, configured):
@@ -542,3 +551,40 @@ def test_a_room_that_builds_each_change_names_no_restart(tmp_path):
     none names a commit: the Slack steps' restart reads this before naming one."""
     work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")
     assert delivery.delivered_by_restart(GitHub(), work) is None
+
+
+def test_a_restart_names_a_commit_only_where_the_deployment_mounts_the_bundle(tmp_path, configured):
+    """An agent whose commit converted it still runs its old image until the deploy
+    platform redeploys it, its bundle baked in: a restart there delivers nothing, so
+    it names nothing, and a converted agent is never read as carrying a save."""
+    _pub, kube = configured
+    kube.mounted = False
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")
+    _built(kube, work)
+    (work / "bundle" / "persona.md").write_text("two\n")
+    delivery.push(GitHub(), work, "kobo: persona")
+    assert kube.restarts == [("ledger", "ledger")] and kube.named == [None]
+
+
+def test_a_secret_change_on_a_baked_image_still_restarts(tmp_path, configured):
+    """force_restart means the pod must read a Secret again: a commit that builds
+    does not stand in for that restart."""
+    _pub, kube = configured
+    baked = _repo(tmp_path, dockerfile="FROM reg.example/agents/daedalus-runtime:old\nCOPY bundle/ /bundle\n")
+    (baked / "bundle" / "persona.md").write_text("two\n")
+    delivery.push(GitHub(), baked, "kobo: persona", force_restart=True)
+    assert kube.restarts == [("ledger", "ledger")]
+
+
+def test_a_gojira_yaml_change_with_no_stamp_to_compare_builds(tmp_path, configured):
+    """A repository whose deploy files carry no contract stamp cannot say they are
+    behind, so a commit that changes gojira.yaml builds, as every commit did."""
+    _pub, kube = configured
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")
+    (work / CI_WORKFLOW).write_text("name: ci\n")
+    _git(work, "commit", "-qam", "older deploy files")
+    _built(kube, work)
+    (work / "gojira.yaml").write_text(yaml.safe_dump({"app": "ledger", "env": {"A": "1"}}))
+    gh = GitHub()
+    delivery.push(gh, work, "kobo: env")
+    assert gh.messages == ["kobo: env"]

@@ -1166,7 +1166,8 @@ class GhCLI:
         status = self._runner.run(
             [
                 self._gh, "api",
-                f"repos/{repo}/compare/{quote(commit, safe='')}...{quote(tip, safe='')}",
+                # One commit per page: only the status is read.
+                f"repos/{repo}/compare/{quote(commit, safe='')}...{quote(tip, safe='')}?per_page=1",
                 "--jq", ".status",
             ],
             env=self._env(),

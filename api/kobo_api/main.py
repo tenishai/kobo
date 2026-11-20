@@ -9249,10 +9249,11 @@ def create_app(
             log.warning(
                 "tooling archive commit failed for %s (%s): %s", repo, filename, exc
             )
-            if delivery.configured() and not str(exc).startswith(delivery.PLATFORM_NOT_ASKED):
+            if delivery.configured():
                 # The tool is on the agent's volume; the restart that loads it
-                # was this push's to make. A push that only failed to ask the
-                # deploy platform had restarted the agent already.
+                # was this push's to make, and a failed push may not have made
+                # it (one that failed only on asking the deploy platform had,
+                # and the agent rolls twice: rare, and never a tool left unloaded).
                 _request_tool_restart(agent_name)
         else:
             if pin is not None:
