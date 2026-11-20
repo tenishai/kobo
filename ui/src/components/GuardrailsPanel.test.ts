@@ -161,6 +161,28 @@ describe("GuardrailsPanel", () => {
     });
   });
 
+  // People open with nobody in it: Add waits. An email typed and never entered
+  // still goes with the rule when Add is pressed, since leaving the box adds it.
+  it("waits for people when People is open, and keeps an email typed but not entered", async () => {
+    renderWithClient(GuardrailsPanel, { agentName: "gate" });
+
+    await fireEvent.input(await screen.findByRole("textbox", { name: "New rule" }), {
+      target: { value: "Only answer these people." },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /People/ }));
+    const add = screen.getByRole("button", { name: "Add" }) as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+
+    const box = screen.getByLabelText("Add a person");
+    await fireEvent.input(box, { target: { value: "grace@example.test" } });
+    await fireEvent.blur(box);
+    expect(add.disabled).toBe(false);
+    await fireEvent.click(add);
+
+    await screen.findByRole("status");
+    expect(savedBody().rules[2].people).toEqual([{ name: "", email: "grace@example.test" }]);
+  });
+
   it("shows the people a rule is about under it", async () => {
     stubFetch({
       "/guardrails": {

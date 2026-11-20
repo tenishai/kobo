@@ -105,7 +105,6 @@ _TOOLING_EXTENSIONS = (".py", ".go")
 # marketplace's `baseline-` ids, reserved for room operators), said the way an
 # owner reads them on the Guardrails section. Any other check is described by the
 # first sentence of its module docstring (`describe_check`).
-BASELINE_PREFIX = "baseline-"
 BASELINE_DESCRIPTIONS = {
     "baseline-leakguard.py": "Keys and tokens are cut out of its replies before they're sent.",
     "baseline-probe-guard.py": "Asks for its own keys are refused before it reads them.",
@@ -114,8 +113,11 @@ BASELINE_DESCRIPTIONS = {
 
 def is_baseline(filename: str) -> bool:
     """Whether `filename` is one of the room's own checks, which only a room
-    operator may remove."""
-    return filename.startswith(BASELINE_PREFIX)
+    operator may remove and no upload or import may write."""
+    # Read here, not at import: kobo_api.marketplace imports this module.
+    from kobo_api.marketplace import BASELINE_TOOL_PREFIX
+
+    return filename.startswith(BASELINE_TOOL_PREFIX)
 
 
 def _plain(words: str) -> str:
@@ -450,6 +452,11 @@ def import_tooling(
         passed: list[tuple[str, bytes]] = []
         rejected: list[dict] = []
         for name, raw in candidates:
+            if is_baseline(name):
+                # The room's own checks: an upload refuses the name too, and only
+                # a room operator may remove one, so an import must not replace one.
+                rejected.append({"name": name, "reason": f"{name} is one of the room's own checks"})
+                continue
             try:
                 _validate_filename(name)
                 _validate_content(name, raw)

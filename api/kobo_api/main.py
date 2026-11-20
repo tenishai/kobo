@@ -2492,16 +2492,9 @@ def _operator_block(request: Request, config: Config) -> JSONResponse | None:
 def _baseline_check_block(request: Request, config: Config, filename: str) -> JSONResponse | None:
     """None when the caller may remove the check `filename`; a 403 body when it is one
     of the room's own checks (the baseline pack, `kobo_api.tooling.is_baseline`) and
-    the caller is not a room operator. The same semantics family as `_operator_block`
-    above: ungated with no operators named, and with IAP off. Any other check is the
+    `_operator_block` above would turn the caller away. Any other check is the
     agent's owners' to remove, through the route's own owner-or-operator gate."""
-    if not is_baseline(filename):
-        return None
-    if not config.operators and not config.admin_groups:
-        return None
-    if not config.iap_audience:
-        return None
-    if _is_admin(request):
+    if not is_baseline(filename) or _operator_block(request, config) is None:
         return None
     return JSONResponse(
         {"error": "This is one of the room's own checks; only a room operator can remove it."},

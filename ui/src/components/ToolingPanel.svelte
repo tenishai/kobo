@@ -7,8 +7,9 @@
   //
   // Each row says what the check does in one sentence (`description`, from the
   // server: the room's own words for its baseline pack, else the check's
-  // docstring) and one state: on, starting at the next restart, or waiting
-  // for a newer runtime. The file's name sits beside it for whoever wrote it.
+  // docstring) and one state: on, starting at the next restart, paused by a
+  // broken check, or not confirmed. The file's name sits beside it for
+  // whoever wrote it.
   // There is no upload here: a check is code, and an engineer adds one from
   // their own assistant (`kobo_add_agent_tool`). Remove shows only when the
   // server says this caller may (`can_remove`): the room's own checks are a
@@ -44,10 +45,20 @@
 
   type RowState = { on: boolean; text: string };
 
+  /** What a check's row says. "On" only when the server says it is enforced. A
+   * lock stops every check, and the banner says which one failed; a delivered
+   * check the room can't confirm (the agent was out of reach, or its runtime
+   * doesn't say) says just that, rather than guess why. */
   function rowState(file: ToolingFile): RowState {
     if (file.status === "enforced") return { on: true, text: "On" };
+    if (locked) {
+      return {
+        on: false,
+        text: file.name === locked.locked_file ? "Failed to load" : "Paused while a check is broken",
+      };
+    }
     if (!file.delivered) return { on: false, text: "Starts at its next restart" };
-    return { on: false, text: "Waits for a newer runtime" };
+    return { on: false, text: "Can't confirm it's on right now" };
   }
 
   // --- Delivery chip (after a removal) -------------------------------------

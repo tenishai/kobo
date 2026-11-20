@@ -868,6 +868,29 @@ def test_the_rooms_own_checks_are_an_operators_to_remove(session_factory__web_ow
     assert operator_baseline.status_code == 200, operator_baseline.text
 
 
+def test_an_import_never_writes_one_of_the_rooms_own_checks(session_factory__web_ownership_gate, config__web_ownership_gate):
+    """Gate (baseline checks, 2026-11-20): an import from another repository may not
+    write a file named like one of the room's own checks, or an owner could replace
+    the leak guard with an empty hook that DELETE refuses to let them remove. The file
+    is refused on its own; the rest of the folder still lands."""
+    private_key, jwk = _generate_jwk()
+    hook = "def post_draft(draft):\n    return draft\n"
+    github = _CapturingGitHub(tooling_source_files={
+        "acme/tools": {"tools/baseline-leakguard.py": hook, "tools/tool.py": hook},
+    })
+    client = _make_client(session_factory__web_ownership_gate, config__web_ownership_gate, github=github, iap_jwks_fetcher=_fetcher(jwk))
+    _seed_agent(session_factory__web_ownership_gate, config__web_ownership_gate, created_by=OWNER_EMAIL)
+
+    response = _import_tooling(client, _headers(private_key, email=OWNER_EMAIL))
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["imported"] == ["tool.py"]
+    assert body["rejected"] == [
+        {"name": "baseline-leakguard.py", "reason": "baseline-leakguard.py is one of the room's own checks"}
+    ]
+
+
 def test_destroy_still_works_for_a_listed_operator(session_factory__web_ownership_gate, config__web_ownership_gate):
     """Gate (ownership): Destroy still works for a listed operator."""
     private_key, jwk = _generate_jwk()

@@ -2,8 +2,10 @@
   // Who a guardrail rule is about (Kyle, 2026-11-20: "only respond to these
   // people"). The people picked show as chips; one box searches the room's
   // directory the way Owners does, and takes a full email typed in when the
-  // directory can't be searched. The rule's own words say what to do about
-  // them; the agent is told who sent each message and matches by email.
+  // directory can't be searched, on Enter or when the box loses focus, so an
+  // email typed and never entered is not lost when Add or Save is pressed.
+  // The rule's own words say what to do about them; the agent is told who
+  // sent each message and matches by email.
   //
   // `people` is bound: the panel that holds the rule saves it.
   import { createQuery } from "@tanstack/svelte-query";
@@ -55,17 +57,24 @@
     people = people.filter((person) => person.email !== email);
   }
 
+  /** A full email typed in, as a person: the directory's match when there is one. */
+  function addTyped(): boolean {
+    const typed = term.trim();
+    if (!EMAIL.test(typed)) {
+      return false;
+    }
+    const known = suggestions.find((person) => person.email.toLowerCase() === typed.toLowerCase());
+    add(known ?? { name: "", email: typed });
+    return true;
+  }
+
   /** Enter adds a full email as typed, or the one person the search found. */
   function onKeydown(event: KeyboardEvent): void {
     if (event.key !== "Enter") {
       return;
     }
     event.preventDefault();
-    const typed = term.trim();
-    if (EMAIL.test(typed)) {
-      const known = suggestions.find((person) => person.email.toLowerCase() === typed.toLowerCase());
-      add(known ?? { name: "", email: typed });
-    } else if (suggestions.length === 1) {
+    if (!addTyped() && suggestions.length === 1) {
       add(suggestions[0]);
     }
   }
@@ -101,6 +110,7 @@
       placeholder="Add a person by name or email"
       bind:value={term}
       onkeydown={onKeydown}
+      onblur={addTyped}
       {disabled}
     />
     {#if showSuggestions}

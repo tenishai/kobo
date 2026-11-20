@@ -56,6 +56,25 @@ describe("ToolingPanel", () => {
     expect(screen.queryByLabelText("Content")).toBeNull();
   });
 
+  // A lock stops every check: the banner names the one that failed and every
+  // row says why it isn't on, never a guess like "waits for a newer runtime".
+  it("says a broken check stopped the rest", async () => {
+    stubFetch({
+      // Locked, the server marks no file enforced.
+      "/api/agents/warden/tooling": {
+        files: [{ ...BASELINE, status: undefined }, FILE],
+        enforcement: { attested: true, locked: true, locked_file: FILE.name },
+      },
+      "/api/": {},
+    });
+    renderWithClient(ToolingPanel, { agentName: "warden", frozen: false });
+
+    expect((await screen.findByRole("alert")).textContent).toContain(`${FILE.name} failed to load`);
+    expect(screen.getByText("Failed to load")).not.toBeNull();
+    expect(screen.getByText("Paused while a check is broken")).not.toBeNull();
+    expect(screen.queryByText("On")).toBeNull();
+  });
+
   it("asks before removing, in the room's own dialog, and never through the browser", async () => {
     const confirmSpy = vi.fn(() => true);
     vi.stubGlobal("confirm", confirmSpy);

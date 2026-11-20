@@ -58,9 +58,11 @@
   let draft = $state("");
   let draftPeople = $state<Person[]>([]);
   let draftPeopleOpen = $state(false);
-  let editingIndex = $state<number | null>(null);
+  // An open editor names its rule by key, not by place: a save refused because the
+  // list changed underneath reloads it, and a place could then be another rule.
+  let editingKey = $state<string | null>(null);
   let editText = $state("");
-  let peopleIndex = $state<number | null>(null);
+  let peopleKey = $state<string | null>(null);
   let peopleDraft = $state<Person[]>([]);
   let menuIndex = $state<number | null>(null);
   let find = $state("");
@@ -78,7 +80,12 @@
     const average = rules.length > 0 ? data.used_chars / rules.length : TYPICAL_RULE_CHARS;
     return Math.max(0, Math.floor((data.limit_chars - data.used_chars) / average));
   });
-  const findTerm = $derived(find.trim().toLowerCase());
+  // The box shows from FIND_FROM rules; below that nothing filters, so a removal
+  // that hides the box can't leave rules hidden behind it.
+  const findTerm = $derived(rules.length >= FIND_FROM ? find.trim().toLowerCase() : "");
+  // People open for a new rule with nobody in it: Add waits, so a rule like "Only
+  // answer these people" is never live without them.
+  const addNeedsPeople = $derived(draftPeopleOpen && draftPeople.length === 0);
 
   function matches(rule: GuardrailRule): boolean {
     if (!findTerm) return true;
@@ -92,6 +99,17 @@
 
   function asInput(rule: GuardrailRule): GuardrailRuleIn {
     return { id: rule.id, text: rule.text, people: rule.people };
+  }
+
+  /** A rule's key: its row's id, or for a line written in the repository, the
+   * line itself. */
+  function keyOf(rule: GuardrailRule): string {
+    return rule.id !== null ? `id:${rule.id}` : `line:${rule.line}`;
+  }
+
+  /** Where the rule an editor names sits in the list now, or -1. */
+  function placeOf(key: string | null): number {
+    return key === null ? -1 : rules.findIndex((rule) => keyOf(rule) === key);
   }
 
   function person(email: string | null): string {
@@ -145,7 +163,7 @@
   async function add(event: SubmitEvent) {
     event.preventDefault();
     const text = draft.trim();
-    if (!text || busy) return;
+    if (!text || busy || addNeedsPeople) return;
     const added = { text, people: draftPeopleOpen ? draftPeople : [] };
     if (await commit([...rules.map(asInput), added], "Added.")) {
       draft = "";
@@ -158,33 +176,43 @@
     menuIndex = null;
   }
 
-  function startEdit(index: number) {
+  function startEdit(rule: GuardrailRule) {
     closeMenu();
-    peopleIndex = null;
-    editingIndex = index;
-    editText = rules[index].text;
+    peopleKey = null;
+    editingKey = keyOf(rule);
+    editText = rule.text;
   }
 
-  async function saveEdit(index: number) {
+  function gone(): void {
+    errorText = "That rule changed or went while you had it open. Here is the list as it stands.";
+    editingKey = null;
+    peopleKey = null;
+  }
+
+  async function saveEdit() {
     const text = editText.trim();
     if (!text || busy) return;
+    const index = placeOf(editingKey);
+    if (index < 0) return gone();
     const next = rules.map(asInput);
     next[index] = { ...next[index], text };
-    if (await commit(next, "Saved.")) editingIndex = null;
+    if (await commit(next, "Saved.")) editingKey = null;
   }
 
-  function startPeople(index: number) {
+  function startPeople(rule: GuardrailRule) {
     closeMenu();
-    editingIndex = null;
-    peopleIndex = index;
-    peopleDraft = [...rules[index].people];
+    editingKey = null;
+    peopleKey = keyOf(rule);
+    peopleDraft = [...rule.people];
   }
 
-  async function savePeople(index: number) {
+  async function savePeople() {
     if (busy) return;
+    const index = placeOf(peopleKey);
+    if (index < 0) return gone();
     const next = rules.map(asInput);
     next[index] = { ...next[index], people: peopleDraft };
-    if (await commit(next, "Saved.")) peopleIndex = null;
+    if (await commit(next, "Saved.")) peopleKey = null;
   }
 
   async function reportBroken(rule: GuardrailRule) {
@@ -205,9 +233,11 @@
     return `Broken ${times}, last ${whenDay(rule.last_broken_at)}`;
   }
 
-  async function remove(index: number) {
+  async function remove(rule: GuardrailRule) {
     closeMenu();
     if (busy) return;
+    const index = placeOf(keyOf(rule));
+    if (index < 0) return gone();
     await commit(
       rules.filter((_, i) => i !== index).map(asInput),
       "Removed.",
@@ -276,7 +306,11 @@
             <Users size={16} aria-hidden="true" />
             People{draftPeopleOpen && draftPeople.length > 0 ? ` (${draftPeople.length})` : ""}
           </button>
-          <button class="btn btn--primary" type="submit" disabled={busy || !draft.trim()}>
+          <button
+            class="btn btn--primary"
+            type="submit"
+            disabled={busy || !draft.trim() || addNeedsPeople}
+          >
             Add
           </button>
         </div>
@@ -284,7 +318,7 @@
           <div class="guardrails__people-box">
             <p class="guardrails__hint">
               Who this rule is about. Write the rule around them, like "Only answer these
-              people".
+              people".{addNeedsPeople ? " Add someone, or close People, to add the rule." : ""}
             </p>
             <PeoplePicker id="guardrails-new-people" bind:people={draftPeople} disabled={busy} />
           </div>
@@ -321,7 +355,7 @@
           {#if matches(rule)}
             <li class="guardrail">
               <div class="guardrail__body">
-                {#if editingIndex === index}
+                {#if editingKey === keyOf(rule)}
                   <div class="guardrail__edit">
                     <input
                       class="guardrails__input"
@@ -331,18 +365,18 @@
                       aria-label="Edit the rule"
                       disabled={busy}
                       onkeydown={(event) => {
-                        if (event.key === "Escape") editingIndex = null;
-                        if (event.key === "Enter") saveEdit(index);
+                        if (event.key === "Escape") editingKey = null;
+                        if (event.key === "Enter") saveEdit();
                       }}
                     />
-                    <button class="btn btn--quiet" type="button" onclick={() => (editingIndex = null)}>
+                    <button class="btn btn--quiet" type="button" onclick={() => (editingKey = null)}>
                       Cancel
                     </button>
                     <button
                       class="btn btn--primary"
                       type="button"
                       disabled={busy || !editText.trim()}
-                      onclick={() => saveEdit(index)}
+                      onclick={() => saveEdit()}
                     >
                       Save
                     </button>
@@ -353,7 +387,7 @@
                     class="guardrail__text guardrail__text--button"
                     aria-label={`Edit the rule: ${rule.text}`}
                     disabled={busy}
-                    onclick={() => startEdit(index)}
+                    onclick={() => startEdit(rule)}
                   >
                     {rule.text}
                   </button>
@@ -361,7 +395,7 @@
                   <p class="guardrail__text">{rule.text}</p>
                 {/if}
 
-                {#if peopleIndex === index}
+                {#if peopleKey === keyOf(rule)}
                   <div class="guardrails__people-box">
                     <p class="guardrails__hint">
                       Who this rule is about. {agentName} is told who sent each message and
@@ -373,14 +407,14 @@
                       disabled={busy}
                     />
                     <div class="guardrail__edit-actions">
-                      <button class="btn btn--quiet" type="button" onclick={() => (peopleIndex = null)}>
+                      <button class="btn btn--quiet" type="button" onclick={() => (peopleKey = null)}>
                         Cancel
                       </button>
                       <button
                         class="btn btn--primary"
                         type="button"
                         disabled={busy}
-                        onclick={() => savePeople(index)}
+                        onclick={() => savePeople()}
                       >
                         Save people
                       </button>
@@ -432,7 +466,7 @@
                             role="menuitem"
                             class="guardrail__item"
                             disabled={busy}
-                            onclick={() => startEdit(index)}
+                            onclick={() => startEdit(rule)}
                           >
                             Edit
                           </button>
@@ -441,7 +475,7 @@
                             role="menuitem"
                             class="guardrail__item"
                             disabled={busy}
-                            onclick={() => startPeople(index)}
+                            onclick={() => startPeople(rule)}
                           >
                             People{rule.people.length > 0 ? ` (${rule.people.length})` : ""}
                           </button>
@@ -463,7 +497,7 @@
                             role="menuitem"
                             class="guardrail__item guardrail__item--danger"
                             disabled={busy}
-                            onclick={() => remove(index)}
+                            onclick={() => remove(rule)}
                           >
                             Remove
                           </button>

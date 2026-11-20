@@ -210,7 +210,6 @@ import {
   type GrantRole,
   type GroupOption,
   type GroupRequest,
-  importTooling,
   type IntakeFile,
   type Invite,
   type InvitesResult,
@@ -302,7 +301,6 @@ import {
   updateSlackApp,
   uploadAvatar,
   uploadIntake,
-  uploadTooling,
   type Whoami,
   checkOrgAccounts,
   connectGcpProjects,
@@ -1629,39 +1627,6 @@ export function toolingQuery(name: string) {
     queryFn: () => listTooling(name),
     refetchInterval: (query) => toolingRefetchInterval(query.state.data),
   });
-}
-
-/**
- * Uploads (creates or overwrites) one tooling file; on success, invalidates
- * that agent's tooling query so the saved file (and its new sha/delivery
- * state) is picked up.
- */
-export function uploadToolingMutation(queryClient: QueryClient, name: string) {
-  return {
-    mutationFn: ({ filename, content }: { filename: string; content: string }) =>
-      uploadTooling(name, filename, content),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "tooling"] });
-    },
-  };
-}
-
-/**
- * Imports every `.py`/`.go` file that passes validation from some other
- * repo's folder in one delivery; on success, invalidates that agent's
- * tooling query so any newly-imported files show up. Invalidates
- * unconditionally, even when nothing passed (`sha: null`) — a harmless
- * no-op refetch, and it keeps this mutation's success handling uniform with
- * upload/delete rather than branching on the result shape.
- */
-export function importToolingMutation(queryClient: QueryClient, name: string) {
-  return {
-    mutationFn: ({ repo, path }: { repo: string; path: string }) =>
-      importTooling(name, repo, path),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "tooling"] });
-    },
-  };
 }
 
 /**

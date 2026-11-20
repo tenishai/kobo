@@ -2660,52 +2660,6 @@ export async function listTooling(name: string): Promise<ToolingListResponse> {
   return parse<ToolingListResponse>(res);
 }
 
-/** Uploads (creates or overwrites) one tooling file. Like `uploadIntake`,
- * the filename travels in the request body, not the URL path — this is a
- * fresh file pick from a form, not an edit of an already-named resource. */
-export async function uploadTooling(
-  name: string,
-  filename: string,
-  content: string,
-): Promise<{ sha: string }> {
-  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/tooling`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ filename, content }),
-  });
-  return parse<{ sha: string }>(res);
-}
-
-/** `POST /api/agents/{name}/tooling/import`'s partial-pass result: every
- * candidate `.py`/`.go` file under `path` in `repo` is validated
- * independently, so one bad file never sinks the rest. `sha` is `null` when
- * nothing passed (nothing was pushed at all — see `kobo_api.tooling.
- * import_tooling`'s docstring). */
-export type ToolingImportResult = {
-  sha: string | null;
-  imported: string[];
-  rejected: { name: string; reason: string }[];
-};
-
-/** Imports every `.py`/`.go` file that passes validation from `path` in
- * `repo` (cloned via kobo's own GitHub App identity — no separate auth
- * needed) into this agent's `bundle/tools/`, in one delivery. */
-export async function importTooling(
-  name: string,
-  repo: string,
-  path: string,
-): Promise<ToolingImportResult> {
-  const res = await fetch(
-    `/api/agents/${encodeURIComponent(name)}/tooling/import`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo, path }),
-    },
-  );
-  return parse<ToolingImportResult>(res);
-}
-
 /** Removes a tooling file. These are files, not memories — deleting removes
  * the file, full stop (no "already ingested elsewhere" caveat like
  * `deleteIntake`'s `note`). */

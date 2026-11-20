@@ -41,7 +41,7 @@ Type a rule in the box at the top and press **Add**; it goes at the bottom of th
 
 **People** makes a rule about particular people, like "Only answer these people" or "Ask before changing anything for these people". Pick them from the directory, or type a full email and press Enter, and the rule shows them under its words. The agent is told who sent each Slack message and matches them by email. For a new rule, press **People** beside **Add** first, so a rule like "Only answer these people" is never live without them. The room's own chat doesn't say who is typing yet, so there a rule about people can't tell. Like every rule, it guides the agent and locks nothing.
 
-The list has room for about 4,000 characters, which is 30 to 40 rules, and the count at the top says how many more fit; the people on a rule count toward it. From twelve rules on, a box above the list finds a rule by its words or its people. A rule that only matters inside one job belongs in that job's skill.
+The list has room for about 4,000 characters, which is 30 to 40 rules, and the count at the top says how many more fit. The people on a rule count toward it, and one rule with its people can be up to 1,000 characters. From twelve rules on, a box above the list finds a rule by its words or its people. A rule that only matters inside one job belongs in that job's skill.
 
 If the section says guardrails haven't turned on yet, this room's runtime doesn't read them, and an agent's rules are in its persona until it does.
 
