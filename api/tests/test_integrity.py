@@ -5280,6 +5280,48 @@ def _seed_agent__web_tooling(session_factory__web_tooling, config__web_tooling, 
     session.close()
 
 
+def test_an_instant_tool_in_a_room_of_artifacts_restarts_the_agent_once(
+    session_factory__web_tooling, config__web_tooling, monkeypatch
+):
+    """Gate (2026-11-20): with bundles as artifacts the archive's own push restarts the
+    agent and names its commit, so the route adds no restart of its own (the two rolled
+    it twice). When that push fails, the route still restarts it once, so the tool on
+    the agent's volume loads."""
+    from kobo_api import delivery
+
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config__web_tooling(config__web_tooling).model_copy(update={"bundle_registry": "r.example/agents"})
+    kubectl = FakeKubectl()
+    cabal = FakeCabal(relay_result={"status": {"state": "completed", "message": {"role": "agent", "parts": [{"kind": "text", "text": "ok"}]}}})
+
+    class _ArchiveRefused(FakeGitHub):
+        def commit_push(self, workdir, message):
+            raise ClientError("the push was refused")
+
+    github = _ArchiveRefused()
+    try:
+        client = _make_client__web_tooling(session_factory__web_tooling, cfg, github=github, kubectl=kubectl, cabal=cabal)
+        _seed_agent__web_tooling(session_factory__web_tooling, cfg)
+        response = client.post(
+            f"/api/agents/{AGENT_NAME}/tooling",
+            json={"filename": "tool.py", "content": "def post_draft(draft):\n    return draft\n"},
+        )
+        assert response.status_code == 200 and response.json()["mode"] == "instant", response.text
+        assert kubectl.restarts == [(AGENT_NAME, AGENT_NAME)]
+
+        # The archive lands: its push is the one restart, and the route adds none.
+        landed = FakeKubectl()
+        client = _make_client__web_tooling(session_factory__web_tooling, cfg, github=FakeGitHub(), kubectl=landed, cabal=cabal)
+        response = client.post(
+            f"/api/agents/{AGENT_NAME}/tooling",
+            json={"filename": "other.py", "content": "def post_draft(draft):\n    return draft\n"},
+        )
+        assert response.status_code == 200 and response.json()["mode"] == "instant", response.text
+        assert landed.restarts == []
+    finally:
+        delivery.configure(None)
+
+
 def test_upload_tooling_route_invalid_content_refused_before_any_relay(
     session_factory__web_tooling, config__web_tooling, monkeypatch
 ):
@@ -7159,6 +7201,73 @@ def test_a_delivery_is_delivered_only_once_the_new_pod_is_available():
     settled = FakeKubectl(images={("acme-agent", "acme-agent"): f"registry.example/agents/acme-agent:{sha[:12]}"})
     out = delivery_state(github, settled, repo="acme-org/acme-agent", namespace="acme-agent", deploy="acme-agent", sha=sha)
     assert out["state"] == "delivered", out
+
+
+def test_a_save_the_build_skipped_is_delivered_by_the_restart_that_names_it():
+    """Gate (integrity, 2026-11-20): with bundles as artifacts a save that cannot change
+    the image skips the build, so no run and no new image tag ever say it landed. The
+    room's restart names it on the pod template: delivered once that restart is over,
+    rolling while it runs, and still building when the restart named an older commit."""
+    from kobo_api import delivery
+    from kobo_api.knowledge import delivery_state
+    from tests.fakes import FAKE_DEPLOYMENT_STATUS_SETTLED, FakeGitHub, FakeKubectl
+
+    sha, newer = "0123456789abcdef0123456789abcdef01234567", "fedcba9876543210fedcba9876543210fedcba98"
+    where = {"repo": "acme-org/acme-agent", "namespace": "acme-agent", "deploy": "acme-agent"}
+    named = {delivery.BUNDLE_COMMIT_ANNOTATION: sha}
+    delivery.configure(delivery.Delivery(kubectl=FakeKubectl(), publisher=None, registry="r.example/agents", runtime_image="rt"))
+    try:
+        settled = FakeKubectl()
+        settled.template_annotations[("acme-agent", "acme-agent")] = named
+        assert delivery_state(FakeGitHub(head_sha=newer), settled, sha=sha, **where)["state"] == "delivered"
+        # The route takes a prefix of the commit as well.
+        assert delivery_state(FakeGitHub(head_sha=newer), settled, sha=sha[:12], **where)["state"] == "delivered"
+
+        rolling = FakeKubectl(deployment_status={("acme-agent", "acme-agent"): {
+            **FAKE_DEPLOYMENT_STATUS_SETTLED, "status": {"observedGeneration": 1, "updatedReplicas": 1, "availableReplicas": 0},
+        }})
+        rolling.template_annotations[("acme-agent", "acme-agent")] = named
+        assert delivery_state(FakeGitHub(head_sha=newer), rolling, sha=sha, **where)["state"] == "rolling"
+
+        # A later save's restart named a commit that carries this one: it rode along.
+        later = FakeKubectl()
+        later.template_annotations[("acme-agent", "acme-agent")] = {delivery.BUNDLE_COMMIT_ANNOTATION: newer}
+        assert delivery_state(FakeGitHub(ancestor_pairs={(sha, newer)}), later, sha=sha, **where)["state"] == "delivered"
+
+        older = FakeKubectl()
+        older.template_annotations[("acme-agent", "acme-agent")] = {delivery.BUNDLE_COMMIT_ANNOTATION: "1" * 40}
+        assert delivery_state(FakeGitHub(head_sha=newer), older, sha=sha, **where)["state"] == "building"
+
+        # GitHub that cannot be asked is a poll that says building, never an error.
+        class _Silent(FakeGitHub):
+            def includes(self, repo, tip, commit):
+                raise ClientError("GitHub did not answer")
+
+        assert delivery_state(_Silent(), later, sha=sha, **where)["state"] == "building"
+    finally:
+        delivery.configure(None)
+
+
+def test_what_is_live_is_the_later_of_the_image_and_the_named_restart():
+    """Gate (integrity): intake's "ingested" and a check's "delivered" read the newest
+    commit the agent is known to carry: the image's tag, or the commit the room last
+    restarted it with, whichever is later in the clone; either alone when it is the only
+    one that resolves."""
+    from kobo_api import delivery
+    from tests.fakes import FakeGitHub, FakeKubectl
+
+    built, restarted = "a" * 40, "b" * 40
+    github = FakeGitHub(rev_parse_results={built[:12]: built, restarted: restarted}, ancestor_pairs={(built, restarted)})
+    kubectl = FakeKubectl(images={("acme-agent", "acme-agent"): f"registry.example/agents/acme-agent:{built[:12]}"})
+    where = {"namespace": "acme-agent", "deploy": "acme-agent"}
+
+    assert delivery.live_commit(github, kubectl, Path("."), **where) == built
+    kubectl.template_annotations[("acme-agent", "acme-agent")] = {delivery.BUNDLE_COMMIT_ANNOTATION: restarted}
+    assert delivery.live_commit(github, kubectl, Path("."), **where) == restarted
+
+    tagless = FakeKubectl(images={("acme-agent", "acme-agent"): "registry.example/agents/acme-agent@sha256:" + "c" * 64})
+    tagless.template_annotations[("acme-agent", "acme-agent")] = {delivery.BUNDLE_COMMIT_ANNOTATION: restarted}
+    assert delivery.live_commit(github, tagless, Path("."), **where) == restarted
 
 
 # --- the broker's approved rows move onto GitHub per agent at boot (kobo#365) ------

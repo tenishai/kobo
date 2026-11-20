@@ -13,7 +13,7 @@ To move an agent onto another model after it is deployed, pick one from the list
 
 When the room reaches its models through the model gateway, the list is the models a room admin offers, each with a tag saying which cloud it comes from, and a model in grey cannot be picked: the line under it says whether its cloud is not connected or the model gateway is not answering. Pressing **Change model** then also moves the agent onto the gateway: the room gives the agent its own key and points it at the gateway, so an agent made before the gateway was turned on keeps working as it was until someone presses **Change model**.
 
-Below them, **Asks other agents** sets whether the agent may ask its colleagues: yes, when it helps (the default); no, but it knows who they are; or no. Pick one and press **Change**; the agent rebuilds with it. See "Agents talking to agents" for what each mode does.
+Below them, **Asks other agents** sets whether the agent may ask its colleagues: yes, when it helps (the default); no, but it knows who they are; or no. Pick one and press **Change**; the agent restarts with it. See "Agents talking to agents" for what each mode does.
 
 ## Agent to agent
 
@@ -37,7 +37,7 @@ Under it, **Details** shows the agent's team, purpose tags and capability senten
 
 Skills are abilities from your organization's skills catalog: a way of working, a checklist, a domain the agent should know. Open **Browse the catalog** or **Suggestions** (skills recommended for this agent's persona), select the ones you want and press **Add N skills**. There is no second confirm: they go out together as one update and one restart of the agent, so select everything you want before you press it; one the agent already has says Added. **Write a skill** writes one by hand; it ends in the same table. A skill is how to do a job, and the agent reads it when a question needs it. A rule it must always follow belongs in **Guardrails**.
 
-Each new row shows where its change is: **Pending** (saved, on its way), **Building** (the agent is being rebuilt with it), **Rolling** (the new agent is starting), **Active** (in place; the mark fades after a few seconds). **Failed** stays, with a sentence saying what to do, until you remove the row or change something and save again. While a change is building or rolling the page rests: every control that would change the agent is disabled, the banner at the top says Updating, and reading goes on as usual. The controls come back when the change lands or fails. On a current runtime the agent sees a short list of its skills in its instructions and loads one in full when a question needs it. Remove a skill from its row.
+Each new row shows where its change is: **Pending** (saved, on its way), **Building** (on its way to the agent), **Rolling** (the agent is restarting with it), **Active** (in place; the mark fades after a few seconds). **Failed** stays, with a sentence saying what to do, until you remove the row or change something and save again. While a change is building or rolling the page rests: every control that would change the agent is disabled, the banner at the top says Updating, and reading goes on as usual. The controls come back when the change lands or fails. On a current runtime the agent sees a short list of its skills in its instructions and loads one in full when a question needs it. Remove a skill from its row.
 
 ## Guardrails
 

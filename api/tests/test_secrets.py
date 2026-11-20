@@ -1793,8 +1793,10 @@ def test_the_slack_tools_backfill_tries_again_and_delivers_a_commit_that_landed(
     monkeypatch.setattr(slack_setup.delivery, "push", push)
     monkeypatch.setattr(slack_setup.delivery, "agent_name_of", lambda workdir: AGENT_NAME)
     monkeypatch.setattr(slack_setup.delivery, "publish", lambda workdir, name, head_sha: published.append(name))
+    monkeypatch.setattr(slack_setup.delivery, "delivered_by_restart", lambda gh, workdir: "c" * 40)
 
-    assert slack_setup.allow_slack_tools(github, repo=f"acme/{AGENT_NAME}", sleep=pauses.append) is True
+    # The commit the install's restart then names, as the restart delivers it.
+    assert slack_setup.allow_slack_tools(github, repo=f"acme/{AGENT_NAME}", sleep=pauses.append) == "c" * 40
     assert [m for _, m in github.pushes] == ["kobo: allow the Slack tools"]
     assert published == [AGENT_NAME] and pauses == [slack_setup._ALLOW_PAUSE]
 

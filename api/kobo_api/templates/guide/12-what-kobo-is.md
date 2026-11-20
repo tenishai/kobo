@@ -42,7 +42,7 @@ From your own assistant, create agent also takes **skills** and **tags** up fron
 
 ### How it talks to other agents (colleague mode)
 
-Set on the Harness tab beside **Asks other agents**, or **set colleague mode** from your assistant. The agent rebuilds.
+Set on the Harness tab beside **Asks other agents**, or **set colleague mode** from your assistant. The agent restarts with it.
 
 - **Yes, when it helps** (`default`). Why: the agent asks the colleague whose field a question is in before it answers from general knowledge, so answers draw on the whole room.
 - **No, but knows who they are** (`roster-only`). Why: answers must come from the agent's own tools and memory. It knows who else is in the room but cannot ask them; when its own evidence runs out it says so and asks you. It does not fall back on general knowledge.

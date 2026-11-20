@@ -45,6 +45,18 @@ class GitHub:
     def local_head(self, workdir: Path) -> str:
         return _git(workdir, "rev-parse", "HEAD")
 
+    def rev_parse_prefix(self, workdir: Path, prefix: str) -> str | None:
+        try:
+            return _git(workdir, "rev-parse", f"{prefix}^{{commit}}")
+        except subprocess.CalledProcessError:
+            return None
+
+    def is_ancestor(self, workdir: Path, ancestor: str, descendant: str) -> bool:
+        return subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=workdir, check=False).returncode == 0
+
+    def commit_shas_for_paths(self, workdir: Path, paths: list[str]) -> dict[str, str]:
+        return {path: _git(workdir, "log", "-1", "--format=%H", "--", path) for path in paths}
+
 
 class Publisher:
     def __init__(self):
@@ -62,13 +74,29 @@ class Publisher:
 
 class Kubectl:
     def __init__(self, exists: bool = True):
-        self.exists, self.restarts = exists, []
+        self.exists, self.restarts, self.named = exists, [], []
+        # The image the agent runs, tagged with the commit it was built from (`_built`).
+        self.image: str | None = None
 
     def deployment_exists(self, ns, deploy):
         return self.exists
 
-    def restart_deploy(self, ns, deploy):
+    def deploy_image(self, ns, deploy):
+        if self.image is None:
+            raise ClientError(f"deployments.apps {deploy!r} not found")
+        return self.image
+
+    # The agent's Deployment mounts its bundle image (False: an old-shape agent
+    # still on its baked image).
+    mounted = True
+
+    def deployment_status_json(self, ns, deploy):
+        volumes = [{"name": "bundle", "image": {"reference": f"{REGISTRY}/{deploy}-bundle:current"}}] if self.mounted else []
+        return {"spec": {"template": {"spec": {"volumes": volumes}}}}
+
+    def restart_deploy(self, ns, deploy, *, annotations=None):
         self.restarts.append((ns, deploy))
+        self.named.append((annotations or {}).get(delivery.BUNDLE_COMMIT_ANNOTATION))
 
 
 def _repo(tmp_path: Path, *, dockerfile: str, gojira: dict | None = None) -> Path:
@@ -88,6 +116,11 @@ def _repo(tmp_path: Path, *, dockerfile: str, gojira: dict | None = None) -> Pat
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "-m", "compose")
     return work
+
+
+def _built(kube: Kubectl, work: Path) -> None:
+    """The agent runs the image its generated build made from `work`'s HEAD."""
+    kube.image = f"{REGISTRY}/ledger:{_git(work, 'rev-parse', 'HEAD')[:12]}@sha256:" + "d" * 64
 
 
 @pytest.fixture
@@ -420,6 +453,7 @@ def test_a_save_never_moves_the_runtime_when_bundles_are_artifacts(tmp_path, con
     _pub, kube = configured
     old = "reg.example/agents/daedalus-runtime@sha256:" + "b" * 64
     source = _repo(tmp_path, dockerfile=f"FROM {old}\n")
+    _built(kube, source)
     gh = _CloningGitHub(source)
 
     upload_intake_file(gh, "acme/agent-ledger", "note.md", "remember this", runtime_image=RUNTIME, archive_only=True)
@@ -428,6 +462,129 @@ def test_a_save_never_moves_the_runtime_when_bundles_are_artifacts(tmp_path, con
 
     assert gh.dockerfiles == [f"FROM {old}\n", f"FROM {old}\n"]
     assert gh.messages[0] == "kobo: archive intake/note.md [skip ci]"
-    assert gh.messages[1] == "kobo: add tools/check.py"
+    assert gh.messages[1] == "kobo: add tools/check.py [skip ci]"
     # The archive restarts nothing; the check is delivered by one restart.
     assert kube.restarts == [("ledger", "ledger")]
+
+
+def test_a_save_that_cannot_change_the_image_skips_the_build_and_names_its_commit(tmp_path, configured):
+    """Gate (integrity, 2026-11-20): a commit that cannot change the image skips the
+    generated build, whose deploy of the same image under the commit's tag rolled the
+    agent a second time a minute after the room's own restart (johnny-bravo). The one
+    restart names the commit it delivers, which is what says the save is live."""
+    _pub, kube = configured
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")
+    _built(kube, work)
+    (work / "bundle" / "persona.md").write_text("two\n")
+    gh = GitHub()
+    assert delivery.push(gh, work, "kobo: persona") is True
+    assert gh.messages == ["kobo: persona [skip ci]"]
+    assert kube.restarts == [("ledger", "ledger")] and kube.named == [gh.local_head(work)]
+
+
+def test_a_commit_that_can_change_the_image_still_builds(tmp_path, configured):
+    """A new runtime in the Dockerfile builds (the runtime route), and so does every
+    commit of an agent whose Dockerfile reads the commit (the old shape on an older
+    runtime, which bakes its bundle in)."""
+    _pub, kube = configured
+    work = _repo(tmp_path / "moved", dockerfile=f"FROM {RUNTIME}\n")
+    (work / "Dockerfile").write_text("FROM reg.example/agents/daedalus-runtime@sha256:" + "c" * 64 + "\n")
+    gh = GitHub()
+    delivery.push(gh, work, "kobo: runtime image")
+    assert gh.messages == ["kobo: runtime image"] and kube.restarts == []
+
+    baked = _repo(tmp_path / "baked", dockerfile="FROM reg.example/agents/daedalus-runtime:old\nCOPY bundle/ /bundle\n")
+    (baked / "bundle" / "persona.md").write_text("two\n")
+    delivery.push(gh, baked, "kobo: persona")
+    assert gh.messages[-1] == "kobo: persona"
+
+
+def test_a_restart_after_a_secret_names_the_commit_it_delivers(tmp_path, configured):
+    """The restart that follows a Secret names the commit it delivers: the one its
+    caller published before it, or the one its step returns, and none otherwise."""
+    _pub, _kube = configured
+    plain = SecretKubectl(keys_after=0)
+    delivery.restart_once_secret_carries(plain, "ledger", "ledger-slack", ["SLACK_BOT_TOKEN"], background=False)
+    given = SecretKubectl(keys_after=0)
+    delivery.restart_once_secret_carries(
+        given, "ledger", "ledger-slack", ["SLACK_BOT_TOKEN"], background=False, commit="a" * 40,
+    )
+    stepped = SecretKubectl(keys_after=0)
+    delivery.restart_once_secret_carries(
+        stepped, "ledger", "ledger-slack", ["SLACK_BOT_TOKEN"], background=False, before=lambda: "b" * 40,
+    )
+    assert (plain.named, given.named, stepped.named) == ([None], ["a" * 40], ["b" * 40])
+
+
+def test_a_save_after_a_build_that_never_landed_builds_again(tmp_path, configured):
+    """Gate (integrity): a save used to retry a runtime build that failed, by being
+    a commit that builds. It still does: when the image running predates the
+    Dockerfile's last change, the next save builds, and the room's restart still
+    delivers its bundle on the image the agent has."""
+    _pub, kube = configured
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")
+    _built(kube, work)
+    (work / "Dockerfile").write_text("FROM reg.example/agents/daedalus-runtime@sha256:" + "c" * 64 + "\n")
+    gh = GitHub()
+    delivery.push(gh, work, "kobo: runtime image")
+    (work / "bundle" / "persona.md").write_text("two\n")
+    delivery.push(gh, work, "kobo: persona")
+    assert gh.messages == ["kobo: runtime image", "kobo: persona"]
+    # Restarted for its bundle, named by its image's tag once its build deploys.
+    assert kube.restarts == [("ledger", "ledger")] and kube.named == [None]
+
+
+def test_an_image_that_bakes_its_bundle_in_is_restarted_by_its_build_alone(tmp_path, configured):
+    """An agent whose Dockerfile copies its bundle in takes a change only from its
+    build, so the room adds no restart that would deliver nothing."""
+    _pub, kube = configured
+    baked = _repo(tmp_path, dockerfile="FROM reg.example/agents/daedalus-runtime:old\nCOPY bundle/ /bundle\n")
+    _built(kube, baked)
+    (baked / "bundle" / "persona.md").write_text("two\n")
+    gh = GitHub()
+    delivery.push(gh, baked, "kobo: persona")
+    assert gh.messages == ["kobo: persona"] and kube.restarts == []
+
+
+def test_a_room_that_builds_each_change_names_no_restart(tmp_path):
+    """Without bundles as artifacts no restart delivers a bundle (the build does), so
+    none names a commit: the Slack steps' restart reads this before naming one."""
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")
+    assert delivery.delivered_by_restart(GitHub(), work) is None
+
+
+def test_a_restart_names_a_commit_only_where_the_deployment_mounts_the_bundle(tmp_path, configured):
+    """An agent whose commit converted it still runs its old image until the deploy
+    platform redeploys it, its bundle baked in: a restart there delivers nothing, so
+    it names nothing, and a converted agent is never read as carrying a save."""
+    _pub, kube = configured
+    kube.mounted = False
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")
+    _built(kube, work)
+    (work / "bundle" / "persona.md").write_text("two\n")
+    delivery.push(GitHub(), work, "kobo: persona")
+    assert kube.restarts == [("ledger", "ledger")] and kube.named == [None]
+
+
+def test_a_secret_change_on_a_baked_image_still_restarts(tmp_path, configured):
+    """force_restart means the pod must read a Secret again: a commit that builds
+    does not stand in for that restart."""
+    _pub, kube = configured
+    baked = _repo(tmp_path, dockerfile="FROM reg.example/agents/daedalus-runtime:old\nCOPY bundle/ /bundle\n")
+    (baked / "bundle" / "persona.md").write_text("two\n")
+    delivery.push(GitHub(), baked, "kobo: persona", force_restart=True)
+    assert kube.restarts == [("ledger", "ledger")]
+
+
+def test_a_gojira_yaml_change_with_no_stamp_to_compare_builds(tmp_path, configured):
+    """A repository whose deploy files carry no contract stamp cannot say they are
+    behind, so a commit that changes gojira.yaml builds, as every commit did."""
+    _pub, kube = configured
+    work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\n")
+    (work / CI_WORKFLOW).write_text("name: ci\n")
+    _git(work, "commit", "-qam", "older deploy files")
+    _built(kube, work)
+    (work / "gojira.yaml").write_text(yaml.safe_dump({"app": "ledger", "env": {"A": "1"}}))
+    gh = GitHub()
+    delivery.push(gh, work, "kobo: env")
+    assert gh.messages == ["kobo: env"]

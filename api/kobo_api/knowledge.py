@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kobo_api import delivery
-from kobo_api.clients import GitHubClient, KubectlClient, image_tag
+from kobo_api.clients import ClientError, GitHubClient, KubectlClient, image_tag
 
 # 1-40 chars: a lowercase letter, then lowercase/digit/hyphen, ".md" — no path
 # separators, no leading dot/digit/hyphen, nothing that could escape
@@ -178,6 +178,13 @@ def delivery_state(
 
     runs = github.runs_for_commit(repo, sha), newest first (same convention
     BuildStep relies on, kobo_api.steps.BuildStep):
+      - no runs, with bundles as artifacts: a save that cannot change the
+        image skips the build (`kobo_api.delivery.push`, 2026-11-20), and the
+        room's restart names the commit it delivered on the pod template
+        (`delivery.named_commit`). Named this commit (`sha` may be a prefix)
+        or one that carries it (`github.includes`): "rolling" while that
+        restart runs, then "delivered". Anything else, or a GitHub that
+        cannot be asked, is "building" until the next poll.
       - no runs yet: "building" — registration lag, the same grace BuildStep
         extends CI before treating an empty list as anything but "not yet".
       - newest run not completed (queued or in_progress): "building".
@@ -217,6 +224,20 @@ def delivery_state(
     """
     runs = github.runs_for_commit(repo, sha)
     if not runs:
+        if delivery.configured():
+            # A commit that cannot change the image skips the build (`delivery.push`):
+            # the room's restart delivers it and names it on the pod template. Named,
+            # or a later head named (one branch, so it carries this one), and the
+            # restart is over: delivered.
+            try:
+                dep = kubectl.deployment_status_json(namespace, deploy)
+            except Exception:  # noqa: BLE001 -- no claim about what was not seen
+                dep = None
+            named = delivery.named_commit(dep)
+            if named is not None and _carries(github, repo, named, sha):
+                if _rollout_unfinished(dep):
+                    return {"state": "rolling", "detail": None}
+                return {"state": "delivered", "detail": None}
         return {"state": "building", "detail": None}
 
     newest = runs[0]
@@ -254,6 +275,16 @@ def delivery_state(
     return {"state": "rolling", "detail": None}
 
 
+def _carries(github: GitHubClient, repo: str, named: str, sha: str) -> bool:
+    """Whether the commit a restart named is `sha` or descends from it."""
+    if named.startswith(sha):
+        return True
+    try:
+        return github.includes(repo, named, sha)
+    except ClientError:
+        return False
+
+
 def rollout_in_progress(kubectl: KubectlClient, *, namespace: str, deploy: str) -> bool:
     """True when the agent's Deployment is genuinely mid-rollout: the
     controller hasn't observed the latest spec yet, or the updated or
@@ -264,6 +295,13 @@ def rollout_in_progress(kubectl: KubectlClient, *, namespace: str, deploy: str) 
     try:
         dep = kubectl.deployment_status_json(namespace, deploy)
     except Exception:  # noqa: BLE001
+        return False
+    return _rollout_unfinished(dep)
+
+
+def _rollout_unfinished(dep: dict | None) -> bool:
+    """`rollout_in_progress` over a Deployment already read; False for none."""
+    if not dep:
         return False
     status = dep.get("status") or {}
     spec = dep.get("spec") or {}

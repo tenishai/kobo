@@ -41,6 +41,7 @@ import httpx
 
 from kobo_api.config import Config, GroupChoice
 from kobo_api.groups import GroupResolver, OktaGroupResolver, OktaPeopleSearch
+from kobo_api.timefmt import rfc3339
 
 if TYPE_CHECKING:
     # kobo_api.sero and kobo_api.github_app import ClientError from this
@@ -518,6 +519,13 @@ class GitHubClient(Protocol):
         have to tolerate) — the local clone's HEAD is the pushed sha with no
         such lag, since it's the commit this process itself just made.
         """
+        ...
+
+    def includes(self, repo: str, tip: str, commit: str) -> bool:
+        """Whether `tip` is `commit` (or a sha prefix of it names it) or
+        descends from it in `repo`, read from GitHub's compare (`identical`
+        or `ahead`), with no clone. Raises `ClientError` when GitHub cannot
+        be asked."""
         ...
 
     def head_sha(self, repo: str) -> str:
@@ -1153,6 +1161,18 @@ class GhCLI:
         return self._runner.run(
             [self._gh, "api", f"repos/{repo}/commits", "--jq", ".[0].sha"], env=self._env()
         )
+
+    def includes(self, repo: str, tip: str, commit: str) -> bool:
+        status = self._runner.run(
+            [
+                self._gh, "api",
+                # One commit per page: only the status is read.
+                f"repos/{repo}/compare/{quote(commit, safe='')}...{quote(tip, safe='')}?per_page=1",
+                "--jq", ".status",
+            ],
+            env=self._env(),
+        )
+        return status.strip() in ("identical", "ahead")
 
     def runs_for_commit(self, repo: str, sha: str) -> list[dict]:
         out = self._runner.run(
@@ -2417,7 +2437,9 @@ class KubectlClient(Protocol):
         list, and to retire nothing at all when the cluster is silent."""
         ...
 
-    def restart_deploy(self, namespace: str, deploy: str) -> None:
+    def restart_deploy(
+        self, namespace: str, deploy: str, *, annotations: dict[str, str] | None = None
+    ) -> None:
         """Ask kubectl to roll the Deployment's pods now (`kubectl rollout
         restart`).
 
@@ -2427,6 +2449,11 @@ class KubectlClient(Protocol):
         re-reads its tools directories at boot -- no hot reload into the
         running process. This is the exact nudge that makes the boot
         happen, requested once per successful delivery.
+
+        `annotations` go on the pod template in the same change, beside the
+        restart stamp `rollout restart` writes, so the roll is still one: a
+        delivery names the commit it restarts the agent with
+        (`kobo_api.delivery.BUNDLE_COMMIT_ANNOTATION`).
         """
         ...
 
@@ -2489,6 +2516,10 @@ class KubectlClient(Protocol):
         other failure raises `ClientError`.
         """
         ...
+
+
+# What `kubectl rollout restart` writes on a pod template to roll it.
+RESTARTED_AT_ANNOTATION = "kubectl.kubernetes.io/restartedAt"
 
 
 def image_tag(image: str) -> str | None:
@@ -2576,9 +2607,19 @@ class KubectlCLI:
         )
         return bool(out.strip())
 
-    def restart_deploy(self, namespace: str, deploy: str) -> None:
+    def restart_deploy(
+        self, namespace: str, deploy: str, *, annotations: dict[str, str] | None = None
+    ) -> None:
+        if not annotations:
+            self._runner.run(
+                [self._kubectl, "-n", namespace, "rollout", "restart", f"deploy/{deploy}"]
+            )
+            return
+        # What `rollout restart` writes, plus the caller's, in one patch: one roll.
+        stamped = {RESTARTED_AT_ANNOTATION: rfc3339(datetime.now(UTC)), **annotations}
+        patch = {"spec": {"template": {"metadata": {"annotations": stamped}}}}
         self._runner.run(
-            [self._kubectl, "-n", namespace, "rollout", "restart", f"deploy/{deploy}"]
+            [self._kubectl, "-n", namespace, "patch", f"deploy/{deploy}", "--type", "merge", "-p", json.dumps(patch)]
         )
 
     def set_env(self, namespace: str, deploy: str, name: str, value: str) -> None:
