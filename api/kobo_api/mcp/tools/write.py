@@ -1984,10 +1984,14 @@ def register(mcp: FastMCP, app: Any) -> None:
         what_they_do: str | None = None,
         rules: list[str] | None = None,
         text: str | None = None,
+        base_sha: str | None = None,
     ) -> dict:
         """Rewrite the persona one running agent wears, in place: the same edit
         as Edit persona in its Persona section. Read it first with
-        `kobo_get_agent_persona`. A persona in the room's shape takes
+        `kobo_get_agent_persona` and pass its `sha` as `base_sha`: a save made
+        from a persona that changed since is refused, so nobody's change is
+        written over; read it again and redo the change. A persona in the room's
+        shape takes
         `who_they_are` (one line finishing "You are NAME, ...") and
         `what_they_do` (at least 300 characters), and `rules` only while
         `rules_in_persona` is true; otherwise the agent's rules are its
@@ -2005,7 +2009,11 @@ def register(mcp: FastMCP, app: Any) -> None:
         req = authz.room_request(app, get_user_email(ctx))
         try:
             body = EditAgentPersonaBody(
-                who_they_are=who_they_are, what_they_do=what_they_do, rules=rules, text=text
+                who_they_are=who_they_are,
+                what_they_do=what_they_do,
+                rules=rules,
+                text=text,
+                base_sha=base_sha,
             )
         except ValidationError as exc:
             raise ToolError(_bad_request(exc)) from exc

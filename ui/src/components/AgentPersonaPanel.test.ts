@@ -4,9 +4,11 @@
 // a person can count on: the section shows the persona the agent runs, Edit
 // persona saves this agent's copy and says the agent restarts with it, rules
 // are offered only while they live in the persona, Save to {persona} too
-// appears only for who may edit the catalog persona and sends that
-// persona's own rules back unchanged, and a persona not in the house shape
-// is edited as one text.
+// appears only for who may edit the catalog persona, sends that persona's
+// own rules back unchanged and stays off while the text names the agent, a
+// persona not in the house shape is edited as one text, and a save from a
+// copy that changed since is refused and the form takes the text as it
+// stands.
 import { fireEvent, screen, waitFor, within } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AgentPersonaPanel from "./AgentPersonaPanel.svelte";
@@ -16,6 +18,7 @@ const WHAT = "Keeps the team's alerts straight. ".repeat(12).trim();
 
 const HOUSE = {
   persona: "alert-scribe",
+  sha: "1".repeat(64),
   house_shape: true,
   who_they_are: "a careful keeper of alerts",
   what_they_do: WHAT,
@@ -42,7 +45,16 @@ const CATALOG = {
 
 type Call = { method: string; url: string; body: Record<string, unknown> | null };
 
-function stubRoom(persona: Record<string, unknown>): Call[] {
+/** Answers the persona routes and records every call. `persona` is what the
+ * read answers, read again on every call so a test can change it; `save` is
+ * the edit's answer. */
+function stubRoom(
+  persona: Record<string, unknown> | (() => Record<string, unknown>),
+  save: { status: number; body: unknown } = {
+    status: 200,
+    body: { persona: "alert-scribe", sha: "a".repeat(40) },
+  },
+): Call[] {
   const calls: Call[] = [];
   const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), {
@@ -59,10 +71,10 @@ function stubRoom(persona: Record<string, unknown>): Call[] {
         return json({ state: "building", detail: null });
       }
       if (url === "/api/agents/clio/persona/text" && method === "PUT") {
-        return json({ persona: "alert-scribe", sha: "a".repeat(40) });
+        return json(save.body, save.status);
       }
       if (url === "/api/agents/clio/persona") {
-        return json(persona);
+        return json(typeof persona === "function" ? persona() : persona);
       }
       if (url.startsWith("/api/personas/alert-scribe") && method === "GET") {
         return json(CATALOG);
@@ -106,7 +118,7 @@ describe("AgentPersonaPanel", () => {
       expect(calls.find((c) => c.method === "PUT")).toEqual({
         method: "PUT",
         url: "/api/agents/clio/persona/text",
-        body: { who_they_are: "a calmer keeper of alerts", what_they_do: WHAT },
+        body: { who_they_are: "a calmer keeper of alerts", what_they_do: WHAT, base_sha: HOUSE.sha },
       }),
     );
     expect(await screen.findByText("Restarting clio with the new persona…")).not.toBeNull();
@@ -176,7 +188,56 @@ describe("AgentPersonaPanel", () => {
     await fireEvent.click(within(dialog).getByRole("button", { name: "Save and restart" }));
 
     await waitFor(() =>
-      expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ text: `${prose}\nBe brief.` }),
+      expect(calls.find((c) => c.method === "PUT")?.body).toEqual({
+        text: `${prose}\nBe brief.`,
+        base_sha: HOUSE.sha,
+      }),
+    );
+  });
+
+  it("keeps Save to the persona off while the text names the agent", async () => {
+    stubRoom({ ...HOUSE, can_edit_source: true });
+    render();
+
+    const dialog = await openEditor();
+    await fireEvent.input(within(dialog).getByLabelText("What they do"), {
+      target: { value: `${WHAT} Ask Clio's owners before paging anyone.` },
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: "Save and restart" }));
+
+    expect(
+      await screen.findByText(
+        "The text names clio. Agents made from alert-scribe later would carry that name, so take it out first, or keep this change on clio only.",
+      ),
+    ).not.toBeNull();
+    const button = screen.getByRole("button", { name: "Save to alert-scribe too" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  });
+
+  it("refuses a save from a copy that changed since, and fills the form with the text as it stands", async () => {
+    let current: Record<string, unknown> = HOUSE;
+    stubRoom(() => current, {
+      status: 409,
+      body: { error: "the persona changed since you opened it. Here it is as it stands; make your change again." },
+    });
+    render();
+
+    const dialog = await openEditor();
+    await fireEvent.input(within(dialog).getByLabelText("Who they are"), {
+      target: { value: "a calmer keeper of alerts" },
+    });
+    current = { ...HOUSE, sha: "2".repeat(64), who_they_are: "the keeper someone else wrote" };
+    await fireEvent.click(within(dialog).getByRole("button", { name: "Save and restart" }));
+
+    expect(
+      await within(dialog).findByText(
+        "the persona changed since you opened it. Here it is as it stands; make your change again.",
+      ),
+    ).not.toBeNull();
+    await waitFor(() =>
+      expect((within(dialog).getByLabelText("Who they are") as HTMLInputElement).value).toBe(
+        "the keeper someone else wrote",
+      ),
     );
   });
 

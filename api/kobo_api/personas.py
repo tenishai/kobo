@@ -22,7 +22,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from kobo_api import delivery
 from kobo_api.catalog import _parse_persona_file
@@ -553,6 +553,42 @@ def parse_agent_persona(text: str, agent_name: str) -> ParsedPersona:
     return parse_persona_body("\n".join(lines))
 
 
+def _agent_persona_fields(
+    agent_name: str, who_they_are: str, what_they_do: str, rules: list[str]
+) -> PersonaFields:
+    """The form's fields for an agent's own persona. The who-line is shown to people
+    as "You are {agent}, ...", so a pasted copy of that sentence loses its opening
+    here, before `clean_who`, or the name would be written twice."""
+    opening = re.compile(rf"^\s*you are\s+{re.escape(agent_name)}\b\s*,?\s*", re.IGNORECASE)
+    return PersonaFields(
+        name=agent_name[:60],
+        who_they_are=opening.sub("", who_they_are, count=1),
+        what_they_do=what_they_do,
+        rules=rules,
+    )
+
+
+def agent_persona_parts(text: str, agent_name: str) -> ParsedPersona | None:
+    """The parts of an agent's own persona.md, but only when an edit in parts loses
+    nothing: the file is in the house shape exactly, so rendering what was read
+    gives the file back byte for byte. Anything else (a line added by hand, a rule
+    in another list style, a paragraph after the rules, a built-in's plain prose)
+    is None, and the file is edited as one text, so the form can never drop what it
+    does not show."""
+    parsed = parse_agent_persona(text, agent_name)
+    if parsed.who_they_are is None or parsed.what_they_do is None:
+        return None
+    try:
+        fields = _agent_persona_fields(
+            agent_name, parsed.who_they_are, parsed.what_they_do, parsed.rules
+        )
+    except ValidationError:
+        return None
+    if render_persona(fields).replace("{name}", agent_name) != text:
+        return None
+    return parsed
+
+
 def render_agent_persona(
     agent_name: str, who_they_are: str, what_they_do: str, rules: list[str]
 ) -> str:
@@ -561,12 +597,7 @@ def render_agent_persona(
     The same cleaners and the same floor on what-they-do as a persona edit, and no
     floor on rules: they are this agent's, and with guardrails on they live in its
     Guardrails. Raises PersonaError, or pydantic.ValidationError from the fields."""
-    fields = PersonaFields(
-        name=agent_name[:60],
-        who_they_are=who_they_are,
-        what_they_do=what_they_do,
-        rules=rules,
-    )
+    fields = _agent_persona_fields(agent_name, who_they_are, what_they_do, rules)
     check_substance(fields, rules_required=False)
     body = render_persona(fields).replace("{name}", agent_name)
     _check_rendered_size(body)
@@ -574,17 +605,15 @@ def render_agent_persona(
 
 
 def clean_persona_text(text: str) -> str:
-    """A persona.md the room did not write in its shape, saved as one text: each
-    line's trailing spaces and the blank lines at either end go, and it ends in one
-    newline. Raises PersonaError when nothing is left or it is over the size limit."""
-    lines = [line.rstrip() for line in text.splitlines()]
-    while lines and not lines[0]:
-        lines.pop(0)
-    while lines and not lines[-1]:
-        lines.pop()
-    if not lines:
+    """A persona.md the room did not write in its shape, saved as one text: exactly
+    as given, with Windows line ends made plain and a newline at the end if it had
+    none. Nothing else is touched, so nothing is lost. Raises PersonaError when it
+    is blank or over the size limit."""
+    body = text.replace("\r\n", "\n")
+    if not body.strip():
         raise PersonaError("the persona can't be empty")
-    body = "\n".join(lines) + "\n"
+    if not body.endswith("\n"):
+        body += "\n"
     _check_rendered_size(body)
     return body
 

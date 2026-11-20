@@ -1046,7 +1046,7 @@ def test_a_persona_not_in_the_house_shape_is_read_and_edited_as_one_text(tmp_pat
     """Wire shape (2026-11-20): a persona the room did not write in its shape (an older
     built-in's plain prose) has no parts to show, so it is read and edited whole, and
     an edit in parts is refused rather than writing over text the form never showed.
-    The floor on what-they-do still holds for a persona in the house shape."""
+    The whole text is saved as given."""
     client, github, _ = _guardrails_room(tmp_path, monkeypatch)
     prose = "You are gate, a helpful assistant. Be concise.\n\nAnswer from what you know.\n"
     github._repo_files = {"bundle/persona.md": prose}
@@ -1063,15 +1063,103 @@ def test_a_persona_not_in_the_house_shape_is_read_and_edited_as_one_text(tmp_pat
     assert github.pushes == []
 
     whole = client.put(
-        "/api/agents/gate/persona/text",
-        json={"text": "\n\nYou are gate, a helpful assistant.   \nBe brief.\n\n\n"},
+        "/api/agents/gate/persona/text", json={"text": prose + "Be brief.\n"}
     )
     assert whole.status_code == 200, whole.text
-    assert github.pushed_file("bundle/persona.md") == "You are gate, a helpful assistant.\nBe brief.\n"
+    assert github.pushed_file("bundle/persona.md") == prose + "Be brief.\n"
 
+
+def test_a_hand_edited_house_persona_is_edited_whole_and_loses_nothing(tmp_path, monkeypatch):
+    """Wire shape (2026-11-20 review): parts are offered only when editing them loses
+    nothing. A persona in the house shape that someone edited by hand (a line under
+    the opening, a rule in another list style, a paragraph after the rules) would be
+    cut down to what the form reads, so it comes back as one text, and saving that
+    text writes it back byte for byte."""
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    born = _house_persona("gate", rules=["Never guess."])
+    lines = born.splitlines()
+    lines.insert(1, "Answer the payments team first.")
+    edited = "\n".join(lines) + "\n* Say what you checked.\n\nWhen unsure, ask in the thread.\n"
+    github._repo_files = {"bundle/persona.md": edited}
+
+    body = client.get("/api/agents/gate/persona").json()
+    assert body["house_shape"] is False and body["text"] == edited
+
+    saved = client.put("/api/agents/gate/persona/text", json={"text": body["text"]})
+    assert saved.status_code == 200, saved.text
+    assert github.pushed_file("bundle/persona.md") == edited
+
+
+def test_the_floor_and_a_pasted_opening_on_an_edit_in_parts(tmp_path, monkeypatch):
+    """Wire shape (2026-11-20): the floor on what-they-do holds for an edit in parts,
+    and a who-line pasted as the section shows it ("You are gate, ...") does not
+    write the agent's name twice, in any case, with or without the comma."""
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
     github._repo_files = {"bundle/persona.md": _house_persona("gate", rules=[])}
+
     thin = client.put(
         "/api/agents/gate/persona/text",
         json={"who_they_are": "a helper", "what_they_do": "Helps with alerts."},
     )
     assert thin.status_code == 422 and "too short to work from" in thin.json()["error"]
+
+    for pasted in ("You are gate, a calm triager.", "you are GATE a calm triager"):
+        saved = client.put(
+            "/api/agents/gate/persona/text",
+            json={"who_they_are": pasted, "what_they_do": HOUSE_WHAT_THEY_DO},
+        )
+        assert saved.status_code == 200, saved.text
+        assert github.pushed_file("bundle/persona.md").splitlines()[0] == (
+            "You are gate, a calm triager."
+        )
+
+
+def test_a_persona_edit_from_a_stale_copy_is_refused(tmp_path, monkeypatch):
+    """Wire shape (2026-11-20 review): a save names the version it was read at. When
+    the file moved since (another edit, a swap, a hand edit), the save is refused and
+    nothing is written, so nobody's change is lost; the version read now saves."""
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    github._repo_files = {"bundle/persona.md": _house_persona("gate", rules=[])}
+    opened = client.get("/api/agents/gate/persona").json()["sha"]
+    github._repo_files = {"bundle/persona.md": _house_persona("gate", rules=["Never guess."])}
+
+    change = {"who_they_are": "a triager", "what_they_do": HOUSE_WHAT_THEY_DO}
+    stale = client.put("/api/agents/gate/persona/text", json={**change, "base_sha": opened})
+
+    assert stale.status_code == 409
+    assert stale.json()["error"].startswith("the persona changed since you opened it")
+    assert github.pushes == []
+    current = client.get("/api/agents/gate/persona").json()["sha"]
+    fresh = client.put("/api/agents/gate/persona/text", json={**change, "base_sha": current})
+    assert fresh.status_code == 200, fresh.text
+
+
+def test_a_persona_reads_without_a_rules_box_when_the_guardrails_file_cannot_be_read(
+    tmp_path, monkeypatch
+):
+    """Wire shape (2026-11-20 review): reading the persona does not fail because the
+    guardrails file could not be read; it says the rules are not the persona's, so no
+    rules box is offered that could put a rule in two places. The edit itself still
+    refuses until it can tell."""
+    from kobo_api.clients import ClientError as RoomClientError
+    from kobo_api.guardrails import GUARDRAILS_PATH
+
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    github._repo_files = {"bundle/persona.md": _house_persona("gate", rules=[])}
+    read_file = github.read_file
+
+    def guardrails_unreadable(repo, path, ref=None):
+        if path == GUARDRAILS_PATH:
+            raise RoomClientError("down")
+        return read_file(repo, path, ref)
+
+    github.read_file = guardrails_unreadable
+
+    body = client.get("/api/agents/gate/persona")
+    assert body.status_code == 200, body.text
+    assert body.json()["rules_in_persona"] is False and body.json()["house_shape"] is True
+    edit = client.put(
+        "/api/agents/gate/persona/text",
+        json={"who_they_are": "a triager", "what_they_do": HOUSE_WHAT_THEY_DO},
+    )
+    assert edit.status_code == 502 and github.pushes == []

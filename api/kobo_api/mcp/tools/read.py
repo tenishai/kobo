@@ -493,11 +493,12 @@ def register(mcp: FastMCP, app: Any) -> None:
     @audited("kobo_get_agent_persona")
     async def kobo_get_agent_persona(ctx: Context, agent: str) -> dict:
         """The persona `agent` runs, read from its own files: the catalog id it
-        was made from (`persona`) and, when the persona is in the room's shape
-        (`house_shape`), `who_they_are`, `what_they_do` and any `rules` the file
-        still holds; otherwise the whole `text`. `rules_in_persona` false means
-        the agent's rules live in its Guardrails (`kobo_get_guardrails`), not
-        here. `can_edit` says whether you may change it with
+        was made from (`persona`) and, when the persona is exactly in the
+        room's shape (`house_shape`), `who_they_are`, `what_they_do` and any
+        `rules` the file still holds; otherwise the whole `text`. `sha` is the
+        version to pass back as `base_sha`. `rules_in_persona` false means the
+        agent's rules live in its Guardrails (`kobo_get_guardrails`), not here.
+        `can_edit` says whether you may change it with
         `kobo_edit_agent_persona`. The agent must be ready; one that runs its
         team's own code keeps its persona in its own repository."""
         req = authz.room_request(app, get_user_email(ctx))

@@ -1071,13 +1071,16 @@ export async function updatePersona(id: string, body: PersonaUpdate): Promise<Ca
 }
 
 /** `GET /api/agents/{name}/persona` (2026-11-20): the persona one agent runs,
- * read from its own `bundle/persona.md`. In the house shape (`house_shape`)
- * it comes in parts, with any rules the file still holds; otherwise the
- * whole `text`. `rules_in_persona` is false when the agent's rules live in its
- * Guardrails, so the editor offers no rules then. `can_edit_source` says the
- * caller may also save an edit to the catalog persona it was made from. */
+ * read from its own `bundle/persona.md`. Exactly in the house shape
+ * (`house_shape`) it comes in parts, with any rules the file still holds;
+ * otherwise the whole `text`, so an edit never drops what a form would not
+ * show. `sha` is the version a save names as `base_sha`. `rules_in_persona`
+ * is false when the agent's rules live in its Guardrails, so the editor
+ * offers no rules then. `can_edit_source` says the caller may also save an
+ * edit to the catalog persona it was made from. */
 export type AgentPersona = {
   persona: string;
+  sha: string;
   house_shape: boolean;
   who_they_are: string | null;
   what_they_do: string | null;
@@ -1094,14 +1097,17 @@ export async function getAgentPersona(name: string): Promise<AgentPersona> {
 }
 
 /** What Edit persona sends: the parts of a house-shape persona (`rules` only
- * while they live in it), or the whole `text` of one that is not. */
-export type AgentPersonaEdit =
+ * while they live in it), or the whole `text` of one that is not, with the
+ * `sha` it was read at. */
+export type AgentPersonaEdit = (
   | { who_they_are: string; what_they_do: string; rules?: string[] }
-  | { text: string };
+  | { text: string }
+) & { base_sha: string | null };
 
 /** `PUT /api/agents/{name}/persona/text`: rewrites the agent's own persona;
  * the agent restarts with it. Answers the commit to watch, like other saves
- * that rebuild the agent. The catalog persona stays as it was. */
+ * that rebuild the agent. The catalog persona stays as it was. A 409 means
+ * the file moved since `base_sha`: read it again and make the change again. */
 export async function editAgentPersona(
   name: string,
   body: AgentPersonaEdit,

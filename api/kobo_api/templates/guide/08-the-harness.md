@@ -27,7 +27,7 @@ Shown only while the permission service is off. The service account the agent ru
 
 The persona the agent runs, read in place: who it is, what it does, and any rules its persona still holds. The persona name in the agent's header opens this section too.
 
-**Edit persona** changes it for this agent. **Save and restart** writes the new text into the agent's own files, and the agent restarts with it, usually within a minute or two; its memory, skills and Guardrails stay as they are, and the page says Updating until the new persona is in place. Where the agent's rules live in its Guardrails, the editor has no rules box: change them there. A persona the room did not write in its usual parts is edited as one text.
+**Edit persona** changes it for this agent. **Save and restart** writes the new text into the agent's own files, and the agent restarts with it, usually within a minute or two; its memory, skills and Guardrails stay as they are, and the page says Updating until the new persona is in place. Where the agent's rules live in its Guardrails, the editor has no rules box: change them there. A persona that is not exactly in the room's usual parts, such as one edited by hand in its repository, is edited as one text, so nothing in it is lost. If someone else changed the persona while you had it open, your save is refused and the editor shows it as it stands, so nobody's change is lost.
 
 The edit changes this agent alone. When you may also edit the persona it was made from, a line after the save says agents made from that persona later still start from the old text, and its button, **Save to** and the persona's name, puts the new text there as well. Agents already made from it keep their own.
 

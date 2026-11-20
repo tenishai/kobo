@@ -11,13 +11,20 @@
   // catalog persona it was made from, a line after the save offers **Save to
   // {persona} too** (the persona form's own `PUT /api/personas/{id}`, with that
   // persona's rules left as they are), so the next agent made from it starts
-  // from the new text as well. Nothing else changes any other agent.
+  // from the new text as well. Nothing else changes any other agent. Text that
+  // names this agent keeps the offer off: every later agent would carry the
+  // name.
   //
-  // A persona the room wrote in its house shape is edited in its parts. Its
-  // rules are offered only while they live in the persona (a room without
-  // guardrails, or an agent from before them); otherwise they are the agent's
-  // Guardrails, and changed there. One the room did not write in that shape
-  // (an older built-in's plain prose) is shown and edited as one text.
+  // A persona exactly in the room's house shape is edited in its parts; the
+  // room says so only when writing the parts back gives the same file, so the
+  // form never drops a line it does not show. Its rules are offered only while
+  // they live in the persona (a room without guardrails, or an agent from before
+  // them); otherwise they are the agent's Guardrails, and changed there. Any
+  // other persona is shown and edited as one text.
+  //
+  // A save names the version it was opened at (`base_sha`). When the file moved
+  // since, the room refuses it, and the form takes the text as it stands so the
+  // change is made again on top of it, the way Guardrails does.
   //
   // A save rebuilds the agent, so its delivery is reported to the page the
   // way the Skills panel's is (`lib/delivery.svelte`): the header says
@@ -29,7 +36,12 @@
   import ErrorState from "./ErrorState.svelte";
   import Modal from "./Modal.svelte";
   import Skeleton from "./Skeleton.svelte";
-  import { ApiError, errorMessage, type AgentPersonaEdit } from "../lib/api";
+  import {
+    ApiError,
+    errorMessage,
+    type AgentPersona,
+    type AgentPersonaEdit,
+  } from "../lib/api";
   import {
     beginDelivery as noteDeliveryBegan,
     reportDelivery as noteDeliveryState,
@@ -41,7 +53,7 @@
     personaFullQuery,
     updatePersonaMutation,
   } from "../lib/queries";
-  import { splitLines } from "../lib/validate";
+  import { personaMissing, splitLines } from "../lib/validate";
 
   let {
     agentName,
@@ -62,8 +74,6 @@
   const editMut = createMutation(() => editAgentPersonaMutation(queryClient, agentName));
   const sourceMut = createMutation(() => updatePersonaMutation(queryClient));
 
-  // The room's own floor on what-they-do (`PERSONA_WHAT_MIN_CHARS`).
-  const WHAT_MIN_CHARS = 300;
   // What they do starts folded past this many lines.
   const FOLD_LINES = 12;
 
@@ -83,48 +93,65 @@
   let what = $state("");
   let rulesText = $state("");
   let wholeText = $state("");
+  /** The version the form was filled from, sent as `base_sha`. */
+  let baseSha = $state<string | null>(null);
   let saveError = $state<string | null>(null);
 
   const house = $derived(persona.data?.house_shape ?? true);
   const rulesHere = $derived(Boolean(persona.data?.rules_in_persona));
   const fileRules = $derived(persona.data?.rules ?? []);
 
+  /** Fill the form from what the room read, and remember its version. */
+  function seed(data: AgentPersona): void {
+    who = data.who_they_are ?? "";
+    what = data.what_they_do ?? "";
+    rulesText = (data.rules ?? []).join("\n");
+    wholeText = data.text ?? "";
+    baseSha = data.sha ?? null;
+  }
+
   function openEditor(): void {
     const data = persona.data;
     if (!data || frozen) {
       return;
     }
-    who = data.who_they_are ?? "";
-    what = data.what_they_do ?? "";
-    rulesText = fileRules.join("\n");
-    wholeText = data.text ?? "";
+    seed(data);
     saveError = null;
     open = true;
   }
 
-  /** What is still missing, in one sentence, or null when Save may go. The
-   * server is still the check. */
+  /** What is still missing, in one sentence, or null when Save may go: the
+   * persona form's own floor (`personaMissing`), with the name not edited
+   * here and no floor on rules, which are this agent's. The server is still
+   * the check. */
   const missing = $derived.by((): string | null => {
     if (!house) {
       return wholeText.trim().length === 0 ? "The persona can't be empty." : null;
     }
-    if (who.trim().length === 0) {
-      return "Say who they are in one line.";
-    }
-    const length = what.trim().length;
-    if (length === 0) {
-      return "Say what they do.";
-    }
-    if (length < WHAT_MIN_CHARS) {
-      return `Say more about what they do: ${length} of at least ${WHAT_MIN_CHARS} characters.`;
-    }
-    return null;
+    return personaMissing(
+      { name: personaName, whoTheyAre: who, whatTheyDo: what, rules: rulesText },
+      "shared",
+      true,
+      false,
+    );
   });
 
   /** The last saved parts, for Save to {persona} too. */
   let saved = $state<{ who: string; what: string } | null>(null);
   let offerSource = $state(false);
   let sourceNote = $state<{ ok: boolean; message: string } | null>(null);
+
+  /** Whether the saved text names this agent as a whole word, in any case.
+   * Saved to the catalog, every agent made from the persona later would carry
+   * this one's name. */
+  const namesAgent = $derived.by((): boolean => {
+    if (saved === null) {
+      return false;
+    }
+    const escaped = agentName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`\\b${escaped}\\b`, "i");
+    return pattern.test(saved.who) || pattern.test(saved.what);
+  });
 
   function handleSave(): void {
     if (missing !== null || editMut.isPending || frozen) {
@@ -136,8 +163,9 @@
           who_they_are: who,
           what_they_do: what,
           ...(rulesHere ? { rules: splitLines(rulesText) } : {}),
+          base_sha: baseSha,
         }
-      : { text: wholeText };
+      : { text: wholeText, base_sha: baseSha };
     const offer = house && Boolean(persona.data?.can_edit_source);
     editMut.mutate(body, {
       onSuccess: (result) => {
@@ -147,8 +175,17 @@
         sourceNote = null;
         beginDelivery(result.sha);
       },
-      onError: (error: unknown) => {
+      onError: async (error: unknown) => {
         saveError = errorMessage(error, "Couldn't save the persona. Try again.");
+        if (error instanceof ApiError && error.status === 409) {
+          // Changed since the dialog opened: the form takes the text as it
+          // stands, and the change is made again on top of it.
+          try {
+            seed(await queryClient.fetchQuery(agentPersonaQuery(agentName)));
+          } catch {
+            // The line above already says what happened.
+          }
+        }
       },
     });
   }
@@ -298,12 +335,17 @@
     {#if offerSource}
       <div class="persona-panel__offer">
         <p class="panel__note">
-          Agents made from {personaName} later still start from the old text.
+          {#if namesAgent}
+            The text names {agentName}. Agents made from {personaName} later would carry that
+            name, so take it out first, or keep this change on {agentName} only.
+          {:else}
+            Agents made from {personaName} later still start from the old text.
+          {/if}
         </p>
         <button
           type="button"
           class="btn"
-          disabled={sourceMut.isPending}
+          disabled={sourceMut.isPending || namesAgent}
           onclick={saveToSource}
         >
           {sourceMut.isPending ? "Saving…" : `Save to ${personaName} too`}
