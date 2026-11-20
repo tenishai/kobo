@@ -100,10 +100,12 @@ from kobo_api.archetypes import (
 from kobo_api.avatars import (
     PLACEHOLDER,
     cache_portrait,
+    has_picture,
     paint_portrait,
     portrait_version,
     set_avatar,
     small_portrait,
+    stored_picture,
 )
 from kobo_api.bab import A2A_ASK as BAB_A2A_ASK
 from kobo_api.bab import AGENTS_VENDOR as BAB_AGENTS_VENDOR
@@ -7242,7 +7244,7 @@ def create_app(
                 "first_reply": agent.first_reply,
                 "slack": slack,
                 "destroy_visible": _operator_block(request, cfg) is None,
-                "has_avatar": agent.avatar_version is not None or agent.avatar_png is not None,
+                "has_avatar": has_picture(session, agent),
                 "avatar_version": agent.avatar_version,
                 "health": _fresh_health_body(agent, live),
                 "created_by": agent.created_by,
@@ -12973,14 +12975,24 @@ def create_app(
         if isinstance(agent, JSONResponse):
             return agent
 
+        # The picture columns are read on their own (`stored_picture`), never
+        # through `agent`: they are deferred, and a destroy that finishes
+        # while the page is still asking would make that load raise. A row
+        # gone by then has no picture. What this route makes (a version, a
+        # small copy) is written the same way, so a gone row updates nothing.
+        agent_id = agent.id
         version = agent.avatar_version
+        stored: str | None = None
         if version is None:
-            if agent.avatar_png is None:
+            stored = stored_picture(session, agent_id, Agent.avatar_png)
+            if stored is None:
                 return JSONResponse({"error": "no picture yet"}, status_code=404)
             # A picture kept before versions, or by a replica that predates
             # them: give it one now.
-            version = portrait_version(base64.b64decode(agent.avatar_png))
-            agent.avatar_version = version
+            version = portrait_version(base64.b64decode(stored))
+            session.query(Agent).filter_by(id=agent_id).update(
+                {Agent.avatar_version: version}, synchronize_session=False
+            )
             session.commit()
 
         small = request.query_params.get("size") == "small"
@@ -12995,20 +13007,25 @@ def create_app(
             return Response(status_code=304, headers=headers)
 
         if small:
-            copy = agent.avatar_small
+            copy = stored_picture(session, agent_id, Agent.avatar_small)
             if copy is None:
-                made = small_portrait(base64.b64decode(agent.avatar_png))
+                stored = stored or stored_picture(session, agent_id, Agent.avatar_png)
+                made = small_portrait(base64.b64decode(stored)) if stored else None
                 if made is not None:
                     copy = base64.b64encode(made).decode("ascii")
-                    agent.avatar_small = copy
+                    session.query(Agent).filter_by(id=agent_id).update(
+                        {Agent.avatar_small: copy}, synchronize_session=False
+                    )
                     session.commit()
             if copy is not None:
                 return Response(
                     content=base64.b64decode(copy), media_type="image/webp", headers=headers
                 )
 
-        png = base64.b64decode(agent.avatar_png)
-        return Response(content=png, media_type="image/png", headers=headers)
+        stored = stored or stored_picture(session, agent_id, Agent.avatar_png)
+        if stored is None:
+            return JSONResponse({"error": "no picture yet"}, status_code=404)
+        return Response(content=base64.b64decode(stored), media_type="image/png", headers=headers)
 
     # --- Cross-group colleagueship (access-control arc, Task C1) -----------
     #

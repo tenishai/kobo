@@ -40,6 +40,7 @@ from PIL import Image
 
 from kobo_api import delivery
 from kobo_api.clients import GitHubClient
+from kobo_api.models import Agent
 
 log = logging.getLogger(__name__)
 
@@ -193,6 +194,24 @@ def small_portrait(png: bytes) -> bytes | None:
     except Exception as exc:  # noqa: BLE001 -- the full picture still serves
         log.warning("no small copy of a portrait: %s", exc)
         return None
+
+
+def stored_picture(session, agent_id: int, column) -> str | None:
+    """One kept picture column of one agent (`Agent.avatar_png` or
+    `Agent.avatar_small`, base64), read on its own: None when there is none,
+    or when the row is gone. Both columns are deferred, so reading one
+    through the agent loads it then, and raises if a destroy has deleted the
+    row since the agent was read."""
+    return session.query(column).filter(Agent.id == agent_id).scalar()
+
+
+def has_picture(session, agent) -> bool:
+    """Whether `agent` has a picture, without loading it: its version says
+    so, and only a picture kept before versions takes a query."""
+    if agent.avatar_version is not None:
+        return True
+    pictured = session.query(Agent.id).filter(Agent.id == agent.id, Agent.avatar_png.is_not(None))
+    return pictured.first() is not None
 
 
 def cache_portrait(agent, png: bytes) -> str:

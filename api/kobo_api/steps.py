@@ -46,7 +46,13 @@ import httpx
 import yaml
 
 from kobo_api import audit, delivery, gateway_lane, github_access
-from kobo_api.avatars import PLACEHOLDER, cache_portrait, paint_portrait, set_avatar
+from kobo_api.avatars import (
+    PLACEHOLDER,
+    cache_portrait,
+    has_picture,
+    paint_portrait,
+    set_avatar,
+)
 from kobo_api.bab import ROOM_ACTOR as BAB_ROOM_ACTOR
 from kobo_api.catalog import _DESCRIPTION_HEADER_RE
 from kobo_api.clients import (
@@ -1276,9 +1282,9 @@ class AvatarStep:
     def run(self, ctx: Ctx) -> str:
         agent = ctx.agent
 
-        # The version first: the picture itself is deferred, a megabyte to
-        # load just to learn it is there.
-        if agent.avatar_version is not None or agent.avatar_png is not None:
+        # Never the picture itself: it is deferred, a megabyte to load just
+        # to learn it is there.
+        if has_picture(ctx.session, agent):
             raise StepSkipped("agent already has a picture")
 
         # Same catalog-lookup-by-persona-id idiom as `generate_avatar`'s own

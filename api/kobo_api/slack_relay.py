@@ -441,10 +441,13 @@ def face(relay_id: str, request: Request, session: Session = Depends(get_session
     row = session.get(SlackRelayApp, relay_id)
     if row is None:
         return _bare(404)
-    agent = session.query(Agent).filter_by(name=row.agent_name).one_or_none()
-    if agent is None or not agent.avatar_png:
+    # The picture alone (2026-11-20): it is a deferred column, and reading it
+    # through the agent would load it then, and raise for a row a destroy
+    # deleted in between.
+    stored = session.query(Agent.avatar_png).filter_by(name=row.agent_name).scalar()
+    if not stored:
         return _bare(404)
-    return Response(content=base64.b64decode(agent.avatar_png), media_type="image/png",
+    return Response(content=base64.b64decode(stored), media_type="image/png",
                     headers={"Cache-Control": "public, max-age=300"})
 
 
