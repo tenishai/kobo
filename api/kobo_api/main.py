@@ -168,7 +168,7 @@ from kobo_api.guardrails import (
     validate_rules,
 )
 from kobo_api.guide import find_section, load_guide
-from kobo_api.health import AgentHealth, health_sweep_loop, probe_health
+from kobo_api.health import AgentHealth, health_sweep_loop, keep_newer, probe_health
 from kobo_api.iap import HttpsOnlyMiddleware, IapMiddleware, IapVerifier
 from kobo_api.intake import (
     INTAKE_MAX_BYTES,
@@ -3264,7 +3264,7 @@ def _probe_health_soon(app: FastAPI, kubectl, name: str) -> None:
 
     def run() -> None:
         try:
-            app.state.health[name] = probe_health(kubectl, name)
+            keep_newer(app.state.health, name, probe_health(kubectl, name))
         except Exception:  # the sweep asks again within a minute
             log.exception("health probe for %s failed", name)
         finally:
@@ -7067,18 +7067,19 @@ def create_app(
         verdict: AgentHealth | None = getattr(app.state, "health", {}).get(name)
         return verdict.body() if verdict is not None else None
 
-    def _fresh_health_body(agent: Agent) -> dict | None:
-        """The agent's own page wants the cluster's word now, not the sweep's
-        from up to a minute ago (2026-11-20: a restart showed Ready, then sat on
-        Restarting long after the agent was back). A ready agent whose last
-        verdict is older than LIVE_HEALTH_MAX_AGE_S is asked again, off the
-        request (`_probe_health_soon`); the page polls every few seconds while it
-        watches a restart, so the next poll carries the new verdict. The
-        dashboard's list keeps the sweep's minute."""
+    def _fresh_health_body(agent: Agent, live: bool) -> dict | None:
+        """While the agent's own page watches a restart (`live`) it wants the
+        cluster's word now, not the sweep's from up to a minute ago (2026-11-20:
+        a restart showed Ready, then sat on Restarting long after the agent was
+        back). A ready agent whose last verdict is older than
+        LIVE_HEALTH_MAX_AGE_S is asked again then, off the request
+        (`_probe_health_soon`); the page polls every few seconds while it
+        watches, so the next poll carries the new verdict. Otherwise, and on
+        the dashboard's list, the sweep's minute stands."""
         verdict: AgentHealth | None = getattr(app.state, "health", {}).get(agent.name)
         clients = app.state.clients
         if (
-            agent.status == AgentStatus.READY and clients is not None and clients.kubectl is not None
+            live and agent.status == AgentStatus.READY and clients is not None and clients.kubectl is not None
             and _health_stale(verdict)
         ):
             _probe_health_soon(app, clients.kubectl, agent.name)
@@ -7154,7 +7155,7 @@ def create_app(
 
     @app.get("/api/agents/{name}")
     def get_agent(
-        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+        name: str, request: Request, session: Session = Depends(get_session), live: bool = False  # noqa: B008
     ) -> JSONResponse:
         cfg: Config = app.state.config
         agent = _visible_agent_or_404(session, request, name)
@@ -7223,7 +7224,7 @@ def create_app(
                 "slack": slack,
                 "destroy_visible": _operator_block(request, cfg) is None,
                 "has_avatar": agent.avatar_png is not None,
-                "health": _fresh_health_body(agent),
+                "health": _fresh_health_body(agent, live),
                 "created_by": agent.created_by,
                 "group_name": agent.group_name,
                 "archetype": agent.archetype,

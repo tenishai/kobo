@@ -164,24 +164,27 @@ def test_an_old_shape_agent_on_the_rooms_runtime_converts_in_the_one_commit_that
 
 def test_a_conversion_whose_ask_failed_is_asked_again_by_the_next_push(tmp_path, configured):
     """Gate (integrity): the conversion's commit lands with CI skipped, so if the platform
-    cannot be asked, nothing else would ever deploy it. The push says the change did not
-    reach the agent, and the next push asks again, even with nothing to commit; so does a
-    save to an agent left that way before this (ledger, 2026-11-04 to 11-20)."""
+    cannot be asked, nothing else would ever deploy it. The push says so (a timeout as
+    much as a refusal), and the next push asks again, even with nothing to commit; so
+    does a save to an agent left that way before this (ledger, 2026-11-04 to 11-20). A
+    restart still delivers what it can on the way, except to the conversion's own image,
+    which still carries its old bundle."""
     pub, kube = configured
     asked: list[str] = []
 
     def reprovision(name: str) -> None:
         asked.append(name)
         if len(asked) == 1:
-            raise ClientError("reprovision(7) failed (503): down")
+            raise httpx.ReadTimeout("timed out")
 
     delivery.configure(delivery.Delivery(kubectl=kube, publisher=pub, registry=REGISTRY, runtime_image=RUNTIME,
                                          replica_bucket="mem-bucket", reprovision=reprovision))
     work = _repo(tmp_path, dockerfile=f"FROM {RUNTIME}\nCOPY bundle/ /bundle\n")
     (work / "bundle" / "persona.md").write_text("two\n")
     gh = GitHub()
-    with pytest.raises(ClientError, match=delivery.NOT_DELIVERED):
+    with pytest.raises(ClientError, match=delivery.PLATFORM_NOT_ASKED):
         delivery.push(gh, work, "kobo: persona")
+    assert kube.restarts == []
     assert gh.messages == [f"kobo: persona{delivery.CONVERTED_NOTE} [skip ci]"]
 
     assert delivery.push(gh, work, "kobo: persona") is False
@@ -189,8 +192,7 @@ def test_a_conversion_whose_ask_failed_is_asked_again_by_the_next_push(tmp_path,
     assert delivery.push(gh, work, "kobo: persona") is True
     assert asked == ["ledger", "ledger", "ledger"]
     assert gh.messages[-1] == "kobo: persona [skip ci]"
-    # The platform's deploy is the restart; the room adds none of its own.
-    assert kube.restarts == []
+    assert kube.restarts == [("ledger", "ledger")]
 
 
 def test_a_caller_that_asks_the_platform_itself_is_not_asked_for_twice(tmp_path, configured):

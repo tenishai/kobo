@@ -57,7 +57,7 @@ export function isUpdating(agent: string, now: number = Date.now()): boolean {
 // a restart this page saw start, forgotten after `STALE_MS` so a watcher that
 // stopped without saying so can never mask a real outage for long.
 
-type Restart = { id: number; at: number; rolled: boolean; since?: string | null };
+type Restart = { id: number; at: number; rolled: boolean; mark?: string };
 
 const restarts = $state<Record<string, Restart>>({});
 let lastRestart = 0;
@@ -90,19 +90,37 @@ export function isRestarting(agent: string, now: number = Date.now()): boolean {
 // has seen none by then ends: none is coming.
 const ROLL_WAIT_MS = 8 * 60_000;
 
-type Reading = { state: string; rolling?: boolean; ready_since?: string | null; unread?: boolean };
+type Reading = {
+  state: string;
+  rolling?: boolean;
+  ready_since?: string | null;
+  generation?: number | null;
+  unread?: boolean;
+};
+
+// The agents whose last reading said rolling: the page asks for live readings
+// while one is, as it does while it watches a restart of its own.
+const rollingNow: Record<string, boolean> = {};
+
+/** True while this page wants the room's live reading of `agent`. */
+export function wantsLiveHealth(agent: string): boolean {
+  return isRestarting(agent) || rollingNow[agent] === true;
+}
 
 /** Ends the watch over a restart this page asked for once the agent has been
  * through it and is back: up and settled after a reading that said it was
- * rolling or down, or with a `ready_since` other than the first reading's
- * (a restart between two polls). A reading the room could not take counts for
- * nothing, and no reading is compared with this browser's clock (2026-11-20:
- * the header kept saying Restarting until a hard refresh). */
+ * rolling or down, or after one whose generation or ready time moved on from
+ * the first reading's (a restart between two polls). A reading the room could
+ * not take counts for nothing, and no reading is compared with this browser's
+ * clock (2026-11-20: the header kept saying Restarting until a hard refresh). */
 export function settleRestart(
   agent: string,
   health: Reading | null | undefined,
   now: number = Date.now(),
 ): void {
+  if (health && health.unread !== true) {
+    rollingNow[agent] = health.rolling === true;
+  }
   const restart = restarts[agent];
   if (restart === undefined || !health || health.unread === true) {
     return;
@@ -113,12 +131,12 @@ export function settleRestart(
     }
     return;
   }
-  const since = health.ready_since ?? null;
-  if (restart.since === undefined) {
+  const mark = `${health.generation ?? ""}/${health.ready_since ?? ""}`;
+  if (restart.mark === undefined) {
     // The first reading: the agent as the change found it.
-    restart.since = since;
+    restart.mark = mark;
   }
-  if (restart.rolled || since !== restart.since || now - restart.at > ROLL_WAIT_MS) {
+  if (restart.rolled || mark !== restart.mark || now - restart.at > ROLL_WAIT_MS) {
     delete restarts[agent];
   }
 }

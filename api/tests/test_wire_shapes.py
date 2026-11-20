@@ -1860,10 +1860,11 @@ def test_a_connected_agents_page_says_what_is_missing(session_factory__api_slack
 def test_an_agents_own_page_has_the_cluster_asked_again_off_the_request(
     session_factory__api_slack, config__api_slack
 ):
-    """Wire shape (2026-11-20): the agent's page answers at once with the stored
-    reading and, when that is older than ten seconds, has the cluster asked again on a
-    thread, so its next poll is current and no request holds a database connection
-    while the cluster answers."""
+    """Wire shape (2026-11-20): while the agent's page watches a restart (`live`) it
+    answers at once with the stored reading and, when that is older than ten seconds,
+    has the cluster asked again on a thread, so its next poll is current and no request
+    holds a database connection while the cluster answers. Otherwise the sweep's minute
+    stands. The reading carries the deployment's generation, which the page compares."""
     import threading
 
     client = _make_client__api_slack(session_factory__api_slack, config__api_slack, kubectl=FakeKubectl())
@@ -1872,12 +1873,14 @@ def test_an_agents_own_page_has_the_cluster_asked_again_off_the_request(
     client.app.state.health = {AGENT_NAME: old}
 
     assert client.get(f"/api/agents/{AGENT_NAME}").json()["health"] == old.body()
+    assert not [t for t in threading.enumerate() if t.name == f"health-{AGENT_NAME}"]
+    assert client.get(f"/api/agents/{AGENT_NAME}?live=true").json()["health"] == old.body()
     for thread in threading.enumerate():
         if thread.name == f"health-{AGENT_NAME}":
             thread.join(5)
     health = client.get(f"/api/agents/{AGENT_NAME}").json()["health"]
     assert (health["state"], health["rolling"]) == ("up", False)
-    assert health["checked_at"] != old.checked_at
+    assert health["checked_at"] != old.checked_at and "generation" in health
 
 
 def test_a_connected_agents_page_claims_nothing_it_could_not_see(
@@ -4914,6 +4917,18 @@ def test_the_access_tab_carries_each_vendors_last_failed_lease_until_a_newer_lea
 
 
 # --- the health block's `rolling` (2026-11-01) ---
+
+
+def test_a_sweep_never_puts_back_an_older_reading_than_the_one_stored():
+    """Gate (2026-11-20): an agent's page has the cluster asked between sweeps, and a
+    sweep that read the agent before that keeps the newer reading."""
+    from kobo_api.health import keep_newer
+
+    store = {"clio": AgentHealth("up", None, "2026-11-20T21:00:05.250000Z")}
+    keep_newer(store, "clio", AgentHealth("down", "0 of 1 running", "2026-11-20T21:00:05Z", rolling=True))
+    assert store["clio"].state == "up"
+    keep_newer(store, "clio", AgentHealth("down", "0 of 1 running", "2026-11-20T21:00:06Z", rolling=True))
+    assert store["clio"].state == "down"
 
 _SETTLED_STATUS = FAKE_DEPLOYMENT_STATUS_SETTLED["status"]
 _PROGRESSING = {"type": "Progressing", "status": "True", "reason": "ReplicaSetUpdated"}

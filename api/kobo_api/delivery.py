@@ -60,6 +60,7 @@ REPLICA_BUCKET_ENV = "MEMORY_REPLICA_BUCKET"
 LEGACY_COPY = "COPY bundle/"
 CONVERTED_NOTE = " (the image is now the runtime only; the bundle travels as an artifact)"
 NOT_DELIVERED = "the change is in the repository but did not reach the agent"
+PLATFORM_NOT_ASKED = "the change is in the repository, but the deploy platform could not be asked to deploy it"
 
 
 @dataclass(frozen=True)
@@ -100,18 +101,23 @@ def save_pin(runtime_image: str | None) -> str | None:
     return None if configured() else runtime_image
 
 
-def reprovisioner(session_factory: Callable[[], Any], gojira: GojiraClient | None) -> Callable[[str], None]:
+def reprovisioner(
+    session_factory: Callable[[], Any], gojira: GojiraClient | None,
+) -> Callable[[str], None] | None:
     """`Delivery.reprovision` for a room or a script: finds the agent's deploy
     platform app by name and asks for its deploy files again, as a hand-over
-    for a connected agent (`kobo_api.agent_env.regenerate_handed_over`). Raises
-    ClientError when there is no app to ask or the platform refuses."""
+    for a connected agent (`kobo_api.agent_env.regenerate_handed_over`). None
+    for a room without the platform, so a conversion there builds as it did.
+    The ask raises ClientError when the agent has no app to ask."""
+    if gojira is None:
+        return None
 
     def reprovision(name: str) -> None:
         with session_factory() as session:
             agent = session.query(Agent).filter_by(name=name).first()
             app_id = agent.gojira_app_id if agent is not None else None
             handed_over = agent is not None and is_connected(agent)
-        if gojira is None or app_id is None:
+        if app_id is None:
             raise ClientError(f"no deploy platform app to ask for {name}")
         gojira.reprovision(app_id, handed_over=handed_over)
 
@@ -260,14 +266,17 @@ def push(
     reads changed). Returns whether anything was pushed, like `commit_push`.
 
     When the deploy files no longer match gojira.yaml (the conversion below just
-    changed it, or an earlier ask never reached the platform), a restart delivers
-    nothing: the commit skips the build their contract check would fail, and the
-    platform is asked to render them again, which builds and rolls the agent. It
-    is asked whether or not anything was pushed, so asking again after a failure
-    repairs the agent (`kobo_api.agent_env.edit_gojira_yaml` does the same).
-    `asks_platform` is for a caller that changed gojira.yaml itself and asks the
-    platform right after: the commit skips the build all the same, and is not
-    asked twice. Raises ClientError when the publish, the restart or the ask fails."""
+    changed it, or an earlier ask never reached the platform), the commit skips
+    the build their contract check would fail, and the platform is asked to
+    render them again, which builds and rolls the agent. A restart still
+    delivers what it can first (never for the conversion, whose running image
+    still carries its old bundle). The platform is asked whether or not anything
+    was pushed, so asking again after a failure repairs the agent
+    (`kobo_api.agent_env.edit_gojira_yaml` does the same). `asks_platform` is
+    for a caller that changed gojira.yaml itself and asks the platform right
+    after: the commit skips the build all the same, nothing is asked twice, and
+    the platform's deploy is the one restart. Raises ClientError when the
+    publish, the restart or the ask fails."""
     if _delivery is None:
         return github.commit_push(workdir, message)
     name = agent_name_of(workdir)
@@ -289,11 +298,14 @@ def push(
     if changed:
         publish(workdir, name, head_sha=github.local_head(workdir) or "")
     if behind:
-        if not asks_platform and _delivery.reprovision is not None:
-            try:
-                _delivery.reprovision(name)
-            except ClientError as exc:
-                raise ClientError(f"{NOT_DELIVERED}: the deploy platform was not asked to deploy it ({exc}); try again") from exc
+        if asks_platform or _delivery.reprovision is None:
+            return pushed
+        if not built and ((changed and restart) or force_restart):
+            _restart(name)
+        try:
+            _delivery.reprovision(name)
+        except Exception as exc:  # a refusal, a timeout or no app: the same failure here
+            raise ClientError(f"{PLATFORM_NOT_ASKED} ({exc}); try again") from exc
         return pushed
     if built:
         # Nobody to ask: the conversion commit builds, and the roll is the restart.

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { beginRestart, endRestart, isRestarting, settleRestart } from "./delivery.svelte";
+import { beginRestart, endRestart, isRestarting, settleRestart, wantsLiveHealth } from "./delivery.svelte";
 
 // A restart this page asked for ends once the agent has been through it and is
 // back (2026-11-20). Readings are compared with each other, never with this
@@ -33,6 +33,23 @@ describe("settleRestart", () => {
     expect(isRestarting("gate")).toBe(true);
     settleRestart("gate", up("2026-11-20T21:00:40Z"));
     expect(isRestarting("gate")).toBe(false);
+
+    // A rolling update never takes the agent down: its generation still moves on.
+    beginRestart("gate");
+    settleRestart("gate", { ...up("2026-11-20T09:00:00Z"), generation: 7 });
+    settleRestart("gate", { ...up("2026-11-20T09:00:00Z"), generation: 8 });
+    expect(isRestarting("gate")).toBe(false);
+  });
+
+  it("asks for live readings while it watches a restart or the agent rolls", () => {
+    expect(wantsLiveHealth("solo")).toBe(false);
+    beginRestart("solo");
+    expect(wantsLiveHealth("solo")).toBe(true);
+    endRestart("solo");
+    settleRestart("solo", { state: "up", rolling: true });
+    expect(wantsLiveHealth("solo")).toBe(true);
+    settleRestart("solo", up("2026-11-20T21:00:40Z"));
+    expect(wantsLiveHealth("solo")).toBe(false);
   });
 
   it("waits minutes for a restart that starts late, and ends when none comes", () => {

@@ -120,7 +120,9 @@ import {
   type AgentEnvWriteResult,
   type AgentListResult,
   type AgentMetadata,
+  type AgentModelChange,
   type AgentPersonaEdit,
+  type AgentRestart,
   type AgentSecrets,
   type AgentSecretsWrite,
   type AgentSkill,
@@ -312,7 +314,7 @@ import {
   checkSelfHostedModels,
   type OrgAccountsCheck,
 } from "./api";
-import { beginRestart, isRestarting } from "./delivery.svelte";
+import { beginRestart, isRestarting, wantsLiveHealth } from "./delivery.svelte";
 import { detailRefetchInterval, listRefetchInterval } from "./status";
 
 /**
@@ -350,7 +352,7 @@ export function agentsQuery() {
 export function agentQuery(name: string) {
   return queryOptions({
     queryKey: ["agents", name] as const,
-    queryFn: () => getAgent(name),
+    queryFn: () => getAgent(name, wantsLiveHealth(name)),
     refetchInterval: (query) => detailRefetchInterval(query.state.data, isRestarting(name)),
   });
 }
@@ -1249,8 +1251,13 @@ export function convertToConnectedMutation(
 export function updateAgentModelMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (model: string) => patchAgentModel(name, model),
-    onSuccess: () => {
-      restarted(queryClient, name);
+    onSuccess: (result: AgentModelChange) => {
+      // Unchanged, or a pull request someone still has to merge: nothing restarts yet.
+      if (result.wiring === "committed") {
+        restarted(queryClient, name);
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      }
       queryClient.invalidateQueries({ queryKey: ["agents"], exact: true });
     },
   };
@@ -1404,10 +1411,13 @@ export function deleteKnowledgeMutation(
 ) {
   return {
     mutationFn: (filename: string) => deleteKnowledgeFile(name, filename),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["agents", name, "knowledge"],
-      });
+    onSuccess: (result: { sha?: string; mode?: "instant" | "archive" }) => {
+      // Removed live, nothing restarts; a removal the room had to commit does.
+      if (result.mode === "archive") {
+        restarted(queryClient, name);
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["agents", name, "knowledge"] });
+      }
     },
   };
 }
@@ -1534,9 +1544,7 @@ export function addCatalogSkillMutation(queryClient: QueryClient, name: string) 
   return {
     mutationFn: ({ skillName, team }: { skillName: string; team: string }) =>
       addCatalogSkill(name, skillName, team),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "skills"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1548,9 +1556,7 @@ export function addCatalogSkillMutation(queryClient: QueryClient, name: string) 
 export function addCatalogSkillsMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (picks: { name: string; team: string }[]) => addCatalogSkills(name, picks),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "skills"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1562,9 +1568,7 @@ export function addCatalogSkillsMutation(queryClient: QueryClient, name: string)
 export function deleteSkillMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (skillId: string) => deleteSkill(name, skillId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "skills"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1577,9 +1581,7 @@ export function saveLocalSkillMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: ({ skillId, content }: { skillId: string; content: string }) =>
       saveLocalSkill(name, skillId, content),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "skills"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1892,7 +1894,13 @@ export function agentSecretsQuery(
 export function restartAgentMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: () => restartAgent(name),
-    onSuccess: () => restarted(queryClient, name),
+    onSuccess: (result: AgentRestart) => {
+      if (result.restarted) {
+        restarted(queryClient, name);
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      }
+    },
   };
 }
 
@@ -1945,7 +1953,13 @@ export function saveAgentEnvMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: ({ set, remove }: { set: Record<string, string>; remove: string[] }) =>
       saveAgentEnv(name, set, remove),
-    onSuccess: () => restarted(queryClient, name),
+    onSuccess: (result: AgentEnvWriteResult) => {
+      if (result.wiring === "committed") {
+        restarted(queryClient, name);
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      }
+    },
   };
 }
 
@@ -2195,8 +2209,13 @@ export function patchMetadataMutation(queryClient: QueryClient, name: string) {
       purpose_tags?: string[];
       capability?: string;
     }) => patchAgentMetadata(name, body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    onSuccess: (result: { sha: string | null }) => {
+      // The agent's card carries these, so a change that landed restarts it.
+      if (result.sha) {
+        restarted(queryClient, name);
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      }
       // The cards on the main page show the same tags and line.
       queryClient.invalidateQueries({ queryKey: ["agents"], exact: true });
     },
@@ -2216,7 +2235,7 @@ export function regenerateMetadataMutation(
   return {
     mutationFn: () => regenerateAgentMetadata(name),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      restarted(queryClient, name);
       queryClient.invalidateQueries({ queryKey: ["agents"], exact: true });
     },
   };
