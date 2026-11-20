@@ -25,7 +25,14 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from . import audit, gateway_lane
-from .bab import ROOM_ACTOR, BabClient, all_permissions, child_id, child_repositories
+from .bab import (
+    ROOM_ACTOR,
+    BabClient,
+    all_permissions,
+    child_every,
+    child_id,
+    child_repositories,
+)
 from .clients import ClientError, InstallationRepo
 from .models import REPO_ACCESS_APPROVED, AdminIntegration, RepoAccess
 
@@ -122,13 +129,15 @@ def strays(repositories: list[str], available: list[InstallationRepo]) -> list[s
 @dataclass(frozen=True)
 class Saved:
     """What a write of an agent's set came to: the child's id, whether the set
-    in force changed, the set in force, and the pick left waiting for a
-    reviewer (None when the whole pick landed)."""
+    in force changed, the set in force (named repositories, or `every`
+    repository the installation can see, for Read alone), and the pick left
+    waiting for a reviewer (None when the whole pick landed)."""
 
     integration: str
     changed: bool
     repositories: list[str]
     waiting: dict | None = None
+    every: bool = False
 
 
 def waiting_pick(request: dict | None) -> dict | None:
@@ -138,8 +147,8 @@ def waiting_pick(request: dict | None) -> dict | None:
         return None
     change = request.get("proposal") or {}
     return {"id": request.get("id"), "added": sorted(change.get("added") or []),
-            "removed": sorted(change.get("removed") or []), "requested_by": request.get("requested_by"),
-            "created_at": request.get("created_at")}
+            "removed": sorted(change.get("removed") or []), "all": bool(change.get("all")),
+            "requested_by": request.get("requested_by"), "created_at": request.get("created_at")}
 
 
 def waiting_on(bab: BabClient, actor: str, agent: str, integration: str) -> dict | None:
@@ -150,36 +159,45 @@ def waiting_on(bab: BabClient, actor: str, agent: str, integration: str) -> dict
     return None
 
 
-def child_spec(conn: Connection, agent: str, repositories: list[str]) -> dict:
-    """What the child carries in the permission service: the set, a name the
-    Review pane shows, and the installation copied from the connection."""
-    spec = {"repositories": sorted(set(repositories)), "name": f"{conn.name} for {agent}",
-            "installation_id": conn.installation_id}
+def child_spec(conn: Connection, agent: str, repositories: list[str], *, every: bool = False) -> dict:
+    """What the child carries in the permission service: the set (named
+    repositories, or every repository the installation can see, which the
+    service keeps to Read alone), a name the Review pane shows, and the
+    installation copied from the connection."""
+    the_set: dict = {"all_repositories": True} if every else {"repositories": sorted(set(repositories))}
+    spec = {**the_set, "name": f"{conn.name} for {agent}", "installation_id": conn.installation_id}
     if conn.account:
         spec["account"] = conn.account
     return spec
 
 
-def write_child(bab: BabClient, actor: str, conn: Connection, agent: str, repositories: list[str]) -> Saved:
-    """Write or replace the agent's child with `repositories`. The ceiling is
-    every github catalogue permission: the levels are the owner's to ask and
-    Review's to decide, not a wall the room adds.
+def write_child(bab: BabClient, actor: str, conn: Connection, agent: str, repositories: list[str], *,
+                every: bool = False) -> Saved:
+    """Write or replace the agent's child with `repositories`, or with every
+    repository the installation can see (`every`, bab 0.4.26), which the
+    permission service keeps to Read alone: it refuses a level beyond Read
+    on such a set, and a set holding or asking for one cannot become it. The
+    ceiling is every github catalogue permission: the levels are the owner's
+    to ask and Review's to decide, not a wall the room adds.
 
     Once the set carries grants, an owner's pick is the permission service's
-    to split (bab 0.4.22): what it removes lands, what it adds waits for a
-    reviewer, and the answer names the set in force and the request under
-    `pending`. A reviewer's own write lands whole."""
+    to split (bab 0.4.22): what it removes lands, what widens it (added
+    repositories, or every repository) waits for a reviewer, and the answer
+    names the set in force and the request under `pending`. A reviewer's own
+    write lands whole."""
     existing = child(bab, actor, conn.id, agent)
-    before = sorted(child_repositories(existing))
-    spec = child_spec(conn, agent, repositories)
+    before, was_every = sorted(child_repositories(existing)), child_every(existing)
+    spec = child_spec(conn, agent, repositories, every=every)
     cid = child_id(conn.id, agent)
     answer = bab.put_integration(cid, GITHUB_VENDOR, spec, all_permissions(bab, GITHUB_VENDOR, actor), actor,
                                  parent=conn.id) or {}
     waiting = waiting_pick(answer.get("pending"))
     if waiting is not None:
-        in_force = sorted(answer.get("repositories") or before)
-        return Saved(cid, in_force != before, in_force, waiting)
-    return Saved(cid, existing is None or before != spec["repositories"], spec["repositories"])
+        now_every = bool(answer.get("all_repositories"))
+        in_force = [] if now_every else sorted(answer.get("repositories") or before)
+        return Saved(cid, (in_force, now_every) != (before, was_every), in_force, waiting, every=now_every)
+    after = spec.get("repositories", [])
+    return Saved(cid, existing is None or (before, was_every) != (after, every), after, every=every)
 
 
 def active_grants(bab: BabClient, actor: str, agent: str, integration: str) -> list[dict]:

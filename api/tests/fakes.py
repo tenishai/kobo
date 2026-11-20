@@ -2682,8 +2682,16 @@ class FakeBab:
         self.topologies.append((actor, list(agents)))
         return {"agents": len(agents), "removed": 0, "tuples_written": len(agents), "tuples_deleted": 0}
 
+    def _tier(self, permission):
+        return next((x["tier"] for v in self._catalogue.values() for g in v["groups"] for x in g["permissions"]
+                     if x["name"] == permission), "read")
+
     def request(self, agent, integration, permissions, note, actor):
         self._guard()
+        row = next((i for i in self._integrations if i["integration"] == integration), None)
+        if row is not None and (row.get("spec") or {}).get("all_repositories") and any(
+                self._tier(p) != "read" for p in permissions):
+            raise ClientError("the permission service refused the request: every repository is for Read alone")
         rid = len(self._requests) + 1
         tiers: dict[str, int] = {}
         for p in permissions:
@@ -2727,6 +2735,12 @@ class FakeBab:
             if verdict == "deny":
                 r["status"] = "denied"
                 results.append({"id": rid, "status": "denied", "reason": reason})
+                continue
+            if r["kind"] == "repositories" and r["proposal"].get("all"):
+                row = next(i for i in self._integrations if i["integration"] == r["integration"])
+                row["spec"] = {**{k: v for k, v in row["spec"].items() if k != "repositories"}, "all_repositories": True}
+                r["outcome"], r["status"] = {"every repository": "added"}, "approved"
+                results.append({"id": rid, "status": "approved", "outcome": dict(r["outcome"]), "leases_ended": 0})
                 continue
             if r["kind"] == "repositories":
                 row = next(i for i in self._integrations if i["integration"] == r["integration"])
@@ -2857,18 +2871,33 @@ class FakeBab:
         existing = next((i for i in self._integrations if i["integration"] == integration), None)
         waits = [r for r in self._requests.values()
                  if r["integration"] == integration and r["kind"] == "repositories" and r["status"] == "pending"]
+        every = spec.get("all_repositories") is True
+        held = [g for g in self._grants.values() if g["integration"] == integration and g.get("state") == "active"]
+        asked = [r for r in self._requests.values() if r["integration"] == integration
+                 and r["kind"] != "repositories" and r["status"] == "pending"]
+        levels = sorted({g["permission"] for g in held} | {p for r in asked for p in r["permissions"]})
+        if every and existing is not None and any(self._tier(p) != "read" for p in levels):
+            raise ClientError(f"the permission service refused connecting {integration}: every repository is for Read "
+                              f"alone, and this set holds or is asked for more")
         if self.reviewers is not None and actor not in self.reviewers:
             repos = list(spec.get("repositories") or [])
-            if not parent or parent_row.get("kind") != "connection" or not repos:
+            if not parent or parent_row.get("kind") != "connection" or not (repos or every):
                 raise ClientError(f"the permission service refused connecting {integration}: {actor} is not on the "
                                   f"admin or security team")
+            was_every = bool(((existing or {}).get("spec") or {}).get("all_repositories"))
             before = list(((existing or {}).get("spec") or {}).get("repositories") or [])
-            held = [g for g in self._grants.values() if g["integration"] == integration and g.get("state") == "active"]
-            asked = [r for r in self._requests.values() if r["integration"] == integration
-                     and r["kind"] != "repositories" and r["status"] == "pending"]
-            levels = sorted({g["permission"] for g in held} | {p for r in asked for p in r["permissions"]})
             added = sorted(set(repos) - set(before))
-            if before and added and (held or asked):
+            if every and existing is not None and not was_every and (held or asked):
+                row = waits[0] if waits else {"id": len(self._requests) + 1, "integration": integration, "kind": "repositories",
+                                              "status": "pending", "note": None, "created_at": "2026-10-29T12:00:00",
+                                              "decided_at": None, "decided_by": None, "reason": None, "outcome": {}}
+                row.update(agent=min([g["agent"] for g in held] + [r["agent"] for r in asked]), permissions=levels,
+                           tiers={"read": len(levels)}, requested_by=actor, proposal={"all": True, "added": [], "removed": []})
+                self._requests[row["id"]] = row
+                return {"integration": integration, "vendor": vendor, "ceiling": list(existing["ceiling"]), "parent": parent,
+                        "kind": kind, "repositories": list(existing["spec"].get("repositories") or []),
+                        "all_repositories": False, "pending": dict(row)}
+            if before and added and (held or asked) and not was_every:
                 kept = [r for r in before if r in repos]
                 if kept:
                     existing["spec"] = {**existing["spec"], "repositories": kept}

@@ -2109,11 +2109,18 @@ def register(mcp: FastMCP, app: Any) -> None:
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True))
     @audited("kobo_set_agent_repositories")
-    async def kobo_set_agent_repositories(ctx: Context, agent: str, repositories: list[str]) -> dict:
+    async def kobo_set_agent_repositories(
+        ctx: Context, agent: str, repositories: list[str] | None = None, every_repository: bool = False
+    ) -> dict:
         """Set the GitHub repositories `agent` may work with: the whole set,
         each as "owner/name", replacing whatever it had. This picks WHICH
         repositories; what the agent may do there (read, open pull requests)
-        is asked for with `kobo_request_access`.
+        is asked for with `kobo_request_access`. Or pass
+        `every_repository=True` (and no repositories) for every repository
+        the room's GitHub connection can see, new ones included. That set is
+        for Read alone: Review and Open pull requests need named repositories,
+        and an agent holding either keeps its named set until they are taken
+        back.
 
         A repository taken out of the set stops at once. One added to a set
         the agent already holds a permission on waits for a reviewer:
@@ -2130,7 +2137,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         session = app.state.session_factory()
         try:
             try:
-                payload = GitHubRepositoriesBody(repositories=repositories)
+                payload = GitHubRepositoriesBody(repositories=repositories or [], all=every_repository)
             except (TypeError, ValidationError) as exc:
                 raise ToolError(_bad_request(exc)) from exc
             response = await _off_loop(
@@ -2142,6 +2149,7 @@ def register(mcp: FastMCP, app: Any) -> None:
         return {
             "agent": agent,
             "repositories": body.get("repositories", []),
+            "every_repository": bool(body.get("all")),
             "changed": body.get("changed"),
             "waiting": body.get("waiting"),
         }

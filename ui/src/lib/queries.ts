@@ -902,7 +902,8 @@ export function githubRepositoriesQuery(name: string) {
 
 export function putGithubRepositoriesMutation(queryClient: QueryClient, name: string) {
   return {
-    mutationFn: (repositories: string[]) => putGithubRepositories(name, repositories),
+    // `"every"`: every repository the installation can see, for Read alone.
+    mutationFn: (pick: string[] | "every") => putGithubRepositories(name, pick === "every" ? [] : pick, pick === "every"),
     onSuccess: () => {
       // The access view's GitHub account is now the child (or a new set on
       // it), and the list's `selected` moved with it.

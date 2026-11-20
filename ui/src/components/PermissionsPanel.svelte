@@ -243,17 +243,25 @@
     repoSaved = false;
   }
 
-  type RowState = "held" | "waiting" | "notool" | "above" | "open";
+  type RowState = "held" | "waiting" | "notool" | "readonly" | "above" | "open";
   function rowState(a: AccessAccount, p: AccessPermission): RowState {
     const key = `${a.id}:${p.name}`;
     if (held.has(key)) return "held";
     if (waiting.has(key)) return "waiting";
     if (p.tool === false) return "notool";
+    if (a.all_repositories && p.tier !== "read") return "readonly";
     if (!a.ceiling.includes(p.name)) return "above";
     return "open";
   }
   const NO_TOOL = "no tool uses this yet";
-  const WHY: Record<RowState, string> = { held: "held", waiting: "waiting for review", notool: NO_TOOL, above: "the connection does not allow this", open: "" };
+  const WHY: Record<RowState, string> = {
+    held: "held",
+    waiting: "waiting for review",
+    notool: NO_TOOL,
+    readonly: "every repository is Read only; pick repositories for this",
+    above: "the connection does not allow this",
+    open: "",
+  };
   /** A permission held or asked for before the room knew it opens nothing
    * still says so, beside its state. */
   function why(st: RowState, p: AccessPermission): string {
@@ -330,6 +338,20 @@
    * reviewer. The ticks show what was asked for: the set in force with the
    * pick applied, so unticking a waiting repository and saving takes it back. */
   const repoWaiting = $derived(repos.data?.waiting ?? null);
+  /** Every repository the room's GitHub app can see, for Read alone: one box
+   * instead of a list. Ticked when the set is that or a reviewer is asked for
+   * it; `everyDraft` is the box as the person left it, null following the room. */
+  const everyAsked = $derived(Boolean(repos.data?.all || repoWaiting?.all));
+  let everyDraft = $state<boolean | null>(null);
+  const repoEvery = $derived(everyDraft ?? everyAsked);
+  /** The agent holds or has asked for more than Read on GitHub. Every
+   * repository is for Read alone, so the box waits until that is taken back. */
+  const githubBeyondRead = $derived(
+    grants.some((g) => vendorOf.get(g.integration) === GITHUB && g.state !== "expired" && g.tier !== "read") ||
+      pending.some(
+        (r) => vendorOf.get(r.integration) === GITHUB && r.kind !== REPOSITORIES && Object.keys(r.tiers ?? {}).some((t) => t !== "read"),
+      ),
+  );
   const repoSelected = $derived.by(() => {
     const now = repos.data?.selected ?? [];
     if (!repoWaiting) return now;
@@ -337,7 +359,8 @@
   });
   const repoChecked = $derived(repoDraft ?? repoSelected);
   const repoChanged = $derived(
-    repoChecked.length !== repoSelected.length || repoChecked.some((r) => !repoSelected.includes(r)),
+    repoEvery !== everyAsked ||
+      (!repoEvery && (repoChecked.length !== repoSelected.length || repoChecked.some((r) => !repoSelected.includes(r)))),
   );
   const repoTotal = $derived(repos.data?.total ?? repos.data?.repositories.length ?? 0);
   /** The rows the picker draws: what is picked first (every one of them,
@@ -366,12 +389,21 @@
     repoError = null;
     repoDraft = repoChecked.includes(fullName) ? repoChecked.filter((r) => r !== fullName) : [...repoChecked, fullName];
   }
-  function saveRepositories(): void {
-    if (!repoChanged || repoChecked.length === 0) return;
+  function toggleEvery(): void {
     repoError = null;
-    saveRepos.mutate([...repoChecked], {
+    everyDraft = !repoEvery;
+  }
+  function saveRepositories(): void {
+    if (!repoChanged || (!repoEvery && repoChecked.length === 0)) return;
+    repoError = null;
+    saveRepos.mutate(repoEvery ? "every" : [...repoChecked], {
       onSuccess: (res) => {
         repoDraft = null;
+        everyDraft = null;
+        if (res.waiting?.all) {
+          toast.success("Sent for review", `Every repository waits for a reviewer. ${agentName} keeps its picked repositories until then.`);
+          return;
+        }
         if (res.waiting) {
           // The agent holds a level on its set, so what was added is a
           // reviewer's to allow: stay on the list, where it shows as waiting.
@@ -387,7 +419,12 @@
         accountId = res.integration;
         picked = [];
         query = "";
-        toast.success("Repositories saved", `${res.repositories.length} repositor${res.repositories.length === 1 ? "y" : "ies"} for ${agentName}. Pick the level next.`);
+        toast.success(
+          "Repositories saved",
+          res.all
+            ? `Every repository for ${agentName}, Read only. Pick the level next.`
+            : `${res.repositories.length} repositor${res.repositories.length === 1 ? "y" : "ies"} for ${agentName}. Pick the level next.`,
+        );
       },
       onError: (err: unknown) => {
         repoError = errorMessage(err, "The repositories could not be saved. Try again.");
@@ -430,6 +467,10 @@
     const a = accounts.get(integration);
     return a?.has_repo_set ? a.repositories : null;
   }
+  /** Whether a GitHub set is every repository, for Read alone. */
+  function everyAt(integration: string): boolean {
+    return Boolean(accounts.get(integration)?.all_repositories);
+  }
   function count(n: number, one: string, many: string): string {
     return `${n} ${n === 1 ? one : many}`;
   }
@@ -446,6 +487,7 @@
    * many repositories it may reach. Other vendors' name and mark stand alone. */
   function connectionNote(v: AccessVendor): string | null {
     if (v.id !== GITHUB) return null;
+    if (v.accounts[0]?.all_repositories) return "every repository, Read only";
     return v.accounts[0]?.has_repo_set
       ? count(v.accounts[0].repositories.length, "repository", "repositories")
       : "no repositories picked yet";
@@ -518,7 +560,7 @@
             <td><span class="perm" class:perm--named={labels.has(g.permission)} title={g.permission}>{label(g.permission)}</span></td>
             <td>
               {where(g.integration)}
-              {#if set}{@render repoList(set)}{/if}
+              {#if everyAt(g.integration)}<span class="quiet repos__every">every repository</span>{:else if set}{@render repoList(set)}{/if}
             </td>
             <td><span class="tier tier--{g.tier}">{g.tier}</span></td>
             <td>{expires(g)}</td>
@@ -532,16 +574,16 @@
         {/each}
         {#each asked as r (r.id)}
           {@const pick = r.kind === REPOSITORIES ? (r.proposal ?? { added: [], removed: [] }) : null}
-          {@const set = pick ? pick.added : (r.repositories ?? repoSet(r.integration))}
+          {@const set = pick?.all ? null : pick ? pick.added : (r.repositories ?? repoSet(r.integration))}
           <tr class="vendor__waiting">
             {#if pick}
-              <td><span class="perm perm--named">{pick.removed.length > 0 ? "Replace the repositories" : `Add ${count(pick.added.length, "repository", "repositories")}`}</span></td>
+              <td><span class="perm perm--named">{pick.all ? "Every repository, Read only" : pick.removed.length > 0 ? "Replace the repositories" : `Add ${count(pick.added.length, "repository", "repositories")}`}</span></td>
             {:else}
               <td><span class="perm" class:perm--named={r.permissions.some((p) => labels.has(p))}>{requestLabels(r)}</span></td>
             {/if}
             <td>
               {where(r.integration)}
-              {#if set}{@render repoList(set)}{/if}
+              {#if !pick && everyAt(r.integration)}<span class="quiet repos__every">every repository</span>{:else if set}{@render repoList(set)}{/if}
             </td>
             <td><span class="tier tier--{requestTier(r)}">{requestTier(r)}</span></td>
             <td><span class="quiet">waiting for review</span></td>
@@ -624,10 +666,22 @@
                 </p>
                 {#if repoWaiting}
                   <p class="vendor__copy" role="status">
-                    Waiting for review: {repoWaiting.added.join(", ")}. The agent keeps its current
-                    repositories until a reviewer allows the change.
+                    Waiting for review: {repoWaiting.all ? "every repository" : repoWaiting.added.join(", ")}. The agent
+                    keeps its current repositories until a reviewer allows the change.
                   </p>
                 {/if}
+                <label class="svc svc--repo">
+                  <input type="checkbox" checked={repoEvery} disabled={frozen || saveRepos.isPending || (githubBeyondRead && !repoEvery)} onchange={toggleEvery} />
+                  <span class="svc__name">Every repository, Read only</span>
+                  <span class="svc__desc quiet">
+                    {githubBeyondRead && !repoEvery
+                      ? "Not while the agent holds or has asked for Review or Open pull requests: those need picked repositories."
+                      : `All ${repoTotal} the room's GitHub app can see, and any added later. Review and Open pull requests need picked repositories.`}
+                  </span>
+                </label>
+                {#if repoEvery}
+                  <!-- No list: the set is every repository. -->
+                {:else}
                 <div class="search">
                   <input class="field__input" type="search" placeholder={`Find a repository (${repoTotal} the room can see)`} bind:value={repoQuery} aria-label="Find a repository" disabled={frozen} />
                 </div>
@@ -660,13 +714,14 @@
                     {/if}
                   </div>
                 {/if}
+                {/if}
                 <div class="confirm" class:confirm--live={repoChanged}>
-                  <span class="confirm__count">{repoChecked.length} picked</span>
+                  <span class="confirm__count">{repoEvery ? "Every repository" : `${repoChecked.length} picked`}</span>
                   {#if repoError}
                     <span class="panel__note panel__note--fail confirm__error" role="alert">{repoError}</span>
                   {:else if saveRepos.isPending}
                     <span class="panel__note confirm__error" role="status">Saving the set…</span>
-                  {:else if repoChecked.length === 0}
+                  {:else if !repoEvery && repoChecked.length === 0}
                     <span class="panel__note confirm__error">Pick at least one repository.</span>
                   {:else}
                     <span class="confirm__spacer"></span>
@@ -674,7 +729,7 @@
                   {#if githubAccount?.has_repo_set && !repoChanged}
                     <button type="button" class="btn btn--primary" disabled={frozen} onclick={chooseLevel}>Choose the level</button>
                   {:else}
-                    <button type="button" class="btn btn--primary" disabled={frozen || !repoChanged || repoChecked.length === 0 || saveRepos.isPending} onclick={saveRepositories}>
+                    <button type="button" class="btn btn--primary" disabled={frozen || !repoChanged || (!repoEvery && repoChecked.length === 0) || saveRepos.isPending} onclick={saveRepositories}>
                       {saveRepos.isPending ? "Saving…" : "Save repositories"}
                     </button>
                   {/if}
@@ -697,7 +752,7 @@
               <nav class="crumbs" aria-label="Where you are">
                 {#if vendor.kind !== "service"}<button type="button" class="crumb" onclick={back}>‹ {vendor.account_noun ? `${vendor.account_noun.slice(0, 1).toUpperCase()}${vendor.account_noun.slice(1)}s` : "Accounts"}</button>{/if}
                 {#if isGithub}
-                  <span class="crumb crumb--here">{count(account.repositories.length, "repository", "repositories")}</span>
+                  <span class="crumb crumb--here">{account.all_repositories ? "Every repository" : count(account.repositories.length, "repository", "repositories")}</span>
                 {:else}
                   <span class="crumb crumb--here">{account.name}</span>
                 {/if}
@@ -707,7 +762,7 @@
                   <p class="vendor__saved" role="status">Repositories saved. Pick the level next.</p>
                 {/if}
                 <p class="panel__note repo-set">
-                  <span class="repo-set__list" title={account.repositories.join("\n")}>{account.repositories.join(", ")}</span>
+                  <span class="repo-set__list" title={account.repositories.join("\n")}>{account.all_repositories ? "Every repository the room's GitHub app can see, Read only" : account.repositories.join(", ")}</span>
                   <button type="button" class="crumb" disabled={frozen} onclick={back}>Change repositories</button>
                 </p>
                 <p class="vendor__copy">
