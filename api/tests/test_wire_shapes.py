@@ -4621,7 +4621,8 @@ def test_agent_connections_group_a_child_a_grant_and_a_lease_under_the_agent_and
     assert (asker["team"], asker["status"]) == (None, "ready")
     (github,) = asker["vendors"]
     assert (github["vendor"], github["label"]) == ("github", "GitHub")
-    assert github["connections"] == [{"id": "github-asker", "name": "GitHub for asker", "repositories": ["acme/infra", "acme/web"]}]
+    assert github["connections"] == [{"id": "github-asker", "name": "GitHub for asker", "repositories": ["acme/infra", "acme/web"],
+                                       "all_repositories": False}]
     (grant,) = github["grants"]
     assert (grant["integration"], grant["permission"], grant["tier"], grant["granted_by"], grant["state"]) == (
         "github-asker", "github_repos_read", "read", "ops@example.com", "active")

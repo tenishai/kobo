@@ -47,7 +47,9 @@
       (v) =>
         v.vendor.toLowerCase().includes(q) ||
         v.label.toLowerCase().includes(q) ||
-        v.connections.some((c) => c.name.toLowerCase().includes(q) || c.repositories.some((r) => r.toLowerCase().includes(q))),
+        v.connections.some(
+          (c) => c.name.toLowerCase().includes(q) || c.all_repositories || c.repositories.some((r) => r.toLowerCase().includes(q)),
+        ),
     );
   }
 
@@ -163,7 +165,7 @@
                   <span class="ac__vendor-name">{v.label}</span>
                   {#each v.connections as c (c.id)}
                     <span class="ac__connection" title={c.repositories.join("\n")}>
-                      {c.name}{#if c.repositories.length > 0}<span class="ac__quiet"> · {count(c.repositories.length, "repository", "repositories")}</span>{/if}
+                      {c.name}{#if c.all_repositories}<span class="ac__quiet"> · every repository, Read only</span>{:else if c.repositories.length > 0}<span class="ac__quiet"> · {count(c.repositories.length, "repository", "repositories")}</span>{/if}
                     </span>
                   {/each}
                 </div>

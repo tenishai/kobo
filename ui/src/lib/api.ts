@@ -1828,6 +1828,9 @@ export type AccessAccount = {
   account_id: string | null;
   repositories: string[];
   has_repo_set: boolean;
+  /** A GitHub set that is every repository the room's GitHub app can see,
+   * for Read alone, instead of `repositories`. */
+  all_repositories?: boolean;
 };
 
 /** One vendor in the picker: a cloud (accounts underneath) or a service (one
@@ -1897,7 +1900,9 @@ export type AccessRequest = {
   team?: string | null;
   /** A GitHub request's repository set (issue #365), for the reviewer. */
   repositories?: string[];
-  proposal?: { added: string[]; removed: string[] } | null;
+  /** The request's set is every repository, for Read alone. */
+  all_repositories?: boolean;
+  proposal?: { added: string[]; removed: string[]; all?: boolean } | null;
 };
 
 export type AgentAccess = {
@@ -1939,6 +1944,8 @@ export type RepositoryPick = {
   id: number;
   added: string[];
   removed: string[];
+  /** The pick is every repository, for Read alone. */
+  all?: boolean;
   requested_by: string | null;
   created_at: string | null;
 };
@@ -1951,6 +1958,9 @@ export type GithubRepositories = {
   available: boolean;
   repositories: GithubRepository[];
   selected: string[];
+  /** The set is every repository the room's GitHub app can see, for Read
+   * alone; `selected` is then empty. */
+  all?: boolean;
   /** A pick on a set the agent already holds a level on, waiting for a
    * reviewer; `selected` stays the set in force until it is allowed. */
   waiting?: RepositoryPick | null;
@@ -1968,18 +1978,20 @@ export async function fetchGithubRepositories(name: string): Promise<GithubRepos
 
 /** Writes or replaces the agent's repository set. `integration` is the child
  * the agent's GitHub permission requests then target. 422 with a sentence on
- * an empty set or a repository the installation cannot see. Once the agent
- * holds a level on the set, what the pick adds waits for a reviewer: the
- * answer is a 202 whose `repositories` is the set in force and whose
- * `waiting` is the pick. */
+ * an empty set or a repository the installation cannot see. `every` asks for
+ * every repository the installation can see instead, for Read alone. Once the
+ * agent holds a level on the set, what widens it waits for a reviewer: the
+ * answer is a 202 whose `repositories` (and `all`) are the set in force and
+ * whose `waiting` is the pick. */
 export async function putGithubRepositories(
   name: string,
   repositories: string[],
-): Promise<{ integration: string; repositories: string[]; changed: boolean; waiting?: RepositoryPick | null }> {
+  every = false,
+): Promise<{ integration: string; repositories: string[]; all?: boolean; changed: boolean; waiting?: RepositoryPick | null }> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/github/repositories`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repositories }),
+    body: JSON.stringify(every ? { all: true } : { repositories }),
   });
   return parse(res);
 }
@@ -2039,7 +2051,7 @@ export async function decideAccessRequests(
 export type AgentVendorHoldings = {
   vendor: string;
   label: string;
-  connections: { id: string; name: string; repositories: string[] }[];
+  connections: { id: string; name: string; repositories: string[]; all_repositories?: boolean }[];
   grants: {
     id: number;
     integration: string;

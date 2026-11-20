@@ -7014,11 +7014,12 @@ def test_an_assistant_reads_an_agents_access_picks_its_repositories_and_asks(tmp
     page = _call_tool(mcp, "kobo_get_agent_access", ops, agent="ledger", repository_search="ACME")
     assert (page["grants"], page["pending"], page["can_request"]) == ([], [], True)
     assert "github" in {v["id"] for v in page["vendors"]}
-    assert page["github"] == {"available": True, "selected": [], "waiting": None, "total": 3, "note": None,
+    assert page["github"] == {"available": True, "selected": [], "every_repository": False, "waiting": None, "total": 3, "note": None,
                               "matches": ["acme/infra", "acme/web"]}
 
     saved = _call_tool(mcp, "kobo_set_agent_repositories", ops, agent="ledger", repositories=["acme/web"])
-    assert saved == {"agent": "ledger", "repositories": ["acme/web"], "changed": True, "waiting": None}
+    assert saved == {"agent": "ledger", "repositories": ["acme/web"], "every_repository": False, "changed": True,
+                     "waiting": None}
     asked = _call_tool(mcp, "kobo_request_access", ops, agent="ledger", integration="github-ledger",
                        permissions=["github_repos_read"], note="reads the web app's code")
     after = _call_tool(mcp, "kobo_get_agent_access", ops, agent="ledger")
@@ -7054,7 +7055,7 @@ def test_the_access_tab_shows_github_as_the_agents_own_repository_set(tmp_path, 
     gh = next(v for v in page["vendors"] if v["id"] == "github")
     assert gh["connected"] is True  # a parentless connection exists (kobo#371)
     assert gh["accounts"] == [{"id": "github", "name": "GitHub", "connected": True, "ceiling": GITHUB_LEVELS, "organization": None,
-                               "account_id": None, "repositories": [], "has_repo_set": False}]
+                               "account_id": None, "repositories": [], "has_repo_set": False, "all_repositories": False}]
     assert {p["name"]: p["label"] for g in gh["groups"] for p in g["permissions"]} == {
         "github_repos_read": "Read", "github_pulls_review": "Review pull requests", "github_pulls_write": "Open pull requests"}
     assert all("label" in p for v in page["vendors"] for g in v["groups"] for p in g["permissions"])
@@ -7068,7 +7069,7 @@ def test_the_access_tab_shows_github_as_the_agents_own_repository_set(tmp_path, 
 
     r = c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/web", "acme/infra"]})
     assert r.status_code == 200, r.text
-    assert r.json() == {"integration": "github-ledger", "repositories": ["acme/infra", "acme/web"], "changed": True}
+    assert r.json() == {"integration": "github-ledger", "repositories": ["acme/infra", "acme/web"], "all": False, "changed": True}
     child = next(i for i in bab.integrations("x") if i["integration"] == "github-ledger")
     assert child["parent"] == "github" and child["vendor"] == "github" and child["ceiling"] == GITHUB_LEVELS
     assert child["spec"] == {"repositories": ["acme/infra", "acme/web"], "name": "GitHub for ledger", "installation_id": "151256501"}
@@ -7077,7 +7078,7 @@ def test_the_access_tab_shows_github_as_the_agents_own_repository_set(tmp_path, 
     gh = next(v for v in page["vendors"] if v["id"] == "github")
     assert gh["accounts"] == [{"id": "github-ledger", "name": "GitHub", "connected": True, "ceiling": GITHUB_LEVELS,
                                "organization": None, "account_id": None, "repositories": ["acme/infra", "acme/web"],
-                               "has_repo_set": True}]
+                               "has_repo_set": True, "all_repositories": False}]
     # Another agent's child is nobody else's business; the room-wide picker shows the connection.
     bab.put_integration("github-other", "github", {"repositories": ["acme/web"], "name": "GitHub for other"}, GITHUB_LEVELS, "x",
                         parent="github")
@@ -7138,9 +7139,10 @@ def test_a_repository_added_to_a_set_the_agent_holds_a_level_on_waits_for_a_revi
 
     r = c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/web", "acme/infra"]})
     assert r.status_code == 202, r.text
-    waiting = {"id": rid + 1, "added": ["acme/web"], "removed": [], "requested_by": "ops@example.com",
+    waiting = {"id": rid + 1, "added": ["acme/web"], "removed": [], "all": False, "requested_by": "ops@example.com",
                "created_at": "2026-10-29T12:00:00"}
-    assert r.json() == {"integration": "github-ledger", "repositories": ["acme/infra"], "changed": False, "waiting": waiting}
+    assert r.json() == {"integration": "github-ledger", "repositories": ["acme/infra"], "all": False, "changed": False,
+                        "waiting": waiting}
     listing = c.get("/api/agents/ledger/github/repositories", headers=h).json()
     assert listing["selected"] == ["acme/infra"] and listing["waiting"] == waiting
     row = next(p for p in c.get("/api/agents/ledger/access", headers=h).json()["pending"] if p["kind"] == "repositories")
@@ -7166,9 +7168,45 @@ def test_a_repository_added_to_a_set_the_agent_holds_a_level_on_waits_for_a_revi
     assert r.json()["waiting"]["added"] == ["example-org/agent-ledger"]
     # Saving the set without the addition withdraws it.
     r = c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/web"]})
-    assert r.status_code == 200 and r.json() == {"integration": "github-ledger", "repositories": ["acme/web"], "changed": False}
+    assert r.status_code == 200 and r.json() == {"integration": "github-ledger", "repositories": ["acme/web"], "all": False, "changed": False}
     assert c.get("/api/agents/ledger/github/repositories", headers=h).json()["waiting"] is None
     assert [p["status"] for p in bab.requests("all", "ledger", "x") if p["kind"] == "repositories"] == ["approved", "withdrawn"]
+
+
+def test_every_repository_is_read_alone_and_widening_a_held_set_to_it_waits_for_a_reviewer(tmp_path, fake_storage):
+    """Gate (authorization, bab 0.4.26): one box gives an agent Read on every repository the room's
+    GitHub app can see. The set is written as every repository, never as a list, and the picker
+    and the Access tab say so. It is for Read alone: a level beyond Read is refused on it. Once
+    the agent holds Read on a named set, every repository widens it, so it waits for a reviewer;
+    a set that holds more than Read cannot become it."""
+    c, h, bab, _, _ = _github_room(tmp_path, fake_storage)
+    bab.reviewers = {"sec@example.com"}  # the signed-in owner is on neither team
+
+    r = c.put("/api/agents/ledger/github/repositories", headers=h, json={"all": True})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"integration": "github-ledger", "repositories": [], "all": True, "changed": True}
+    assert bab.integrations("x")[-1]["spec"]["all_repositories"] is True
+    assert c.get("/api/agents/ledger/github/repositories", headers=h).json()["all"] is True
+    github = next(v for v in c.get("/api/agents/ledger/access", headers=h).json()["vendors"] if v["id"] == "github")
+    assert github["accounts"][0]["all_repositories"] is True and github["accounts"][0]["has_repo_set"] is True
+    review = c.post("/api/agents/ledger/access/requests", headers=h,
+                    json={"integration": "github-ledger", "permissions": ["github_pulls_review"], "note": "review"})
+    assert review.status_code >= 400 and "Read alone" in review.json()["error"]
+    for bad in ({"all": True, "repositories": ["acme/web"]}, {"repositories": []}):
+        assert c.put("/api/agents/ledger/github/repositories", headers=h, json=bad).status_code == 422
+
+    # Back to a named set, Read held on it: every repository now waits for a reviewer.
+    assert c.put("/api/agents/ledger/github/repositories", headers=h, json={"repositories": ["acme/infra"]}).status_code == 200
+    rid = c.post("/api/agents/ledger/access/requests", headers=h,
+                 json={"integration": "github-ledger", "permissions": ["github_repos_read"], "note": "read"}).json()["id"]
+    bab.reviewers.add("ops@example.com")
+    assert c.post("/api/admin/access/decide", headers=h, json={"ids": [rid], "verdict": "approve"}).status_code == 200
+    bab.reviewers.discard("ops@example.com")
+    r = c.put("/api/agents/ledger/github/repositories", headers=h, json={"all": True})
+    assert r.status_code == 202 and r.json()["repositories"] == ["acme/infra"] and r.json()["all"] is False
+    assert r.json()["waiting"]["all"] is True
+    trail = [e["summary"] for e in c.get("/api/admin/audit", headers=h).json()["rows"]]
+    assert any(t.endswith("asked to give ledger every repository on GitHub, for Read alone; waiting for review") for t in trail)
 
 
 def test_the_gateway_lane_follows_each_github_level_and_withdraws_what_is_revoked(tmp_path, fake_storage):

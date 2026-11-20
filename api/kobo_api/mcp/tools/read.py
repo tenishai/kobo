@@ -638,6 +638,8 @@ def register(mcp: FastMCP, app: Any) -> None:
             github = {
                 "available": held.get("available"),
                 "selected": held.get("selected", []),
+                # Every repository the room's GitHub app can see, for Read alone: `selected` is then empty.
+                "every_repository": bool(held.get("all")),
                 "waiting": held.get("waiting"),
                 "total": held.get("total", 0),
                 "note": held.get("note"),

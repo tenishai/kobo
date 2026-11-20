@@ -458,6 +458,37 @@ describe("PermissionsPanel: GitHub (issue #365)", () => {
     });
   });
 
+  // Wire payload (PUT /api/agents/{name}/github/repositories, bab 0.4.26): one box asks for
+  // every repository as `{all: true}`, never as a list, and that set offers Read alone.
+  it("saves every repository as one set and offers Read alone on it", async () => {
+    let access: unknown = ACCESS;
+    let repositories: unknown = REPOSITORIES;
+    stubRoutes({
+      "/api/agents/ledger/access": () => ({ body: access }),
+      "/api/agents/ledger/github/repositories": () => ({ body: repositories }),
+      "PUT /api/agents/ledger/github/repositories": () => {
+        const every = { ...GITHUB_SET.accounts[0], repositories: [], all_repositories: true, ceiling: GITHUB_ROWS.map((r) => r.name) };
+        access = { ...ACCESS, vendors: [...ACCESS.vendors.slice(0, 2), { ...GITHUB_SET, accounts: [every] }] };
+        repositories = { ...REPOSITORIES, selected: [], all: true };
+        return { body: { integration: "github-ledger", repositories: [], all: true, changed: true } };
+      },
+    });
+    renderWithClient(PermissionsPanel, { agentName: "ledger" });
+
+    await fireEvent.click(await screen.findByRole("button", { name: /GitHub/ }));
+    await fireEvent.click(await screen.findByLabelText(/Every repository, Read only/));
+    expect(screen.queryByLabelText("Find a repository")).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Save repositories" }));
+    await vi.waitFor(() => expect(putCalls()).toHaveLength(1));
+    expect(JSON.parse(String(putCalls()[0].body))).toEqual({ all: true });
+
+    const read = (await screen.findByLabelText(/^Read/)) as HTMLInputElement;
+    expect(read.disabled).toBe(false);
+    expect((screen.getByLabelText(/Review pull requests/) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText(/Open pull requests/) as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getAllByText("every repository is Read only; pick repositories for this")).toHaveLength(2);
+  });
+
   it("pre-checks the saved set, keeps Save dead until it changes, and shows the 422 sentence inline", async () => {
     stubRoutes({
       "/api/agents/ledger/access": { body: { ...ACCESS, vendors: [...ACCESS.vendors.slice(0, 2), GITHUB_SET] } },
@@ -516,8 +547,10 @@ describe("PermissionsPanel: GitHub (issue #365)", () => {
     expect(search.getAttribute("placeholder")).toBe("Find a repository (2279 the room can see)");
 
     // Nothing typed: the two picked, then the first forty of the rest, and
-    // a line saying how many more there are.
-    let boxes = screen.getAllByRole("checkbox");
+    // a line saying how many more there are. (The repository rows: the
+    // Every repository box above them is not one.)
+    const repoBoxes = () => screen.getAllByRole("checkbox").filter((b) => !b.closest("label")?.textContent?.includes("Every repository"));
+    let boxes = repoBoxes();
     expect(boxes).toHaveLength(42);
     expect((boxes[0] as HTMLInputElement).checked).toBe(true);
     expect((boxes[1] as HTMLInputElement).checked).toBe(true);
@@ -525,7 +558,7 @@ describe("PermissionsPanel: GitHub (issue #365)", () => {
 
     // Typing narrows the rest; the picked stay, so they can be unticked.
     await fireEvent.input(search, { target: { value: "svc-00" } });
-    boxes = screen.getAllByRole("checkbox");
+    boxes = repoBoxes();
     expect(boxes).toHaveLength(12);
     expect(screen.getByLabelText(/acme-eng\/ledger/)).not.toBeNull();
     expect(screen.getByLabelText(/svc-009/)).not.toBeNull();
