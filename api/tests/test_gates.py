@@ -835,6 +835,39 @@ def test_destroy_stays_operator_only_owner_alone_is_not_enough(session_factory__
     assert response.json() == {"error": "Destroying agents is operator-only on this room"}
 
 
+def test_the_rooms_own_checks_are_an_operators_to_remove(session_factory__web_ownership_gate, config__web_ownership_gate):
+    """Gate (baseline checks, 2026-11-20): an owner may take off a check of the agent's
+    own but not one of the room's baseline pack, the leak and probe guards every new
+    agent starts with; a room operator may take off either. The checks list says the
+    same per file, so the page offers Remove only where this route allows it."""
+    private_key, jwk = _generate_jwk()
+    hook = "def post_draft(draft):\n    return draft\n"
+    github = _CapturingGitHub(tooling_files={"baseline-leakguard.py": hook, "tool.py": hook})
+    client = _make_client(session_factory__web_ownership_gate, config__web_ownership_gate, github=github, iap_jwks_fetcher=_fetcher(jwk))
+    _seed_agent(session_factory__web_ownership_gate, config__web_ownership_gate, created_by=OWNER_EMAIL)
+    owner = _headers(private_key, email=OWNER_EMAIL)
+    operator = _headers(private_key, email=OPERATOR_EMAIL)
+
+    listed = client.get(f"/api/agents/{AGENT_NAME}/tooling", headers=owner).json()
+    listed_for_operator = client.get(f"/api/agents/{AGENT_NAME}/tooling", headers=operator).json()
+    owner_baseline = client.delete(f"/api/agents/{AGENT_NAME}/tooling/baseline-leakguard.py", headers=owner)
+    owner_own = client.delete(f"/api/agents/{AGENT_NAME}/tooling/tool.py", headers=owner)
+    operator_baseline = client.delete(f"/api/agents/{AGENT_NAME}/tooling/baseline-leakguard.py", headers=operator)
+
+    assert {f["name"]: f["can_remove"] for f in listed["files"]} == {
+        "baseline-leakguard.py": False, "tool.py": True,
+    }
+    assert {f["name"]: f["can_remove"] for f in listed_for_operator["files"]} == {
+        "baseline-leakguard.py": True, "tool.py": True,
+    }
+    assert owner_baseline.status_code == 403
+    assert owner_baseline.json() == {
+        "error": "This is one of the room's own checks; only a room operator can remove it."
+    }
+    assert owner_own.status_code == 200, owner_own.text
+    assert operator_baseline.status_code == 200, operator_baseline.text
+
+
 def test_destroy_still_works_for_a_listed_operator(session_factory__web_ownership_gate, config__web_ownership_gate):
     """Gate (ownership): Destroy still works for a listed operator."""
     private_key, jwk = _generate_jwk()

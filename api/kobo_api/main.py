@@ -146,17 +146,22 @@ from kobo_api.directory import retire_directory, served_card, sync_directory
 from kobo_api.guardrails import (
     BREAKS_BEFORE_A_CHECK,
     GUARDRAILS_MARKER,
+    RULE_MAX_PEOPLE,
     RULES_MAX_CHARS,
     GuardrailsError,
+    Person,
     RuleIn,
     annotate,
     checked_source,
+    clean_people,
+    compose_line,
     file_sha,
     parse_rules,
     read_guardrails,
     render_file,
     rule_payload,
     save_guardrails_file,
+    split_line,
     sync_rows,
     used_chars,
     validate_rules,
@@ -370,6 +375,7 @@ from kobo_api.tooling import (
     delete_tooling_file,
     existing_tool_filenames,
     import_tooling,
+    is_baseline,
     list_tooling,
     upload_tooling_file,
 )
@@ -652,16 +658,27 @@ class KnowledgeSavePayload(BaseModel):
     content: str
 
 
+class GuardrailPersonPayload(BaseModel):
+    """Someone a rule names: the directory's name for them and their email."""
+
+    name: str = Field(default="", max_length=200)
+    email: str = Field(max_length=320)
+
+
 class GuardrailRulePayload(BaseModel):
     """One line of a guardrails save. `id` is the line's row when it was already
     on the list, so an edit keeps where the rule came from; `source_kind` and
     `source_ref` name the persona, skill or correction a proposed rule came from
-    (kobo_api.guardrails.SETTABLE_SOURCES; anything else saves as a person's)."""
+    (kobo_api.guardrails.SETTABLE_SOURCES; anything else saves as a person's).
+    `people` are the people the rule names; a `text` may instead end with them
+    the way the file writes them, `(These people: Name <email>; ...)`, which is
+    how an assistant sends a rule's `line` back."""
 
     text: str
     id: int | None = None
     source_kind: str = "person"
     source_ref: str | None = Field(default=None, max_length=200)
+    people: list[GuardrailPersonPayload] = Field(default_factory=list, max_length=RULE_MAX_PEOPLE)
 
 
 class GuardrailsSavePayload(BaseModel):
@@ -2469,6 +2486,26 @@ def _operator_block(request: Request, config: Config) -> JSONResponse | None:
         return None
     return JSONResponse(
         {"error": "Destroying agents is operator-only on this room"}, status_code=403
+    )
+
+
+def _baseline_check_block(request: Request, config: Config, filename: str) -> JSONResponse | None:
+    """None when the caller may remove the check `filename`; a 403 body when it is one
+    of the room's own checks (the baseline pack, `kobo_api.tooling.is_baseline`) and
+    the caller is not a room operator. The same semantics family as `_operator_block`
+    above: ungated with no operators named, and with IAP off. Any other check is the
+    agent's owners' to remove, through the route's own owner-or-operator gate."""
+    if not is_baseline(filename):
+        return None
+    if not config.operators and not config.admin_groups:
+        return None
+    if not config.iap_audience:
+        return None
+    if _is_admin(request):
+        return None
+    return JSONResponse(
+        {"error": "This is one of the room's own checks; only a room operator can remove it."},
+        status_code=403,
     )
 
 
@@ -7676,6 +7713,16 @@ def create_app(
             return None, JSONResponse({"error": error}, status_code=502)
         return mode, None
 
+    def _guardrail_line(rule: GuardrailRulePayload) -> str:
+        """The line a saved rule becomes: its words, then the people it names, from
+        `people` or from a people list already at the end of its text, not both."""
+        text, named = split_line(rule.text.strip())
+        if rule.people:
+            if named:
+                raise GuardrailsError("a rule names its people once")
+            named = [Person(name=person.name, email=person.email) for person in rule.people]
+        return compose_line(text, clean_people(named))
+
     @app.get("/api/agents/{name}/guardrails")
     def get_guardrails(
         name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
@@ -7728,7 +7775,7 @@ def create_app(
                 status_code=409,
             )
         try:
-            rules = validate_rules([rule.text for rule in payload.rules])
+            rules = validate_rules([_guardrail_line(rule) for rule in payload.rules])
         except GuardrailsError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
         content = render_file(rules)
@@ -9117,6 +9164,18 @@ def create_app(
                 if file["delivered"]:
                     file["status"] = "enforced"
 
+        # Who may take a check off, per file: the room's own checks are an
+        # operator's to remove, any other the agent's owners'. The panel draws
+        # Remove from this, and the delete route holds the same line.
+        owners_may = (
+            _room_edits_this_agent_or_409(agent) is None
+            and _owner_or_operator_or_403(agent, request) is None
+        )
+        for file in files:
+            file["can_remove"] = owners_may and (
+                _baseline_check_block(request, app.state.config, file["name"]) is None
+            )
+
         return JSONResponse({"files": files, "enforcement": enforcement})
 
     @app.post("/api/agents/{name}/tooling")
@@ -9321,6 +9380,9 @@ def create_app(
         if blocked is not None:
             return blocked
         gate = _owner_or_operator_or_403(agent, request)
+        if gate is not None:
+            return gate
+        gate = _baseline_check_block(request, app.state.config, filename)
         if gate is not None:
             return gate
 

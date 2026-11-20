@@ -82,8 +82,13 @@ describe("frozen panels disable every control", () => {
       "/api/agents/warden/knowledge": { files: [] },
       "/api/agents/warden/intake": { files: [] },
       "/api/agents/warden/skills": { skills: [] },
+      // One check this caller may remove: Always on has no other control
+      // (it has no upload since 2026-11-20), so its Remove is what the sweep
+      // finds disabled.
       "/api/agents/warden/tooling": {
-        files: [],
+        files: [
+          { name: "tool.py", content_bytes: 64, delivered: true, description: null, baseline: false, can_remove: true },
+        ],
         enforcement: { attested: false, locked: false, locked_file: null },
       },
       "/api/agents/warden/invites": {

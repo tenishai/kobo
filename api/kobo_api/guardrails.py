@@ -15,6 +15,13 @@ would read to it as a newer edit made in the repository.
 The limit is the runtime's: 4,000 characters of "- rule" lines. The room refuses a
 longer list instead of letting the runtime cut it, and one rule is at most
 RULE_MAX_CHARS, so a paragraph cannot eat the list.
+
+A rule can name the people it is about (Kyle, 2026-11-20: "only respond to these
+people"). They ride on the rule's own line, after its words, as
+`(These people: Name <email>; Name <email>)`, so the file stays the one record and
+the runtime needs no new format: it tells the model who sent each message
+(`(From Name <email>.)`, daedalus's Slack transport) and the model matches the two
+by email. Like every rule, it guides; it locks nothing.
 """
 
 from __future__ import annotations
@@ -48,6 +55,15 @@ SOURCE_PERSON = "person"
 SOURCE_REPOSITORY = "repository"
 SETTABLE_SOURCES = ("person", "persona", "skill", "correction")
 
+# The people a rule names: at most this many, each a name and an email, written at
+# the end of the rule's line (`compose_line`).
+RULE_MAX_PEOPLE = 20
+PEOPLE_MARKER = "(These people:"
+_PEOPLE_SUFFIX = re.compile(r"^(?P<text>.*?)\s*\(These people:(?P<people>[^()]*)\)$")
+_PERSON = re.compile(r"^(?P<name>[^<>;()]*?)\s*<(?P<email>[^<>\s;()]+)>$")
+_EMAIL = re.compile(r"^[^@\s<>;()]+@[^@\s<>;()]+\.[^@\s<>;()]+$")
+_NAME_DROP = re.compile(r"[<>;()\r\n]")
+
 _HEADER = (
     "<!-- This agent's guardrails: one rule per line, followed on every task. "
     "Edit them in the room's Guardrails section. -->\n"
@@ -59,6 +75,60 @@ _LIST_MARKER = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 
 class GuardrailsError(Exception):
     """A rules list the room will not save, with the sentence a person reads."""
+
+
+@dataclass(frozen=True)
+class Person:
+    """Someone a rule names: what the directory calls them, and their email, which is
+    what the runtime's sender line carries too."""
+
+    name: str
+    email: str
+
+
+def clean_people(people: list[Person]) -> list[Person]:
+    """`people` as a rule's line will carry them: names on one line without the
+    characters the line's own shape uses, emails lower case, each email once. A
+    GuardrailsError names the first that can't be."""
+    cleaned: list[Person] = []
+    seen: set[str] = set()
+    for person in people:
+        email = person.email.strip().lower()
+        if not _EMAIL.match(email):
+            raise GuardrailsError(f"{person.email.strip() or 'an empty email'} isn't an email address")
+        if email in seen:
+            continue
+        seen.add(email)
+        name = " ".join(_NAME_DROP.sub(" ", person.name).split())[:100]
+        cleaned.append(Person(name=name, email=email))
+    if len(cleaned) > RULE_MAX_PEOPLE:
+        raise GuardrailsError(f"a rule names at most {RULE_MAX_PEOPLE} people")
+    return cleaned
+
+
+def compose_line(text: str, people: list[Person]) -> str:
+    """The rule's line in the file: its words, then the people it names, if any."""
+    if not people:
+        return text
+    named = "; ".join(f"{p.name} <{p.email}>" if p.name else f"<{p.email}>" for p in people)
+    return f"{text} {PEOPLE_MARKER} {named})"
+
+
+def split_line(line: str) -> tuple[str, list[Person]]:
+    """A line's words and the people it names. A line whose ending only looks like a
+    people list (an entry without an email) is all words, as written."""
+    match = _PEOPLE_SUFFIX.match(line)
+    if match is None:
+        return line, []
+    people: list[Person] = []
+    for entry in match.group("people").split(";"):
+        person = _PERSON.match(entry.strip())
+        if person is None or not _EMAIL.match(person.group("email")):
+            return line, []
+        people.append(Person(name=person.group("name").strip(), email=person.group("email")))
+    if not people:
+        return line, []
+    return match.group("text"), people
 
 
 def parse_rules(text: str) -> list[str]:
@@ -89,7 +159,17 @@ def validate_rules(rules: list[str]) -> list[str]:
             raise GuardrailsError("a rule can't be empty")
         if "\n" in rule or "\r" in rule:
             raise GuardrailsError("a rule is one line; put each rule on its own line")
-        if len(rule) > RULE_MAX_CHARS:
+        words, people = split_line(rule)
+        if not words.strip():
+            raise GuardrailsError("a rule needs words as well as people")
+        if people and PEOPLE_MARKER in words:
+            # Two people lists on one line: the model would read both and the panel
+            # would show one. A line from the repository whose ending only looks like
+            # a list has no people and passes as written.
+            raise GuardrailsError("a rule names its people once")
+        if len(people) > RULE_MAX_PEOPLE:
+            raise GuardrailsError(f"a rule names at most {RULE_MAX_PEOPLE} people")
+        if len(words) > RULE_MAX_CHARS:
             raise GuardrailsError(
                 f"a rule is at most {RULE_MAX_CHARS} characters; split a longer one, "
                 "or move the steps into a skill"
@@ -212,15 +292,21 @@ class RuleIn:
     source_ref: str | None = None
 
 
-def rule_payload(row: GuardrailRule | None, text: str) -> dict:
-    """One rule as the panel and the room's assistant tools read it."""
+def rule_payload(row: GuardrailRule | None, line: str) -> dict:
+    """One rule as the panel and the room's assistant tools read it: `text` is its
+    words and `people` who it names, both from `line`, the rule as the file has it."""
+    text, people = split_line(line)
+    named = [{"name": p.name, "email": p.email} for p in people]
     if row is None:
-        return {"id": None, "text": text, "source": {"kind": SOURCE_REPOSITORY, "ref": None},
+        return {"id": None, "text": text, "people": named, "line": line,
+                "source": {"kind": SOURCE_REPOSITORY, "ref": None},
                 "added_by": None, "added_at": None, "edited_by": None, "edited_at": None,
                 "breaks": 0, "last_broken_at": None}
     return {
         "id": row.id,
         "text": text,
+        "people": named,
+        "line": line,
         "source": {"kind": row.source_kind, "ref": row.source_ref},
         "added_by": row.added_by,
         "added_at": row.added_at.isoformat() if row.added_at else None,

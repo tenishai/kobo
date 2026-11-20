@@ -555,8 +555,9 @@
             recommendWhat={purposeTags.join(" ")}
           />
         {:else if id === "tooling"}
-          <!-- Guardrails (issue #524): the rules list, then the checks the
-               room runs in code, which is what the Tooling section held. -->
+          <!-- Guardrails (issue #524): the rules list, then Always on, the
+               checks the room runs in code, which is what the Tooling section
+               held. -->
           <GuardrailsPanel {agentName} {frozen} />
           <ToolingPanel {agentName} {frozen} />
         {:else if id === "a2a"}

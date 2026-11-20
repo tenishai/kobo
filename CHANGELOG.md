@@ -6,6 +6,16 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **People on a guardrail rule.** A rule's **⋯** menu has **People**: pick the people a rule is about from the directory, or type a full email, for a rule like "Only answer these people". They ride on the rule's own line in the agent's guardrails file, as `(These people: Name <email>; ...)`, and the agent, told who sent each Slack message, matches them by email. A new rule takes its people before it is added, so a rule like that is never live without them. From an assistant, **get guardrails** gives each rule's `people` and its whole `line`; send the `line` back to **set guardrails** to keep them. Needs the runtime that names each message's sender (tenishai/daedalus#270).
+
+### Changed
+- **Guardrails is one line a rule.** Each rule shows its words and a short tag for where it came from, with the whole sentence on hover. **Edit**, **People**, **It broke this** and **Remove** sit behind one **⋯** button that is always on screen, and clicking a rule's words edits them. From twelve rules on, a box above the list finds a rule by its words or its people.
+- **Always on replaces Checks the room runs.** Each check says in a line what it does, in the room's own words for the leak guard and the probe guard and from the check's own description otherwise, and whether it is on. The upload form is gone: a check is code, and an engineer adds one from their own assistant with **add agent tool**. Only a room operator can remove the leak guard or the probe guard, and the page offers **Remove** only to someone the room lets remove that check.
+
+### Fixed
+- **The guide's probe guard.** The user guide said the probe guard stops an agent being led off its job. It refuses requests that fish for the agent's own keys, and the guide now says so.
+
 ## [0.3.77] - 2026-11-20
 
 ### Added

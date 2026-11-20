@@ -2186,7 +2186,14 @@ export type GuardrailSourceKind = "person" | "persona" | "skill" | "correction" 
 
 export type GuardrailRule = {
   id: number | null;
+  /** The rule's words, without the people it names. */
   text: string;
+  /** The people the rule is about ("Only answer these people"), from the
+   * directory. The agent is told who sent each message and matches them by
+   * email. */
+  people: Person[];
+  /** The rule as the agent reads it: its words, then its people. */
+  line: string;
   source: { kind: GuardrailSourceKind; ref: string | null };
   added_by: string | null;
   added_at: string | null;
@@ -2221,6 +2228,7 @@ export type GuardrailsResponse = {
  * `source_kind`/`source_ref` name where a proposed rule came from. */
 export type GuardrailRuleIn = {
   text: string;
+  people?: Person[];
   id?: number | null;
   source_kind?: Exclude<GuardrailSourceKind, "repository">;
   source_ref?: string | null;
@@ -2615,6 +2623,15 @@ export type ToolingFile = {
   content_bytes: number;
   delivered: boolean;
   status?: "enforced";
+  /** One sentence on what the check does, for a person: the room's own words
+   * for its baseline pack, else the file's docstring. Null when there is
+   * nothing to say. */
+  description?: string | null;
+  /** One of the room's own checks, which only a room operator may remove. */
+  baseline?: boolean;
+  /** Whether this caller may take the check off: the agent's owners for its
+   * own checks, a room operator for the room's. */
+  can_remove?: boolean;
 };
 
 /** Whether the running pod actually enforces `bundle/tools/*` hooks around a
