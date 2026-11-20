@@ -181,9 +181,10 @@ def delivery_state(
       - no runs, with bundles as artifacts: a save that cannot change the
         image skips the build (`kobo_api.delivery.push`, 2026-11-20), and the
         room's restart names the commit it delivered on the pod template
-        (`delivery.bundle_commit`). Named this commit, or the repository's
-        head (one branch, so the head carries this one): "rolling" while that
-        restart runs, then "delivered". Anything else falls through below.
+        (`delivery.named_commit`). Named this commit (`sha` may be a prefix),
+        or the repository's head (one branch, so the head carries this one):
+        "rolling" while that restart runs, then "delivered". Anything else
+        falls through below. One read of the Deployment answers both.
       - no runs yet: "building" — registration lag, the same grace BuildStep
         extends CI before treating an empty list as anything but "not yet".
       - newest run not completed (queued or in_progress): "building".
@@ -228,9 +229,13 @@ def delivery_state(
             # the room's restart delivers it and names it on the pod template. Named,
             # or a later head named (one branch, so it carries this one), and the
             # restart is over: delivered.
-            named = delivery.bundle_commit(kubectl, namespace, deploy)
-            if named is not None and (named == sha or named == github.head_sha(repo)):
-                if rollout_in_progress(kubectl, namespace=namespace, deploy=deploy):
+            try:
+                dep = kubectl.deployment_status_json(namespace, deploy)
+            except Exception:  # noqa: BLE001 -- no claim about what was not seen
+                dep = None
+            named = delivery.named_commit(dep)
+            if named is not None and (named.startswith(sha) or named == github.head_sha(repo)):
+                if _rollout_unfinished(dep):
                     return {"state": "rolling", "detail": None}
                 return {"state": "delivered", "detail": None}
         return {"state": "building", "detail": None}
@@ -280,6 +285,13 @@ def rollout_in_progress(kubectl: KubectlClient, *, namespace: str, deploy: str) 
     try:
         dep = kubectl.deployment_status_json(namespace, deploy)
     except Exception:  # noqa: BLE001
+        return False
+    return _rollout_unfinished(dep)
+
+
+def _rollout_unfinished(dep: dict | None) -> bool:
+    """`rollout_in_progress` over a Deployment already read; False for none."""
+    if not dep:
         return False
     status = dep.get("status") or {}
     spec = dep.get("spec") or {}

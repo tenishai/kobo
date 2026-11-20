@@ -262,26 +262,56 @@ def deploy_files_behind(workdir: Path) -> bool:
     return contract_behind(text, workflow) is not None
 
 
-def needs_build(workdir: Path) -> bool:
-    """Whether the working copy's commit can change the agent's image: its
-    Dockerfile reads the commit (the old shape bakes the bundle in) or changed.
-    Otherwise the generated build makes the same image again and its deploy rolls
-    the agent once more for nothing, so the commit skips it."""
+def _git(workdir: Path, *args: str) -> str | None:
+    proc = subprocess.run(["git", *args], cwd=workdir, capture_output=True, text=True, check=False)
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def bakes_bundle(workdir: Path) -> bool:
+    """Whether the agent's Dockerfile reads the commit into its image (COPY, ADD,
+    a bind mount; the old shape bakes its bundle in): only a build delivers a
+    change to such an agent, and a restart delivers nothing."""
     try:
         text = (workdir / "Dockerfile").read_text()
     except OSError:
         return True
-    if _READS_CONTEXT.search(text):
+    return bool(_READS_CONTEXT.search(text))
+
+
+def needs_build(workdir: Path, name: str) -> bool:
+    """Whether the working copy's commit must build the agent's image: the
+    Dockerfile reads the commit or changed, or the image running now predates the
+    Dockerfile's last change (a runtime build that failed or never ran, which any
+    later save used to retry). Otherwise the generated build makes the same image
+    again and its deploy rolls the agent a second time for nothing, so the commit
+    skips it. Whatever cannot be read counts as a build."""
+    if bakes_bundle(workdir):
         return True
-    status = subprocess.run(
-        ["git", "status", "--porcelain", "--", "Dockerfile"], cwd=workdir, capture_output=True, text=True, check=False,
-    )
-    return status.returncode != 0 or bool(status.stdout.strip())
+    if _git(workdir, "status", "--porcelain", "--", "Dockerfile") != "":
+        return True
+    return not _image_has_dockerfile(workdir, name)
 
 
-# What this process published last for each agent, and when (monotonic): the commit
-# a restart that follows a publishing step names (`restart_once_secret_carries`).
-_published: dict[str, tuple[str, float]] = {}
+def _image_has_dockerfile(workdir: Path, name: str) -> bool:
+    """Whether the agent's running image was built from a commit that carries the
+    Dockerfile's last change (the generated build tags it with its commit)."""
+    assert _delivery is not None
+    try:
+        tag = image_tag(_delivery.kubectl.deploy_image(name, name))
+    except Exception:  # noqa: BLE001 -- no deployment yet, or no cluster to ask: build
+        return False
+    built = _git(workdir, "rev-parse", "--verify", "--quiet", f"{tag}^{{commit}}") if tag else None
+    changed_in = _git(workdir, "log", "-1", "--format=%H", "--", "Dockerfile")
+    if not built or not changed_in:
+        return False
+    return _git(workdir, "merge-base", "--is-ancestor", changed_in, built) is not None
+
+
+def delivered_by_restart(github: GitHubClient, workdir: Path) -> str | None:
+    """The commit a restart of the agent now delivers (HEAD's bundle, which a
+    publish just made current), for the restart to name; None for an image that
+    bakes its bundle in, which only its own build delivers."""
+    return None if bakes_bundle(workdir) else (github.local_head(workdir) or None)
 
 
 def publish(workdir: Path, name: str, *, head_sha: str) -> str | None:
@@ -296,32 +326,38 @@ def publish(workdir: Path, name: str, *, head_sha: str) -> str | None:
         )
     except PublishError as exc:
         raise ClientError(f"{NOT_DELIVERED}: {exc}; try again") from exc
-    if published and head_sha:
-        _published[name] = (head_sha, time.monotonic())
     return published.pointer if published else None
 
 
-def bundle_commit(kubectl: KubectlClient, namespace: str, deploy: str) -> str | None:
-    """The commit the room last restarted the agent with, from its pod template;
-    None for one it has not restarted since this was written, or when the
-    cluster cannot be read."""
-    try:
-        dep = kubectl.deployment_status_json(namespace, deploy)
-    except Exception:  # noqa: BLE001 -- no claim about what was not seen
-        return None
-    template = ((dep.get("spec") or {}).get("template") or {}).get("metadata") or {}
+def named_commit(dep: dict | None) -> str | None:
+    """The commit the room last restarted the agent with, from its Deployment
+    (`kubectl.deployment_status_json`); None for one it has not restarted since
+    this was written."""
+    template = (((dep or {}).get("spec") or {}).get("template") or {}).get("metadata") or {}
     commit = (template.get("annotations") or {}).get(BUNDLE_COMMIT_ANNOTATION)
     return commit if isinstance(commit, str) and commit else None
+
+
+def _template_image(dep: dict | None) -> str | None:
+    containers = ((((dep or {}).get("spec") or {}).get("template") or {}).get("spec") or {}).get("containers") or []
+    first = containers[0] if containers and isinstance(containers[0], dict) else {}
+    return first.get("image") or None
 
 
 def live_commit(github: GitHubClient, kubectl: KubectlClient, workdir: Path, *, namespace: str, deploy: str) -> str | None:
     """The newest commit the running agent is known to carry, resolved in the
     clone `workdir`: the one its image was built from (the image's tag) or the
-    one the room last restarted it with (`bundle_commit`), whichever is later.
-    None when neither resolves (a tagless image and no restart named yet)."""
-    tag = image_tag(kubectl.deploy_image(namespace, deploy))
+    one the room last restarted it with (`named_commit`), whichever is later.
+    None when neither resolves (a tagless image and no restart named yet). One
+    read of the Deployment answers both where it carries its image."""
+    try:
+        dep = kubectl.deployment_status_json(namespace, deploy)
+    except Exception:  # noqa: BLE001 -- no claim about what was not seen
+        dep = None
+    image = _template_image(dep) or kubectl.deploy_image(namespace, deploy)
+    tag = image_tag(image)
     built = github.rev_parse_prefix(workdir, tag) if tag is not None else None
-    named = bundle_commit(kubectl, namespace, deploy)
+    named = named_commit(dep)
     restarted = github.rev_parse_prefix(workdir, named) if named is not None else None
     if built is None or restarted is None:
         return built or restarted
@@ -363,14 +399,18 @@ def push(
         if built:
             message = f"{message}{CONVERTED_NOTE}"
     behind = (asks_platform or _delivery.reprovision is not None) and deploy_files_behind(workdir)
-    if (behind or not needs_build(workdir)) and "[skip ci]" not in message:
+    builds = not behind and needs_build(workdir, name)
+    if not builds and "[skip ci]" not in message:
         message = f"{message} [skip ci]"
     pushed = github.commit_push(workdir, message)
     changed = pushed and (built or _bundle_changed(workdir))
     head = github.local_head(workdir) or ""
     if changed:
         publish(workdir, name, head_sha=head)
-    delivered = head if changed else None
+    # What a restart now delivers, which it names; an image that bakes its bundle
+    # in takes a change only from its own build, whose deploy is then the restart.
+    baked = bakes_bundle(workdir)
+    delivered = head if changed and not baked else None
     if behind:
         if asks_platform or _delivery.reprovision is None:
             return pushed
@@ -381,8 +421,9 @@ def push(
         except Exception as exc:  # a refusal, a timeout or no app: the same failure here
             raise ClientError(f"{PLATFORM_NOT_ASKED} ({exc}); try again") from exc
         return pushed
-    if built:
-        # Nobody to ask: the conversion commit builds, and the roll is the restart.
+    if built or (builds and baked and pushed):
+        # The commit builds (nobody to ask for the conversion, or an image that
+        # carries its bundle): the build's deploy is the restart.
         return pushed
     if (changed and restart) or force_restart:
         _restart(name, delivered)
@@ -466,7 +507,8 @@ def wait_for_secret(
 
 def restart_once_secret_carries(
     kubectl: KubectlClient, name: str, secret: str, keys: Iterable[str], *, background: bool = True,
-    before: Callable[[], None] | None = None, settings: Mapping[str, str | None] | None = None,
+    before: Callable[[], str | None] | None = None, settings: Mapping[str, str | None] | None = None,
+    commit: str | None = None,
 ) -> threading.Thread | None:
     """Restart agent `name` once its Secret carries `keys` (and reads `settings`, as
     `secret_carries` does), restarting anyway when the wait runs out (the next start
@@ -475,16 +517,19 @@ def restart_once_secret_carries(
     `before` is a bundle change this one restart should carry too: it runs beside the
     wait and the restart follows it. Whatever it raises is logged, and one still
     running `STEP_WAIT` seconds after the wait is left behind; the restart happens
-    either way. The restart names a commit this process published since the call
-    began (`before`'s), never an older one another replica may have moved past."""
+    either way. The restart names the commit it delivers (`BUNDLE_COMMIT_ANNOTATION`):
+    `commit`, for a caller that published before this, or the one `before` returns."""
     keys = list(keys)
-    began = time.monotonic()
+    naming: list[str | None] = [commit]
 
     def _before() -> None:
         try:
-            before()
+            published = before()
         except Exception as exc:  # noqa: BLE001 -- the restart must not be lost to it
             log.warning("%s: the step before its restart failed: %s", name, exc)
+            return
+        if isinstance(published, str) and published:
+            naming[0] = published
 
     def _run() -> None:
         step = None
@@ -497,10 +542,8 @@ def restart_once_secret_carries(
             step.join(STEP_WAIT)
             if step.is_alive():
                 log.warning("%s: the step before its restart is still running; restarting without it", name)
-        published = _published.get(name)
-        commit = published[0] if published is not None and published[1] >= began else None
         try:
-            kubectl.restart_deploy(name, name, annotations=_named(commit))
+            kubectl.restart_deploy(name, name, annotations=_named(naming[0]))
         except ClientError as exc:
             log.warning("restart of %s after a secret change failed: %s", name, exc)
 
@@ -534,15 +577,17 @@ __all__ = [
     "REPLICA_BUCKET_ENV",
     "Delivery",
     "agent_name_of",
+    "bakes_bundle",
     "bundle_artifact",
-    "bundle_commit",
     "configure",
     "configured",
     "convert_to_runtime_only",
+    "delivered_by_restart",
     "deploy_files_behind",
     "join_restarts",
     "legacy_shape",
     "live_commit",
+    "named_commit",
     "needs_build",
     "optional_secrets",
     "publish",

@@ -5280,6 +5280,48 @@ def _seed_agent__web_tooling(session_factory__web_tooling, config__web_tooling, 
     session.close()
 
 
+def test_an_instant_tool_in_a_room_of_artifacts_restarts_the_agent_once(
+    session_factory__web_tooling, config__web_tooling, monkeypatch
+):
+    """Gate (2026-11-20): with bundles as artifacts the archive's own push restarts the
+    agent and names its commit, so the route adds no restart of its own (the two rolled
+    it twice). When that push fails, the route still restarts it once, so the tool on
+    the agent's volume loads."""
+    from kobo_api import delivery
+
+    monkeypatch.setenv("CABAL_OPERATOR_TOKEN", "op-token")
+    cfg = _enabled_config__web_tooling(config__web_tooling).model_copy(update={"bundle_registry": "r.example/agents"})
+    kubectl = FakeKubectl()
+    cabal = FakeCabal(relay_result={"status": {"state": "completed", "message": {"role": "agent", "parts": [{"kind": "text", "text": "ok"}]}}})
+
+    class _ArchiveRefused(FakeGitHub):
+        def commit_push(self, workdir, message):
+            raise ClientError("the push was refused")
+
+    github = _ArchiveRefused()
+    try:
+        client = _make_client__web_tooling(session_factory__web_tooling, cfg, github=github, kubectl=kubectl, cabal=cabal)
+        _seed_agent__web_tooling(session_factory__web_tooling, cfg)
+        response = client.post(
+            f"/api/agents/{AGENT_NAME}/tooling",
+            json={"filename": "tool.py", "content": "def post_draft(draft):\n    return draft\n"},
+        )
+        assert response.status_code == 200 and response.json()["mode"] == "instant", response.text
+        assert kubectl.restarts == [(AGENT_NAME, AGENT_NAME)]
+
+        # The archive lands: its push is the one restart, and the route adds none.
+        landed = FakeKubectl()
+        client = _make_client__web_tooling(session_factory__web_tooling, cfg, github=FakeGitHub(), kubectl=landed, cabal=cabal)
+        response = client.post(
+            f"/api/agents/{AGENT_NAME}/tooling",
+            json={"filename": "other.py", "content": "def post_draft(draft):\n    return draft\n"},
+        )
+        assert response.status_code == 200 and response.json()["mode"] == "instant", response.text
+        assert landed.restarts == []
+    finally:
+        delivery.configure(None)
+
+
 def test_upload_tooling_route_invalid_content_refused_before_any_relay(
     session_factory__web_tooling, config__web_tooling, monkeypatch
 ):
@@ -7178,6 +7220,8 @@ def test_a_save_the_build_skipped_is_delivered_by_the_restart_that_names_it():
         settled = FakeKubectl()
         settled.template_annotations[("acme-agent", "acme-agent")] = named
         assert delivery_state(FakeGitHub(head_sha=newer), settled, sha=sha, **where)["state"] == "delivered"
+        # The route takes a prefix of the commit as well.
+        assert delivery_state(FakeGitHub(head_sha=newer), settled, sha=sha[:12], **where)["state"] == "delivered"
 
         rolling = FakeKubectl(deployment_status={("acme-agent", "acme-agent"): {
             **FAKE_DEPLOYMENT_STATUS_SETTLED, "status": {"observedGeneration": 1, "updatedReplicas": 1, "availableReplicas": 0},

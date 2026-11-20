@@ -9222,7 +9222,7 @@ def create_app(
     #      plain copy rather than claiming the tool is already active.
     # `import_tooling` (multi-file) is unchanged: it stays archive-only.
 
-    def _archive_tooling_upload(repo: str, filename: str, content: str) -> None:
+    def _archive_tooling_upload(repo: str, filename: str, content: str, agent_name: str) -> None:
         """The tool upload's background archive lane: only ever runs after
         the relay above already reported the write completed, and the runtime
         has already re-validated and written the file into its own overlay
@@ -9246,6 +9246,10 @@ def create_app(
             log.warning(
                 "tooling archive commit failed for %s (%s): %s", repo, filename, exc
             )
+            if delivery.configured():
+                # The tool is on the agent's volume; the restart that loads it
+                # was this push's to make.
+                _request_tool_restart(agent_name)
         else:
             if pin is not None:
                 record_built_runtime(app.state.session_factory, repo, pin)
@@ -9410,8 +9414,13 @@ def create_app(
                     agent.repo_full_name,
                     payload.filename,
                     payload.content,
+                    agent.name,
                 )
-                _request_tool_restart(agent.name)
+                # With bundles as artifacts the archive's own push restarts the
+                # agent and names its commit; one restart here as well rolled it
+                # twice (2026-11-20). It restarts here only if that push fails.
+                if not delivery.configured():
+                    _request_tool_restart(agent.name)
                 audit.record(
                     session, request=request, action="tooling.upload", target_kind="tool", target_id=payload.filename,
                     agent_name=agent.name, detail={"mode": "instant"},

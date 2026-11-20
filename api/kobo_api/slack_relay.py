@@ -729,9 +729,11 @@ def oauth_callback(
     github = getattr(clients, "github", None)
     repo = agent.repo_full_name if agent.kind == KIND_COMPOSED and agent.archetype != ARCHETYPE_TEAM_GUIDE else None
 
-    def _allow_tools() -> None:
-        if allow_slack_tools(github, repo=repo):
+    def _allow_tools() -> str | None:
+        commit = allow_slack_tools(github, repo=repo)
+        if commit:
             log.info("slack install: agent %s now allows the Slack tools", name)
+        return commit
 
     delivery.restart_once_secret_carries(
         clients.kubectl, name, f"{name}-slack", ["SLACK_BOT_TOKEN"],

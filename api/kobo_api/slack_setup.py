@@ -824,8 +824,11 @@ def wire_slack_values(
             # restart delivers it, no build and no reprovision. Through the platform the
             # values land at its next re-read, so the restart waits for them, off this
             # request; a direct write is there already and the restart follows at once.
-            delivery.push(github, workdir, f"{message}{note}", restart=False)
-            delivery.restart_once_secret_carries(kubectl, name, f"{name}-slack", list(values))
+            pushed = delivery.push(github, workdir, f"{message}{note}", restart=False)
+            delivery.restart_once_secret_carries(
+                kubectl, name, f"{name}-slack", list(values),
+                commit=delivery.delivered_by_restart(github, workdir) if pushed else None,
+            )
             changed = False
         else:
             changed = delivery.push(github, workdir, f"{message}{note}", asks_platform=True)
@@ -849,13 +852,18 @@ _ALLOW_TRIES = 3
 _ALLOW_PAUSE = 5.0
 
 
-def allow_slack_tools(github: GitHubClient, *, repo: str, sleep: Callable[[float], None] = time.sleep) -> bool:
+def allow_slack_tools(
+    github: GitHubClient, *, repo: str, sleep: Callable[[float], None] = time.sleep
+) -> str | None:
     """Make an agent's own bundle admit the Slack tools (`SLACK_TOOLS_ALLOW`):
     clone `repo`, add the entry when no pattern there covers it, publish. An
     agent born since the entry was composed already has it, and then nothing
     is pushed. No restart of its own: the caller is on its way to one (the
-    install callback restarts the agent for its token). Returns whether the
-    bundle changed. Raises `ClientError`.
+    install callback restarts the agent for its token). Returns the commit that
+    restart delivers the tools with, for it to name
+    (`delivery.delivered_by_restart`), and None when nothing changed or a
+    restart cannot deliver them (an image that bakes its bundle in, whose own
+    build does). Raises `ClientError`.
 
     The clone and the push are tried `_ALLOW_TRIES` times, since nothing asks
     for this a second time once the app holds its scopes. A try that finds the
@@ -874,7 +882,7 @@ def allow_slack_tools(github: GitHubClient, *, repo: str, sleep: Callable[[float
                 continue
             changed = update_agent_yaml_allow(workdir / "bundle", entries=[SLACK_TOOLS_ALLOW])
             if not changed and failed is None:
-                return False
+                return None
             try:
                 if changed:
                     delivery.push(github, workdir, "kobo: allow the Slack tools", restart=False)
@@ -883,7 +891,7 @@ def allow_slack_tools(github: GitHubClient, *, repo: str, sleep: Callable[[float
             except ClientError as exc:
                 failed = exc
                 continue
-            return True
+            return delivery.delivered_by_restart(github, workdir)
     assert failed is not None
     raise failed
 
