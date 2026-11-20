@@ -205,7 +205,9 @@ than one per grant: every scope, handler and allow pattern a card's lane has
 ever named (`gateway_managed`). It withdraws those like the targets' own, so
 a handler that leaves the cards is taken off every agent that held it. The
 last read lives in `gateway_cards` and is used across the room's own restarts.
-A room that has never read the cards manages its targets alone.
+A room that has never read the cards manages and offers only its targets. A
+handler that leaves the cards keeps its lane for an hour first, so a gateway
+that restarts with a handler that failed to load restarts no agent twice.
 
 ### 6. Ask a person before
 

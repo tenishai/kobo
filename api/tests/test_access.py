@@ -6055,7 +6055,7 @@ def test_the_picker_says_which_permissions_open_no_tool():
     the catalogue gained since, opens nothing until the room learns its tool. And
     whatever the room says opens a tool has a lane to carry it to the agent. Which handler
     tool a permission opens is the gateway's to say (its cards); before the room has read
-    them it cannot tell, so it greys nothing a handler might serve."""
+    them no handler opens, so only what the room's own targets serve is offered."""
     from kobo_api.bab import picker
     from kobo_api.gateway_lane import Lanes
 
@@ -6078,7 +6078,8 @@ def test_the_picker_says_which_permissions_open_no_tool():
     assert all(lanes.lane_for(v, p) for v, ps in tools.items() for p, tool in ps.items() if tool)
     unread = {v["id"]: {p["name"]: p["tool"] for g in v["groups"] for p in g["permissions"]}
               for v in picker(bab, "x", lanes=Lanes())}
-    assert unread["gcp"]["gcp_vertex_ai_user"] and unread["azure"]["azure_resources_read"]
+    assert not any(unread["gcp"].values()) and not any(unread["aws"].values()) and not any(unread["azure"].values())
+    assert unread["github"]["github_repos_read"] and unread["datadog"] == {"datadog_monitors_read": True, "datadog_slos_read": False}
 
 
 def test_a_google_cloud_project_is_probed_through_the_permission_service_and_held_there_with_the_read_ceiling(tmp_path, fake_storage):
@@ -7263,11 +7264,12 @@ GCP_ROW = {"integration": "acme-platform-prod", "vendor": "gcp", "kind": "accoun
            "created_at": "2026-10-29T12:00:00", "updated_at": "2026-10-29T12:00:00"}
 
 
-def test_a_handler_that_leaves_the_cards_is_withdrawn_from_every_agent_that_held_it(tmp_path, fake_storage):
+def test_a_handler_that_leaves_the_cards_is_withdrawn_from_every_agent_that_held_it(tmp_path, fake_storage, monkeypatch):
     """Gate (authorization, #524 step 5): what a permission opens comes from the gateway's handler
-    cards. When a handler leaves them, the next heal pass takes it from every agent that held it,
-    from the gateway grant and from the bundle's allow list, because the room remembers what the
-    cards' lanes named. Nothing else on the grant moves."""
+    cards. When a handler leaves them, a heal pass takes it from every agent that held it, from
+    the gateway grant and from the bundle's allow list, because the room remembers what the
+    cards' lanes named. Nothing else on the grant moves. A gateway that comes back without a
+    handler for less than an hour (one that failed to load) costs no agent a commit."""
     from kobo_api import gateway_lane
     from kobo_api.models import GatewayManaged
 
@@ -7292,6 +7294,9 @@ def test_a_handler_that_leaves_the_cards_is_withdrawn_from_every_agent_that_held
     assert "gcp.*" in yaml.safe_load(github.pushed_file("bundle/agent.yaml"))["tools"]["allow"]
 
     admin.cards_listed = [card for card in GATEWAY_CARDS if card["name"] != "gcp"]
+    pushes = len(github.pushes)
+    assert gateway_lane._heal_ready_agents(c.app) == [] and len(github.pushes) == pushes
+    monkeypatch.setattr(gateway_lane, "VANISHED_GRACE_S", 0.0)
     assert sorted(gateway_lane._heal_ready_agents(c.app)) == ["janus", "ledger"]
 
     for name in ("janus", "ledger"):
@@ -7331,8 +7336,10 @@ def test_a_failed_card_read_changes_no_grant(tmp_path, fake_storage):
         s.query(GatewayManaged).delete()
         s.commit()
     assert gateway_lane._heal_ready_agents(c.app) == []
+    with c.app.state.session_factory() as s:
+        said = gateway_lane.follow(s, c.app.state.clients, bab, agent_name="ledger", actor="room@kobo")
+    assert said.endswith(gateway_lane.CARDS_UNREAD), said
     assert admin.grants[("cabal-core", "ledger")] == held and len(admin.writes) == writes
-    assert len(github.pushes) == pushes
 
 
 def test_the_room_puts_a_gateway_target_an_applied_connection_owes_and_the_gateway_lacks(session__admin_store):
@@ -7442,6 +7449,9 @@ def test_a_google_cloud_read_permission_opens_the_gateways_gcp_handler():
     lanes = _lanes()
     lane = lanes.lane_for("gcp", "gcp_compute_read")
     assert lanes.lane_for("gcp", "gcp_gke_read") == lane and lanes.lane_for("gcp", "gcp_vertex_ai_user") is None
+    # A field the room cannot read costs that field, never the read: a list for a risk is no risk.
+    odd = _lanes([_card("gcp", "gcp", "gcp:read", [("compute_instances", {"permissions": ["gcp_compute_read"], "risk": ["low"]})])])
+    assert odd.lane_for("gcp", "gcp_compute_read") == lane and odd.cards[0].tools[0].risk is None
     assert (lane.scopes, lane.handlers, lane.allow) == (("gcp:read",), ("gcp",), ("gcp.*",))
     assert "gcp:read" in lanes.managed_scopes and "gcp" in lanes.managed_handlers
 

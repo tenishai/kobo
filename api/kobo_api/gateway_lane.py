@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import threading
 import time
 import weakref
 from dataclasses import dataclass
@@ -148,6 +149,10 @@ ALLOW_COMMIT = "kobo: allow the {vendor} tools"
 WITHDRAW_COMMIT = "kobo: withdraw the {vendor} tools"
 
 NOT_WIRED = "the gateway admin plane is not wired; the lane did not change"
+# Added to `follow`'s sentence while the room has never read the gateway's cards: the room's own
+# targets followed the permission, its handlers did not.
+CARDS_UNREAD = ("; the gateway has not listed its handlers' cards (liminal 0.10.0 or later), "
+                "so no handler's tools changed")
 ALLOW_FAILED = "; the agent's allow list could not be updated"
 UNCHANGED = "gateway lane unchanged"
 REMOVED = "gateway lane removed"
@@ -208,7 +213,7 @@ def parse_cards(raw: Any) -> tuple[HandlerCard, ...]:
                     log.warning("gateway card %s: tool %s has unreadable permissions %r", name, t["name"], permissions)
                 continue
             scope = t.get("required_scope") if isinstance(t.get("required_scope"), str) else card_scope
-            risk = t.get("risk") if t.get("risk") in RISKS else None
+            risk = t.get("risk") if isinstance(t.get("risk"), str) and t.get("risk") in RISKS else None
             tools.append(CardTool(t["name"], scope, frozenset(permissions), risk))
         if tools:
             out.append(HandlerCard(name, vendor, audience == OWN_CODE, tuple(tools)))
@@ -256,12 +261,10 @@ class Lanes:
         nothing instead of offering a grant that does nothing. A room target
         serves every permission of its vendor unless `TARGET_TOOLED` says
         otherwise; a handler serves the ones its tools name. Before the room
-        has read any cards it cannot tell, and says yes: the grant then opens
-        its tools as soon as the cards are read (the heal pass)."""
+        has read any cards no handler opens, so nothing a handler would serve
+        is offered; a grant made anyway opens once the cards are read."""
         tooled = TARGET_TOOLED.get(vendor)
         if _target_lane(vendor, permission) is not None and (tooled is None or permission in tooled):
-            return True
-        if not self.known:
             return True
         return any(card.vendor == vendor and not card.own_code and card.opened_by(permission) for card in self.cards)
 
@@ -309,74 +312,96 @@ class Lanes:
 # How long one ask for the cards serves a process before the next, answered or not. The heal
 # pass always asks (`current(..., refresh=True)`) and is the one that keeps the answer.
 CARDS_FRESH_S = 60.0
+# How long a handler that leaves the cards keeps its lane. A gateway that restarts with a handler
+# that failed to load (discovery skips it and says so only in its log) or a deploy rolled back
+# within the hour costs no agent two commits and two restarts. Keeping a lane to a handler the
+# gateway no longer serves opens nothing: there is nothing there to call.
+VANISHED_GRACE_S = 3600.0
 
 
 class _Read(NamedTuple):
     asked: float  # monotonic time of this process's last ask
-    raw: list | None  # the cards from its last answer, as the gateway gave them
+    raw: list | None  # its last answer, with any handler that left the answer less than the grace ago
     read_at: datetime | None  # when that answer came
+    missing: dict[str, float]  # handler -> monotonic time it was first missing from an answer
 
 
-# admin client -> this process's last ask.
+# admin client -> this process's last ask; one thread asks at a time, the others use the last answer.
 _READS: weakref.WeakKeyDictionary[Any, _Read] = weakref.WeakKeyDictionary()
+_ASKING = threading.Lock()
 
 
 def _read_cards(admin) -> list | None:
     """The gateway's cards now, or None when it cannot answer (an older
     gateway, or one restarting): never an empty list for "unknown"."""
+    cards = getattr(admin, "cards", None)
+    if cards is None:  # an admin client from before liminal 0.10.0
+        return None
     try:
-        return admin.cards()
+        return cards()
     except ClientError as exc:
         log.warning("the gateway's handler cards could not be read; keeping the last ones read: %s", exc)
-    except AttributeError:
-        pass  # an admin client from before liminal 0.10.0 has no `cards`
-    return None
+        return None
 
 
 def _kept_cards(session: Session) -> list | None:
-    try:
-        row = session.get(GatewayCards, 1)
-    except SQLAlchemyError as exc:
-        log.warning("the gateway cards the room kept could not be read: %s", exc)
-        return None
+    row = session.get(GatewayCards, 1)
     return row.cards if row is not None else None
 
 
-def _remembered(session: Session) -> frozenset[tuple[str, str, str]]:
-    try:
-        return frozenset((r.kind, r.value, r.vendor) for r in session.query(GatewayManaged).all())
-    except SQLAlchemyError as exc:
-        log.warning("what the gateway cards' lanes have named could not be read: %s", exc)
-        return frozenset()
+def _with_vanished(answer: list, before: list | None, missing: dict[str, float], now: float) -> tuple[list, dict[str, float]]:
+    """The answer, plus each handler the cards before it had and it lacks,
+    for `VANISHED_GRACE_S` from when it was first missing."""
+    named = {c.get("name") for c in answer if isinstance(c, dict)}
+    kept, still = list(answer), {}
+    for card in before or []:
+        name = card.get("name") if isinstance(card, dict) else None
+        if isinstance(name, str) and name not in named and now - missing.get(name, now) < VANISHED_GRACE_S:
+            kept.append(card)
+            still[name] = missing.get(name, now)
+    for name in still:
+        if name not in missing:
+            log.warning("the gateway's %s handler left its cards; its lane is kept for %d minutes", name, VANISHED_GRACE_S // 60)
+    return kept, still
+
+
+def _ask(admin, last: _Read | None, session: Session | None) -> _Read:
+    got = _read_cards(admin)
+    now = time.monotonic()
+    if got is None:
+        return _Read(now, last.raw if last else None, last.read_at if last else None, last.missing if last else {})
+    before = last.raw if last is not None else (_kept_cards(session) if session is not None else None)
+    raw, missing = _with_vanished(got, before, last.missing if last else {}, now)
+    return _Read(now, raw, datetime.now(UTC).replace(tzinfo=None), missing)
 
 
 def current(session: Session | None, clients, *, refresh: bool = False) -> Lanes:
     """The lanes as of now. The cards come from the gateway, asked at most
     once every `CARDS_FRESH_S` per process, answered or not (`refresh` asks
     now); when it cannot answer, the last cards it gave are kept, this
-    process's or, after a restart, the database's. A database that cannot be
-    read keeps nothing: then only the targets are managed, which withdraws
-    nothing a card would have named."""
+    process's or, after a restart, the database's."""
     admin = getattr(clients, "liminal_admin", None) if clients is not None else None
     raw: list | None = None
     if admin is not None:
         last = _READS.get(admin)
-        if refresh or last is None or time.monotonic() - last.asked >= CARDS_FRESH_S:
-            got = _read_cards(admin)
-            last = (_Read(time.monotonic(), got, datetime.now(UTC).replace(tzinfo=None)) if got is not None
-                    else _Read(time.monotonic(), last.raw if last else None, last.read_at if last else None))
-            _READS[admin] = last
-        raw = last.raw
+        due = refresh or last is None or time.monotonic() - last.asked >= CARDS_FRESH_S
+        if due and _ASKING.acquire(blocking=refresh or last is None):
+            try:
+                last = _READS[admin] = _ask(admin, _READS.get(admin), session)
+            finally:
+                _ASKING.release()
+        raw = last.raw if last is not None else None
     if raw is None and session is not None:
         raw = _kept_cards(session)
-    remembered = _remembered(session) if session is not None else frozenset()
+    remembered = (frozenset((r.kind, r.value, r.vendor) for r in session.query(GatewayManaged).all())
+                  if session is not None else frozenset())
     return Lanes(cards=parse_cards(raw) if raw is not None else (), known=raw is not None, remembered=remembered)
 
 
 def remember(session: Session, clients, lanes: Lanes) -> None:
-    """Keep this process's last answer from the gateway, with when it came,
-    and every part its lanes name, on the caller's session (the caller
-    commits). The heal pass calls it after asking afresh."""
+    """Keep this process's last answer from the gateway, when it first came
+    in that shape, and every part its lanes name, on the caller's session
+    (the caller commits). The heal pass calls it after asking afresh."""
     admin = getattr(clients, "liminal_admin", None) if clients is not None else None
     last = _READS.get(admin) if admin is not None else None
     if last is None or last.raw is None or last.read_at is None or not lanes.known:
@@ -384,7 +409,7 @@ def remember(session: Session, clients, lanes: Lanes) -> None:
     row = session.get(GatewayCards, 1)
     if row is None:
         session.add(GatewayCards(id=1, cards=last.raw, read_at=last.read_at))
-    elif row.read_at != last.read_at:
+    elif row.cards != last.raw:
         row.cards, row.read_at = last.raw, last.read_at
     for kind, value, vendor in sorted(lanes.parts() - lanes.remembered):
         if session.get(GatewayManaged, (kind, value)) is None:
@@ -529,6 +554,8 @@ def follow(session: Session, clients, bab, *, agent_name: str, actor: str) -> st
         lanes = current(session, clients)
         held = held_lanes(bab, agent_name, actor, lanes=lanes, own_code=runs_own_code(session, agent_name))
         allowed = sync_allow(session, clients, agent_name=agent_name, patterns=desired_allow(held), lanes=lanes)
+        if not lanes.known:
+            allowed += CARDS_UNREAD
         existing = next((g for g in admin.list_grants() if g.issuer == ISSUER and g.persona == agent_name), None)
         old_scopes, old_handlers, new_scopes, new_handlers = _owed_grant(existing, held, lanes)
         if new_scopes == old_scopes and new_handlers == old_handlers:
@@ -703,7 +730,7 @@ def tally(sentence: str) -> str:
 
 
 __all__ = [
-    "ANY_PERMISSION", "HEAL_INTERVAL_S", "OWN_CODE", "RETIRED_HANDLERS", "RETIRED_PREFIXES", "RISKS", "TARGET_LANES",
+    "ANY_PERMISSION", "CARDS_UNREAD", "HEAL_INTERVAL_S", "OWN_CODE", "RETIRED_HANDLERS", "RETIRED_PREFIXES", "RISKS", "TARGET_LANES",
     "TARGET_PERMISSION_LANES", "TARGET_TOOLED", "CardTool", "HandlerCard", "Lane", "Lanes", "current", "desired_allow",
     "follow", "heal", "heal_loop", "held_lanes", "held_permissions", "lanes_of", "parse_cards", "remember",
     "runs_own_code", "sync_allow", "tally",
