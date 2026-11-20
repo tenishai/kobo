@@ -34,6 +34,10 @@ export type AgentSummary = {
   model_label: string;
   created_at: string;
   has_avatar: boolean;
+  /** The picture's version (a short digest of its bytes), for a URL a browser
+   * can keep (lib/portrait.ts). Null for a picture kept before versions,
+   * which gets one the first time it is asked for. */
+  avatar_version?: string | null;
   health?: AgentHealth | null;
   /** System tasks (the nightly learnings pass) that have failed several
    * runs in a row for this agent (issue #142). Older rooms omit it. */
@@ -3093,35 +3097,45 @@ export async function patchAgentRuntime(
   return parse<AgentRuntimeChange>(res);
 }
 
+/** What a new picture came out as: `version` is the picture's own (for its
+ * URL), and `how` says whether it was painted, painted without the agent's
+ * name after a refusal, or is the room's placeholder. */
+export type PortraitResult = {
+  sha: string;
+  version?: string;
+  how?: "painted" | "painted-without-name" | "placeholder";
+};
+
 /**
  * Generates (or regenerates) an agent's picture: the server derives a
  * prompt from the agent's persona, generates a square image, commits it to
- * the agent's repo, and caches it on the agent row. Returns the commit sha
- * so the caller can cache-bust the `<img src>` that reads the picture back
- * (see `GET /api/agents/{name}/avatar`, a plain URL — no client fn needed
- * for that side, an `<img>` tag fetches it directly).
+ * the agent's repo, and caches it on the agent row. It always answers with a
+ * picture (2026-11-20): when the image model refuses or fails, the room's
+ * placeholder, which is never committed. The caller shows the picture by the
+ * returned `version` (lib/portrait.ts; `GET /api/agents/{name}/avatar` is a
+ * plain URL an `<img>` tag fetches directly).
  */
-export async function generateAvatar(name: string): Promise<{ sha: string }> {
+export async function generateAvatar(name: string): Promise<PortraitResult> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/avatar`, {
     method: "POST",
   });
-  return parse<{ sha: string }>(res);
+  return parse<PortraitResult>(res);
 }
 
 /**
  * Human-provided counterpart to `generateAvatar` above: PUTs the raw PNG
  * bytes as the entire request body (no JSON envelope, no multipart form) —
  * matching `PUT /api/agents/{name}/avatar`'s own contract. Same return shape
- * (`{sha}`) and same cache-busting use (the caller re-derives the `<img
- * src>` from the returned sha, same as after a generate).
+ * (`{sha, version}`) and same use (the caller shows the picture by the
+ * returned version, same as after a generate).
  */
-export async function uploadAvatar(name: string, png: ArrayBuffer): Promise<{ sha: string }> {
+export async function uploadAvatar(name: string, png: ArrayBuffer): Promise<PortraitResult> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/avatar`, {
     method: "PUT",
     headers: { "Content-Type": "image/png" },
     body: png,
   });
-  return parse<{ sha: string }>(res);
+  return parse<PortraitResult>(res);
 }
 
 // --- Cross-group colleagueship: invites + per-user grants (access-control

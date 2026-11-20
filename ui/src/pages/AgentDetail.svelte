@@ -85,6 +85,7 @@
     retryAgentMutation,
     uploadAvatarMutation,
   } from "../lib/queries";
+  import { portraitUrl } from "../lib/portrait";
   import { formatHash, navigate, route } from "../lib/router.svelte";
   import { isRestarting, isUpdating, settleRestart } from "../lib/delivery.svelte";
   import { isDestroyComplete, isFrozen } from "../lib/status";
@@ -390,30 +391,27 @@
     }
   });
 
-  // Cache-bust seam for the `<img>` that reads the avatar back: the GET
-  // route serves whatever's cached on the agent row, and a browser will
-  // otherwise keep showing the previously-cached image at the same URL
-  // after a regenerate. `avatarVersion` starts null (plain URL, relies on
-  // normal HTTP caching) and becomes the mutation's returned sha on
-  // success, appended as a `?v=` param the route ignores but the browser
-  // treats as a new URL — so the swapped-in image is never stale.
-  let avatarVersion = $state<string | null>(null);
+  // The picture by version (lib/portrait.ts, 2026-11-20): the detail
+  // payload's `avatar_version`, which a new face or an upload writes into the
+  // cached detail at once (`pictured` in lib/queries), so the swapped-in
+  // picture shows under its own URL. The header shows the small copy;
+  // Download is the full picture.
   let avatarError = $state<string | null>(null);
   let avatarNote = $state<string | null>(null);
 
-  const avatarSrc = $derived(
-    avatarVersion === null
-      ? `/api/agents/${encodeURIComponent(name)}/avatar`
-      : `/api/agents/${encodeURIComponent(name)}/avatar?v=${encodeURIComponent(avatarVersion)}`,
-  );
+  const shownVersion = $derived(agent.data?.avatar_version ?? null);
+  const avatarSrc = $derived(portraitUrl(name, shownVersion));
+  const avatarDownload = $derived(portraitUrl(name, shownVersion, "full"));
 
   function handleGenerateAvatar(): void {
     avatarError = null;
     avatarNote = null;
     generateAvatar.mutate(undefined, {
       onSuccess: (result) => {
-        avatarVersion = result.sha;
-        avatarNote = "Saved. It'll ride along with the next update.";
+        avatarNote =
+          result.how === "placeholder"
+            ? "Couldn't paint a face this time, so it has a placeholder. Try New face again later."
+            : "Saved. It'll ride along with the next update.";
       },
       onError: (error: unknown) => {
         avatarError = errorMessage(error, "Couldn't paint a face this time.");
@@ -457,7 +455,6 @@
       const bytes = reader.result as ArrayBuffer;
       uploadAvatar.mutate(bytes, {
         onSuccess: (result) => {
-          avatarVersion = result.sha;
           avatarNote = "Saved. It'll ride along with the next update.";
         },
         onError: (error: unknown) => {
@@ -536,8 +533,15 @@
             title="Change portrait"
             onclick={() => (menuOpen = !menuOpen)}
           >
-            {#if data.has_avatar || avatarVersion !== null}
-              <img class="agent-detail__avatar" src={avatarSrc} alt="{data.name}'s picture" />
+            {#if data.has_avatar}
+              <img
+                class="agent-detail__avatar"
+                src={avatarSrc}
+                alt="{data.name}'s picture"
+                width="56"
+                height="56"
+                decoding="async"
+              />
             {:else}
               <span class="agent-detail__avatar agent-detail__avatar--initial" aria-hidden="true">
                 {data.name.slice(0, 1).toUpperCase()}
@@ -558,7 +562,7 @@
                 {#if generateAvatar.isPending}
                   <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
                   Painting…
-                {:else if data.has_avatar || avatarVersion !== null}
+                {:else if data.has_avatar}
                   New face
                 {:else}
                   Give {data.name} a face
@@ -580,10 +584,10 @@
                 />
               </label>
 
-              {#if data.has_avatar || avatarVersion !== null}
+              {#if data.has_avatar}
                 <a
                   class="agent-detail__menu-item"
-                  href={avatarSrc}
+                  href={avatarDownload}
                   download={`${data.name}-portrait.png`}
                   onclick={() => (menuOpen = false)}
                 >

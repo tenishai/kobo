@@ -313,6 +313,7 @@ import {
   type GcpProjectsConnect,
   checkSelfHostedModels,
   type OrgAccountsCheck,
+  type PortraitResult,
 } from "./api";
 import { beginRestart, isRestarting, wantsLiveHealth } from "./delivery.svelte";
 import { detailRefetchInterval, listRefetchInterval } from "./status";
@@ -2255,10 +2256,18 @@ export function regenerateMetadataMutation(
 export function generateAvatarMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: () => generateAvatar(name),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents"] });
-    },
+    onSuccess: (result: PortraitResult) => pictured(queryClient, name, result),
   };
+}
+
+/** A new picture shows at once under its own version: the agent's page
+ * reads it from the cached detail, which a later change by anyone else
+ * replaces in turn, and the main page's cards fetch it again. */
+function pictured(queryClient: QueryClient, name: string, result: PortraitResult): void {
+  queryClient.setQueryData<AgentDetail>(["agents", name], (detail) =>
+    detail && result.version ? { ...detail, has_avatar: true, avatar_version: result.version } : detail,
+  );
+  queryClient.invalidateQueries({ queryKey: ["agents"] });
 }
 
 /**
@@ -2270,9 +2279,7 @@ export function generateAvatarMutation(queryClient: QueryClient, name: string) {
 export function uploadAvatarMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (png: ArrayBuffer) => uploadAvatar(name, png),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents"] });
-    },
+    onSuccess: (result: PortraitResult) => pictured(queryClient, name, result),
   };
 }
 

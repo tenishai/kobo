@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import json
 import logging
 import re
@@ -97,7 +96,16 @@ from kobo_api.archetypes import (
     render_team_guide,
     team_guide_persona_id,
 )
-from kobo_api.avatars import avatar_prompt, set_avatar
+from kobo_api.avatars import (
+    PLACEHOLDER,
+    cache_portrait,
+    has_picture,
+    paint_portrait,
+    portrait_version,
+    set_avatar,
+    small_portrait,
+    stored_picture,
+)
 from kobo_api.bab import A2A_ASK as BAB_A2A_ASK
 from kobo_api.bab import AGENTS_VENDOR as BAB_AGENTS_VENDOR
 from kobo_api.bab import ROOM_ACTOR as BAB_ROOM_ACTOR
@@ -1119,6 +1127,12 @@ _INTAKE_FAST_LANE_FILENAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}\.md$")
 # not a user-input problem, hence the 502 rather than a 422.
 AVATAR_MAX_BYTES = 4 * 1024 * 1024
 
+# How long a browser keeps a portrait (`GET /api/agents/{name}/avatar`):
+# asked for by its current version, for good, because a new picture has a new
+# version; any other way, checked against its ETag every time.
+PORTRAIT_KEPT = "private, max-age=31536000, immutable"
+PORTRAIT_CHECKED = "private, no-cache"
+
 # Avatar upload (portrait upload/download): a human-supplied PNG is capped
 # tighter than a generated one (AVATAR_MAX_BYTES above) — this IS a
 # user-input problem, hence the 422 (not 502) below when it's exceeded. Small
@@ -1526,7 +1540,7 @@ def _store_avatar(clients, agent: Agent, png: bytes) -> str:
     cache either way.
     """
     if is_connected(agent):
-        return hashlib.sha256(png).hexdigest()[:40]
+        return portrait_version(png)
     return set_avatar(clients.github, repo=agent.repo_full_name, png=png)
 
 
@@ -7105,6 +7119,11 @@ def create_app(
         ):
             failing_tasks.setdefault(task_row.agent_name, []).append(task_row.task)
         model_entries = room_models.known_entries(session, cfg)
+        # Which agents have a picture, in one query that never reads one: the
+        # pictures are deferred, and touching each would load them all.
+        pictured = {
+            row.name for row in session.query(Agent.name).filter(Agent.avatar_png.is_not(None))
+        }
         return {
             "agents": [
                 {
@@ -7114,7 +7133,8 @@ def create_app(
                     "model": a.model_id,
                     "model_label": _model_label(model_entries, a.model_id),
                     "created_at": rfc3339(a.created_at),
-                    "has_avatar": a.avatar_png is not None,
+                    "has_avatar": a.name in pictured,
+                    "avatar_version": a.avatar_version,
                     "health": _health_body(a.name),
                     "system_tasks_failing": sorted(failing_tasks.get(a.name, [])),
                     # Owner-or-operator gate + "Made by <email>" (access-
@@ -7223,7 +7243,8 @@ def create_app(
                 "first_reply": agent.first_reply,
                 "slack": slack,
                 "destroy_visible": _operator_block(request, cfg) is None,
-                "has_avatar": agent.avatar_png is not None,
+                "has_avatar": has_picture(session, agent),
+                "avatar_version": agent.avatar_version,
                 "health": _fresh_health_body(agent, live),
                 "created_by": agent.created_by,
                 "group_name": agent.group_name,
@@ -12816,10 +12837,6 @@ def create_app(
             return gate
 
         clients = app.state.clients
-        if clients.image is None:
-            return JSONResponse(
-                {"error": "picture generation is not available"}, status_code=503
-            )
 
         # Same catalog-lookup-by-persona-id idiom as create_slack_app's
         # persona_first_line above (the FTS entry's description, looked up by
@@ -12839,27 +12856,39 @@ def create_app(
             log.warning("persona %r not in the catalog, using generic text for avatar prompt", agent.persona)
             persona_description = f"A {agent.persona} agent."
 
-        prompt = avatar_prompt(agent.name, persona_description, decode_tags(agent.purpose_tags))
-
-        try:
-            png = clients.image.generate(prompt)
-        except ClientError as exc:
-            log.warning("avatar generation failed for %s: %s", name, exc)
-            return JSONResponse({"error": str(exc)}, status_code=502)
-
-        # Size cap enforced BEFORE any store (repo push or DB cache) — a
-        # backend-result problem, not a user-input one, hence 502 not 422.
-        if len(png) > AVATAR_MAX_BYTES:
-            log.warning(
-                "generated avatar for %s exceeded the %d-byte cap (%d bytes)",
-                name, AVATAR_MAX_BYTES, len(png),
-            )
+        # Always a picture (2026-11-20): the usual prompt, then one without the
+        # agent's name (a famous name invites a refusal), then the placeholder.
+        # A placeholder is the room's stand-in, kept here only: the agent's
+        # repository keeps whatever real picture it had. Painting can take a
+        # minute or two, so no transaction is held open across it (the pool
+        # ran dry that way once, 2026-10-01).
+        tags = decode_tags(agent.purpose_tags)
+        had_picture = has_picture(session, agent)
+        session.rollback()
+        painted = paint_portrait(
+            clients.image,
+            name=name,
+            description=persona_description,
+            tags=tags,
+            max_bytes=AVATAR_MAX_BYTES,
+        )
+        png = painted.png
+        if painted.how == PLACEHOLDER and had_picture:
+            # The face it has stays: a stand-in never replaces a real picture.
             return JSONResponse(
-                {"error": "that picture came out too large. Try again."}, status_code=502
+                {"error": "couldn't paint a new face just now, so it keeps the one it has. Try again later."},
+                status_code=502,
             )
+        agent = session.query(Agent).filter_by(name=name).one_or_none()
+        if agent is None:
+            return JSONResponse({"error": "agent not found"}, status_code=404)
 
         try:
-            sha = _store_avatar(clients, agent, png)
+            sha = (
+                portrait_version(png)
+                if painted.how == PLACEHOLDER
+                else _store_avatar(clients, agent, png)
+            )
         except ClientError as exc:
             # The push side's own failure mode (repo unreachable, auth
             # lapsed, ...) — distinct from the image-generation failure
@@ -12872,10 +12901,10 @@ def create_app(
                 {"error": "couldn't save your agent's picture. Try again."}, status_code=502
             )
 
-        agent.avatar_png = base64.b64encode(png).decode("ascii")
+        version = cache_portrait(agent, png)
         session.commit()
 
-        return JSONResponse({"sha": sha})
+        return JSONResponse({"sha": sha, "version": version, "how": painted.how})
 
     @app.put("/api/agents/{name}/avatar")
     async def upload_avatar(
@@ -12930,10 +12959,10 @@ def create_app(
                 {"error": "couldn't save your agent's picture. Try again."}, status_code=502
             )
 
-        agent.avatar_png = base64.b64encode(png).decode("ascii")
+        version = cache_portrait(agent, png)
         session.commit()
 
-        return JSONResponse({"sha": sha})
+        return JSONResponse({"sha": sha, "version": version})
 
     @app.get("/api/agents/{name}/avatar")
     def get_avatar(
@@ -12946,15 +12975,70 @@ def create_app(
         # Visibility IS still enforced (access-control Task B2): a picture is
         # as much "the agent's stuff" as any other field, and existence is
         # itself information.
+        #
+        # Cached by version (2026-11-20): `v` names the picture the page
+        # expects (`avatar_version`, carried on the list and detail payloads).
+        # Asked for by its current version, a picture is kept by the browser
+        # for good, since a new picture has a new version; asked for any other
+        # way, it is checked against its ETag each time and answered 304 when
+        # it has not changed. `size=small` is the 160px WebP copy the cards
+        # and the page header show; without it, the full PNG (the download,
+        # and anything else that reads this route).
         agent = _visible_agent_or_404(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
 
-        if agent.avatar_png is None:
-            return JSONResponse({"error": "no picture yet"}, status_code=404)
+        # The picture columns are read on their own (`stored_picture`), never
+        # through `agent`: they are deferred, and a destroy that finishes
+        # while the page is still asking would make that load raise. A row
+        # gone by then has no picture. What this route makes (a version, a
+        # small copy) is written the same way, so a gone row updates nothing.
+        agent_id = agent.id
+        version = agent.avatar_version
+        stored: str | None = None
+        if version is None:
+            stored = stored_picture(session, agent_id, Agent.avatar_png)
+            if stored is None:
+                return JSONResponse({"error": "no picture yet"}, status_code=404)
+            # A picture kept before versions, or by a replica that predates
+            # them: give it one now.
+            version = portrait_version(base64.b64decode(stored))
+            session.query(Agent).filter_by(id=agent_id).update(
+                {Agent.avatar_version: version}, synchronize_session=False
+            )
+            session.commit()
 
-        png = base64.b64decode(agent.avatar_png)
-        return Response(content=png, media_type="image/png")
+        small = request.query_params.get("size") == "small"
+        etag = f'"{version}{"-small" if small else ""}"'
+        asked = request.query_params.get("v")
+        headers = {
+            "ETag": etag,
+            "Cache-Control": PORTRAIT_KEPT if asked == version else PORTRAIT_CHECKED,
+        }
+        sent = request.headers.get("if-none-match", "")
+        if etag in (tag.strip().removeprefix("W/") for tag in sent.split(",")):
+            return Response(status_code=304, headers=headers)
+
+        if small:
+            copy = stored_picture(session, agent_id, Agent.avatar_small)
+            if copy is None:
+                stored = stored or stored_picture(session, agent_id, Agent.avatar_png)
+                made = small_portrait(base64.b64decode(stored)) if stored else None
+                if made is not None:
+                    copy = base64.b64encode(made).decode("ascii")
+                    session.query(Agent).filter_by(id=agent_id).update(
+                        {Agent.avatar_small: copy}, synchronize_session=False
+                    )
+                    session.commit()
+            if copy is not None:
+                return Response(
+                    content=base64.b64decode(copy), media_type="image/webp", headers=headers
+                )
+
+        stored = stored or stored_picture(session, agent_id, Agent.avatar_png)
+        if stored is None:
+            return JSONResponse({"error": "no picture yet"}, status_code=404)
+        return Response(content=base64.b64decode(stored), media_type="image/png", headers=headers)
 
     # --- Cross-group colleagueship (access-control arc, Task C1) -----------
     #

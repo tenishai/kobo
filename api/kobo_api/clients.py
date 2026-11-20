@@ -3401,6 +3401,12 @@ class ImageClient(Protocol):
 _IMAGE_GENERATION_FAILED = "the picture didn't come through. Try again."
 
 
+class ImageRefused(ClientError):
+    """The image model answered and declined to paint (a blocked prompt, a
+    safety stop): worth asking again in other words, unlike a model that is
+    down or slow."""
+
+
 def _gcloud_print_access_token(runner: CommandRunner | None = None) -> str:
     """Default `token_provider` for VertexImageClient: shells `gcloud auth
     print-access-token` via CommandRunner and returns its (already-stripped
@@ -3633,10 +3639,17 @@ class VertexImageClient:
             raise ClientError(_IMAGE_GENERATION_FAILED)
 
         try:
-            parts = resp.json()["candidates"][0]["content"]["parts"]
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            reply = resp.json()
+        except ValueError as exc:
             log.warning("malformed image generation reply for prompt %r: %r", prompt, exc)
             raise ClientError(_IMAGE_GENERATION_FAILED) from exc
+        try:
+            parts = reply["candidates"][0]["content"]["parts"]
+        except (KeyError, IndexError, TypeError) as exc:
+            # No candidate, or one with no content: the model declined (a
+            # blocked prompt, a safety stop).
+            log.warning("image generation declined for prompt %r: %r", prompt, exc)
+            raise ImageRefused(_IMAGE_GENERATION_FAILED) from exc
 
         for part in parts:
             inline_data = part.get("inlineData")
@@ -3651,7 +3664,7 @@ class VertexImageClient:
         # No inlineData part in any reply part at all — safety-blocked or a
         # text-only turn. A normal, expected outcome, not a transport error.
         log.warning("no image part in generation reply for prompt %r", prompt)
-        raise ClientError(_IMAGE_GENERATION_FAILED)
+        raise ImageRefused(_IMAGE_GENERATION_FAILED)
 
 
 # --- Name (Vertex AI text generateContent: agent name suggestions) ----------------
