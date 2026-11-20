@@ -392,15 +392,14 @@
   });
 
   // The picture by version (lib/portrait.ts, 2026-11-20): the detail
-  // payload's `avatar_version`, or, right after a new face or an upload, the
-  // version that answer carried, so the swapped-in picture shows at once
-  // under its own URL. The header shows the small copy; Download is the full
-  // picture.
-  let avatarVersion = $state<string | null>(null);
+  // payload's `avatar_version`, which a new face or an upload writes into the
+  // cached detail at once (`pictured` in lib/queries), so the swapped-in
+  // picture shows under its own URL. The header shows the small copy;
+  // Download is the full picture.
   let avatarError = $state<string | null>(null);
   let avatarNote = $state<string | null>(null);
 
-  const shownVersion = $derived(avatarVersion ?? agent.data?.avatar_version ?? null);
+  const shownVersion = $derived(agent.data?.avatar_version ?? null);
   const avatarSrc = $derived(portraitUrl(name, shownVersion));
   const avatarDownload = $derived(portraitUrl(name, shownVersion, "full"));
 
@@ -409,7 +408,6 @@
     avatarNote = null;
     generateAvatar.mutate(undefined, {
       onSuccess: (result) => {
-        avatarVersion = result.version ?? result.sha;
         avatarNote =
           result.how === "placeholder"
             ? "Couldn't paint a face this time, so it has a placeholder. Try New face again later."
@@ -457,7 +455,6 @@
       const bytes = reader.result as ArrayBuffer;
       uploadAvatar.mutate(bytes, {
         onSuccess: (result) => {
-          avatarVersion = result.version ?? result.sha;
           avatarNote = "Saved. It'll ride along with the next update.";
         },
         onError: (error: unknown) => {
@@ -536,7 +533,7 @@
             title="Change portrait"
             onclick={() => (menuOpen = !menuOpen)}
           >
-            {#if data.has_avatar || avatarVersion !== null}
+            {#if data.has_avatar}
               <img
                 class="agent-detail__avatar"
                 src={avatarSrc}
@@ -565,7 +562,7 @@
                 {#if generateAvatar.isPending}
                   <span class="composition__avatar-dot pulse" aria-hidden="true"></span>
                   Painting…
-                {:else if data.has_avatar || avatarVersion !== null}
+                {:else if data.has_avatar}
                   New face
                 {:else}
                   Give {data.name} a face
@@ -587,7 +584,7 @@
                 />
               </label>
 
-              {#if data.has_avatar || avatarVersion !== null}
+              {#if data.has_avatar}
                 <a
                   class="agent-detail__menu-item"
                   href={avatarDownload}

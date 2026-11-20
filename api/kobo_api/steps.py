@@ -1243,12 +1243,11 @@ class ConnectStep:
 
 
 class AvatarStep:
-    """A face at birth: generates the agent's avatar and pushes it to its
-    just-created repo, mirroring `kobo_api.main.generate_avatar`'s own
-    sequence (persona-description lookup, `clients.image.generate`, the
-    `AVATAR_MAX_BYTES` size cap, `set_avatar`, the `Agent.avatar_png`
-    base64 cache) almost exactly -- the one difference being what happens
-    when something goes wrong.
+    """A face at birth: paints the agent's picture and pushes it to its
+    just-created repo, the same sequence as `kobo_api.main.generate_avatar`
+    (the persona-description lookup, `kobo_api.avatars.paint_portrait` with
+    its `AVATAR_MAX_BYTES` cap, `set_avatar`, and `cache_portrait` on the
+    row) -- the one difference being what happens when something goes wrong.
 
     Always a picture (2026-11-20): `kobo_api.avatars.paint_portrait` tries
     the persona prompt with the agent's name, then without it (a famous name
@@ -1266,11 +1265,11 @@ class AvatarStep:
     and -- unlike a real failure -- moves straight on to the next step
     rather than aborting the rest of the pipeline.
 
-    Idempotent resume, belt-and-suspenders: a pre-existing `agent.
-    avatar_png` (this step already ran and succeeded on a prior attempt, or
-    a human already generated/uploaded one via the routes above before this
-    ever got a turn) short-circuits to `StepSkipped` before touching
-    `clients.image` or the repo at all -- the engine's own DONE/SKIPPED
+    Idempotent resume, belt-and-suspenders: a picture already on the row
+    (`kobo_api.avatars.has_picture`: this step already ran on a prior
+    attempt, or a human already generated/uploaded one via the routes above
+    before this ever got a turn) short-circuits to `StepSkipped` before
+    touching the image model or the repo at all -- the engine's own DONE/SKIPPED
     resume check (`_get_or_create_step`) already prevents a second run of
     this exact step, but checking the agent's own state here too means a
     stray re-invocation can never overwrite a picture that's already there.
@@ -1383,7 +1382,7 @@ class AvatarStep:
             raise StepSkipped("couldn't save the picture") from exc
 
         if painted.how == PLACEHOLDER:
-            return "no picture could be painted, so it has a placeholder for now"
+            return "no picture could be painted, so it has a placeholder; New face on its page tries again"
         if sha is None:
             return "painted a portrait" + ("; its repository copy didn't save" if owns_repo(agent) else "")
         return f"painted a portrait ({sha})"

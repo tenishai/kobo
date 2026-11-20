@@ -5502,21 +5502,51 @@ def test_a_picture_kept_before_versions_gets_one_when_asked(tmp_path):
     assert client.get("/api/agents").json()["agents"][0]["avatar_version"] == portrait_version(png)
 
 
+def test_new_face_never_trades_a_picture_for_the_placeholder(tmp_path):
+    """Gate: an agent that has a face keeps it when New face can only draw the
+    placeholder (the model down, or no image backend): the answer says so and
+    the picture is the one it had."""
+    import base64
+
+    png = _portrait_png((40, 120, 200))
+    client, github = _portrait_room(
+        tmp_path, image=FakeImage(generate_error="down"), avatar_png=base64.b64encode(png).decode()
+    )
+
+    answer = client.post("/api/agents/clio/avatar")
+
+    assert answer.status_code == 502 and "keeps the one it has" in answer.json()["error"]
+    assert client.get("/api/agents/clio/avatar").content == png
+    assert [call for call in github.calls if "avatar" in call] == []
+
+
+def test_the_nameless_try_drops_the_name_and_keeps_the_persona():
+    """Gate: the second try names no one, however the name is written, and keeps
+    the persona; a short name inside another word is not the name."""
+    from kobo_api.avatars import without_name
+
+    assert without_name("tony-stark", "Tony Stark builds suits") == "the agent builds suits"
+    assert without_name("al", "analytical, and Al is calm") == "analytical, and the agent is calm"
+
+
 class _RefusesNames(FakeImage):
-    """An image backend that refuses any prompt naming the agent, the way a
-    model refuses a famous character's name."""
+    """An image backend that declines any prompt naming the agent, the way a
+    model declines a famous character's name."""
 
     def generate(self, prompt: str) -> bytes:
+        from kobo_api.clients import ImageRefused
+
         self.prompts.append(prompt)
-        if "clio" in prompt:
-            raise ClientError("the picture didn't come through")
+        if "clio" in prompt.lower():
+            raise ImageRefused("the picture didn't come through")
         return self._image_bytes
 
 
 def test_an_agent_always_gets_a_portrait(tmp_path):
-    """Wire shape (2026-11-20, "we should always generate an image"): a refused
-    prompt is tried again without the agent's name; when that fails too, or the
-    room has no image backend, the agent gets a placeholder, a 512px PNG of its
+    """Wire shape (2026-11-20, "we should always generate an image"): a prompt
+    the model declines is tried again without the agent's name; a model that
+    fails any other way is not asked twice. When nothing paints, or the room
+    has no image backend, the agent gets a placeholder, a 512px PNG of its
     initials, kept in the room and never pushed to its repository."""
     import io
 
@@ -5524,9 +5554,8 @@ def test_an_agent_always_gets_a_portrait(tmp_path):
 
     refusing = _RefusesNames()
     named, _ = _portrait_room(tmp_path / "named", image=refusing)
-    blocked, blocked_github = _portrait_room(
-        tmp_path / "blocked", image=FakeImage(generate_error="blocked")
-    )
+    down = FakeImage(generate_error="blocked")
+    blocked, blocked_github = _portrait_room(tmp_path / "blocked", image=down)
     none, _ = _portrait_room(tmp_path / "none", image=None)
 
     painted = named.post("/api/agents/clio/avatar").json()
@@ -5535,7 +5564,8 @@ def test_an_agent_always_gets_a_portrait(tmp_path):
     picture = blocked.get("/api/agents/clio/avatar").content
 
     assert painted["how"] == "painted-without-name"
-    assert "clio" in refusing.prompts[0] and "clio" not in refusing.prompts[1]
+    assert "clio" in refusing.prompts[0] and "clio" not in refusing.prompts[1].lower()
     assert stand_in["how"] == "placeholder" and no_backend["how"] == "placeholder"
+    assert len(down.prompts) == 1
     assert Image.open(io.BytesIO(picture)).size == (512, 512)
     assert [call for call in blocked_github.calls if "avatar" in call] == []

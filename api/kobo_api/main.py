@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import json
 import logging
 import re
@@ -1541,7 +1540,7 @@ def _store_avatar(clients, agent: Agent, png: bytes) -> str:
     cache either way.
     """
     if is_connected(agent):
-        return hashlib.sha256(png).hexdigest()[:40]
+        return portrait_version(png)
     return set_avatar(clients.github, repo=agent.repo_full_name, png=png)
 
 
@@ -12860,15 +12859,29 @@ def create_app(
         # Always a picture (2026-11-20): the usual prompt, then one without the
         # agent's name (a famous name invites a refusal), then the placeholder.
         # A placeholder is the room's stand-in, kept here only: the agent's
-        # repository keeps whatever real picture it had.
+        # repository keeps whatever real picture it had. Painting can take a
+        # minute or two, so no transaction is held open across it (the pool
+        # ran dry that way once, 2026-10-01).
+        tags = decode_tags(agent.purpose_tags)
+        had_picture = has_picture(session, agent)
+        session.rollback()
         painted = paint_portrait(
             clients.image,
-            name=agent.name,
+            name=name,
             description=persona_description,
-            tags=decode_tags(agent.purpose_tags),
+            tags=tags,
             max_bytes=AVATAR_MAX_BYTES,
         )
         png = painted.png
+        if painted.how == PLACEHOLDER and had_picture:
+            # The face it has stays: a stand-in never replaces a real picture.
+            return JSONResponse(
+                {"error": "couldn't paint a new face just now, so it keeps the one it has. Try again later."},
+                status_code=502,
+            )
+        agent = session.query(Agent).filter_by(name=name).one_or_none()
+        if agent is None:
+            return JSONResponse({"error": "agent not found"}, status_code=404)
 
         try:
             sha = (

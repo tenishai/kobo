@@ -39,7 +39,7 @@ from pathlib import Path
 from PIL import Image
 
 from kobo_api import delivery
-from kobo_api.clients import GitHubClient
+from kobo_api.clients import GitHubClient, ImageRefused
 from kobo_api.models import Agent
 
 log = logging.getLogger(__name__)
@@ -104,7 +104,9 @@ def set_avatar(github: GitHubClient, *, repo: str, png: bytes) -> str:
         bundle_dir = workdir / "bundle"
         bundle_dir.mkdir(parents=True, exist_ok=True)
         (bundle_dir / "avatar.png").write_bytes(png)
-        delivery.push(github, workdir, "kobo: set avatar")
+        # Nothing in the running agent reads its picture (the room serves it),
+        # so no build and no restart for it: the next one carries it.
+        delivery.push(github, workdir, "kobo: set avatar [skip ci]", restart=False)
         return github.local_head(workdir)
 
 
@@ -141,25 +143,38 @@ PAINTED_WITHOUT_NAME = "painted-without-name"
 PLACEHOLDER = "placeholder"
 
 
+def without_name(name: str, text: str) -> str:
+    """`text` with the agent's name, as whole words, said as "the agent":
+    `tony-stark` and "Tony Stark" are the same name, and "al" is not inside
+    "analytical"."""
+    words = [re.escape(word) for word in re.split(r"[\s_-]+", name.strip()) if word]
+    if not words:
+        return text
+    return re.sub(r"\b" + r"[\s_-]+".join(words) + r"\b", "the agent", text, flags=re.IGNORECASE)
+
+
 def paint_portrait(
     image, *, name: str, description: str, tags: list[str], max_bytes: int
 ) -> Painted:
-    """Always a picture. With an image backend: the usual prompt, then one
-    without the agent's name; a refusal, an error or a picture over
-    `max_bytes` moves on to the next. Without one, or when both fail, the
-    placeholder. Failures are logged here, never raised."""
+    """Always a picture. With an image backend: the usual prompt, then, when
+    the model declines it or paints one over `max_bytes`, one without the
+    agent's name. A model that fails any other way (down, slow) is not asked
+    twice. Without a backend, or when nothing paints, the placeholder.
+    Failures are logged here, never raised."""
     if image is not None:
-        nameless = description if name.lower() not in description.lower() else "an AI assistant"
         tries = (
             (PAINTED, avatar_prompt(name, description, tags)),
-            (PAINTED_WITHOUT_NAME, avatar_prompt_without_name(nameless, tags)),
+            (PAINTED_WITHOUT_NAME, avatar_prompt_without_name(without_name(name, description), tags)),
         )
         for how, prompt in tries:
             try:
                 png = image.generate(prompt)
+            except ImageRefused as exc:
+                log.warning("portrait for %s (%s) declined: %s", name, how, exc)
+                continue
             except Exception as exc:  # noqa: BLE001 -- a picture is never a reason to fail
                 log.warning("portrait for %s (%s) failed: %s", name, how, exc)
-                continue
+                break
             if len(png) > max_bytes:
                 log.warning(
                     "portrait for %s (%s) came out at %d bytes, over %d", name, how, len(png), max_bytes
