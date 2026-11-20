@@ -2186,7 +2186,14 @@ export type GuardrailSourceKind = "person" | "persona" | "skill" | "correction" 
 
 export type GuardrailRule = {
   id: number | null;
+  /** The rule's words, without the people it names. */
   text: string;
+  /** The people the rule is about ("Only answer these people"), from the
+   * directory. The agent is told who sent each message and matches them by
+   * email. */
+  people: Person[];
+  /** The rule as the agent reads it: its words, then its people. */
+  line: string;
   source: { kind: GuardrailSourceKind; ref: string | null };
   added_by: string | null;
   added_at: string | null;
@@ -2221,6 +2228,7 @@ export type GuardrailsResponse = {
  * `source_kind`/`source_ref` name where a proposed rule came from. */
 export type GuardrailRuleIn = {
   text: string;
+  people?: Person[];
   id?: number | null;
   source_kind?: Exclude<GuardrailSourceKind, "repository">;
   source_ref?: string | null;
@@ -2615,6 +2623,15 @@ export type ToolingFile = {
   content_bytes: number;
   delivered: boolean;
   status?: "enforced";
+  /** One sentence on what the check does, for a person: the room's own words
+   * for its baseline pack, else the file's docstring. Null when there is
+   * nothing to say. */
+  description?: string | null;
+  /** One of the room's own checks, which only a room operator may remove. */
+  baseline?: boolean;
+  /** Whether this caller may take the check off: the agent's owners for its
+   * own checks, a room operator for the room's. */
+  can_remove?: boolean;
 };
 
 /** Whether the running pod actually enforces `bundle/tools/*` hooks around a
@@ -2641,52 +2658,6 @@ export type ToolingListResponse = {
 export async function listTooling(name: string): Promise<ToolingListResponse> {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}/tooling`);
   return parse<ToolingListResponse>(res);
-}
-
-/** Uploads (creates or overwrites) one tooling file. Like `uploadIntake`,
- * the filename travels in the request body, not the URL path — this is a
- * fresh file pick from a form, not an edit of an already-named resource. */
-export async function uploadTooling(
-  name: string,
-  filename: string,
-  content: string,
-): Promise<{ sha: string }> {
-  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/tooling`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ filename, content }),
-  });
-  return parse<{ sha: string }>(res);
-}
-
-/** `POST /api/agents/{name}/tooling/import`'s partial-pass result: every
- * candidate `.py`/`.go` file under `path` in `repo` is validated
- * independently, so one bad file never sinks the rest. `sha` is `null` when
- * nothing passed (nothing was pushed at all — see `kobo_api.tooling.
- * import_tooling`'s docstring). */
-export type ToolingImportResult = {
-  sha: string | null;
-  imported: string[];
-  rejected: { name: string; reason: string }[];
-};
-
-/** Imports every `.py`/`.go` file that passes validation from `path` in
- * `repo` (cloned via kobo's own GitHub App identity — no separate auth
- * needed) into this agent's `bundle/tools/`, in one delivery. */
-export async function importTooling(
-  name: string,
-  repo: string,
-  path: string,
-): Promise<ToolingImportResult> {
-  const res = await fetch(
-    `/api/agents/${encodeURIComponent(name)}/tooling/import`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo, path }),
-    },
-  );
-  return parse<ToolingImportResult>(res);
 }
 
 /** Removes a tooling file. These are files, not memories — deleting removes

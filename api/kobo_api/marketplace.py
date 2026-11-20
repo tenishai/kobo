@@ -39,7 +39,9 @@ class MarketplaceError(Exception):
 # _stage_baseline_tools` stages what matches it, and `kobo_api.mcp.tools.
 # write.kobo_create_tool` reserves what matches it for room operators
 # (publishing one is a room-wide act -- it changes what every agent born
-# afterward carries -- not a team-scoped one like any other tool).
+# afterward carries -- not a team-scoped one like any other tool). On an
+# agent, the same prefix marks the checks no upload or import may write and
+# only a room operator may remove (`kobo_api.tooling.is_baseline`).
 BASELINE_TOOL_PREFIX = "baseline-"
 
 

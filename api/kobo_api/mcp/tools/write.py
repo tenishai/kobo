@@ -1152,6 +1152,13 @@ def register(mcp: FastMCP, app: Any) -> None:
         word keeps where it came from; a new or reworded one is recorded as
         yours. An empty list clears it.
 
+        A rule can name the people it is about: end it with
+        `(These people: Name <email>; Name <email>)`, the way `line` in
+        `kobo_get_guardrails` shows it, so "Only answer these people" knows
+        who they are. The agent is told who sent each Slack message and
+        matches them by email. Send a rule's `line`, not just its `text`, to
+        keep the people it names.
+
         Write rules that make sense on their own ("When searching tickets, use
         the person's full email", not "Use the full email"). Always or never
         is a rule; how to do a job is a skill. A rule guides the agent but

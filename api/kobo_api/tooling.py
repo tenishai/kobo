@@ -101,6 +101,54 @@ SOURCE_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 _TOOLING_EXTENSIONS = (".py", ".go")
 
 
+# The room's own checks, the baseline pack every new agent starts with (the
+# marketplace's `baseline-` ids, reserved for room operators), said the way an
+# owner reads them on the Guardrails section. Any other check is described by the
+# first sentence of its module docstring (`describe_check`).
+BASELINE_DESCRIPTIONS = {
+    "baseline-leakguard.py": "Keys and tokens are cut out of its replies before they're sent.",
+    "baseline-probe-guard.py": "Asks for its own keys are refused before it reads them.",
+}
+
+
+def is_baseline(filename: str) -> bool:
+    """Whether `filename` is one of the room's own checks, which only a room
+    operator may remove and no upload or import may write."""
+    # Read here, not at import: kobo_api.marketplace imports this module.
+    from kobo_api.marketplace import BASELINE_TOOL_PREFIX
+
+    return filename.startswith(BASELINE_TOOL_PREFIX)
+
+
+def _plain(words: str) -> str:
+    return re.sub(r"[-_\s]+", " ", words).strip().lower()
+
+
+def describe_check(filename: str, source: str) -> str | None:
+    """One sentence on what a check does, for a person: the room's own words for
+    the baseline pack, else the first sentence of a Python check's docstring with
+    a leading "its-name:" or "Its name --" dropped. None when there is nothing to
+    say, and the panel shows the file's name instead."""
+    if filename in BASELINE_DESCRIPTIONS:
+        return BASELINE_DESCRIPTIONS[filename]
+    if not filename.endswith(".py"):
+        return None
+    try:
+        doc = ast.get_docstring(ast.parse(source))
+    except (SyntaxError, ValueError):
+        return None
+    if not doc:
+        return None
+    first = " ".join(doc.split("\n\n", 1)[0].split())
+    named = re.match(r"^(?P<name>[^:]{1,64}?)\s*(?::|--)\s+(?P<rest>.+)$", first)
+    if named and _plain(named.group("name")) == _plain(Path(filename).stem):
+        first = named.group("rest")
+    sentence = re.split(r"(?<=[.!?])\s", first, maxsplit=1)[0].strip()
+    if not sentence:
+        return None
+    return (sentence[0].upper() + sentence[1:])[:200]
+
+
 class ToolingError(Exception):
     """A tooling filename/source-repo/source-path failed validation, a
     file's content was empty, too large, not valid UTF-8, or (for a .py
@@ -404,6 +452,11 @@ def import_tooling(
         passed: list[tuple[str, bytes]] = []
         rejected: list[dict] = []
         for name, raw in candidates:
+            if is_baseline(name):
+                # The room's own checks: an upload refuses the name too, and only
+                # a room operator may remove one, so an import must not replace one.
+                rejected.append({"name": name, "reason": f"{name} is one of the room's own checks"})
+                continue
             try:
                 _validate_filename(name)
                 _validate_content(name, raw)
@@ -548,11 +601,17 @@ def list_tooling(
             delivered = live_commit is not None and github.is_ancestor(
                 workdir, file_commit, live_commit
             )
+            try:
+                source = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                source = ""
             results.append(
                 {
                     "name": path.name,
                     "content_bytes": path.stat().st_size,
                     "delivered": delivered,
+                    "description": describe_check(path.name, source),
+                    "baseline": is_baseline(path.name),
                 }
             )
         return results, enforcement

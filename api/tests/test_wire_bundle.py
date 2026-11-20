@@ -729,6 +729,101 @@ def test_a_guardrails_save_relays_and_archives_the_same_bytes(tmp_path, monkeypa
     assert github.pushes[-1][1].endswith("[skip ci]")
 
 
+PEOPLE = [
+    {"name": "Ada Lovelace", "email": "ada@example.com"},
+    {"name": "Alan Turing", "email": "Alan@Example.com"},
+]
+
+
+def test_a_rule_names_its_people_on_its_own_line(tmp_path, monkeypatch):
+    """Wire shape (daedalus's rules intro and its Slack sender line, `(From Name <email>.)`):
+    the people a rule is about ride on the rule's own line, after its words, as
+    `(These people: Name <email>; ...)`. The runtime puts the line in front of the model
+    as written and names each message's sender the same way, so the model matches the
+    two by email. The panel reads the words and the people apart, and the line whole."""
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+
+    response = client.put("/api/agents/gate/guardrails", json={"rules": [
+        {"text": "Only answer these people.", "people": PEOPLE},
+        {"text": RULES[1]},
+    ]})
+
+    assert response.status_code == 200, response.text
+    line = ("Only answer these people. (These people: Ada Lovelace <ada@example.com>; "
+            "Alan Turing <Alan@Example.com>)")
+    assert github.pushed_file("bundle/guardrails.md").endswith(f"- {line}\n- {RULES[1]}\n")
+    first, second = response.json()["rules"]
+    assert first["text"] == "Only answer these people." and first["line"] == line
+    assert first["people"] == PEOPLE
+    assert second["people"] == [] and second["line"] == RULES[1]
+
+
+def test_an_assistant_keeps_a_rules_people_by_sending_its_line(tmp_path, monkeypatch):
+    """Wire shape (`kobo_set_guardrails` takes plain lines): a rule's `line`, people
+    included, sent back as its text keeps the people. People sent both ways at once are
+    refused, and so is an address that isn't one; nothing is written either time. A line
+    from the repository whose ending only looks like a list of people reads, and saves,
+    as written."""
+    from kobo_api.guardrails import render_file
+
+    client, github, _ = _guardrails_room(tmp_path, monkeypatch)
+    line = "Only answer these people. (These people: Ada Lovelace <ada@example.com>)"
+
+    kept = client.put("/api/agents/gate/guardrails", json={"rules": [{"text": line}]})
+    pushes = len(github.pushes)
+    twice = client.put("/api/agents/gate/guardrails", json={"rules": [
+        {"text": line, "people": [PEOPLE[1]]},
+    ]})
+    not_an_email = client.put("/api/agents/gate/guardrails", json={"rules": [
+        {"text": "Only answer them.", "people": [{"name": "Ada", "email": "ada"}]},
+    ]})
+    crowd = [{"name": "A" * 60, "email": f"person{i}@example.com"} for i in range(20)]
+    too_long = client.put("/api/agents/gate/guardrails", json={"rules": [
+        {"text": "Only answer these people.", "people": crowd},
+    ]})
+    written = "Keep it short (These people: the on-call team)"
+    github._repo_files = {"bundle/guardrails.md": render_file([written])}
+    read = client.get("/api/agents/gate/guardrails").json()["rules"]
+    resaved = client.put("/api/agents/gate/guardrails", json={"rules": [
+        {"text": rule["text"], "people": rule["people"]} for rule in read
+    ]})
+
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["rules"][0]["people"] == [{"name": "Ada Lovelace", "email": "ada@example.com"}]
+    assert twice.status_code == 422 and twice.json() == {"error": "a rule names its people once"}
+    assert not_an_email.status_code == 422
+    assert not_an_email.json() == {"error": "ada isn't an email address"}
+    assert too_long.status_code == 422
+    assert too_long.json()["error"].startswith("a rule and its people are at most 1,000 characters")
+    assert len(github.pushes) == pushes + 1  # the resave; nothing for the three refusals
+    assert read[0]["text"] == written and read[0]["people"] == []
+    assert resaved.status_code == 200, resaved.text
+    assert github.pushed_file("bundle/guardrails.md").endswith(f"- {written}\n")
+
+
+def test_changing_a_rules_people_keeps_where_it_came_from(tmp_path, monkeypatch):
+    """Wire shape (an assistant sends lines, no ids): a rule whose people change keeps
+    its row, so it still says where it came from and how often it broke, and the
+    panel's "keeps breaking" note does not reset; the person who changed it is
+    recorded as its editor."""
+    client, _, _ = _guardrails_room(tmp_path, monkeypatch)
+    words = "Only answer these people."
+    saved = client.put("/api/agents/gate/guardrails", json={"rules": [
+        {"text": words, "people": [PEOPLE[0]], "source_kind": "persona",
+         "source_ref": "helpful-generalist"},
+    ]}).json()["rules"][0]
+    client.post(f"/api/agents/gate/guardrails/{saved['id']}/broken")
+
+    changed = client.put("/api/agents/gate/guardrails", json={"rules": [
+        {"text": f"{words} (These people: Ada Lovelace <ada@example.com>; Alan Turing <alan@example.com>)"},
+    ]}).json()["rules"][0]
+
+    assert changed["id"] == saved["id"]
+    assert changed["source"] == {"kind": "persona", "ref": "helpful-generalist"}
+    assert changed["breaks"] == 1 and changed["edited_by"]
+    assert [p["email"] for p in changed["people"]] == ["ada@example.com", "alan@example.com"]
+
+
 def test_without_a_relay_the_commit_is_the_delivery(tmp_path, monkeypatch):
     """Wire shape: an agent the switchboard cannot reach (or a runtime from before
     guardrails) gets the list by an ordinary commit, which keeps CI so the next image

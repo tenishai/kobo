@@ -8,13 +8,20 @@ const FILE = {
   name: "no_secrets.py",
   content_bytes: 512,
   delivered: true,
-  status: "stored" as const,
+  description: "Holds back a reply that names a customer.",
+  baseline: false,
+  can_remove: true,
 };
 
-/** Open the "+ Tool" disclosure. The upload form lives behind it now. */
-async function openUpload(): Promise<void> {
-  await fireEvent.click(await screen.findByRole("button", { name: "+ Tool" }));
-}
+const BASELINE = {
+  name: "baseline-leakguard.py",
+  content_bytes: 1100,
+  delivered: true,
+  status: "enforced" as const,
+  description: "Keys and tokens are cut out of its replies before they're sent.",
+  baseline: true,
+  can_remove: false,
+};
 
 describe("ToolingPanel", () => {
   beforeEach(() => {
@@ -26,20 +33,46 @@ describe("ToolingPanel", () => {
     });
   });
 
-  it("keeps the upload form shut until it is asked for, and opens it on click", async () => {
+  // Always on (2026-11-20): an owner reads what each check does and whether it
+  // is on; adding one is an engineer's job from their own assistant, so the
+  // page has no upload, and a check this caller may not remove has no Remove.
+  it("says what each check does and whether it is on, with no upload", async () => {
+    stubFetch({
+      "/api/agents/warden/tooling": {
+        files: [BASELINE, { ...FILE, delivered: false }],
+        enforcement: { attested: true, locked: false, locked_file: null },
+      },
+      "/api/": {},
+    });
     renderWithClient(ToolingPanel, { agentName: "warden", frozen: false });
 
-    const toggle = await screen.findByRole("button", { name: "+ Tool" });
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByLabelText("Choose file")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Upload" })).toBeNull();
+    expect(await screen.findByText(BASELINE.description)).not.toBeNull();
+    expect(screen.getByText("On")).not.toBeNull();
+    expect(screen.getByText(FILE.description)).not.toBeNull();
+    expect(screen.getByText("Starts at its next restart")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: `Remove ${BASELINE.name}` })).toBeNull();
+    expect(screen.getByRole("button", { name: `Remove ${FILE.name}` })).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "+ Tool" })).toBeNull();
+    expect(screen.queryByLabelText("Content")).toBeNull();
+  });
 
-    await fireEvent.click(toggle);
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByLabelText("Choose file")).not.toBeNull();
-    expect(screen.getByLabelText("File name")).not.toBeNull();
-    expect(screen.getByLabelText("Content")).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Upload" })).not.toBeNull();
+  // A lock stops every check: the banner names the one that failed and every
+  // row says why it isn't on, never a guess like "waits for a newer runtime".
+  it("says a broken check stopped the rest", async () => {
+    stubFetch({
+      // Locked, the server marks no file enforced.
+      "/api/agents/warden/tooling": {
+        files: [{ ...BASELINE, status: undefined }, FILE],
+        enforcement: { attested: true, locked: true, locked_file: FILE.name },
+      },
+      "/api/": {},
+    });
+    renderWithClient(ToolingPanel, { agentName: "warden", frozen: false });
+
+    expect((await screen.findByRole("alert")).textContent).toContain(`${FILE.name} failed to load`);
+    expect(screen.getByText("Failed to load")).not.toBeNull();
+    expect(screen.getByText("Paused while a check is broken")).not.toBeNull();
+    expect(screen.queryByText("On")).toBeNull();
   });
 
   it("asks before removing, in the room's own dialog, and never through the browser", async () => {
@@ -117,32 +150,5 @@ describe("ToolingPanel", () => {
             (init as RequestInit | undefined)?.method === "DELETE",
         ),
     ).toBe(true);
-  });
-
-  it("uploads the typed file name and content", async () => {
-    renderWithClient(ToolingPanel, { agentName: "warden", frozen: false });
-
-    await openUpload();
-    await fireEvent.input(screen.getByLabelText("File name"), {
-      target: { value: "no_secrets.py" },
-    });
-    await fireEvent.input(screen.getByLabelText("Content"), {
-      target: { value: "def hook():\n    return None\n" },
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Upload" }));
-
-    const call = vi
-      .mocked(fetch)
-      .mock.calls.find(
-        ([url, init]) =>
-          String(url).includes("/api/agents/warden/tooling") &&
-          (init as RequestInit | undefined)?.method === "POST",
-      );
-    expect(call).toBeDefined();
-    const body = JSON.parse((call as [RequestInfo | URL, RequestInit])[1].body as string);
-    expect(body).toEqual({
-      filename: "no_secrets.py",
-      content: "def hook():\n    return None\n",
-    });
   });
 });

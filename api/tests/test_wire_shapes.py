@@ -4225,6 +4225,30 @@ def test_list_tooling_attested_and_locked_reports_locked_file():
     assert by_name == {"old.py": True, "fresh.py": False}
 
 
+def test_each_check_says_what_it_does():
+    """Wire shape (the Guardrails section's Always on list reads it, 2026-11-20): a check
+    from the room's baseline pack carries the room's own sentence and `baseline`; any
+    other Python check carries the first sentence of its docstring, with its own name in
+    front dropped; a check with nothing to say carries None, and the page shows its file
+    name instead."""
+    github = FakeGitHub(tooling_files={
+        "baseline-probe-guard.py": "def pre_task(message):\n    return None\n",
+        "reply-tidy.py": '"""Reply tidy -- whitespace hygiene for outgoing drafts. Trims lines."""\n',
+        "quiet.py": "def post_draft(draft):\n    return draft\n",
+    })
+    kubectl = FakeKubectl(images={(NAMESPACE, DEPLOY): f"gojira-app:{OLDER_SHA[:12]}"})
+
+    files, _ = list_tooling(
+        github, kubectl, FakeAgent(), repo=REPO, namespace=NAMESPACE, deploy=DEPLOY
+    )
+
+    assert {f["name"]: (f["description"], f["baseline"]) for f in files} == {
+        "baseline-probe-guard.py": ("Asks for its own keys are refused before it reads them.", True),
+        "quiet.py": (None, False),
+        "reply-tidy.py": ("Whitespace hygiene for outgoing drafts.", False),
+    }
+
+
 # --- from test_metrics.py ---
 
 
