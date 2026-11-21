@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.81] - 2026-11-20
+
 ### Fixed
 - **A save restarts the agent once.** In a room that delivers bundles as artifacts, every save restarted the agent twice: the room's own restart within seconds, then the agent repository's build a minute or two later, which built the same image again and deployed it under the commit's tag. Chat refused in both gaps, and the page said **Restarting** a second time after it had said **Ready**. Now a commit that cannot change the image (a persona, skill, rule, knowledge, Edit details, a picture) skips that build, and the room's one restart names the commit it delivered, so **Delivered**, **Ingested** and the **Updating** banner still know when the change is live. A new runtime, an agent whose image still carries its bundle (restarted by its build alone now), and a save after a runtime build that never landed (which retries it, as any save did) build as before. An instant tool upload restarts the agent once too.
 
