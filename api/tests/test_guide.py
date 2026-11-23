@@ -166,7 +166,6 @@ BLOCKLIST = (
     "techne",
     "sero",
     "noto",
-    "kodama",
     "kaminos",
     "okta",
     "google",
