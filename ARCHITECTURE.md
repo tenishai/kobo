@@ -1,7 +1,7 @@
 ---
 card: repo-card:kobo
-updated: 2026-10-30
-anchor: .github/workflows/ci.yml sha=449369e942ece82c62f7b7e2fef53e6d9ef11d9e
+updated: 2026-11-23
+anchor: .github/workflows/ci.yml sha=d6d46fd1c1a8801afafa5c4dc4f60381b3090aa0
 ---
 <!-- pyproject.toml is deliberately not anchored: Dependabot moves its pins weekly and the
      CI card check would fail every one of those PRs. The version named under STATE is kept
