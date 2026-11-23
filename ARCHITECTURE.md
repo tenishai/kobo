@@ -1,7 +1,7 @@
 ---
 card: repo-card:kobo
 updated: 2026-11-23
-anchor: Dockerfile sha=c6b13dcddd7854be06a8d87f61fc633e2a90ad14
+anchor: Dockerfile sha=1d5ef7b74c87a3e20ed0258d0e3f86b263fdf083
 ---
 <!-- pyproject.toml and the workflow files are deliberately not anchored: Dependabot moves their
      pins weekly and the CI card check would fail every one of those PRs. The version named under STATE is kept
@@ -63,7 +63,7 @@ DEPS: no Python imports of sibling repos (daedalus only via `pytest.importorskip
 - sero: machine-lane secrets, auth = pod's Google ID token (sero.py).
 - liminal: `liminal_url` baked into each bundle's tools block; techne: each agent's memory store on a PVC (runtime side; kobo never imports techne).
 - GitHub (gh CLI + GitHub App), Okta (groups/people), Vertex (names, persona drafts, avatars), GCS (catalogs), Slack (manifest API).
-HEALTH: API tests live under api/tests (pytest, `-n auto`; each test owns its SQLite file; `make -C api test` locally runs serial). UI: vitest + svelte-check. CI (.github/workflows/ci.yml): `api-tests` as three shards, each every third test file in sorted order on its own runner, the architecture-card check on shard 1 only, `ui` (build, check, test), `migrations` (alembic to head on real Postgres 16 + scripts/schema_tripwire.py), and `test-lifecycle` (TESTING.md: scaffold tests must not reach a PR). Every job runs on a GitHub-hosted runner (2026-11-23; api/tests/test_guide.py holds that), and the last job, `ci`, needs all the others: it is the one check the branch rules require, with `dco`. Ruff is NOT in CI. A `dockerfile` job lints both Dockerfiles with `docker buildx build --check` (ghcr login first: the base image is private); the image itself is built only by release.yml (2026-10-29).
+HEALTH: API tests live under api/tests (pytest, `-n auto`; each test owns its SQLite file; `make -C api test` locally runs serial). UI: vitest + svelte-check. CI (.github/workflows/ci.yml): `api-tests` as three shards, each every third test file in sorted order on its own runner, the architecture-card check on shard 1 only, `ui` (build, check, test), `migrations` (alembic to head on real Postgres 16 + scripts/schema_tripwire.py), and `test-lifecycle` (TESTING.md: scaffold tests must not reach a PR). Every job runs on a GitHub-hosted runner (2026-11-23; api/tests/test_guide.py holds that), and the last job, `ci`, needs all the others: it is the one check the branch rules require, with `dco`. Ruff is NOT in CI. A `dockerfile` job lints both Dockerfiles with `docker buildx build --check` (ghcr login first: the base image is private); the image itself is built only by release.yml (2026-10-29). A release (2026-11-23, RELEASING.md) runs all of ci.yml on the tag, then gates the image before it publishes: it starts, `scripts/check_licences.py`, and a grype scan for high or critical findings that have a fix (`.grype.yaml`); the product Dockerfile's `APT_REFRESH` argument makes the OS upgrade layer run again on every release.
 GOTCHAS:
 - CI installs with `uv sync --locked` against the committed `api/uv.lock` (2026-10-05); a
   drifted lock fails the job instead of silently resolving. The same job runs

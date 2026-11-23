@@ -51,6 +51,10 @@ export PATH                                      # in ~/.profile or ~/.zshrc
 
 Check: `sed --version` should print `sed (GNU sed)`. Re-open your shell, or source the profile, after changing `PATH`.
 
+## Releases
+
+Maintainers cut releases; [RELEASING.md](RELEASING.md) says how, and what stops one.
+
 ## Developer Certificate of Origin
 
 kobo uses the [Developer Certificate of Origin](https://developercertificate.org/)

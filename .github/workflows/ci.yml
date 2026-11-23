@@ -16,6 +16,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_call:  # release.yml runs all of this on the tagged commit
 
 permissions:
   contents: read

@@ -1,0 +1,7 @@
+# What the release scan does not block on (the release still lists it).
+# Go modules are compiled into tools this image installs ready-built (kubectl, gh).
+# A finding there is fixed by that tool's next release, not by a change here, so the
+# gate covers what this repository decides: the OS packages and the Python packages.
+ignore:
+  - package:
+      type: go-module
