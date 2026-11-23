@@ -30,7 +30,6 @@ failed), and BuildStep/DeployStep would then run against an unverified app.
 
 from __future__ import annotations
 
-import base64
 import logging
 import os
 import re
@@ -47,7 +46,13 @@ import httpx
 import yaml
 
 from kobo_api import audit, delivery, gateway_lane, github_access
-from kobo_api.avatars import avatar_prompt, set_avatar
+from kobo_api.avatars import (
+    PLACEHOLDER,
+    cache_portrait,
+    has_picture,
+    paint_portrait,
+    set_avatar,
+)
 from kobo_api.bab import ROOM_ACTOR as BAB_ROOM_ACTOR
 from kobo_api.catalog import _DESCRIPTION_HEADER_RE
 from kobo_api.clients import (
@@ -1238,35 +1243,33 @@ class ConnectStep:
 
 
 class AvatarStep:
-    """A face at birth: generates the agent's avatar and pushes it to its
-    just-created repo, mirroring `kobo_api.main.generate_avatar`'s own
-    sequence (persona-description lookup, `clients.image.generate`, the
-    `AVATAR_MAX_BYTES` size cap, `set_avatar`, the `Agent.avatar_png`
-    base64 cache) almost exactly -- the one difference being what happens
-    when something goes wrong.
+    """A face at birth: paints the agent's picture and pushes it to its
+    just-created repo, the same sequence as `kobo_api.main.generate_avatar`
+    (the persona-description lookup, `kobo_api.avatars.paint_portrait` with
+    its `AVATAR_MAX_BYTES` cap, `set_avatar`, and `cache_portrait` on the
+    row) -- the one difference being what happens when something goes wrong.
 
-    That route answers a human's button-press, so its failures are a 502/
-    503 the human can just retry. This step runs unattended, inside the
-    one-click pipeline, immediately after `RepoStep` -- and a picture is a
-    nice-to-have, never a reason to leave an otherwise-healthy agent stuck
-    in FAILED. So EVERY failure path here -- no image backend configured,
-    `clients.image.generate` raising, the generated PNG coming back over
-    the size cap, the repo push itself failing, or the final `avatar_png`
-    encode/persist failing -- raises `StepSkipped` with a one-line reason
-    instead of letting the underlying exception propagate. A persona-
-    description or purpose-tags lookup failure is guarded too, but
-    degrades quietly to a generic, tag-free prompt rather than skipping --
-    a missing/unreadable persona is never worth losing the picture over.
+    Always a picture (2026-11-20): `kobo_api.avatars.paint_portrait` tries
+    the persona prompt with the agent's name, then without it (a famous name
+    invites a refusal), and draws a placeholder when neither paints or there
+    is no image backend, so no failure of the image model leaves an agent
+    faceless. A placeholder is the room's stand-in and stays in the room;
+    only a painted picture is pushed to the agent's repository, and a push
+    that fails still leaves the room showing it. The one failure left,
+    keeping the picture on the row, raises `StepSkipped`: a picture is never
+    a reason to leave an otherwise-healthy agent stuck in FAILED. A persona-
+    description or purpose-tags lookup failure degrades quietly to a
+    generic, tag-free prompt, as before.
     `StepSkipped` is exactly what keeps this best-effort: `kobo_api.
     provisioner._run_pipeline_body` records that as SKIPPED, not FAILED,
     and -- unlike a real failure -- moves straight on to the next step
     rather than aborting the rest of the pipeline.
 
-    Idempotent resume, belt-and-suspenders: a pre-existing `agent.
-    avatar_png` (this step already ran and succeeded on a prior attempt, or
-    a human already generated/uploaded one via the routes above before this
-    ever got a turn) short-circuits to `StepSkipped` before touching
-    `clients.image` or the repo at all -- the engine's own DONE/SKIPPED
+    Idempotent resume, belt-and-suspenders: a picture already on the row
+    (`kobo_api.avatars.has_picture`: this step already ran on a prior
+    attempt, or a human already generated/uploaded one via the routes above
+    before this ever got a turn) short-circuits to `StepSkipped` before
+    touching the image model or the repo at all -- the engine's own DONE/SKIPPED
     resume check (`_get_or_create_step`) already prevents a second run of
     this exact step, but checking the agent's own state here too means a
     stray re-invocation can never overwrite a picture that's already there.
@@ -1277,13 +1280,11 @@ class AvatarStep:
 
     def run(self, ctx: Ctx) -> str:
         agent = ctx.agent
-        clients = ctx.clients
 
-        if agent.avatar_png is not None:
+        # Never the picture itself: it is deferred, a megabyte to load just
+        # to learn it is there.
+        if has_picture(ctx.session, agent):
             raise StepSkipped("agent already has a picture")
-
-        if clients.image is None:
-            raise StepSkipped("picture generation is not available")
 
         # Same catalog-lookup-by-persona-id idiom as `generate_avatar`'s own
         # (kobo_api.main), with the same id-derived fallback for a persona
@@ -1338,78 +1339,53 @@ class AvatarStep:
     def _generate_and_store(
         self, ctx: Ctx, persona_description: str, tags: list[str]
     ) -> str:
-        """Generate the picture, cache it on the row, and -- only for an
-        agent whose repo the room owns -- commit it into the bundle.
+        """Paint the picture (or draw the placeholder), keep it on the row, and
+        -- only for a painted picture of an agent whose repo the room owns --
+        commit it into the bundle.
 
-        The repo half is the one thing the two kinds differ on. A connected
-        repo belongs to its team and the room never pushes to it, so the
-        room's own cached copy is the whole of it there: the picture is
-        something the room draws to show the agent by, not a file it puts in
-        somebody else's tree.
+        A connected repo belongs to its team and the room never pushes to it,
+        so the room's own copy is the whole of it there. A placeholder is
+        never pushed either: it stands in until someone paints a face.
         """
         agent = ctx.agent
         clients = ctx.clients
 
-        prompt = avatar_prompt(agent.name, persona_description, tags)
-
-        # Broader than the route's own `except ClientError`: this step's
-        # whole job is to never let a picture problem become an agent
-        # problem, so any exception from the image backend here -- not just
-        # the ones it documents raising -- degrades to a skip instead of
-        # failing the step (and, unlike the route, a step failure would
-        # otherwise cascade into FAILING THE WHOLE AGENT).
-        #
-        # The StepSkipped message itself is a fixed, generic one-liner --
-        # never `str(exc)` -- because it lands verbatim on `AgentStep.error`,
-        # which `GET /api/agents/{name}` serves to any viewer. A `set_avatar`
-        # ClientError in particular can carry a full git/gh command line and
-        # raw stderr; that belongs in the server log only, same sanitization
-        # split the route this step mirrors already applies to its own
-        # errors. The raw exception is logged here, server-side, before the
-        # generic message is raised.
-        try:
-            png = clients.image.generate(prompt)
-        except Exception as exc:  # degrade to skip, never fail the agent
-            log.warning("avatar step %s for %s: %s", "generation", agent.name, exc)
-            raise StepSkipped("picture generation failed") from exc
-
-        # Size cap enforced BEFORE any store (repo push or DB cache), same
-        # as the route.
-        if len(png) > AVATAR_MAX_BYTES:
-            raise StepSkipped(
-                f"generated avatar exceeded the {AVATAR_MAX_BYTES}-byte cap ({len(png)} bytes)"
-            )
+        painted = paint_portrait(
+            clients.image,
+            name=agent.name,
+            description=persona_description,
+            tags=tags,
+            max_bytes=AVATAR_MAX_BYTES,
+        )
 
         sha: str | None = None
-        if owns_repo(agent):
+        if owns_repo(agent) and painted.how != PLACEHOLDER:
             try:
-                sha = set_avatar(clients.github, repo=agent.repo_full_name, png=png)
-            except Exception as exc:  # push-side failure, same skip treatment
+                sha = set_avatar(clients.github, repo=agent.repo_full_name, png=painted.png)
+            except Exception as exc:  # noqa: BLE001 -- the room still shows it
+                # The fixed, generic outcome below, never `str(exc)`: a push
+                # error can carry a whole git command line and its stderr,
+                # and a step's result is shown to any viewer.
                 log.warning("avatar step %s for %s: %s", "save", agent.name, exc)
-                raise StepSkipped("couldn't save the picture") from exc
 
         # No explicit commit here: `_run_pipeline_body` (kobo_api.
-        # provisioner, ~227-229) already commits the session right after
-        # every step's `run` returns successfully, so this assignment rides
-        # that same commit. A second commit here bought nothing on the
-        # happy path and, on failure, poisoned the session for good --
-        # the provisioner's own FAILED-branch commit (same function, the
-        # `except Exception` arm right below the success path) would then
-        # raise its own `PendingRollbackError` instead of ever recording
-        # this step's honest `StepSkipped`, and the agent would die with a
-        # raw SQLAlchemy error instead. Guarded the same way as every other
-        # failure path in this method: a picture is never a reason to fail
-        # the agent.
+        # provisioner) commits the session right after every step's `run`
+        # returns, so this rides that same commit. A second commit here bought
+        # nothing on the happy path and, on failure, poisoned the session for
+        # good, so the provisioner's own FAILED-branch commit raised instead of
+        # recording this step's honest `StepSkipped`.
         try:
-            agent.avatar_png = base64.b64encode(png).decode("ascii")
+            cache_portrait(agent, painted.png)
         except Exception as exc:
             ctx.session.rollback()
-            log.warning("avatar step %s for %s: %s", "encode", agent.name, exc)
+            log.warning("avatar step %s for %s: %s", "keep", agent.name, exc)
             raise StepSkipped("couldn't save the picture") from exc
 
+        if painted.how == PLACEHOLDER:
+            return "no picture could be painted, so it has a placeholder; New face on its page tries again"
         if sha is None:
-            return "generated and saved avatar"
-        return f"generated and saved avatar ({sha})"
+            return "painted a portrait" + ("; its repository copy didn't save" if owns_repo(agent) else "")
+        return f"painted a portrait ({sha})"
 
 
 def _setup_pr_waiting(status_payload: dict) -> StepWaiting:

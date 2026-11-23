@@ -56,7 +56,8 @@ whose runtime never runs the enforcement contract once it exists, yet
 `list_tooling`'s ancestor derivation would still call the file "delivered"
 the instant the live commit descends from this push. See
 `kobo_api.intake`'s module docstring for the full incident this pattern
-closes.
+closes. In a room that delivers bundles as artifacts neither re-pins
+(`delivery.save_pin`): the runtime route is the one place a pin moves there.
 """
 
 from __future__ import annotations
@@ -74,7 +75,6 @@ from kobo_api.clients import (
     ClientError,
     GitHubClient,
     KubectlClient,
-    image_tag,
 )
 from kobo_api.composer import repin_commit_note, update_dockerfile_runtime_image
 from kobo_api.repo_lock import repo_write_lock
@@ -354,9 +354,10 @@ def upload_tooling_file(
         (tools_dir / filename).write_text(content, encoding="utf-8")
         note = ""
         previous = None
-        if runtime_image is not None:
-            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
-            note = repin_commit_note(repo, previous, runtime_image)
+        pin = delivery.save_pin(runtime_image)
+        if pin is not None:
+            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", pin)
+            note = repin_commit_note(repo, previous, pin)
         delivery.push(github, workdir, f"kobo: add tools/{filename}{note}")
         head = github.local_head(workdir)
     # The card now names a new runtime (issue #147); the caller re-registers it.
@@ -478,9 +479,10 @@ def import_tooling(
             (tools_dir / name).write_bytes(raw)
         note = ""
         previous = None
-        if runtime_image is not None:
-            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
-            note = repin_commit_note(repo, previous, runtime_image)
+        pin = delivery.save_pin(runtime_image)
+        if pin is not None:
+            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", pin)
+            note = repin_commit_note(repo, previous, pin)
         delivery.push(
             github, workdir, f"kobo: import tools from {source_repo}/{source_path}{note}"
         )
@@ -557,12 +559,11 @@ def list_tooling(
     algorithm and the reasoning behind every step — repeated here, not
     imported, per the module docstring's note on why): clone once; for every
     tooling file, get its last-touch commit via
-    `github.commit_shas_for_paths`; read the live Deployment's image tag via
-    `kubectl.deploy_image` + `image_tag`; resolve that tag to a full commit
-    sha inside THIS clone via `github.rev_parse_prefix` (`None` if it
-    doesn't resolve); a file is "delivered" iff the tag resolved AND that
-    commit is the file's last-touch commit or a descendant of it
-    (`github.is_ancestor`, equality counts).
+    `github.commit_shas_for_paths`; take the live commit, the later of the
+    image tag's commit and the one the room last restarted the agent with
+    (`kobo_api.delivery.live_commit`), resolved inside THIS clone; a file is
+    "delivered" iff it resolved AND that commit is the file's last-touch
+    commit or a descendant of it (`github.is_ancestor`, equality counts).
 
     This function never adds an "enforced" status to a file's own dict —
     "delivered" here still means only "reached a running pod", same as
@@ -587,12 +588,10 @@ def list_tooling(
         rel_paths = [f"bundle/tools/{p.name}" for p in paths]
         commit_shas = github.commit_shas_for_paths(workdir, rel_paths)
 
-        image = kubectl.deploy_image(namespace, deploy)
-        tag = image_tag(image)
-        # None means a tagless digest-only image — every file below falls
-        # through to "not delivered", the honest state (same as
-        # list_intake's identical branch).
-        live_commit = github.rev_parse_prefix(workdir, tag) if tag is not None else None
+        # The image's tag or the room's last named restart, whichever is
+        # later (`delivery.live_commit`, as list_intake reads it); neither
+        # resolving leaves every file "not delivered", the honest state.
+        live_commit = delivery.live_commit(github, kubectl, workdir, namespace=namespace, deploy=deploy)
 
         results = []
         for path, rel_path in zip(paths, rel_paths):

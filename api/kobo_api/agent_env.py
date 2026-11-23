@@ -35,6 +35,8 @@ module at all, only its key names.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 import tempfile
@@ -539,6 +541,35 @@ SECRETS_WIRING_BRANCH = "kobo/secrets-wiring"
 # The one file either edit writes, and what a branch has to be limited to
 # before the room will delete it.
 GOJIRA_YAML = "gojira.yaml"
+
+# The generated deploy workflow, and the line in it that says which version
+# of gojira.yaml the deploy files were rendered from.
+CI_WORKFLOW = ".github/workflows/gojira-ci.yaml"
+_STAMP = re.compile(r"^\s*GOJIRA_CONTRACT:\s*([0-9a-f]{64})\s*$", re.MULTILINE)
+
+
+def contract_fingerprint(gojira_yaml_text: str) -> str:
+    """The deploy platform's own hash of what gojira.yaml MEANS (parsed,
+    dumped as sorted JSON), which its build recomputes and compares with the
+    one stamped into the workflow. Kept byte-for-byte the same as theirs."""
+    doc = yaml.safe_load(gojira_yaml_text)
+    canon = json.dumps(doc, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canon.encode()).hexdigest()
+
+
+def contract_behind(gojira_yaml_text: str, workflow_text: str) -> str | None:
+    """The fingerprint of `gojira_yaml_text` when `workflow_text` was rendered
+    from a different gojira.yaml: the build refuses to deploy until the
+    platform renders the deploy files again. None when they agree, or when
+    either cannot be read (no claim is made about what was not seen)."""
+    stamp = _STAMP.search(workflow_text)
+    if stamp is None:
+        return None
+    try:
+        actual = contract_fingerprint(gojira_yaml_text)
+    except yaml.YAMLError:
+        return None
+    return actual if actual != stamp.group(1) else None
 
 # What a branch is compared AGAINST. `HEAD` resolves to the repository's
 # own default branch whatever it is called, so nothing here has to know

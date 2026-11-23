@@ -441,10 +441,13 @@ def face(relay_id: str, request: Request, session: Session = Depends(get_session
     row = session.get(SlackRelayApp, relay_id)
     if row is None:
         return _bare(404)
-    agent = session.query(Agent).filter_by(name=row.agent_name).one_or_none()
-    if agent is None or not agent.avatar_png:
+    # The picture alone (2026-11-20): it is a deferred column, and reading it
+    # through the agent would load it then, and raise for a row a destroy
+    # deleted in between.
+    stored = session.query(Agent.avatar_png).filter_by(name=row.agent_name).scalar()
+    if not stored:
         return _bare(404)
-    return Response(content=base64.b64decode(agent.avatar_png), media_type="image/png",
+    return Response(content=base64.b64decode(stored), media_type="image/png",
                     headers={"Cache-Control": "public, max-age=300"})
 
 
@@ -726,9 +729,8 @@ def oauth_callback(
     github = getattr(clients, "github", None)
     repo = agent.repo_full_name if agent.kind == KIND_COMPOSED and agent.archetype != ARCHETYPE_TEAM_GUIDE else None
 
-    def _allow_tools() -> None:
-        if allow_slack_tools(github, repo=repo):
-            log.info("slack install: agent %s now allows the Slack tools", name)
+    def _allow_tools() -> str | None:
+        return allow_slack_tools(github, repo=repo)
 
     delivery.restart_once_secret_carries(
         clients.kubectl, name, f"{name}-slack", ["SLACK_BOT_TOKEN"],

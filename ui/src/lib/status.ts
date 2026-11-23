@@ -45,18 +45,25 @@ export function listRefetchInterval(
 }
 
 /**
- * Refetch interval for a single agent's detail query. Polls while that
- * agent itself is non-terminal (its steps are still progressing), and
- * stops once it reaches ready or failed. `agent` is undefined before the
- * first fetch resolves.
+ * Refetch interval for a single agent's detail query. Polls fast while that
+ * agent itself is non-terminal (its steps are still progressing), while the
+ * cluster says it is mid-restart (`health.rolling`), or while this page is
+ * watching a restart it asked for (`restarting`, lib/delivery.svelte), so
+ * the header leaves Restarting as soon as the agent is back rather than up to
+ * a minute later (2026-11-20). `agent` is undefined before the first fetch
+ * resolves.
  */
 export function detailRefetchInterval(
-  agent?: { status: string },
+  agent?: { status: string; health?: { rolling?: boolean } | null },
+  restarting = false,
 ): number | false {
   if (agent === undefined) {
     return false;
   }
-  return isTerminal(agent.status) ? HEALTH_POLL_MS : ACTIVE_POLL_MS;
+  if (!isTerminal(agent.status) || restarting || agent.health?.rolling === true) {
+    return ACTIVE_POLL_MS;
+  }
+  return HEALTH_POLL_MS;
 }
 
 /**

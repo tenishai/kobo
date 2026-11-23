@@ -120,7 +120,9 @@ import {
   type AgentEnvWriteResult,
   type AgentListResult,
   type AgentMetadata,
+  type AgentModelChange,
   type AgentPersonaEdit,
+  type AgentRestart,
   type AgentSecrets,
   type AgentSecretsWrite,
   type AgentSkill,
@@ -220,6 +222,7 @@ import {
   type GuardrailRule,
   type GuardrailRuleIn,
   type GuardrailsResponse,
+  type TeachResult,
   type KnowledgeFile,
   type Learning,
   listAgentEnv,
@@ -310,7 +313,9 @@ import {
   type GcpProjectsConnect,
   checkSelfHostedModels,
   type OrgAccountsCheck,
+  type PortraitResult,
 } from "./api";
+import { beginRestart, isRestarting, wantsLiveHealth } from "./delivery.svelte";
 import { detailRefetchInterval, listRefetchInterval } from "./status";
 
 /**
@@ -348,9 +353,20 @@ export function agentsQuery() {
 export function agentQuery(name: string) {
   return queryOptions({
     queryKey: ["agents", name] as const,
-    queryFn: () => getAgent(name),
-    refetchInterval: (query) => detailRefetchInterval(query.state.data),
+    queryFn: () => getAgent(name, wantsLiveHealth(name)),
+    refetchInterval: (query) => detailRefetchInterval(query.state.data, isRestarting(name)),
   });
+}
+
+/**
+ * A change that restarts the agent (2026-11-20): the header says Restarting
+ * from that moment, the page polls until the agent is back (status.ts,
+ * lib/delivery.svelte), and every list on the agent's page is fetched again,
+ * since what restarted it usually changed one of them too.
+ */
+function restarted(queryClient: QueryClient, name: string): void {
+  beginRestart(name);
+  queryClient.invalidateQueries({ queryKey: ["agents", name] });
 }
 
 /** How long a catalog search result (skill or persona) is considered fresh
@@ -551,9 +567,7 @@ export function agentPersonaQuery(name: string) {
 export function editAgentPersonaMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (body: AgentPersonaEdit) => editAgentPersona(name, body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "persona"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -597,6 +611,7 @@ export function archivePersonaMutation(queryClient: QueryClient) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["catalog", "personas"] });
       queryClient.invalidateQueries({ queryKey: ["personas", "archived"] });
+      queryClient.invalidateQueries({ queryKey: ["personas", "movable"] });
     },
   };
 }
@@ -608,6 +623,7 @@ export function unarchivePersonaMutation(queryClient: QueryClient) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["catalog", "personas"] });
       queryClient.invalidateQueries({ queryKey: ["personas", "archived"] });
+      queryClient.invalidateQueries({ queryKey: ["personas", "movable"] });
     },
   };
 }
@@ -1106,6 +1122,8 @@ export function createPersonaMutation(queryClient: QueryClient) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["catalog", "personas"] });
       queryClient.invalidateQueries({ queryKey: ["catalog", "teams"] });
+      // Its maker may edit and move it: its Edit and Move show at once.
+      queryClient.invalidateQueries({ queryKey: ["personas", "movable"] });
     },
   };
 }
@@ -1234,9 +1252,14 @@ export function convertToConnectedMutation(
 export function updateAgentModelMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (model: string) => patchAgentModel(name, model),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name] });
-      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    onSuccess: (result: AgentModelChange) => {
+      // Unchanged, or a pull request someone still has to merge: nothing restarts yet.
+      if (result.wiring === "committed") {
+        restarted(queryClient, name);
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      }
+      queryClient.invalidateQueries({ queryKey: ["agents"], exact: true });
     },
   };
 }
@@ -1244,18 +1267,14 @@ export function updateAgentModelMutation(queryClient: QueryClient, name: string)
 export function colleagueModeMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (mode: ColleagueMode) => putColleagueMode(name, mode),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
 export function updateAgentRuntimeMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (runtimeImage: string) => patchAgentRuntime(name, runtimeImage),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1286,8 +1305,15 @@ export function chatMutation(name: string) {
 export function teachMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (text: string) => teachAgent(name, text),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "intake"] });
+    onSuccess: (result: TeachResult) => {
+      // Learnings and Memory both list what was taught (2026-11-20: Learnings
+      // showed it only after a refresh). A note handed over live restarts
+      // nothing; one the room had to commit restarts the agent.
+      if (result.mode === "instant") {
+        queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      } else {
+        restarted(queryClient, name);
+      }
     },
   };
 }
@@ -1320,7 +1346,7 @@ export function saveGuardrailsMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: ({ rules, baseSha }: { rules: GuardrailRuleIn[]; baseSha: string | null }) =>
       saveGuardrails(name, rules, baseSha),
-    onSuccess: (data: GuardrailsResponse) => {
+    onSuccess: (data: GuardrailsResponse & { mode: "instant" | "archive" }) => {
       queryClient.setQueryData(["agents", name, "guardrails"], {
         rules: data.rules,
         limit_chars: data.limit_chars,
@@ -1331,6 +1357,9 @@ export function saveGuardrailsMutation(queryClient: QueryClient, name: string) {
         can_report: data.can_report,
         breaks_before_a_check: data.breaks_before_a_check,
       });
+      if (data.mode === "archive") {
+        restarted(queryClient, name);
+      }
     },
     onError: () => {
       // A refused save (someone changed the list, a rule over the limit)
@@ -1363,10 +1392,12 @@ export function saveKnowledgeMutation(queryClient: QueryClient, name: string) {
       filename: string;
       content: string;
     }) => saveKnowledgeFile(name, filename, content),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["agents", name, "knowledge"],
-      });
+    onSuccess: (result: { sha?: string; mode?: "instant" | "archive" }) => {
+      if (result.mode === "archive") {
+        restarted(queryClient, name);
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["agents", name, "knowledge"] });
+      }
     },
   };
 }
@@ -1381,10 +1412,13 @@ export function deleteKnowledgeMutation(
 ) {
   return {
     mutationFn: (filename: string) => deleteKnowledgeFile(name, filename),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["agents", name, "knowledge"],
-      });
+    onSuccess: (result: { sha?: string; mode?: "instant" | "archive" }) => {
+      // Removed live, nothing restarts; a removal the room had to commit does.
+      if (result.mode === "archive") {
+        restarted(queryClient, name);
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["agents", name, "knowledge"] });
+      }
     },
   };
 }
@@ -1511,9 +1545,7 @@ export function addCatalogSkillMutation(queryClient: QueryClient, name: string) 
   return {
     mutationFn: ({ skillName, team }: { skillName: string; team: string }) =>
       addCatalogSkill(name, skillName, team),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "skills"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1525,9 +1557,7 @@ export function addCatalogSkillMutation(queryClient: QueryClient, name: string) 
 export function addCatalogSkillsMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (picks: { name: string; team: string }[]) => addCatalogSkills(name, picks),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "skills"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1539,9 +1569,7 @@ export function addCatalogSkillsMutation(queryClient: QueryClient, name: string)
 export function deleteSkillMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (skillId: string) => deleteSkill(name, skillId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "skills"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1554,9 +1582,7 @@ export function saveLocalSkillMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: ({ skillId, content }: { skillId: string; content: string }) =>
       saveLocalSkill(name, skillId, content),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "skills"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1600,8 +1626,13 @@ export function uploadIntakeMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: ({ filename, content }: { filename: string; content: string }) =>
       uploadIntake(name, filename, content),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "intake"] });
+    onSuccess: (result: { sha?: string; mode?: "instant" | "archive" }) => {
+      // Handed over live, the file restarts nothing (as a teach note).
+      if (result.mode === "instant") {
+        queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      } else {
+        restarted(queryClient, name);
+      }
     },
   };
 }
@@ -1613,9 +1644,7 @@ export function uploadIntakeMutation(queryClient: QueryClient, name: string) {
 export function deleteIntakeMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (filename: string) => deleteIntake(name, filename),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "intake"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1659,9 +1688,7 @@ export function toolingQuery(name: string) {
 export function deleteToolingMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (filename: string) => deleteTooling(name, filename),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "tooling"] });
-    },
+    onSuccess: () => restarted(queryClient, name),
   };
 }
 
@@ -1868,8 +1895,12 @@ export function agentSecretsQuery(
 export function restartAgentMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: () => restartAgent(name),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "secrets"] });
+    onSuccess: (result: AgentRestart) => {
+      if (result.restarted) {
+        restarted(queryClient, name);
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      }
     },
   };
 }
@@ -1923,8 +1954,12 @@ export function saveAgentEnvMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: ({ set, remove }: { set: Record<string, string>; remove: string[] }) =>
       saveAgentEnv(name, set, remove),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name, "env"] });
+    onSuccess: (result: AgentEnvWriteResult) => {
+      if (result.wiring === "committed") {
+        restarted(queryClient, name);
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      }
     },
   };
 }
@@ -2175,8 +2210,15 @@ export function patchMetadataMutation(queryClient: QueryClient, name: string) {
       purpose_tags?: string[];
       capability?: string;
     }) => patchAgentMetadata(name, body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+    onSuccess: (result: { sha: string | null }) => {
+      // The agent's card carries these, so a change that landed restarts it.
+      if (result.sha) {
+        restarted(queryClient, name);
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      }
+      // The cards on the main page show the same tags and line.
+      queryClient.invalidateQueries({ queryKey: ["agents"], exact: true });
     },
   };
 }
@@ -2194,7 +2236,8 @@ export function regenerateMetadataMutation(
   return {
     mutationFn: () => regenerateAgentMetadata(name),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents", name] });
+      restarted(queryClient, name);
+      queryClient.invalidateQueries({ queryKey: ["agents"], exact: true });
     },
   };
 }
@@ -2213,10 +2256,18 @@ export function regenerateMetadataMutation(
 export function generateAvatarMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: () => generateAvatar(name),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents"] });
-    },
+    onSuccess: (result: PortraitResult) => pictured(queryClient, name, result),
   };
+}
+
+/** A new picture shows at once under its own version: the agent's page
+ * reads it from the cached detail, which a later change by anyone else
+ * replaces in turn, and the main page's cards fetch it again. */
+function pictured(queryClient: QueryClient, name: string, result: PortraitResult): void {
+  queryClient.setQueryData<AgentDetail>(["agents", name], (detail) =>
+    detail && result.version ? { ...detail, has_avatar: true, avatar_version: result.version } : detail,
+  );
+  queryClient.invalidateQueries({ queryKey: ["agents"] });
 }
 
 /**
@@ -2228,9 +2279,7 @@ export function generateAvatarMutation(queryClient: QueryClient, name: string) {
 export function uploadAvatarMutation(queryClient: QueryClient, name: string) {
   return {
     mutationFn: (png: ArrayBuffer) => uploadAvatar(name, png),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["agents"] });
-    },
+    onSuccess: (result: PortraitResult) => pictured(queryClient, name, result),
   };
 }
 

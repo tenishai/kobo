@@ -39,7 +39,7 @@ When an agent is destroyed, the room asks the switchboard to drop its directory 
 
 ## Colleague mode
 
-Each built agent has a colleague mode. Its owner, or a room operator, sets it on the agent's **Harness** tab: pick one from the list beside **Asks other agents** and press **Change**. From your own assistant it is **set colleague mode**. The agent rebuilds and rolls with the new mode, the same as a model change. A connected agent has no colleague mode, because it brings its own harness.
+Each built agent has a colleague mode. Its owner, or a room operator, sets it on the agent's **Harness** tab: pick one from the list beside **Asks other agents** and press **Change**. From your own assistant it is **set colleague mode**. The agent restarts with the new mode. A connected agent has no colleague mode, because it brings its own harness.
 
 - **Yes, when it helps** (`default`): the agent has every colleague tool and is told to ask the colleague whose field a question is in before answering it from general knowledge.
 - **No, but knows who they are** (`roster-only`): the agent keeps the list of who is in the room, but it cannot ask them. It is told to answer only from its own tools and memory. When those can't answer, it says it doesn't know, names what it would need, and asks you. It does not fall back on general knowledge either. Use it for an agent whose answers must come from its own evidence.

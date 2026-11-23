@@ -6,10 +6,12 @@ the composer and the roster refresh lane read) and the agent's repository
 what the running agent reads). This module moves the repository half in one
 commit; the route moves the row only once that commit has landed.
 
-The commit is never `[skip ci]`: the allow list and the knowledge file reach
-the running agent through the rebuild and rollout the generated CI does on
-every push. At boot the runtime's seeder drops the knowledge entries of a
-file that is gone, so `none` retires the old colleague document too.
+The allow list and the knowledge file reach the running agent with its
+bundle: in a room that delivers bundles as artifacts the commit skips the
+build and the room's restart delivers it (`kobo_api.delivery.push`), and in
+one that builds per change the generated CI rebuilds and rolls it. At boot
+the runtime's seeder drops the knowledge entries of a file that is gone, so
+`none` retires the old colleague document too.
 """
 
 from __future__ import annotations

@@ -29,6 +29,7 @@
   import { createQuery } from "@tanstack/svelte-query";
   import { KIND_CONNECTED } from "../lib/api";
   import { NO_DESCRIPTION, agentDescription } from "../lib/agents";
+  import { portraitUrl } from "../lib/portrait";
   import { observabilityQuery } from "../lib/queries";
   import { formatHash } from "../lib/router.svelte";
   import { agentTone } from "../lib/status";
@@ -74,10 +75,17 @@
   <div class="agent-card__top">
     <span class="agent-card__identity">
       {#if agent.has_avatar}
+        <!-- The small copy by version (lib/portrait.ts): a browser keeps it
+             until the picture changes, instead of fetching a 1 MB PNG for a
+             28px face on every load. -->
         <img
           class="agent-card__avatar"
-          src={`/api/agents/${encodeURIComponent(agent.name)}/avatar`}
+          src={portraitUrl(agent.name, agent.avatar_version)}
           alt=""
+          width="28"
+          height="28"
+          loading="lazy"
+          decoding="async"
         />
       {:else}
         <!-- No portrait yet: the initial, so every card has a face. -->

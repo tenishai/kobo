@@ -41,6 +41,7 @@ import httpx
 
 from kobo_api.config import Config, GroupChoice
 from kobo_api.groups import GroupResolver, OktaGroupResolver, OktaPeopleSearch
+from kobo_api.timefmt import rfc3339
 
 if TYPE_CHECKING:
     # kobo_api.sero and kobo_api.github_app import ClientError from this
@@ -518,6 +519,13 @@ class GitHubClient(Protocol):
         have to tolerate) — the local clone's HEAD is the pushed sha with no
         such lag, since it's the commit this process itself just made.
         """
+        ...
+
+    def includes(self, repo: str, tip: str, commit: str) -> bool:
+        """Whether `tip` is `commit` (or a sha prefix of it names it) or
+        descends from it in `repo`, read from GitHub's compare (`identical`
+        or `ahead`), with no clone. Raises `ClientError` when GitHub cannot
+        be asked."""
         ...
 
     def head_sha(self, repo: str) -> str:
@@ -1153,6 +1161,18 @@ class GhCLI:
         return self._runner.run(
             [self._gh, "api", f"repos/{repo}/commits", "--jq", ".[0].sha"], env=self._env()
         )
+
+    def includes(self, repo: str, tip: str, commit: str) -> bool:
+        status = self._runner.run(
+            [
+                self._gh, "api",
+                # One commit per page: only the status is read.
+                f"repos/{repo}/compare/{quote(commit, safe='')}...{quote(tip, safe='')}?per_page=1",
+                "--jq", ".status",
+            ],
+            env=self._env(),
+        )
+        return status.strip() in ("identical", "ahead")
 
     def runs_for_commit(self, repo: str, sha: str) -> list[dict]:
         out = self._runner.run(
@@ -2417,7 +2437,9 @@ class KubectlClient(Protocol):
         list, and to retire nothing at all when the cluster is silent."""
         ...
 
-    def restart_deploy(self, namespace: str, deploy: str) -> None:
+    def restart_deploy(
+        self, namespace: str, deploy: str, *, annotations: dict[str, str] | None = None
+    ) -> None:
         """Ask kubectl to roll the Deployment's pods now (`kubectl rollout
         restart`).
 
@@ -2427,6 +2449,11 @@ class KubectlClient(Protocol):
         re-reads its tools directories at boot -- no hot reload into the
         running process. This is the exact nudge that makes the boot
         happen, requested once per successful delivery.
+
+        `annotations` go on the pod template in the same change, beside the
+        restart stamp `rollout restart` writes, so the roll is still one: a
+        delivery names the commit it restarts the agent with
+        (`kobo_api.delivery.BUNDLE_COMMIT_ANNOTATION`).
         """
         ...
 
@@ -2489,6 +2516,10 @@ class KubectlClient(Protocol):
         other failure raises `ClientError`.
         """
         ...
+
+
+# What `kubectl rollout restart` writes on a pod template to roll it.
+RESTARTED_AT_ANNOTATION = "kubectl.kubernetes.io/restartedAt"
 
 
 def image_tag(image: str) -> str | None:
@@ -2576,9 +2607,19 @@ class KubectlCLI:
         )
         return bool(out.strip())
 
-    def restart_deploy(self, namespace: str, deploy: str) -> None:
+    def restart_deploy(
+        self, namespace: str, deploy: str, *, annotations: dict[str, str] | None = None
+    ) -> None:
+        if not annotations:
+            self._runner.run(
+                [self._kubectl, "-n", namespace, "rollout", "restart", f"deploy/{deploy}"]
+            )
+            return
+        # What `rollout restart` writes, plus the caller's, in one patch: one roll.
+        stamped = {RESTARTED_AT_ANNOTATION: rfc3339(datetime.now(UTC)), **annotations}
+        patch = {"spec": {"template": {"metadata": {"annotations": stamped}}}}
         self._runner.run(
-            [self._kubectl, "-n", namespace, "rollout", "restart", f"deploy/{deploy}"]
+            [self._kubectl, "-n", namespace, "patch", f"deploy/{deploy}", "--type", "merge", "-p", json.dumps(patch)]
         )
 
     def set_env(self, namespace: str, deploy: str, name: str, value: str) -> None:
@@ -3401,6 +3442,12 @@ class ImageClient(Protocol):
 _IMAGE_GENERATION_FAILED = "the picture didn't come through. Try again."
 
 
+class ImageRefused(ClientError):
+    """The image model answered and declined to paint (a blocked prompt, a
+    safety stop): worth asking again in other words, unlike a model that is
+    down or slow."""
+
+
 def _gcloud_print_access_token(runner: CommandRunner | None = None) -> str:
     """Default `token_provider` for VertexImageClient: shells `gcloud auth
     print-access-token` via CommandRunner and returns its (already-stripped
@@ -3633,10 +3680,17 @@ class VertexImageClient:
             raise ClientError(_IMAGE_GENERATION_FAILED)
 
         try:
-            parts = resp.json()["candidates"][0]["content"]["parts"]
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            reply = resp.json()
+        except ValueError as exc:
             log.warning("malformed image generation reply for prompt %r: %r", prompt, exc)
             raise ClientError(_IMAGE_GENERATION_FAILED) from exc
+        try:
+            parts = reply["candidates"][0]["content"]["parts"]
+        except (KeyError, IndexError, TypeError) as exc:
+            # No candidate, or one with no content: the model declined (a
+            # blocked prompt, a safety stop).
+            log.warning("image generation declined for prompt %r: %r", prompt, exc)
+            raise ImageRefused(_IMAGE_GENERATION_FAILED) from exc
 
         for part in parts:
             inline_data = part.get("inlineData")
@@ -3651,7 +3705,7 @@ class VertexImageClient:
         # No inlineData part in any reply part at all — safety-blocked or a
         # text-only turn. A normal, expected outcome, not a transport error.
         log.warning("no image part in generation reply for prompt %r", prompt)
-        raise ClientError(_IMAGE_GENERATION_FAILED)
+        raise ImageRefused(_IMAGE_GENERATION_FAILED)
 
 
 # --- Name (Vertex AI text generateContent: agent name suggestions) ----------------

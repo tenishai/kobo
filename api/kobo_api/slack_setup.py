@@ -813,10 +813,10 @@ def wire_slack_values(
         contract_changed = (gojira_yaml_path.read_text() if gojira_yaml_path.exists() else "") != contract_before
         previous = None
         note = ""
-        if not delivery.configured():
-            # With bundles as artifacts the runtime route is the one place a pin moves.
-            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
-            note = repin_commit_note(repo, previous, runtime_image)
+        pin = delivery.save_pin(runtime_image)
+        if pin is not None:
+            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", pin)
+            note = repin_commit_note(repo, previous, pin)
         by_restart = delivery.configured() and not contract_changed
 
         if by_restart:
@@ -824,11 +824,14 @@ def wire_slack_values(
             # restart delivers it, no build and no reprovision. Through the platform the
             # values land at its next re-read, so the restart waits for them, off this
             # request; a direct write is there already and the restart follows at once.
-            delivery.push(github, workdir, f"{message}{note}", restart=False)
-            delivery.restart_once_secret_carries(kubectl, name, f"{name}-slack", list(values))
+            pushed = delivery.push(github, workdir, f"{message}{note}", restart=False)
+            delivery.restart_once_secret_carries(
+                kubectl, name, f"{name}-slack", list(values),
+                commit=delivery.delivered_by_restart(github, workdir) if pushed else None,
+            )
             changed = False
         else:
-            changed = delivery.push(github, workdir, f"{message}{note}")
+            changed = delivery.push(github, workdir, f"{message}{note}", asks_platform=True)
         if changed:
             gojira.reprovision(gojira_app_id)
         # Always confirm active, even on the no-change path — see the
@@ -849,13 +852,19 @@ _ALLOW_TRIES = 3
 _ALLOW_PAUSE = 5.0
 
 
-def allow_slack_tools(github: GitHubClient, *, repo: str, sleep: Callable[[float], None] = time.sleep) -> bool:
+def allow_slack_tools(
+    github: GitHubClient, *, repo: str, sleep: Callable[[float], None] = time.sleep
+) -> str | None:
     """Make an agent's own bundle admit the Slack tools (`SLACK_TOOLS_ALLOW`):
     clone `repo`, add the entry when no pattern there covers it, publish. An
     agent born since the entry was composed already has it, and then nothing
     is pushed. No restart of its own: the caller is on its way to one (the
-    install callback restarts the agent for its token). Returns whether the
-    bundle changed. Raises `ClientError`.
+    install callback restarts the agent for its token). Returns the commit that
+    restart delivers the tools with, for it to name
+    (`delivery.delivered_by_restart`), and None when nothing changed or a
+    restart cannot deliver them (an image that bakes its bundle in, whose own
+    build does). A change is logged here, since the answer alone cannot say
+    one happened. Raises `ClientError`.
 
     The clone and the push are tried `_ALLOW_TRIES` times, since nothing asks
     for this a second time once the app holds its scopes. A try that finds the
@@ -874,7 +883,7 @@ def allow_slack_tools(github: GitHubClient, *, repo: str, sleep: Callable[[float
                 continue
             changed = update_agent_yaml_allow(workdir / "bundle", entries=[SLACK_TOOLS_ALLOW])
             if not changed and failed is None:
-                return False
+                return None
             try:
                 if changed:
                     delivery.push(github, workdir, "kobo: allow the Slack tools", restart=False)
@@ -883,7 +892,8 @@ def allow_slack_tools(github: GitHubClient, *, repo: str, sleep: Callable[[float
             except ClientError as exc:
                 failed = exc
                 continue
-            return True
+            log.info("%s now allows the Slack tools", repo)
+            return delivery.delivered_by_restart(github, workdir)
     assert failed is not None
     raise failed
 

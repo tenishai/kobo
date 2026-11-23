@@ -123,6 +123,8 @@
   let wakeError = $state<string | null>(null);
   let wakeApplying = $state(false);
   let stopWakeWatch: (() => void) | null = null;
+  // The restart this panel's own watch began, so leaving ends only that one.
+  let wakeRestart: number | undefined;
   const wakeLocked = $derived(frozen || saveWake.isPending || wakeApplying);
   const MANIFEST_NOTE =
     "The Slack app's event list changed: copy the manifest again and paste it " +
@@ -131,11 +133,12 @@
   function watchWake(tail: string, since: string | null): void {
     stopWakeWatch?.();
     wakeApplying = true;
-    beginRestart(agentName);
+    const restart = beginRestart(agentName);
+    wakeRestart = restart;
     const settle = () => {
       wakeApplying = false;
       stopWakeWatch = null;
-      endRestart(agentName);
+      endRestart(agentName, restart);
     };
     stopWakeWatch = watchWakeLive({
       baseline: queryClient.getQueryData<AgentDetail>(["agents", agentName])?.health?.checked_at ?? null,
@@ -150,7 +153,9 @@
   }
   $effect(() => () => {
     stopWakeWatch?.();
-    endRestart(agentName);
+    if (wakeRestart !== undefined) {
+      endRestart(agentName, wakeRestart);
+    }
   });
 
   async function handleWake(next: SlackWake): Promise<void> {

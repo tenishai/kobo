@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import json
 import logging
 import re
@@ -97,7 +96,16 @@ from kobo_api.archetypes import (
     render_team_guide,
     team_guide_persona_id,
 )
-from kobo_api.avatars import avatar_prompt, set_avatar
+from kobo_api.avatars import (
+    PLACEHOLDER,
+    cache_portrait,
+    has_picture,
+    paint_portrait,
+    portrait_version,
+    set_avatar,
+    small_portrait,
+    stored_picture,
+)
 from kobo_api.bab import A2A_ASK as BAB_A2A_ASK
 from kobo_api.bab import AGENTS_VENDOR as BAB_AGENTS_VENDOR
 from kobo_api.bab import ROOM_ACTOR as BAB_ROOM_ACTOR
@@ -168,7 +176,7 @@ from kobo_api.guardrails import (
     validate_rules,
 )
 from kobo_api.guide import find_section, load_guide
-from kobo_api.health import AgentHealth, health_sweep_loop
+from kobo_api.health import AgentHealth, health_sweep_loop, keep_newer, probe_health
 from kobo_api.iap import HttpsOnlyMiddleware, IapMiddleware, IapVerifier
 from kobo_api.intake import (
     INTAKE_MAX_BYTES,
@@ -1119,6 +1127,12 @@ _INTAKE_FAST_LANE_FILENAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}\.md$")
 # not a user-input problem, hence the 502 rather than a 422.
 AVATAR_MAX_BYTES = 4 * 1024 * 1024
 
+# How long a browser keeps a portrait (`GET /api/agents/{name}/avatar`):
+# asked for by its current version, for good, because a new picture has a new
+# version; any other way, checked against its ETag every time.
+PORTRAIT_KEPT = "private, max-age=31536000, immutable"
+PORTRAIT_CHECKED = "private, no-cache"
+
 # Avatar upload (portrait upload/download): a human-supplied PNG is capped
 # tighter than a generated one (AVATAR_MAX_BYTES above) — this IS a
 # user-input problem, hence the 422 (not 502) below when it's exceeded. Small
@@ -1526,7 +1540,7 @@ def _store_avatar(clients, agent: Agent, png: bytes) -> str:
     cache either way.
     """
     if is_connected(agent):
-        return hashlib.sha256(png).hexdigest()[:40]
+        return portrait_version(png)
     return set_avatar(clients.github, repo=agent.repo_full_name, png=png)
 
 
@@ -3233,6 +3247,58 @@ def _directory_resync(app, repo: str) -> Callable[[], None]:
     return resync
 
 
+# How old the stored health verdict may be before an agent's own page asks the
+# cluster again (`_fresh_health_body`): a detail poll every few seconds during a
+# restart then costs at most one cluster read per agent per ten seconds.
+LIVE_HEALTH_MAX_AGE_S = 10.0
+
+
+def _health_stale(verdict: AgentHealth | None) -> bool:
+    if verdict is None:
+        return True
+    try:
+        checked = datetime.fromisoformat(verdict.checked_at)
+    except ValueError:
+        return True
+    return (datetime.now(UTC) - checked).total_seconds() > LIVE_HEALTH_MAX_AGE_S
+
+
+def _probe_health_soon(app: FastAPI, kubectl, name: str) -> None:
+    """Ask the cluster about `name` on a thread, once at a time per agent, and
+    store the verdict where the sweep keeps its own. Nothing waits on it: the
+    request that asked answers with what was stored, and the page's next poll
+    reads the new verdict. A probe inside the request would hold its database
+    connection for as long as the cluster takes, the way the pool ran dry once
+    (2026-10-01)."""
+    probing: set[str] = app.state.health_probing
+    with app.state.health_probing_lock:
+        if name in probing:
+            return
+        probing.add(name)
+
+    def run() -> None:
+        try:
+            keep_newer(app.state.health, name, probe_health(kubectl, name))
+        except Exception:  # the sweep asks again within a minute
+            log.exception("health probe for %s failed", name)
+        finally:
+            with app.state.health_probing_lock:
+                probing.discard(name)
+
+    threading.Thread(target=run, name=f"health-{name}", daemon=True).start()
+
+
+def _record_save_pin(agent: Agent, cfg: Config) -> None:
+    """After a save that may re-pin the agent's Dockerfile (an upload, a check,
+    a teach note, Slack wiring), the row's fact follows the file: whatever the
+    save pinned (`delivery.save_pin`). Where it pinned nothing the fact stays;
+    recording the room's pin there made an agent read as up to date while it
+    still ran the runtime it had (2026-11-20)."""
+    pin = delivery.save_pin(agent.runtime_image or cfg.runtime_image)
+    if pin is not None:
+        agent.built_runtime_image = pin
+
+
 def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> None:
     """The background archive lane. Failure is logged, never surfaced: the
     memory is already stored in the agent; only the repo copy is missing,
@@ -3259,7 +3325,7 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
     """
     if not _room_may_commit_to_repo(app, repo):
         return
-    pin = _runtime_image_for_repo(app, repo)
+    pin = delivery.save_pin(_runtime_image_for_repo(app, repo))
     try:
         upload_intake_file(
             app.state.clients.github,
@@ -3277,7 +3343,8 @@ def _archive_teach_note(app: FastAPI, repo: str, filename: str, note: str) -> No
     else:
         # The commit re-pinned the Dockerfile to `pin` (or found it there);
         # the row's fact follows the file (kobo_api.runtime_truth).
-        record_built_runtime(app.state.session_factory, repo, pin)
+        if pin is not None:
+            record_built_runtime(app.state.session_factory, repo, pin)
 
 
 def _learning_dict(row: AgentLearning) -> dict:
@@ -3439,7 +3506,7 @@ def _decide_learning(
                 {"error": "couldn't deliver the approved learning. Try again."},
                 status_code=502,
             )
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
     row.status = LEARNING_APPROVED
     row.decided_by = email
     row.decided_at = datetime.now(UTC)
@@ -3571,6 +3638,7 @@ def create_app(
         delivery.Delivery(
             kubectl=clients.kubectl, publisher=RegistryPublisher(), registry=config.bundle_registry,
             runtime_image=config.runtime_image, replica_bucket=config.memory_replica_bucket,
+            reprovision=delivery.reprovisioner(session_factory, getattr(clients, "gojira", None)),
         ) if config.bundle_registry else None
     )
     app.state.session_factory = session_factory
@@ -3580,6 +3648,10 @@ def create_app(
     # Live health per ready agent (kobo_api.health): filled by the sweep,
     # read by the list and detail routes, never persisted.
     app.state.health = {}
+    # The agents whose own page is having the cluster asked right now
+    # (`_probe_health_soon`), so a burst of polls asks once.
+    app.state.health_probing = set()
+    app.state.health_probing_lock = threading.Lock()
     # The repository typeahead's cache (kobo_api.repo_search): one listing
     # for the whole room, so it lives on the app rather than being rebuilt
     # per request. None when the room has no GitHub client, which is the
@@ -7009,6 +7081,24 @@ def create_app(
         verdict: AgentHealth | None = getattr(app.state, "health", {}).get(name)
         return verdict.body() if verdict is not None else None
 
+    def _fresh_health_body(agent: Agent, live: bool) -> dict | None:
+        """While the agent's own page watches a restart (`live`) it wants the
+        cluster's word now, not the sweep's from up to a minute ago (2026-11-20:
+        a restart showed Ready, then sat on Restarting long after the agent was
+        back). A ready agent whose last verdict is older than
+        LIVE_HEALTH_MAX_AGE_S is asked again then, off the request
+        (`_probe_health_soon`); the page polls every few seconds while it
+        watches, so the next poll carries the new verdict. Otherwise, and on
+        the dashboard's list, the sweep's minute stands."""
+        verdict: AgentHealth | None = getattr(app.state, "health", {}).get(agent.name)
+        clients = app.state.clients
+        if (
+            live and agent.status == AgentStatus.READY and clients is not None and clients.kubectl is not None
+            and _health_stale(verdict)
+        ):
+            _probe_health_soon(app, clients.kubectl, agent.name)
+        return verdict.body() if verdict is not None else None
+
     @app.get("/api/agents")
     def list_agents(request: Request, session: Session = Depends(get_session)) -> dict:  # noqa: B008
         cfg: Config = app.state.config
@@ -7029,6 +7119,11 @@ def create_app(
         ):
             failing_tasks.setdefault(task_row.agent_name, []).append(task_row.task)
         model_entries = room_models.known_entries(session, cfg)
+        # Which agents have a picture, in one query that never reads one: the
+        # pictures are deferred, and touching each would load them all.
+        pictured = {
+            row.name for row in session.query(Agent.name).filter(Agent.avatar_png.is_not(None))
+        }
         return {
             "agents": [
                 {
@@ -7038,7 +7133,8 @@ def create_app(
                     "model": a.model_id,
                     "model_label": _model_label(model_entries, a.model_id),
                     "created_at": rfc3339(a.created_at),
-                    "has_avatar": a.avatar_png is not None,
+                    "has_avatar": a.name in pictured,
+                    "avatar_version": a.avatar_version,
                     "health": _health_body(a.name),
                     "system_tasks_failing": sorted(failing_tasks.get(a.name, [])),
                     # Owner-or-operator gate + "Made by <email>" (access-
@@ -7079,7 +7175,7 @@ def create_app(
 
     @app.get("/api/agents/{name}")
     def get_agent(
-        name: str, request: Request, session: Session = Depends(get_session)  # noqa: B008
+        name: str, request: Request, session: Session = Depends(get_session), live: bool = False  # noqa: B008
     ) -> JSONResponse:
         cfg: Config = app.state.config
         agent = _visible_agent_or_404(session, request, name)
@@ -7147,8 +7243,9 @@ def create_app(
                 "first_reply": agent.first_reply,
                 "slack": slack,
                 "destroy_visible": _operator_block(request, cfg) is None,
-                "has_avatar": agent.avatar_png is not None,
-                "health": _health_body(agent.name),
+                "has_avatar": has_picture(session, agent),
+                "avatar_version": agent.avatar_version,
+                "health": _fresh_health_body(agent, live),
                 "created_by": agent.created_by,
                 "group_name": agent.group_name,
                 "archetype": agent.archetype,
@@ -8655,7 +8752,7 @@ def create_app(
 
         # The commit re-pinned the Dockerfile to this value (or found it
         # there already); the row's fact follows the file.
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
         session.commit()
         return JSONResponse({"sha": sha, "mode": "archive"})
 
@@ -8828,7 +8925,7 @@ def create_app(
             return JSONResponse(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
 
         # The durable record behind the row the panel shows (issue #269):
         # recorded only once the note has landed on one lane or the other,
@@ -9125,7 +9222,7 @@ def create_app(
     #      plain copy rather than claiming the tool is already active.
     # `import_tooling` (multi-file) is unchanged: it stays archive-only.
 
-    def _archive_tooling_upload(repo: str, filename: str, content: str) -> None:
+    def _archive_tooling_upload(repo: str, filename: str, content: str, agent_name: str) -> None:
         """The tool upload's background archive lane: only ever runs after
         the relay above already reported the write completed, and the runtime
         has already re-validated and written the file into its own overlay
@@ -9134,8 +9231,11 @@ def create_app(
         already landed on the agent's volume; only the repo's own copy is
         missing until a later upload lands it."""
         if not _room_may_commit_to_repo(app, repo):
+            if delivery.configured():
+                # No archive push to restart the agent: the tool loads by this one.
+                _request_tool_restart(agent_name)
             return
-        pin = _runtime_image_for_repo(app, repo)
+        pin = delivery.save_pin(_runtime_image_for_repo(app, repo))
         try:
             upload_tooling_file(
                 app.state.clients.github,
@@ -9149,8 +9249,15 @@ def create_app(
             log.warning(
                 "tooling archive commit failed for %s (%s): %s", repo, filename, exc
             )
+            if delivery.configured():
+                # The tool is on the agent's volume; the restart that loads it
+                # was this push's to make, and a failed push may not have made
+                # it (one that failed only on asking the deploy platform had,
+                # and the agent rolls twice: rare, and never a tool left unloaded).
+                _request_tool_restart(agent_name)
         else:
-            record_built_runtime(app.state.session_factory, repo, pin)
+            if pin is not None:
+                record_built_runtime(app.state.session_factory, repo, pin)
 
     def _request_tool_restart(agent_name: str) -> None:
         """Ask the platform to roll the agent's Deployment so the
@@ -9312,8 +9419,13 @@ def create_app(
                     agent.repo_full_name,
                     payload.filename,
                     payload.content,
+                    agent.name,
                 )
-                _request_tool_restart(agent.name)
+                # With bundles as artifacts the archive's own push restarts the
+                # agent and names its commit; one restart here as well rolled it
+                # twice (2026-11-20). It restarts here only if that push fails.
+                if not delivery.configured():
+                    _request_tool_restart(agent.name)
                 audit.record(
                     session, request=request, action="tooling.upload", target_kind="tool", target_id=payload.filename,
                     agent_name=agent.name, detail={"mode": "instant"},
@@ -9347,7 +9459,7 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
         audit.record(
             session, request=request, action="tooling.upload", target_kind="tool", target_id=payload.filename,
             agent_name=agent.name, detail={"mode": "archive", "sha": sha},
@@ -9402,7 +9514,7 @@ def create_app(
                 {"error": "couldn't reach your agent's files. Try again."}, status_code=502
             )
 
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
         session.commit()
         return JSONResponse(result)
 
@@ -9960,7 +10072,7 @@ def create_app(
             log.warning("slack app wiring failed for agent %s: %s", agent.name, type(exc).__name__)
             return JSONResponse({"error": "couldn't set up Slack. Try again."}, status_code=502)
         row.wired_at = datetime.now(UTC).replace(tzinfo=None)
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
         # The wiring commit above starts the agent's build; it answers in Slack only
         # once that build has rolled. Remember what runs now, so the row can say
         # Rebuilding until the deployment moves off it (`_slack_rebuilding`).
@@ -10232,7 +10344,7 @@ def create_app(
         agent.slack_app_id = payload.app_id
         agent.slack_app_self_service = True
         agent.slack_wired = True
-        agent.built_runtime_image = agent.runtime_image or cfg.runtime_image
+        _record_save_pin(agent, cfg)
         audit.record(
             session, request=request, action="slack.connect", target_kind="agent", target_id=agent.name,
             agent_name=agent.name, summary=f"{audit.who(request)} connected agent {agent.name} to Slack",
@@ -12739,10 +12851,6 @@ def create_app(
             return gate
 
         clients = app.state.clients
-        if clients.image is None:
-            return JSONResponse(
-                {"error": "picture generation is not available"}, status_code=503
-            )
 
         # Same catalog-lookup-by-persona-id idiom as create_slack_app's
         # persona_first_line above (the FTS entry's description, looked up by
@@ -12762,27 +12870,39 @@ def create_app(
             log.warning("persona %r not in the catalog, using generic text for avatar prompt", agent.persona)
             persona_description = f"A {agent.persona} agent."
 
-        prompt = avatar_prompt(agent.name, persona_description, decode_tags(agent.purpose_tags))
-
-        try:
-            png = clients.image.generate(prompt)
-        except ClientError as exc:
-            log.warning("avatar generation failed for %s: %s", name, exc)
-            return JSONResponse({"error": str(exc)}, status_code=502)
-
-        # Size cap enforced BEFORE any store (repo push or DB cache) — a
-        # backend-result problem, not a user-input one, hence 502 not 422.
-        if len(png) > AVATAR_MAX_BYTES:
-            log.warning(
-                "generated avatar for %s exceeded the %d-byte cap (%d bytes)",
-                name, AVATAR_MAX_BYTES, len(png),
-            )
+        # Always a picture (2026-11-20): the usual prompt, then one without the
+        # agent's name (a famous name invites a refusal), then the placeholder.
+        # A placeholder is the room's stand-in, kept here only: the agent's
+        # repository keeps whatever real picture it had. Painting can take a
+        # minute or two, so no transaction is held open across it (the pool
+        # ran dry that way once, 2026-10-01).
+        tags = decode_tags(agent.purpose_tags)
+        had_picture = has_picture(session, agent)
+        session.rollback()
+        painted = paint_portrait(
+            clients.image,
+            name=name,
+            description=persona_description,
+            tags=tags,
+            max_bytes=AVATAR_MAX_BYTES,
+        )
+        png = painted.png
+        if painted.how == PLACEHOLDER and had_picture:
+            # The face it has stays: a stand-in never replaces a real picture.
             return JSONResponse(
-                {"error": "that picture came out too large. Try again."}, status_code=502
+                {"error": "couldn't paint a new face just now, so it keeps the one it has. Try again later."},
+                status_code=502,
             )
+        agent = session.query(Agent).filter_by(name=name).one_or_none()
+        if agent is None:
+            return JSONResponse({"error": "agent not found"}, status_code=404)
 
         try:
-            sha = _store_avatar(clients, agent, png)
+            sha = (
+                portrait_version(png)
+                if painted.how == PLACEHOLDER
+                else _store_avatar(clients, agent, png)
+            )
         except ClientError as exc:
             # The push side's own failure mode (repo unreachable, auth
             # lapsed, ...) — distinct from the image-generation failure
@@ -12795,10 +12915,10 @@ def create_app(
                 {"error": "couldn't save your agent's picture. Try again."}, status_code=502
             )
 
-        agent.avatar_png = base64.b64encode(png).decode("ascii")
+        version = cache_portrait(agent, png)
         session.commit()
 
-        return JSONResponse({"sha": sha})
+        return JSONResponse({"sha": sha, "version": version, "how": painted.how})
 
     @app.put("/api/agents/{name}/avatar")
     async def upload_avatar(
@@ -12853,10 +12973,10 @@ def create_app(
                 {"error": "couldn't save your agent's picture. Try again."}, status_code=502
             )
 
-        agent.avatar_png = base64.b64encode(png).decode("ascii")
+        version = cache_portrait(agent, png)
         session.commit()
 
-        return JSONResponse({"sha": sha})
+        return JSONResponse({"sha": sha, "version": version})
 
     @app.get("/api/agents/{name}/avatar")
     def get_avatar(
@@ -12869,15 +12989,70 @@ def create_app(
         # Visibility IS still enforced (access-control Task B2): a picture is
         # as much "the agent's stuff" as any other field, and existence is
         # itself information.
+        #
+        # Cached by version (2026-11-20): `v` names the picture the page
+        # expects (`avatar_version`, carried on the list and detail payloads).
+        # Asked for by its current version, a picture is kept by the browser
+        # for good, since a new picture has a new version; asked for any other
+        # way, it is checked against its ETag each time and answered 304 when
+        # it has not changed. `size=small` is the 160px WebP copy the cards
+        # and the page header show; without it, the full PNG (the download,
+        # and anything else that reads this route).
         agent = _visible_agent_or_404(session, request, name)
         if isinstance(agent, JSONResponse):
             return agent
 
-        if agent.avatar_png is None:
-            return JSONResponse({"error": "no picture yet"}, status_code=404)
+        # The picture columns are read on their own (`stored_picture`), never
+        # through `agent`: they are deferred, and a destroy that finishes
+        # while the page is still asking would make that load raise. A row
+        # gone by then has no picture. What this route makes (a version, a
+        # small copy) is written the same way, so a gone row updates nothing.
+        agent_id = agent.id
+        version = agent.avatar_version
+        stored: str | None = None
+        if version is None:
+            stored = stored_picture(session, agent_id, Agent.avatar_png)
+            if stored is None:
+                return JSONResponse({"error": "no picture yet"}, status_code=404)
+            # A picture kept before versions, or by a replica that predates
+            # them: give it one now.
+            version = portrait_version(base64.b64decode(stored))
+            session.query(Agent).filter_by(id=agent_id).update(
+                {Agent.avatar_version: version}, synchronize_session=False
+            )
+            session.commit()
 
-        png = base64.b64decode(agent.avatar_png)
-        return Response(content=png, media_type="image/png")
+        small = request.query_params.get("size") == "small"
+        etag = f'"{version}{"-small" if small else ""}"'
+        asked = request.query_params.get("v")
+        headers = {
+            "ETag": etag,
+            "Cache-Control": PORTRAIT_KEPT if asked == version else PORTRAIT_CHECKED,
+        }
+        sent = request.headers.get("if-none-match", "")
+        if etag in (tag.strip().removeprefix("W/") for tag in sent.split(",")):
+            return Response(status_code=304, headers=headers)
+
+        if small:
+            copy = stored_picture(session, agent_id, Agent.avatar_small)
+            if copy is None:
+                stored = stored or stored_picture(session, agent_id, Agent.avatar_png)
+                made = small_portrait(base64.b64decode(stored)) if stored else None
+                if made is not None:
+                    copy = base64.b64encode(made).decode("ascii")
+                    session.query(Agent).filter_by(id=agent_id).update(
+                        {Agent.avatar_small: copy}, synchronize_session=False
+                    )
+                    session.commit()
+            if copy is not None:
+                return Response(
+                    content=base64.b64decode(copy), media_type="image/webp", headers=headers
+                )
+
+        stored = stored or stored_picture(session, agent_id, Agent.avatar_png)
+        if stored is None:
+            return JSONResponse({"error": "no picture yet"}, status_code=404)
+        return Response(content=base64.b64decode(stored), media_type="image/png", headers=headers)
 
     # --- Cross-group colleagueship (access-control arc, Task C1) -----------
     #

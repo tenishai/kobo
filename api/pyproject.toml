@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tenish-kobo"
-version = "0.3.79"
+version = "0.3.81"
 description = "Kobo API — the agent assembly room backend"
 requires-python = ">=3.12"
 authors = [{ name = "tenish" }]
-license = "AGPL-3.0-or-later"
+license = "MIT"
 dependencies = [
     "fastapi",
     "uvicorn",
@@ -36,6 +36,11 @@ dependencies = [
     # just multipart/form-data), on the FastAPI/Starlette versions pinned
     # here.
     "python-multipart",
+    # Portraits (2026-11-20): a painted portrait is a 1 MB, 1024px PNG, and
+    # every card showed it at 28px. Pillow makes the small copy the cards
+    # and the page header load, and draws the placeholder portrait an agent
+    # gets when no picture can be painted.
+    "pillow",
     # The official Model Context Protocol Python SDK (MCP server arc, Task 6
     # onward): Task 6 needs it for the real `ToolError` the audit decorator
     # raises on a rate-limited call; Task 7 needs it for the server itself.

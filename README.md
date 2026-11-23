@@ -6,7 +6,7 @@
 Compose an AI agent — persona, skills, memory, colleagues — and deploy it with one click. Then teach it, connect it, and govern who sees it.
 
 [![CI](https://github.com/tenishai/kobo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tenishai/kobo/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-alpha%20%C2%B7%20live-green.svg)](docs/superpowers/specs/)
 [![Bundles: daedalus](https://img.shields.io/badge/bundles-daedalus-6f42c1.svg)](https://github.com/tenishai/daedalus)
 [![UI: Svelte 5 · API: FastAPI](https://img.shields.io/badge/UI-Svelte%205%20%C2%B7%20FastAPI-ff3e00.svg)](docs/superpowers/specs/)
@@ -219,6 +219,6 @@ have had AI help.
 
 ## License
 
-[AGPL-3.0-or-later](LICENSE), matching the tenishai family.
+[MIT](LICENSE), matching the tenishai family.
 
 Copyright (C) 2026 tenish and the kobo contributors

@@ -6,6 +6,28 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Licence: MIT.** The project moves from AGPL-3.0-or-later to MIT, with the agreement of every contributor (tenishai/agora discussion 69). Releases already published keep the licence they shipped under.
+
+## [0.3.81] - 2026-11-20
+
+### Fixed
+- **A save restarts the agent once.** In a room that delivers bundles as artifacts, every save restarted the agent twice: the room's own restart within seconds, then the agent repository's build a minute or two later, which built the same image again and deployed it under the commit's tag. Chat refused in both gaps, and the page said **Restarting** a second time after it had said **Ready**. Now a commit that cannot change the image (a persona, skill, rule, knowledge, Edit details, a picture) skips that build, and the room's one restart names the commit it delivered, so **Delivered**, **Ingested** and the **Updating** banner still know when the change is live. A new runtime, an agent whose image still carries its bundle (restarted by its build alone now), and a save after a runtime build that never landed (which retries it, as any save did) build as before. An instant tool upload restarts the agent once too.
+
+## [0.3.80] - 2026-11-20
+
+### Changed
+- **The dashboard's pictures load once.** Every card fetched its agent's full picture, a 1024px PNG of about a megabyte, on every page load, and every list of agents read each one from the database. Now each picture is kept with a version and a 160px copy: the cards and the page header ask for the small copy by version, and a browser keeps it until the picture changes, so a reload shows the faces at once. The full picture is still what **Download the portrait** gets.
+
+### Fixed
+- **Teaching an agent no longer moves it onto a new runtime.** In a room that delivers bundles as artifacts, a teach note, an upload and a check re-pinned the agent's Dockerfile to the room's runtime in the same commit. Teaching johnny-bravo right after the room's runtime moved rebuilt it on the new runtime and restarted it twice, and chat answered "receiving a delivery" in between. Now only **Update to current**, **Move to the room's runtime** and **set runtime image** move an agent's runtime there, and a save no longer records the room's runtime as the agent's (Slack wiring did too), so the Harness says what the agent really runs.
+- **Restarting shows when it happens and clears on its own.** A change that restarts an agent (an upload, a persona edit, a skill, Edit details, a model, runtime or environment change that landed, colleague mode, a teach note, guardrails or knowledge change the room had to commit, **Restart**) says **Restarting** on the agent's page at once, and keeps saying it through a restart that begins minutes later (a model, runtime or environment change is built first). A save that changed nothing, or waits on a pull request, says nothing. The page asks for a fresh reading every few seconds until the agent has restarted and is back, so **Ready** returns without a reload.
+- **What you change shows everywhere at once.** A taught note shows in Learnings without a refresh, a new, archived or restored persona's Edit and Move show at once, and Edit details' tags and line show on the main page's cards at once.
+- **An older agent moved to the new delivery shape now deploys.** The commit that moves an agent whose image carried its bundle to the runtime-only shape changes its gojira.yaml, which the generated build refuses until the deploy files are rendered again. The room now asks the deploy platform for that, as every other gojira.yaml change does, and the commit skips the build that would fail. When the platform cannot be asked, the save says so, and the agent's next save asks again. An agent already stuck that way deploys on its next save: ledger has kept its 11/04 image while every later build failed. A model change through the room's model gateway and Slack setup, which change gojira.yaml too, skip that failing build as well and restart the agent once, when the deploy carries the change.
+- **Every agent has a picture.** An agent named after a famous character often got no picture, because the image model refused the name. Now a picture the model declines is tried again without the agent's name, and when no face can be painted, or the room has no image backend, the agent gets a placeholder of its initials in pixel letters, kept in the room. **New face** says when it could only give the placeholder, and never trades a face the agent already has for one.
+- **A new picture no longer restarts the agent.** Nothing in the running agent reads its picture, so a new face or an upload is saved to its files without rebuilding or restarting it.
+
 ## [0.3.79] - 2026-11-20
 
 ### Added

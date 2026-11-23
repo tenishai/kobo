@@ -36,7 +36,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from kobo_api import delivery
-from kobo_api.clients import GitHubClient, KubectlClient, image_tag
+from kobo_api.clients import GitHubClient, KubectlClient
 from kobo_api.composer import repin_commit_note, update_dockerfile_runtime_image
 from kobo_api.repo_lock import repo_write_lock
 
@@ -109,7 +109,9 @@ def upload_intake_file(
     same idempotent, raise-on-unrecognized-FROM edit `kobo_api.slack_setup.
     wire_slack` already makes for the sibling runtime-bump incident there.
     `None` (the default) skips the edit entirely, unchanged from before this
-    parameter existed — every pre-existing caller is unaffected.
+    parameter existed — every pre-existing caller is unaffected. In a room
+    that delivers bundles as artifacts the edit is skipped too
+    (`delivery.save_pin`): the runtime route is the one place a pin moves there.
 
     `archive_only` (the rebuild-per-memory fix): every agent repo's
     generated CI runs build-and-deploy on EVERY push, and the Deployment
@@ -153,10 +155,11 @@ def upload_intake_file(
 
         pin_changed = False
         note = ""
-        if runtime_image is not None:
-            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", runtime_image)
+        pin = delivery.save_pin(runtime_image)
+        if pin is not None:
+            previous = update_dockerfile_runtime_image(workdir / "Dockerfile", pin)
             pin_changed = previous is not None
-            note = repin_commit_note(repo, previous, runtime_image)
+            note = repin_commit_note(repo, previous, pin)
 
         if archive_only and not pin_changed:
             message = f"kobo: archive intake/{filename} [skip ci]"
@@ -222,9 +225,13 @@ def list_intake(
     commit sha inside THIS clone via `github.rev_parse_prefix` (None if it
     doesn't resolve — an image built from a since-force-pushed sha, a
     malformed/non-hex tag like "latest", or a tagless digest-only image
-    that `image_tag` itself already reports as having no tag at all).
+    that `image_tag` itself already reports as having no tag at all). With
+    bundles as artifacts a save that cannot change the image skips the build,
+    so the tag stops moving with the bundle: the live commit is the later of
+    the tag's commit and the one the room last restarted the agent with
+    (`kobo_api.delivery.live_commit`, 2026-11-20).
 
-    A file is "ingested" iff the tag resolved to a commit AND that commit
+    A file is "ingested" iff the live commit resolved AND that commit
     is the file's last-touch commit or a descendant of it
     (`github.is_ancestor(file_commit, live_commit)` — equality counts,
     matching git's own `merge-base --is-ancestor` semantics). Anything else
@@ -254,13 +261,11 @@ def list_intake(
         rel_paths = [f"bundle/intake/{p.name}" for p in paths]
         commit_shas = github.commit_shas_for_paths(workdir, rel_paths)
 
-        image = kubectl.deploy_image(namespace, deploy)
-        tag = image_tag(image)
-        # None means a tagless digest-only image (`repo@sha256:...`) — there's
-        # no tag to resolve at all, so every file below falls through to
-        # "pending" (the honest state; rev_parse_prefix is never called with
-        # a None prefix).
-        live_commit = github.rev_parse_prefix(workdir, tag) if tag is not None else None
+        # The image's tag, or the commit the room last restarted the agent
+        # with, whichever is later (`delivery.live_commit`): a save that skips
+        # the build moves only the second. Neither resolving (a tagless
+        # digest-only image, no restart named) leaves every file "pending".
+        live_commit = delivery.live_commit(github, kubectl, workdir, namespace=namespace, deploy=deploy)
 
         results = []
         for path, rel_path in zip(paths, rel_paths):
