@@ -2,7 +2,7 @@
   "name": "kobo-ui",
   "private": true,
   "version": "0.3.81",
-  "license": "AGPL-3.0-or-later",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
