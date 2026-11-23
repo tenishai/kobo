@@ -4126,7 +4126,7 @@ def create_app(
         cfg: Config = app.state.config
         # `cluster` is the alias gojira registered the cluster under; the panel
         # says where that really is when gojira can tell us (kobo#371 follow-up:
-        # "Deploys to fubo-dev" named the alias, not the cluster).
+        # "Deploys to <alias>" named the alias, not the cluster).
         detail = None
         gojira = getattr(app.state.clients, "gojira", None) if app.state.clients is not None else None
         if gojira is not None and cfg.gojira_cluster:

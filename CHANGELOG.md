@@ -10,6 +10,7 @@ All notable changes to kobo are documented here. The format follows
 
 - **Licence: MIT.** The project moves from AGPL-3.0-or-later to MIT, with the agreement of every contributor (tenishai/agora discussion 69). Releases already published keep the licence they shipped under.
 - **CI runs on GitHub-hosted runners, behind one `ci` check.** Every job names a hosted image, so a pull request from a fork gets the same checks as one from a branch; the fork guards and the runner variables (`CI_RUNS_ON`, `CI_BUILD_RUNS_ON`) are gone. A last job, `ci`, needs every other job and is the one check the branch rules require, with `dco` (tenishai/agora discussion 71). The repo card no longer pins a workflow file, so a Dependabot actions update passes the card check.
+- **No client or private product name at head, and a check that keeps it so.** `scripts/check_names.py` runs in CI and fails on such a name in any tracked file; it holds each name as a hash, so the check itself names nothing. The README no longer says the repositories are private.
 
 ## [0.3.81] - 2026-11-20
 
@@ -271,7 +272,7 @@ All notable changes to kobo are documented here. The format follows
 ## [0.3.55] - 2026-11-06
 
 ### Added
-- An agent's GitHub work is signed. GitHub names the room's app as the author of everything an installation token writes, so with several reviewer agents every review read "fubo-kobo". Comments, reviews and pull requests an agent makes now open with its name and its portrait, served from the agent's own repository to anyone who can see it, through the gateway's `github-write` tools; the vendor's own comment, review and pull-request-creating tools are closed to agents, and each agent is told to name the branches it creates after itself. Review pull requests and Open pull requests open the signing tools alongside the vendor's branch and commit tools.
+- An agent's GitHub work is signed. GitHub names the room's app as the author of everything an installation token writes, so with several reviewer agents every review read as the room's app. Comments, reviews and pull requests an agent makes now open with its name and its portrait, served from the agent's own repository to anyone who can see it, through the gateway's `github-write` tools; the vendor's own comment, review and pull-request-creating tools are closed to agents, and each agent is told to name the branches it creates after itself. Review pull requests and Open pull requests open the signing tools alongside the vendor's branch and commit tools.
 - The room fills in a gateway target an applied connection owes and the gateway lacks, every five minutes with the grant heal pass and on **Sync** in Admin, Access. Connect was the only writer, so GitHub connected on 2026-10-31 never got the `github-mcp-write` target that arrived the next day, and an agent granted Review pull requests saw only read tools (2026-11-06). Nothing the gateway already serves is overwritten.
 
 ### Fixed

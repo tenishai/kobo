@@ -50,6 +50,11 @@ jobs:
         if: ${{ matrix.shard == 1 }}
         working-directory: .
         run: uv run --project api --locked python scripts/check_arch_cards.py
+      - name: No name this repository does not carry
+        # Client and private product names, kept as hashes so the check never names them.
+        if: ${{ matrix.shard == 1 }}
+        working-directory: .
+        run: python3 scripts/check_names.py
       - name: pytest
         working-directory: api
         # One worker per available core: the suite is CPU-bound and each test

@@ -19,6 +19,8 @@ python3 scripts/check_arch_cards.py
 
 It fails when an anchored file has changed without its card, or when a card and the index disagree.
 
+`python3 scripts/check_names.py` fails when a tracked file names a client or a private product. This repository is public: write a placeholder (`example-org`, `<alias>`) instead.
+
 ## The user guide
 
 The room's user guide is `api/kobo_api/templates/guide/NN-<id>.md`, served on the Getting started page and by the `kobo_guide` MCP tool. `what-kobo-is` is the overview an assistant reads first. When you change something a person sees, update the section that describes it; `api/tests/test_guide.py` holds the house rules (no em dashes, no infrastructure words).

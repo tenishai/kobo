@@ -340,7 +340,7 @@ def test_compose_writes_colleague_roster(tmp_path):
 
 def test_compose_roster_omits_the_agent_itself(tmp_path):
     spec = _spec(name="kestrel", colleagues=[
-        {"name": "kestrel", "team": "vidai", "purpose_tags": [], "capability": "x"},
+        {"name": "kestrel", "team": "video", "purpose_tags": [], "capability": "x"},
         {"name": "ward", "team": "infra-engineering", "purpose_tags": [], "capability": "y"},
     ])
     compose(spec, tmp_path)
