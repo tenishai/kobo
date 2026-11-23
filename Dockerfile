@@ -36,6 +36,13 @@ RUN pip install --no-cache-dir "uv==${UV_VERSION}" \
 # because an ARG a FROM reads must come before the first FROM).
 FROM ${BASE_IMAGE} AS runtime
 
+# The base is built on its own cadence, so its OS packages are as old as its last build.
+# A release passes the day here and this layer runs again; without the argument the layer
+# is cached like any other.
+ARG APT_REFRESH=
+RUN echo "apt refresh: ${APT_REFRESH}" \
+ && apt-get update && apt-get -y upgrade && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --from=deps /lock/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt && rm /tmp/requirements.txt
