@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.82] - 2026-11-23
+
 ### Changed
 
 - **A release checks what it ships.** A pushed tag now runs all of CI on the tagged commit, then builds the image and refuses to publish it when the API does not import or a tool the room shells out to does not run, when a Python package in it has a licence we cannot ship (`scripts/check_licences.py`), or when it has a high or critical vulnerability that has a fix (`.grype.yaml` says what the scan leaves out, and why). The published image carries an SBOM and build provenance; the release carries the wheel, the sdist, the SBOM and `SHA256SUMS`, with its notes taken from this file. The image upgrades its OS packages on every release instead of keeping the ones `kobo-base` was built with, and `certifi` moves to the current release. `RELEASING.md` is how to cut one.
