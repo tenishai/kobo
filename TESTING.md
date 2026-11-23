@@ -47,7 +47,7 @@ A new test goes into the file whose first line it could carry.
 - `test_secrets.py`: a secret value is never logged, echoed or written
   where it does not belong; the room's own keys stay the room's.
 - `test_guide.py`: the house rules (the guide's words, no em dashes, no
-  vendor names, the CI fork guards).
+  vendor names, CI on hosted runners behind one `ci` check).
 - `test_incidents.py`: production bugs, each named in its docstring,
   kept verbatim.
 
