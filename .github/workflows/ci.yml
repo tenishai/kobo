@@ -6,10 +6,9 @@
 # Postgres and schema_tripwire.py asserts the ORM maps nothing the chain
 # never created.
 #
-# Where jobs run is a variable: CI_RUNS_ON, a JSON string or list of runner
-# labels (for example '["self-hosted","linux","x64","kobo-ci"]'); unset
-# means GitHub-hosted. This repository builds and publishes no image; an
-# operator builds one from a commit and rolls it where it runs.
+# Every job runs on a GitHub-hosted runner, so a pull request from a fork gets
+# the same checks as one from a branch. The last job, `ci`, is the one check the
+# branch rules require. The image is built by release.yml when a release is cut.
 
 name: ci
 
@@ -18,21 +17,19 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   api-tests:
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
-    # Self-hosted runners must never run code from a fork: only this repository's own
-    # pull requests and pushes. Harmless on GitHub-hosted runners.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Three shards on three runner pods: the self-hosted runner has 3.5 cores, so
-    # `-n auto` alone is a six-minute run; three pods make it two. Shard k takes
-    # every third test file. The runner set allows three pods, so the ui job
-    # queues behind them briefly on a cold start; still a net win.
+    # Three shards on three runners: `-n auto` on one runner is a six-minute run,
+    # three make it two. Shard k takes every third test file.
     strategy:
       fail-fast: false
       matrix:
@@ -63,10 +60,7 @@ jobs:
           PYTHONPATH=. .venv/bin/python -m pytest -q -n auto $files
 
   ui:
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
-    # Self-hosted runners must never run code from a fork: only this repository's own
-    # pull requests and pushes. Harmless on GitHub-hosted runners.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,10 +84,7 @@ jobs:
         run: npm test
 
   migrations:
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
-    # Self-hosted runners must never run code from a fork: only this repository's own
-    # pull requests and pushes. Harmless on GitHub-hosted runners.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
       postgres:
@@ -130,8 +121,7 @@ jobs:
     # TESTING.md: a scaffold test drives a change and is deleted before the
     # change merges. The directories may exist on a branch; a pull request
     # that still carries a file in either does not merge.
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -149,9 +139,7 @@ jobs:
   # surface at release time (0.3.4 published no image over an ARG declared after the
   # first FROM). BuildKit's --check lints both Dockerfiles without building anything.
   dockerfile:
-    runs-on: ${{ fromJSON(vars.CI_BUILD_RUNS_ON || vars.CI_RUNS_ON || '"ubuntu-latest"') }}
-    # The same fork guard every self-hosted job carries (tests/test_ci_fork_guards.py).
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
@@ -168,3 +156,19 @@ jobs:
         run: docker buildx build --check .
       - name: Lint the base Dockerfile
         run: docker buildx build --check docker/base
+
+  # The one check the branch rules require: it passes only when every job above passed.
+  # A skipped or cancelled job fails it, so nothing merges on a job that did not run.
+  ci:
+    name: ci
+    if: ${{ always() }}
+    needs: [api-tests, ui, migrations, test-lifecycle, dockerfile]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for r in $RESULTS; do
+            [ "$r" = "success" ] || { echo "a job did not pass: $RESULTS"; exit 1; }
+          done
