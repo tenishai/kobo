@@ -1,7 +1,7 @@
 ---
 card: arch-card:kobo-bundle
-updated: 2026-11-17
-anchor: api/kobo_api/composer.py sha=e27340c39e434fff95d333add1419de71b8d6c23
+updated: 2026-11-24
+anchor: api/kobo_api/composer.py sha=f9f25acd8a4c5c82f804b320a788d6de3f719a61
 anchor: api/kobo_api/vendor/bundle.schema.json sha=257c9575d4674177daf32d7bc0ad2b1145709552
 ---
 # bundle — the daedalus agent bundle kobo writes into each agent repo

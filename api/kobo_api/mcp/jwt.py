@@ -3,9 +3,8 @@ the one signing module every later task's OAuth AS, refresh-token
 rotation, and tool-call verification builds on.
 
 Four token types share this module (state, authorization_code,
-access_token, refresh_token -- see
-docs/superpowers/specs/2026-08-22-mcp-server-design.md's "Token
-mechanics"), each just a `typ` claim value stamped through `mint`/`verify`
+access_token, refresh_token -- "Token mechanics" in the 2026-08-22
+MCP server design), each just a `typ` claim value stamped through `mint`/`verify`
 below. There is no per-type code and no per-type key: one HS256 secret
 signs all four, and `typ` is the only thing that tells them apart.
 

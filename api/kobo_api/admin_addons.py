@@ -1,7 +1,6 @@
 """The admin panel's Add-ons: what this room runs on, one card each, read
-from the org keys that already turn each one on (design `docs/superpowers/
-specs/2026-10-18-one-runtime-and-admin-panel-design.md`, Arc 2, step 2;
-issue #173).
+from the org keys that already turn each one on (the 2026-10-18 one-runtime
+and admin-panel design, Arc 2, step 2; issue #173).
 
 An add-on is something the room runs on; an integration is something an
 agent reaches out to. Absent means off, as every integration in the room

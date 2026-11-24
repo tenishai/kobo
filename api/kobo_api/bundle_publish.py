@@ -1,6 +1,6 @@
 """Publish an agent's `bundle/` as a registry artifact (one runtime, bundles as
-artifacts; design `docs/superpowers/specs/2026-10-18-one-runtime-and-admin-
-panel-design.md`, Arc 1, step 1; issue #172).
+artifacts; the 2026-10-18 one-runtime and admin-panel design, Arc 1, step 1;
+issue #172).
 
 A composed agent stops being its own image. Its files travel as an OCI
 artifact next to the runtime image: pushed once per commit that changes

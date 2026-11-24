@@ -417,8 +417,8 @@ def _approvals_gates(spec: BundleSpec) -> list | _FlowList:
     """The bundle's `approvals.gates` list -- composes EMPTY when the
     colleagues tools block is emitted (`spec.cabal_url` configured, the same
     presence-alone gate `_a2a_transport`/`_tools_block` above use), per the
-    "Amendments from live acceptance" section of `docs/superpowers/specs/
-    2026-08-19-colleagues-talk-design.md`.
+    "Amendments from live acceptance" section of the 2026-08-19
+    colleagues-talk design.
 
     Rationale (from the amendment): the runtime consults gates via
     first-fnmatch-wins, and a deployed pod's approver is deny-all, so the
@@ -445,7 +445,7 @@ def _approvals_gates(spec: BundleSpec) -> list | _FlowList:
 # The revision-pass mode this room composes for every agent (belief-revision
 # plan, Task 2): daedalus's `MemorySpec.revision` gates a post-boot
 # belief-revision pass that auto-promotes operator-attested corrections, per
-# `docs/superpowers/specs/2026-08-20-belief-revision-design.md`. Used
+# the 2026-08-20 belief-revision design. Used
 # unconditionally in `_agent_yaml_data` below (never gated on a check of the
 # memory provider) because `BundleSpec` exposes no field that selects
 # anything other than techne memory -- every bundle this room composes
@@ -1599,8 +1599,8 @@ def update_agent_yaml_approvals_gates(bundle_dir: Path, *, gates: list[dict]) ->
     `ceiling`, `escalation`, and every other line in the file byte-identical.
 
     The backfill path for the bundle's blanket `match: "*"` approval gate,
-    per the "Amendments from live acceptance" section of `docs/superpowers/
-    specs/2026-08-19-colleagues-talk-design.md`: a deployed pod's approver is
+    per the "Amendments from live acceptance" section of the 2026-08-19
+    colleagues-talk design: a deployed pod's approver is
     deny-all, so that gate blocks every tool outright, including the two
     colleague tools the tool allowlist alone is meant to gate. Called with
     `gates=[]` for that repair — the write ceiling and escalation route are
