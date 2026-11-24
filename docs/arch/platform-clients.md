@@ -1,8 +1,8 @@
 ---
 card: arch-card:kobo-platform-clients
-updated: 2026-11-20
-anchor: api/kobo_api/clients.py sha=94f9523bac181a738eaf4adc5606f2ef1fcd4992
-anchor: api/tests/fakes.py sha=c74810c26d6da15b94bb34e30dd0f40e889bac2d
+updated: 2026-11-24
+anchor: api/kobo_api/clients.py sha=0b4423597954c230d5ec8c8360dc86c3fbbe57e5
+anchor: api/tests/fakes.py sha=d846dd6bfbeefca5857e6a43425c3bc4076e2674
 ---
 # platform-clients — one Protocol per outside system, one real impl, one fake
 
@@ -20,7 +20,7 @@ WHAT / SEAM: api/kobo_api/clients.py. The outside systems in the table below are
 | cabal | (concrete) `CabalClient` | same | `FakeCabal` — see switchboard.md |
 | groups / people_search | `GroupResolver` / `OktaPeopleSearch` (groups.py) | `OktaGroupResolver` / `OktaPeopleSearch` | `FakePeopleSearch`; resolvers are ad hoc per test file |
 | sero | `SeroClient` (sero.py) | `HttpxSeroClient` | `FakeSero` |
-| models_gateway | `ModelsGatewayClient` | `HttpxModelsGatewayClient` (LiteLLM admin API: `/health/readiness`, `/model/info`, `/model/new`, `/model/delete`, `/key/generate`, `/key/delete` by `key_aliases`; bearer = the master key read on first use from the Secret `models_gateway_master_key_secret` names through `KubectlClient.secret_literals`, `models_gateway_master_key_reader`) | `FakeModelsGateway` (`models` by the room's id, `keys` by alias, `up=False` for not ready, `fails=True` to refuse every write) |
+| models_gateway | `ModelsGatewayClient` | `HttpxModelsGatewayClient` (LiteLLM admin API: `/health/readiness`, `/model/info`, `/model/new`, `/model/delete`, `/key/generate`, `/key/delete` by `key_aliases`, `/user/daily/activity` for per-agent model use (#556); bearer = the master key read on first use from the Secret `models_gateway_master_key_secret` names through `KubectlClient.secret_literals`, `models_gateway_master_key_reader`) | `FakeModelsGateway` (`models` by the room's id, `keys` by alias, `up=False` for not ready, `fails=True` to refuse every write) |
 OPS / FLOW: `Clients.real(config)` is called once per process in `main.build_default_app`; tests build `Clients(...)` from fakes and pass it to `create_app`. `CommandRunner.run()` raises `ClientError` on non-zero exit; callers that tolerate one failure catch it and inspect `.stderr` (e.g. `_gh_returned_404`). GitHub auth: a GitHub App installation token (`installation_token_provider`, github_app.py) passed as `GH_TOKEN` in the subprocess env when the App is configured, else the ambient `gh auth` session. Vertex/GCS tokens come from `CachedGcloudToken` (metadata server, then `gcloud` CLI fallback).
 INVARIANTS:
 - `KubectlClient.restart_deploy(..., annotations=)` writes the caller's pod-template annotations beside `rollout restart`'s own stamp (`RESTARTED_AT_ANNOTATION`) in one merge patch, so it is still one roll; without them it is `rollout restart`. A delivery names its commit this way (`delivery.BUNDLE_COMMIT_ANNOTATION`), and `FakeKubectl` keeps what a restart named in `template_annotations`, read back by `deployment_status_json`. `GitHubClient.includes(repo, tip, commit)` answers whether `tip` carries `commit` from GitHub's compare status, with no clone (`FakeGitHub` reads `ancestor_pairs`).

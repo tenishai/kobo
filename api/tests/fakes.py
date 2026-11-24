@@ -3072,11 +3072,14 @@ class FakeModelsGateway:
     """In-memory `ModelsGatewayClient`: deployments by the room's own id,
     keys by alias. `fails=True` makes every write raise `ClientError`
     (the gateway is up but refuses); `up=False` makes `ready()` False.
-    `calls` records each operation by name for the diff tests."""
+    `calls` records each operation by name for the diff tests. `activity`
+    is what `daily_activity` answers, rows in the gateway's own shape."""
 
-    def __init__(self, *, up: bool = True, fails: bool = False, models: list[dict] | None = None):
+    def __init__(self, *, up: bool = True, fails: bool = False, models: list[dict] | None = None,
+                 activity: list[dict] | None = None):
         self.up = up
         self.fails = fails
+        self.activity = list(activity or [])
         self.models: dict[str, dict] = {}
         for entry in models or []:
             self.models[entry["model_info"]["id"]] = entry
@@ -3122,3 +3125,8 @@ class FakeModelsGateway:
         self.calls.append(f"revoke_key:{alias}")
         self._guard(f"revoke key {alias}")
         return self.keys.pop(alias, None) is not None
+
+    def daily_activity(self, start_date: str, end_date: str) -> list[dict]:
+        self.calls.append(f"daily_activity:{start_date}:{end_date}")
+        self._guard("read daily activity")
+        return [r for r in self.activity if start_date <= r.get("date", "") <= end_date]

@@ -5,6 +5,7 @@
   import { createQuery } from "@tanstack/svelte-query";
   import {
     CaretRight,
+    ChartBar,
     ClockCounterClockwise,
     Graph,
     Plugs,
@@ -23,13 +24,16 @@
     adminIntegrationsQuery,
     adminRolesQuery,
     groupRequestsQuery,
+    roomSpendQuery,
   } from "../../lib/queries";
+  import { formatCost } from "../../lib/api";
 
   const addons = createQuery(() => (adminAddonsQuery()));
   const integrations = createQuery(() => (adminIntegrationsQuery()));
   const connections = createQuery(() => (adminConnectionsQuery()));
   const roles = createQuery(() => (adminRolesQuery()));
   const requests = createQuery(() => (groupRequestsQuery(true)));
+  const spend = createQuery(() => (roomSpendQuery(30)));
   // 404 when Access is off for the room; the row then says so instead of a number.
   const access = createQuery(() => (accessRequestsQuery("pending")));
   const leases = createQuery(() => (accessLeasesQuery()));
@@ -55,6 +59,7 @@
     connections: { text: "Which agent reaches which vendor through the gateway.", icon: Graph },
     // The same page id as `connections` when the permission service is on (#371).
     agentConnections: { text: "Which agents reach which vendors, and what they hold right now.", icon: Graph },
+    usage: { text: "What each agent's model calls cost.", icon: ChartBar },
     review: { text: "Permission requests waiting for a decision.", icon: SealCheck },
     roles: { text: "What each role may do in the room.", icon: UserGear },
     people: { text: "Who runs the room, and group requests.", icon: Users },
@@ -102,6 +107,11 @@
         name: "Connections",
         note: connections.isPending ? "…" : noLane ? `${plural(agents.length, "agent")}, ${noLane} without a lane` : `${plural(agents.length, "agent")}, all with a lane`,
       }]),
+      {
+        pane: "usage",
+        name: "Usage",
+        note: spend.isPending ? "…" : spend.isError ? "could not be read" : !spend.data.measured ? "not measured" : `about ${formatCost(spend.data.total.cost)} in the last 30 days`,
+      },
       {
         pane: "review",
         name: "Review",

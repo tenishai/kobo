@@ -13,6 +13,8 @@ To move an agent onto another model after it is deployed, pick one from the list
 
 When the room reaches its models through the model gateway, the list is the models a room admin offers, each with a tag saying which cloud it comes from, and a model in grey cannot be picked: the line under it says whether its cloud is not connected or the model gateway is not answering. Pressing **Change model** then also moves the agent onto the gateway: the room gives the agent its own key and points it at the gateway, so an agent made before the gateway was turned on keeps working as it was until someone presses **Change model**.
 
+**Model use**, the panel under this one, is what this agent's model calls cost over the last 7, 30 or 90 days: an estimated cost, the number of calls, tokens in and out, and one row per model it called. The room's model gateway counts each call under the agent that made it and prices it from its own price list, so the figure is an estimate, not the cloud bill. A room that does not use the model gateway reads **Not measured**. A room admin sees every agent side by side under **Admin, Usage**.
+
 Below them, **Asks other agents** sets whether the agent may ask its colleagues: yes, when it helps (the default); no, but it knows who they are; or no. Pick one and press **Change**; the agent restarts with it. See "Agents talking to agents" for what each mode does.
 
 ## Agent to agent

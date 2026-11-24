@@ -5593,6 +5593,14 @@ class ModelsGatewayClient(Protocol):
         """Delete every key filed under `alias`. False when there was none."""
         ...
 
+    def daily_activity(self, start_date: str, end_date: str) -> list[dict]:
+        """What the gateway metered between two days (`YYYY-MM-DD`, both
+        included), one row per day as it reports them: `date`, `metrics`,
+        and a `breakdown` whose `api_keys` and `models` entries carry the
+        key alias the calls were made under. Kept under the alias after the
+        key itself is gone."""
+        ...
+
 
 class HttpxModelsGatewayClient:
     """`ModelsGatewayClient` over httpx against LiteLLM's admin API, bearer-
@@ -5679,6 +5687,24 @@ class HttpxModelsGatewayClient:
                 return False
             raise
         return True
+
+    def daily_activity(self, start_date: str, end_date: str) -> list[dict]:
+        rows: list[dict] = []
+        # A page is a hundred days; the cap is a guard against a gateway
+        # that never says it is done, not a window anyone asks for.
+        for page in range(1, 21):
+            resp = self._call(
+                "GET",
+                f"/user/daily/activity?start_date={start_date}&end_date={end_date}&page_size=100&page={page}",
+                what="read daily activity",
+            )
+            body = resp.json()
+            if not isinstance(body, dict):
+                break
+            rows.extend(r for r in body.get("results") or [] if isinstance(r, dict))
+            if not (body.get("metadata") or {}).get("has_more"):
+                break
+        return rows
 
 
 def models_gateway_master_key_reader(config: Config, kubectl: KubectlClient) -> Callable[[], str]:

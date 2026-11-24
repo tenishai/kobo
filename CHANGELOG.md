@@ -6,6 +6,10 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Each agent's model use, in the room** (#556). The Harness tab has a **Model use** panel under Model and runtime: an estimated cost, calls and tokens for the last 7, 30 or 90 days, and one row per model the agent called. The admin panel has a **Usage** page with one row per agent, most expensive first, and the Overview carries its total. The numbers are read from the model gateway, which counts every call under the key the room minted for the agent, so the cost is the gateway's estimate from its price list and not the cloud bill. A room without the model gateway reads Not measured.
+
 ### Removed
 
 - **The dated plans and specs under `docs/superpowers/` are no longer in the tree.** They were working notes, kept as a historical record. Code comments that cite one by its date still name it; the files are in the history, last at [v0.3.82](https://github.com/tenishai/kobo/tree/v0.3.82/docs/superpowers).

@@ -53,6 +53,7 @@
   import AgentToAgentPanel from "./AgentToAgentPanel.svelte";
   import MemoryPanel from "./MemoryPanel.svelte";
   import ModelPicker from "./ModelPicker.svelte";
+  import ModelUsePanel from "./ModelUsePanel.svelte";
   import SkillsPanel from "./SkillsPanel.svelte";
   import GuardrailsPanel from "./GuardrailsPanel.svelte";
   import ToolingPanel from "./ToolingPanel.svelte";
@@ -485,6 +486,7 @@
               </p>
             {/if}
           </section>
+          <ModelUsePanel {agentName} />
         {:else if id === "identity"}
           <section class="panel">
             <h2 class="panel__heading">Identity and access</h2>
