@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tenish-kobo"
-version = "0.3.83"
+version = "0.3.84"
 description = "Kobo API — the agent assembly room backend"
 requires-python = ">=3.12"
 authors = [{ name = "tenish" }]

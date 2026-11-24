@@ -6,7 +6,9 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.3.83] - 2026-11-24
+## [0.3.84] - 2026-11-24
+
+The tag v0.3.83 exists and published nothing: its release run ran out of disk during the vulnerability scan. This release is the same changes, with the release job clearing room first.
 
 ### Added
 
