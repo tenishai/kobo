@@ -259,6 +259,8 @@ export type AgentIdentity = {
   service_account: string;
   gsa_email: string;
   project: string;
+  /** Nothing runs as `gsa_email`: it is the name Google Cloud's log records for the agent. */
+  named_only?: boolean;
 };
 
 /** One catalog search result — a skill or a persona, both served by the

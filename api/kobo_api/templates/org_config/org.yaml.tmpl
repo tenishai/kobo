@@ -39,6 +39,16 @@ models_gateway_url: __KOBO_MODELS_GATEWAY_URL__
 liminal_url: __KOBO_LIMINAL_URL__
 # The room's permission service (bab), in-cluster. Empty = Access is off.
 bab_url: __KOBO_BAB_URL__
+# The Google service account the permission service runs as. Naming it makes
+# each new agent's own Google account a name nothing runs as, which the
+# service asks for leases through, so Google Cloud's log records the agent.
+# Empty = every agent runs as its Google account.
+bab_service_account: __KOBO_BAB_SERVICE_ACCOUNT__
+# A Google group those agents' accounts join, so a connection's admin grants
+# Token Creator to the group once. Empty = they join nothing.
+agents_group: __KOBO_AGENTS_GROUP__
+# gcp_project's number. Empty = the room asks Google Cloud for it.
+gcp_project_number: __KOBO_GCP_PROJECT_NUMBER__
 
 # Noto dashboard link for this room's agents (Task 4). Both null (the
 # default) means the observability catalog is off -- the UI shows no

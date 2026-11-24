@@ -1404,6 +1404,15 @@ class FakeCloud:
         self.calls.append(f"bind_workload_identity:{gsa_email}:{namespace}/{ksa}")
         self.bindings.add((gsa_email, namespace, ksa))
 
+    def workload_principal(self, namespace: str, ksa: str) -> str:
+        return (
+            "principal://iam.googleapis.com/projects/1234567890/locations/global/"
+            f"workloadIdentityPools/{self._project}.svc.id.goog/subject/ns/{namespace}/sa/{ksa}"
+        )
+
+    def allow_token_creator(self, gsa_email: str, member_email: str) -> None:
+        self.calls.append(f"allow_token_creator:{gsa_email}:{member_email}")
+
     def add_to_group(self, gsa_email: str, group: str) -> None:
         self.calls.append(f"add_to_group:{gsa_email}:{group}")
         self.group_members.add((gsa_email, group))

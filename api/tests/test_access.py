@@ -5178,6 +5178,65 @@ def test_access_step_skips_the_vertex_grant_when_the_gateway_is_on(session_facto
     assert detail == "model access through the room's model gateway"
 
 
+def test_an_agent_that_does_not_run_as_its_account_is_granted_on_its_own_identity(session_factory, config, tmp_path):
+    """Gate (authorization, bab issue 93): where the room names the permission service's
+    Google identity, a new agent's Google account is a name and nothing runs as it. So it
+    is never bound to the pod; the service may ask for tokens through it; it joins the
+    agents group; the memory prefix goes to the pod's Kubernetes identity; and the service
+    account file carries no Google account. Destroy takes the same things back. An agent
+    born before the setting keeps running as its account, whatever the room says now."""
+    from kobo_api import cloud_identity
+    from kobo_api.destroy import _destroy_access
+    from kobo_api.steps import _write_service_account
+
+    cfg = config.model_copy(update={
+        "models_gateway_url": "http://models-gateway.models.svc", "bab_url": "http://bab.bab.svc",
+        "bab_service_account": "access@example-project.iam.gserviceaccount.com",
+        "agents_group": "agents@example.com", "memory_replica_bucket": "kobo-memory-replicas",
+    })
+    assert cloud_identity.for_a_new_agent(cfg) == cloud_identity.DIRECT
+    assert cloud_identity.for_a_new_agent(cfg.model_copy(update={"models_gateway_url": ""})) is None
+    assert cloud_identity.for_a_new_agent(cfg.model_copy(update={"bab_service_account": ""})) is None
+
+    session, agent = _make_agent(session_factory, name="rae")
+    agent.cloud_identity = cloud_identity.for_a_new_agent(cfg)
+    cloud = FakeCloud(project=cfg.gcp_project)
+    ctx = _make_ctx(session, agent, cfg, _clients(cloud=cloud))
+    AccessStep().run(ctx)
+
+    email = f"agent-rae@{cfg.gcp_project}.iam.gserviceaccount.com"
+    principal = cloud.workload_principal("rae", "agent-rae")
+    assert principal.startswith("principal://") and principal.endswith("/subject/ns/rae/sa/agent-rae")
+    assert cloud.calls == [
+        "ensure_gsa:agent-rae",
+        f"allow_token_creator:{email}:access@example-project.iam.gserviceaccount.com",
+        f"add_to_group:{email}:agents@example.com",
+        f"grant_bucket_prefix_write:{principal}:kobo-memory-replicas:rae/",
+        f"grant_bucket_list:{principal}:kobo-memory-replicas",
+    ]
+    _write_service_account(tmp_path, agent, cfg)
+    manifest = (tmp_path / "serviceaccount.yaml").read_text()
+    assert "name: agent-rae" in manifest and "gcp-service-account" not in manifest
+
+    cloud.calls.clear()
+    ctx.clients.models = None
+    _destroy_access(ctx)
+    assert [c for c in cloud.calls if not c.startswith("revoke_bucket_list")] == [
+        f"remove_from_group:{email}:agents@example.com",
+        f"revoke_bucket_prefix_write:{principal}:kobo-memory-replicas:rae/",
+        f"delete_gsa:{email}",
+    ]
+    session.commit()
+
+    session2, older = _make_agent(session_factory, name="ivy")
+    cloud2 = FakeCloud(project=cfg.gcp_project)
+    AccessStep().run(_make_ctx(session2, older, cfg, _clients(cloud=cloud2)))
+    assert cloud2.calls[:2] == ["ensure_gsa:agent-ivy", f"bind_workload_identity:agent-ivy@{cfg.gcp_project}.iam.gserviceaccount.com:ivy/agent-ivy"]
+    assert not any(c.startswith(("allow_token_creator", "add_to_group")) for c in cloud2.calls)
+    _write_service_account(tmp_path, older, cfg)
+    assert "iam.gke.io/gcp-service-account: agent-ivy@" in (tmp_path / "serviceaccount.yaml").read_text()
+
+
 def test_access_step_grants_a_new_agent_read_on_its_own_repository(session_factory, config):
     """Gate (authorization, owner ruling 2026-11-02): with the permission service on and
     GitHub connected, the Access step writes the agent's repository set as its one

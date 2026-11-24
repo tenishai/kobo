@@ -604,6 +604,22 @@ class Config(BaseModel):
     # it calls with comes from the environment (KOBO_BAB_TOKEN), never from
     # here; both must be present for the client to be wired (kobo_api.bab).
     bab_url: str = ""
+    # The Google service account the permission service runs as. Org-settable.
+    # Naming it is the opt-in to bab issue 93: an agent created from then on
+    # runs as its Kubernetes identity alone, and its Google account becomes
+    # the name the service asks for leases through, so Google Cloud's own log
+    # records the agent (kobo_api.cloud_identity). The room grants this
+    # identity Token Creator on each such agent's account. Empty: every agent
+    # runs as its Google account, as before.
+    bab_service_account: str = ""
+    # A Google group every such agent's account joins, so the admin of a
+    # connection's service account grants Token Creator once, to the group,
+    # not once per agent. Org-settable; empty joins nothing. Only an account
+    # nothing runs as is ever added.
+    agents_group: str = ""
+    # `gcp_project`'s number, which a Kubernetes identity's own name in IAM
+    # carries. Org-settable; empty asks Google Cloud for it when first needed.
+    gcp_project_number: str = ""
     # The accounts, projects and subscriptions the room's permission service
     # can reach, one per vendor it names, so the picker can offer them before
     # a person has connected each one (Access through bab, 2026-10-29). An
@@ -682,6 +698,12 @@ class Config(BaseModel):
         secret delivery at the first agent that needs one. Same "presence is
         the switch" posture as `mcp_enabled` just above."""
         return bool(self.sero_url and self.sero_audience and self.sero_namespace)
+
+    @field_validator("gcp_project_number", mode="before")
+    @classmethod
+    def _number_as_text(cls, v):
+        """A project number written bare in YAML arrives as an int."""
+        return str(v) if isinstance(v, int) and not isinstance(v, bool) else v
 
     @field_validator(
         "workdir", "slack_tokens_path", "ui_dist", "github_app_private_key_path",
