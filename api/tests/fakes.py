@@ -38,7 +38,7 @@ from kobo_api.sero import SecretKeys
 # --- Generated-scaffolding fixture for FakeGitHub.clone ------------------------
 #
 # Mirrors exactly what gojira's generator produced in the P0 live E2E for a
-# freshly-onboarded agent app (see docs/superpowers/plans/p0-e2e-runbook.md and
+# freshly-onboarded agent app (see the P0 end-to-end runbook and
 # the agent-hello reference repo): four generated k8s/base manifests plus a
 # kustomization.yaml listing exactly those four, and a gojira.yaml that has not
 # yet been through WireStep's contract edits (no service_account/env/data_mount

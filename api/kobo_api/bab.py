@@ -1,6 +1,5 @@
-"""Access through bab: the room's permission service (design
-`docs/superpowers/specs/2026-10-27-bab-permissions-design.md`; the contract
-is bab's `docs/design-leases.md`).
+"""Access through bab: the room's permission service (the 2026-10-27
+bab permissions design; the contract is bab's `docs/design-leases.md`).
 
 bab decides; kobo is the console. An agent's owner picks permissions per
 connected integration, a reviewer approves them in bulk, and the agent

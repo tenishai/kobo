@@ -679,8 +679,8 @@ def _colleague_roster(session, agent: Agent) -> list[dict]:
 # view of an agent changes (it goes READY, it is destroyed, its capability
 # distills), every OTHER agent who could already see it gets a freshly
 # rendered `colleagues.md` over the fast lane instead of carrying a stale one
-# until its own next rebuild -- spec `docs/superpowers/specs/2026-08-26-fast-
-# lane-and-discovery-design.md` section 3.3.
+# until its own next rebuild -- the 2026-08-26 fast-lane and discovery
+# design, section 3.3.
 
 
 def _agents_who_can_see(session, *, name: str, group_name: str | None) -> list[Agent]:
@@ -1750,8 +1750,8 @@ spec:
   resources: {{requests: {{storage: 1Gi}}}}
 """
 
-# uid of the runtime image's `agent` user (docs/superpowers/plans/
-# 2026-08-01-p0-foundations.md's Dockerfile creates it) — the PVC mount needs
+# uid of the runtime image's `agent` user (the 2026-08-01 P0 foundations plan's
+# Dockerfile creates it) — the PVC mount needs
 # fsGroup set to this so the seeder can actually write techne.db under /techne.
 TECHNE_FS_GROUP = 10001
 

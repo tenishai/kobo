@@ -1,9 +1,9 @@
 """kobo's OAuth 2.1 Authorization Server (MCP server arc, Task 4): the
 `/oauth/*` and `/.well-known/*` routes that turn a Google-verified
 Workspace identity into the rotating access/refresh token pairs Tasks
-2-3 built (`kobo_api.mcp.jwt`, `kobo_api.mcp.refresh_tokens`). See
-docs/superpowers/specs/2026-08-22-mcp-server-design.md's "Identity and
-auth" section for the flow narrative this module implements.
+2-3 built (`kobo_api.mcp.jwt`, `kobo_api.mcp.refresh_tokens`). The
+2026-08-22 MCP server design's "Identity and auth" section is the flow
+narrative this module implements.
 
 **Flow** (public client, PKCE S256, one pre-registered `client_id`):
 

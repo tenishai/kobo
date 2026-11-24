@@ -12,7 +12,7 @@ All notable changes to kobo are documented here. The format follows
 
 ### Removed
 
-- **The dated plans and specs under `docs/superpowers/` are no longer in the tree.** They were working notes, kept as a historical record. Code comments that cite one by its date still name it; the files are in the history, last at [v0.3.82](https://github.com/tenishai/kobo/tree/v0.3.82/docs/superpowers).
+- **The dated plans and specs under `docs/superpowers/` are no longer in the tree.** They were working notes, kept as a historical record. Code comments name a design by its date and no longer by a path; the files are in the history, last at [v0.3.82](https://github.com/tenishai/kobo/tree/v0.3.82/docs/superpowers).
 
 ### Changed
 

@@ -10,8 +10,8 @@ Two independent responsibilities live here:
   (`docs/slack-app-manifest.yaml` in the daedalus repo) — public-channel
   grants plus private-channel grants (`groups:history`/`message.groups`)
   together, not a straight copy of one or the other. See the P2c incident-1
-  writeup (`docs/superpowers/plans/p0-e2e-runbook.md`, "P2c results — slack
-  connect live") for why: a live connect crashed on a private channel
+  writeup (the P0 end-to-end runbook, "P2c results — slack connect live")
+  for why: a live connect crashed on a private channel
   because the manifest only carried public-channel grants, fixed by
   rendering both grant sets so kobo never has to guess a channel's type
   up front.
@@ -72,8 +72,8 @@ _BACKGROUND_COLOR = "#3d2f5b"
 # manifest (daedalus/docs/slack-app-manifest.yaml) — public-channel grants
 # (channels:history/message.channels) plus private-channel grants
 # (groups:history/message.groups), both included together. Not a
-# byte-identical copy: P2c incident 1 (docs/superpowers/plans/
-# p0-e2e-runbook.md, "P2c results — slack connect live") was a live connect
+# byte-identical copy: P2c incident 1 (the P0 end-to-end runbook,
+# "P2c results — slack connect live") was a live connect
 # crashing on a private channel because the manifest carried only the
 # public-channel half of this list — rendering both grant sets means kobo
 # never has to know a channel's type before connecting it.

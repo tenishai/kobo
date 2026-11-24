@@ -1,10 +1,9 @@
 """Agent destruction: the resumable teardown ledger, the mirror of
 `kobo_api.provisioner`.
 
-Destruction is a step ledger, not a transaction (design doc,
-docs/superpowers/specs/2026-08-17-agent-destruction-design.md,
-docs/superpowers/specs/2026-08-17-destruction-completeness-design.md,
-docs/superpowers/specs/2026-08-18-colleagues-switchboard-design.md): six
+Destruction is a step ledger, not a transaction (the 2026-08-17
+agent-destruction and destruction-completeness designs and the 2026-08-18
+colleagues-switchboard design): six
 ordered steps, each tolerant of "already gone" (a repeat delete, or a
 resume after a prior attempt got partway), writing rows into the SAME
 `agent_steps` table provisioning uses (named per `DESTROY_STEPS`) so the
