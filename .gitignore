@@ -1,3 +1,28 @@
+# --- Shared block: the same in every tenish repo. Repo-specific lines go below it. ---
+
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+kubeconfig
+*.kubeconfig
+service-account*.json
+*credentials.json
+
+# Local state
+*.db
+*.sqlite
+*.sqlite3
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.example.tfvars
+.terraform/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -6,28 +31,33 @@ venv/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 
-# Node (kobo-ui)
+# Node
 node_modules/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/*
+*.swp
+
+# Assistants and scratch
+.claude/settings.local.json
+CLAUDE.local.md
+*.local.md
+*.local.yaml
+scratch*.txt
+
+# --- This repo ---
+# Node (kobo-ui)
 dist/
 
 # Local state / ledgers
-*.db
-*.sqlite
-*.sqlite3
 /.superpowers/
 
 # Env-specific runbook values
-*.local.md
-*.local.yaml
-*.pem
-*.key
 github-app.local.pem
-
-# Editor / OS
-.DS_Store
-.idea/
-.vscode/
 
 # kobo-api
 api/config.local.yaml
@@ -36,9 +66,6 @@ api/venv/
 
 # Local harness config (never commit)
 .claude/
-
-scratch*.txt
-CLAUDE.local.md
 
 # The UI lab's throwaway room (api/scripts/ui_lab.py)
 /api/.lab/

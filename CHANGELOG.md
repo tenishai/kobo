@@ -6,6 +6,14 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- **The dated plans and specs under `docs/superpowers/` are no longer in the tree.** They were working notes, kept as a historical record. Code comments that cite one by its date still name it; the files are in the history, last at [v0.3.82](https://github.com/tenishai/kobo/tree/v0.3.82/docs/superpowers).
+
+### Changed
+
+- **`.gitignore` opens with a block shared by every tenish repo** (keys, env files, local databases, Terraform state, editor folders), with this repo's own lines under it.
+
 ## [0.3.82] - 2026-11-23
 
 ### Changed
@@ -1469,7 +1477,7 @@ All notable changes to kobo are documented here. The format follows
 The first tagged release, `0.1.0`, is the room as the README describes it: create, connect,
 chat and teach, memory, colleagues and threads, access, Slack, the agent page, personas and the
 MCP surface. Everything before the tag is in the git history and in the design record under
-[docs/superpowers/](docs/superpowers/). The entries below cover the changes after this
+[docs/superpowers/](https://github.com/tenishai/kobo/blob/v0.3.82/docs/superpowers/). The entries below cover the changes after this
 changelog started (PR #103).
 
 ### Added
