@@ -42,7 +42,11 @@
         added under Owners can see it.
       </p>
     {/if}
-    {#if identity}
+    {#if identity?.named_only}
+      <p class="access-panel__identity">
+        Google Cloud's logs name this agent <code>{identity.gsa_email}</code>.
+      </p>
+    {:else if identity}
       <p class="access-panel__identity">Runs as <code>{identity.gsa_email}</code>.</p>
     {/if}
   </div>

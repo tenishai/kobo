@@ -40,6 +40,7 @@ from kobo_api import (
     admin_store,
     audit,
     audit_agents,
+    cloud_identity,
     connected_checks,
     connected_wiring,
     delivery,
@@ -6553,6 +6554,7 @@ def create_app(
             team=payload.team,
             purpose_tags=encode_tags(cleaned_tags),
             model_id=model_id,
+            cloud_identity=cloud_identity.for_a_new_agent(cfg),
             # No `runtime_image` here, deliberately: every agent builds on
             # the org default, and a NULL column keeps following that pin
             # as it moves. Only `PATCH /api/agents/{name}/runtime` fills it.
@@ -6904,6 +6906,7 @@ def create_app(
             model_id=cfg.models[0].id,
             skills=[],
             kind=KIND_CONNECTED,
+            cloud_identity=cloud_identity.for_a_new_agent(cfg),
             run_mode=report.run_mode,
             secret_names=secret_names,
             # The route records the repository; `ConnectStep` checks it and
@@ -7309,6 +7312,10 @@ def create_app(
                     "service_account": f"agent-{agent.name}",
                     "gsa_email": gsa_email(f"agent-{agent.name}", cfg.gcp_project),
                     "project": cfg.gcp_project,
+                    # True when nothing runs as that Google account: it is
+                    # the name the cloud's log records for the agent's
+                    # leases (kobo_api.cloud_identity).
+                    "named_only": cloud_identity.runs_direct(agent),
                 },
                 # What this agent runs on, and what the room builds on today
                 # (harness wave, 2026-09-23). Both, because the page's whole

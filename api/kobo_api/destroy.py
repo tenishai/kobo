@@ -47,6 +47,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session, sessionmaker
 
 from kobo_api.clients import ClientError, cabal_enabled
+from kobo_api.cloud_identity import runs_direct
 from kobo_api.config import Config
 from kobo_api.directory import retire_directory
 from kobo_api.kinds import KIND_COMPOSED, is_connected, is_directory
@@ -477,7 +478,22 @@ def _destroy_access(ctx: DestroyCtx) -> str:
     cloud = ctx.clients.cloud
 
     email = cloud.gsa_email_for(f"agent-{agent.name}")
-    if config.model_group:
+    direct = runs_direct(agent)
+    replicated = bool(config.memory_replica_bucket) and not is_connected(agent)
+    # What the grants were made to: the account, or, for an agent whose pod
+    # never ran as it (bab issue 93), its Kubernetes identity. Asked for only
+    # when there is something to take back from it.
+    runs_as = email
+    if direct and (replicated or not gateway_on(config)):
+        runs_as = cloud.workload_principal(agent.name, f"agent-{agent.name}")
+    if direct:
+        removed = False if gateway_on(config) else cloud.revoke_model_access(runs_as, config.vertex_project)
+        what = "model access"
+        # Before the account goes, for the reason below: a deleted account's
+        # membership is a ghost nothing can remove by email.
+        if config.agents_group:
+            cloud.remove_from_group(email, config.agents_group)
+    elif config.model_group:
         removed = cloud.remove_from_group(email, config.model_group)
         what = "membership"
     else:
@@ -494,8 +510,8 @@ def _destroy_access(ctx: DestroyCtx) -> str:
     # `deleted:serviceAccount:...?uid=` members nothing by email can match
     # later (two left behind by johnny-bravo's first lives, 2026-11-06).
     bucket = (
-        cloud.revoke_bucket_prefix_write(email, config.memory_replica_bucket, f"{agent.name}/")
-        if config.memory_replica_bucket and not is_connected(agent) else False
+        cloud.revoke_bucket_prefix_write(runs_as, config.memory_replica_bucket, f"{agent.name}/")
+        if replicated else False
     )
     gone = cloud.delete_gsa(email)
     return (f"{what} removed: {removed}, gateway key revoked: {revoked}, "

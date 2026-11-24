@@ -1585,6 +1585,19 @@ class CloudClient(Protocol):
 
     def bind_workload_identity(self, gsa_email: str, namespace: str, ksa: str) -> None: ...
 
+    def workload_principal(self, namespace: str, ksa: str) -> str:
+        """The name IAM knows a Kubernetes service account by when it is
+        granted directly, with no Google service account between
+        (`principal://...`). The bucket and model methods here take it
+        wherever they take an account's email."""
+        ...
+
+    def allow_token_creator(self, gsa_email: str, member_email: str) -> None:
+        """Let the service account `member_email` ask for tokens as, and
+        through, `gsa_email`: Token Creator on that one account, never on
+        the project."""
+        ...
+
     def add_to_group(self, gsa_email: str, group: str) -> None:
         """Add gsa_email to group; tolerates it already being a member."""
         ...
@@ -1701,13 +1714,22 @@ def bucket_binding_absent(stderr: str) -> bool:
     return "not found" in text and ("binding" in text or "policy" in text)
 
 
+def iam_member(identity: str) -> str:
+    """An IAM member string for what a grant is made to: a service account's
+    email, or a Kubernetes identity's own name (`workload_principal`), which
+    is already one."""
+    return identity if identity.startswith("principal://") else f"serviceAccount:{identity}"
+
+
 class GcloudClient:
     """gcloud-backed CloudClient, scoped to one GCP project."""
 
-    def __init__(self, project: str, runner: CommandRunner | None = None, gcloud: str = "gcloud"):
+    def __init__(self, project: str, runner: CommandRunner | None = None, gcloud: str = "gcloud",
+                 project_number: str = ""):
         self._project = project
         self._runner = runner or CommandRunner()
         self._gcloud = gcloud
+        self._project_number = project_number.strip()
 
     def ensure_gsa(self, name: str) -> str:
         # `name` is always the caller's full "agent-<agent name>" SA id (the
@@ -1754,6 +1776,28 @@ class GcloudClient:
                 "--project", self._project,
                 "--role", "roles/iam.workloadIdentityUser",
                 "--member", member,
+            ]
+        )
+
+    def workload_principal(self, namespace: str, ksa: str) -> str:
+        if not self._project_number:
+            self._project_number = self._runner.run(
+                [self._gcloud, "projects", "describe", self._project, "--format", "value(projectNumber)"]
+            ).strip()
+        if not self._project_number.isdigit():
+            raise ClientError(f"Google Cloud gave no project number for {self._project}")
+        return (
+            f"principal://iam.googleapis.com/projects/{self._project_number}/locations/global/"
+            f"workloadIdentityPools/{self._project}.svc.id.goog/subject/ns/{namespace}/sa/{ksa}"
+        )
+
+    def allow_token_creator(self, gsa_email: str, member_email: str) -> None:
+        self._runner.run(
+            [
+                self._gcloud, "iam", "service-accounts", "add-iam-policy-binding", gsa_email,
+                "--project", self._project,
+                "--role", "roles/iam.serviceAccountTokenCreator",
+                "--member", f"serviceAccount:{member_email}",
             ]
         )
 
@@ -1809,7 +1853,7 @@ class GcloudClient:
         self._runner.run(
             [
                 self._gcloud, "projects", "add-iam-policy-binding", project,
-                "--member", f"serviceAccount:{gsa_email}",
+                "--member", iam_member(gsa_email),
                 "--role", MODEL_ACCESS_ROLE, "--condition=None",
             ]
         )
@@ -1819,7 +1863,7 @@ class GcloudClient:
             self._runner.run(
                 [
                     self._gcloud, "projects", "remove-iam-policy-binding", project,
-                    "--member", f"serviceAccount:{gsa_email}",
+                    "--member", iam_member(gsa_email),
                     "--role", MODEL_ACCESS_ROLE, "--condition=None",
                 ]
             )
@@ -1885,7 +1929,7 @@ class GcloudClient:
         self._bind_bucket_when_the_account_is_visible(
             [
                 self._gcloud, "storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
-                "--member", f"serviceAccount:{gsa_email}",
+                "--member", iam_member(gsa_email),
                 "--role", "roles/storage.objectAdmin",
                 "--condition", f"expression={condition_expression},title={condition_title}",
             ]
@@ -1918,7 +1962,7 @@ class GcloudClient:
         self._bind_bucket_when_the_account_is_visible(
             [
                 self._gcloud, "storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
-                "--member", f"serviceAccount:{gsa_email}",
+                "--member", iam_member(gsa_email),
                 "--role", "roles/storage.legacyBucketReader",
                 "--condition", "None",
             ]
@@ -1956,7 +2000,7 @@ class GcloudClient:
                 self._runner.run(
                     [
                         self._gcloud, "storage", "buckets", "remove-iam-policy-binding", f"gs://{bucket}",
-                        "--member", f"serviceAccount:{gsa_email}",
+                        "--member", iam_member(gsa_email),
                         "--role", role,
                         "--condition", condition,
                     ]
@@ -5849,7 +5893,7 @@ class Clients:
                 installation_writes=installation_writes,
             ),
             gojira=HttpxGojiraClient(config.gojira_url, token=config.gojira_token),
-            cloud=GcloudClient(config.gcp_project, runner=runner),
+            cloud=GcloudClient(config.gcp_project, runner=runner, project_number=config.gcp_project_number),
             agent=KubectlAgentClient(),
             kubectl=kubectl,
             image=VertexImageClient(

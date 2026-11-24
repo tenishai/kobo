@@ -65,7 +65,11 @@ from kobo_api.clients import (
     _build_task_envelope,
     _extract_relay_reply,
     cabal_enabled,
-    gsa_email,
+)
+from kobo_api.cloud_identity import (
+    SERVICEACCOUNT_YAML_TEMPLATE,  # noqa: F401  (the name older callers import from here)
+    runs_direct,
+    service_account_manifest,
 )
 from kobo_api.colleagues import deliver_pass
 from kobo_api.composer import (
@@ -1629,7 +1633,14 @@ class AccessStep:
     membership, or the Vertex role directly when the room has no group),
     (resilience arc, Task 14) write access to its own agent-memory replica
     prefix when the room has one configured, and, with the permission
-    service on and GitHub connected, Read on its own repository (`_own_repository`)."""
+    service on and GitHub connected, Read on its own repository (`_own_repository`).
+
+    An agent whose pod does not run as its Google account
+    (`cloud_identity.runs_direct`, bab issue 93) gets the same things by
+    another road: the account is made but bound to nothing, the permission
+    service is allowed to ask for tokens through it, it joins the room's
+    agents group, and the memory prefix is granted to the agent's Kubernetes
+    identity itself."""
 
     name = "access"
     label = "Access"
@@ -1641,7 +1652,18 @@ class AccessStep:
 
         gsa_name = f"agent-{agent.name}"
         email = cloud.ensure_gsa(gsa_name)
-        cloud.bind_workload_identity(email, namespace=agent.name, ksa=gsa_name)
+        if runs_direct(agent):
+            # Nothing runs as the account, so no workload identity binding:
+            # that binding is exactly what would let the pod ask for a
+            # connection's token itself. `runs_as` is the pod's own identity.
+            runs_as = cloud.workload_principal(agent.name, gsa_name)
+            if config.bab_service_account:
+                cloud.allow_token_creator(email, config.bab_service_account)
+            if config.agents_group:
+                cloud.add_to_group(email, config.agents_group)
+        else:
+            cloud.bind_workload_identity(email, namespace=agent.name, ksa=gsa_name)
+            runs_as = email
         # Model access: through the org's group where there is one (what a
         # Workspace org has: one grant on the group, every agent joins it),
         # or granted on the Vertex project directly where there is not — a
@@ -1653,12 +1675,14 @@ class AccessStep:
         # role, so nothing is granted to the agent for models.
         if gateway_on(config):
             granted = "model access through the room's model gateway"
-        elif config.model_group:
+        elif config.model_group and not runs_direct(agent):
             cloud.add_to_group(email, config.model_group)
             granted = f"granted model access to {email}"
         else:
-            cloud.grant_model_access(email, config.vertex_project)
-            granted = f"granted model access to {email}"
+            # Also a direct agent in a room whose gateway was turned off
+            # after it was born: a Kubernetes identity cannot join a group.
+            cloud.grant_model_access(runs_as, config.vertex_project)
+            granted = f"granted model access to {runs_as}"
         # Connected agents get no memory prefix (design 2026-09-21): the
         # room replicates the memory its OWN runtime keeps, and it has not
         # read a team's code, so it has nothing to say about whether that
@@ -1672,7 +1696,7 @@ class AccessStep:
             # actually write what it's configured to replicate to, and
             # never anything outside its own agent's namespace.
             cloud.grant_bucket_prefix_write(
-                email, config.memory_replica_bucket, f"{agent.name}/"
+                runs_as, config.memory_replica_bucket, f"{agent.name}/"
             )
         return granted + self._own_repository(ctx)
 
@@ -1727,18 +1751,8 @@ class AccessStep:
 # same reason the real agent-hello repo's serviceaccount.yaml does: it's the
 # human-readable signal, on top of the kustomization registration itself,
 # that gojira's generator will never overwrite or drop these two files.
-SERVICEACCOUNT_YAML_TEMPLATE = """\
-# App-authored (preserved by the generator): the agent's identity.
-# Workload Identity binds this KSA to the agent's GSA, whose group
-# membership grants model access.
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: agent-{name}
-  namespace: {name}
-  annotations:
-    iam.gke.io/gcp-service-account: {gsa_email}
-"""
+# The service account file itself has two shapes, one per way an agent is
+# known to Google Cloud: `kobo_api.cloud_identity.service_account_manifest`.
 
 PVC_YAML_TEMPLATE = """\
 # App-authored (preserved by the generator): the agent's memory volume.
@@ -1847,12 +1861,7 @@ def _write_service_account(k8s_base: Path, agent, config) -> None:
     skip it: gojira's generator preserves registered entries, it does not
     scan the directory (see `_register_resources`).
     """
-    # gsa_email() is prefix-agnostic — build the full "agent-<name>" id
-    # here, same as AccessStep does for cloud.ensure_gsa().
-    sa_email = gsa_email(f"agent-{agent.name}", config.gcp_project)
-    (k8s_base / "serviceaccount.yaml").write_text(
-        SERVICEACCOUNT_YAML_TEMPLATE.format(name=agent.name, gsa_email=sa_email)
-    )
+    (k8s_base / "serviceaccount.yaml").write_text(service_account_manifest(agent, config))
 
 
 # The two direct-Vertex variables. Written only when the room has no model
@@ -2264,9 +2273,7 @@ def connected_seed(agent, config) -> dict:
         # The platform refuses a key with nothing under it.
         "needs": {key: value for key, value in needs.items() if value not in ({}, [], None, "")},
         "base_files": {
-            "serviceaccount.yaml": SERVICEACCOUNT_YAML_TEMPLATE.format(
-                name=agent.name, gsa_email=gsa_email(f"agent-{agent.name}", config.gcp_project)
-            ),
+            "serviceaccount.yaml": service_account_manifest(agent, config),
             CONNECTED_STORAGE_FILE: CONNECTED_STORAGE_YAML_TEMPLATE.format(name=agent.name),
         },
         "note": CONNECTED_SEED_NOTE.format(
@@ -2374,9 +2381,7 @@ def own_account(clone_dir: Path, agent, config) -> OwnAccount:
     readable = named and isinstance(declared, str) and bool(_SERVICE_ACCOUNT_NAME.fullmatch(declared))
 
     sa_path = clone_dir / "k8s" / "base" / "serviceaccount.yaml"
-    ours = SERVICEACCOUNT_YAML_TEMPLATE.format(
-        name=agent.name, gsa_email=gsa_email(expected_name, config.gcp_project)
-    )
+    ours = service_account_manifest(agent, config)
     return OwnAccount(
         named=named,
         name=declared if readable else None,

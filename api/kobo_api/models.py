@@ -144,6 +144,12 @@ class Agent(Base):
     # release so a room rolling forward never has an older copy of itself
     # selecting a column that is gone; drop it in the release after.
     service_account: Mapped[str | None] = mapped_column(String(253), nullable=True)
+    # How the agent is known to Google Cloud (kobo_api.cloud_identity). NULL:
+    # its pod runs as its Google service account. `direct`: the pod is granted
+    # what it needs on its Kubernetes identity and nothing runs as the Google
+    # account, which is then the name the cloud's log records for its leases.
+    # Set once, at create, and never moved by a retry or a re-wire.
+    cloud_identity: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Connected agents only: the names of Kubernetes Secrets the owner
     # creates in the agent's own namespace, passed through to the deploy
     # platform so the pod mounts them. The room never holds their contents.

@@ -6,6 +6,10 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Google Cloud's own logs can name the agent.** A room that names the Google identity its permission service runs as (`bab_service_account`) makes every agent created from then on run as its Kubernetes identity alone. Its Google account `agent-<name>` is still made, but nothing runs as it: the permission service asks for the agent's Google Cloud leases through it, so Cloud Audit Logs record which agent made each call (bab issue 93; needs the permission service release that carries `BAB_GCP_AGENT_ACCOUNT`). The agent's memory copy is granted to its Kubernetes identity directly, the room grants the permission service Token Creator on the account, and the account joins `agents_group` when one is named, so a connection's admin grants that group once. Agents created before the setting are not moved, and a room without it, or without the model gateway, runs every agent as its Google account, as before. The Access tab's identity line says which of the two an agent is. New settings: `bab_service_account`, `agents_group`, `gcp_project_number`.
+
 ## [0.3.84] - 2026-11-24
 
 The tag v0.3.83 exists and published nothing: its release run ran out of disk during the vulnerability scan. This release is the same changes, with the release job clearing room first.
