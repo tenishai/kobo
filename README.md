@@ -125,7 +125,6 @@ the room enforces; [ROADMAP.md](ROADMAP.md) is the plan.
 - [docs/operating.md](docs/operating.md): running the room, for operators
 - [docs/adding-a-vendor.md](docs/adding-a-vendor.md): adding an integration
 - [ARCHITECTURE.md](ARCHITECTURE.md) and [docs/arch/](docs/arch/): a map of the code, for people and coding agents
-- [docs/superpowers/specs/](docs/superpowers/specs/) and [plans/](docs/superpowers/plans/): the design record, in order
 - [RELEASING.md](RELEASING.md) and [CHANGELOG.md](CHANGELOG.md): releases
 - [TESTING.md](TESTING.md): how we test
 - [SECURITY.md](SECURITY.md): how to report a vulnerability

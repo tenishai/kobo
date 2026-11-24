@@ -1,8 +1,8 @@
 # Kobo Roadmap
 
-The phased plan at a glance. Details live in the
-[design document](docs/superpowers/specs/2026-08-01-cortex-agent-assembly-poc-design.md) and the
-[Phase A design](docs/superpowers/specs/2026-08-03-phase-a-org-catalogs-design.md).
+The phased plan at a glance. The dated designs this page names are no longer in the tree;
+they are in the history, last at
+[v0.3.82](https://github.com/tenishai/kobo/tree/v0.3.82/docs/superpowers).
 
 ## P0 — Foundations *(shipped)*
 
@@ -51,8 +51,8 @@ delivery and storage backends for rooms with no cluster or object store (ergon).
   Services, Integrations (AWS as a role, no key), Connections (each agent's gateway lane),
   Roles, People and Audit reading and writing the room (see the CHANGELOG). Still to come:
   per-agent cloud profiles inside an account's read-only ceiling, and roles mirrored into
-  bab (design in `docs/superpowers/specs/2026-10-18-one-runtime-and-admin-panel-design.md` and
-  `docs/superpowers/specs/2026-10-25-cloud-access-design.md`).
+  bab (the 2026-10-18 one-runtime-and-admin-panel design and the 2026-10-25 cloud-access
+  design).
 - **Readiness that reflects access** — the card says when an agent is missing a gateway
   grant, a repository or a dispatch pair, and who can approve it (issues #10, #130).
 
