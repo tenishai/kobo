@@ -14,7 +14,7 @@ import importlib.util
 import json
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -5319,6 +5319,63 @@ def test_set_model_through_the_gateway_rewrites_the_model_block_and_delivers_a_k
     kubectl = client.app.state.clients.kubectl
     assert kubectl.secrets[("clio", "clio-models")] == {"MODELS_GATEWAY_KEY": minted["key"]}
     assert minted["key"] not in response.text and minted["key"] not in github.agent_yaml
+
+
+def _metered(spend, calls, tokens_in=0, tokens_out=0, failed=0):
+    return {"spend": spend, "api_requests": calls, "failed_requests": failed, "successful_requests": calls - failed,
+            "prompt_tokens": tokens_in, "completion_tokens": tokens_out, "cache_read_input_tokens": 0}
+
+
+def test_spend_reads_the_gateways_days_by_agent_and_says_when_nothing_is_metered(tmp_path):
+    """Wire shape (kobo#556): the agent page and the admin panel read model
+    use from the gateway's daily activity, matched on the key alias
+    `agent:<name>`. An agent the room no longer has keeps its line, marked
+    removed; a key the room did not mint is summed apart; a day outside the
+    window is left out; and a room with no gateway answers `measured: false`
+    instead of zeros."""
+    today = datetime.now(UTC).date()
+    day = lambda back: (today - timedelta(days=back)).isoformat()
+    clio = {"metadata": {"key_alias": f"agent:{AGENT_NAME}"}}
+    gone = {"metadata": {"key_alias": "agent:gone"}}
+    hand = {"metadata": {"key_alias": "by-hand"}}
+    gateway = FakeModelsGateway(activity=[
+        {"date": day(1), "breakdown": {
+            "api_keys": {"h1": {**clio, "metrics": _metered(1.25, 10, 1000, 200, failed=1)},
+                         "h2": {**gone, "metrics": _metered(3.0, 4)},
+                         "h3": {**hand, "metrics": _metered(0.5, 2)}},
+            "models": {"claude-sonnet": {"api_key_breakdown": {"h1": {**clio, "metrics": _metered(1.0, 8)},
+                                                                  "h2": {**gone, "metrics": _metered(3.0, 4)}}},
+                       "gemini-flash": {"api_key_breakdown": {"h1": {**clio, "metrics": _metered(0.25, 2)}}}}}},
+        {"date": day(0), "breakdown": {
+            "api_keys": {"h9": {**clio, "metrics": _metered(0.75, 5, 500, 100)}},
+            "models": {"claude-sonnet": {"api_key_breakdown": {"h9": {**clio, "metrics": _metered(0.75, 5)}}}}}},
+        {"date": day(40), "breakdown": {"api_keys": {"h1": {**clio, "metrics": _metered(99.0, 99)}}, "models": {}}},
+    ])
+    client, headers, session_factory = _models_room(tmp_path, gateway=gateway)
+    _seed_agent__api_model_change(session_factory)
+
+    mine = client.get(f"/api/agents/{AGENT_NAME}/spend", headers=headers).json()
+    assert mine["measured"] is True and mine["days"] == 30
+    assert mine["total"] == {"cost": 2.0, "calls": 15, "failed": 1, "input_tokens": 1500, "output_tokens": 300, "cached_tokens": 0}
+    assert [(d["date"], d["cost"], d["calls"]) for d in mine["daily"]] == [(day(1), 1.25, 10), (day(0), 0.75, 5)]
+    assert [(m["model"], m["cost"], m["calls"]) for m in mine["models"]] == [("claude-sonnet", 1.75, 13), ("gemini-flash", 0.25, 2)]
+    assert client.get(f"/api/agents/{AGENT_NAME}/spend?days=7", headers=headers).json()["days"] == 7
+    assert client.get(f"/api/agents/{AGENT_NAME}/spend?days=12", headers=headers).json()["days"] == 30
+    assert client.get("/api/agents/nobody/spend", headers=headers).status_code == 404
+
+    room = client.get("/api/admin/spend", headers=headers).json()
+    assert [(a["agent"], a["cost"], a["calls"], a["removed"]) for a in room["agents"]] == [
+        ("gone", 3.0, 4, True), (AGENT_NAME, 2.0, 15, False)]
+    assert (room["total"]["cost"], room["total"]["calls"]) == (5.5, 21)
+    assert (room["other"]["cost"], room["other"]["calls"]) == (0.5, 2)
+
+    gateway.fails = True
+    assert client.get("/api/admin/spend", headers=headers).status_code == 502
+
+    off, off_headers, off_factory = _models_room(tmp_path / "off", gateway=None, models_gateway_url="")
+    _seed_agent__api_model_change(off_factory)
+    assert off.get(f"/api/agents/{AGENT_NAME}/spend", headers=off_headers).json() == {"measured": False, "days": 30}
+    assert off.get("/api/admin/spend", headers=off_headers).json() == {"measured": False, "days": 30}
 
 
 def test_the_guardrails_list_says_where_each_rule_came_from(tmp_path, monkeypatch):

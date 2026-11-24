@@ -47,6 +47,7 @@ from kobo_api import (
     gateway_prs,
     github_access,
     model_providers,
+    model_spend,
     room_credentials,
     room_models,
     slack_relay,
@@ -4156,6 +4157,53 @@ def create_app(
         # The Models row (kobo#390) reads the providers from the rows.
         models = model_providers.gateway_view(session, cfg, app.state.clients) if model_providers.gateway_on(cfg) else None
         return JSONResponse({"addons": addon_cards(cfg, app.state.clients, models=models)})
+
+    def _spend_rows(days: int) -> tuple[list[dict] | None, int, JSONResponse | None]:
+        """The gateway's metered days for a spend read, with the window it
+        covers. Rows are None when the room has no model gateway: nothing
+        is metered, and both spend routes say so rather than show zeros."""
+        days = days if days in model_spend.WINDOWS else model_spend.DEFAULT_WINDOW
+        gateway = getattr(app.state.clients, "models_gateway", None) if app.state.clients is not None else None
+        if not model_providers.gateway_on(app.state.config) or gateway is None:
+            return None, days, None
+        try:
+            return model_spend.read_rows(gateway, days, datetime.now(UTC).date()), days, None
+        except ClientError as exc:
+            log.warning("spend read failed: %s", exc)
+            return None, days, JSONResponse({"error": "couldn't read model use just now. Try again."}, status_code=502)
+
+    @app.get("/api/agents/{name}/spend")
+    def agent_spend(
+        name: str, request: Request, days: int = model_spend.DEFAULT_WINDOW, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """What this agent's model calls cost over the last `days` days, by
+        day and by model, as the model gateway metered them (issue #556)."""
+        agent = _visible_agent_or_404(session, request, name)
+        if isinstance(agent, JSONResponse):
+            return agent
+        rows, days, failed = _spend_rows(days)
+        if failed is not None:
+            return failed
+        if rows is None:
+            return JSONResponse({"measured": False, "days": days})
+        return JSONResponse({"measured": True, "days": days, **model_spend.agent_spend(rows, agent.name)})
+
+    @app.get("/api/admin/spend")
+    def admin_spend(
+        request: Request, days: int = model_spend.DEFAULT_WINDOW, session: Session = Depends(get_session)  # noqa: B008
+    ) -> JSONResponse:
+        """The admin panel's Usage pane: the room's model use over the last
+        `days` days, one line per agent (issue #556)."""
+        blocked = _admin_panel_gate(request)
+        if blocked is not None:
+            return blocked
+        rows, days, failed = _spend_rows(days)
+        if failed is not None:
+            return failed
+        if rows is None:
+            return JSONResponse({"measured": False, "days": days})
+        names = {name for (name,) in session.query(Agent.name).all()}
+        return JSONResponse({"measured": True, "days": days, **model_spend.room_spend(rows, names)})
 
     @app.get("/api/admin/people")
     def admin_people(request: Request) -> JSONResponse:

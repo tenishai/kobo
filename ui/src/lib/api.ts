@@ -1841,6 +1841,62 @@ export async function fetchAdminRoom(): Promise<AdminRoom> {
   return parse<AdminRoom>(res);
 }
 
+/** Model use over a window, as the model gateway metered it (issue #556).
+ * `cost` is the gateway's estimate in US dollars, not the cloud bill. */
+export type SpendTotals = {
+  cost: number;
+  calls: number;
+  failed: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+};
+
+/** `measured: false` when the room has no model gateway: nothing is
+ * metered, and the page says so instead of showing zeros. */
+export type AgentSpend =
+  | { measured: false; days: number }
+  | {
+      measured: true;
+      days: number;
+      total: SpendTotals;
+      daily: ({ date: string } & SpendTotals)[];
+      models: ({ model: string } & SpendTotals)[];
+    };
+
+/** The room's model use, one line per agent. `removed` marks an agent the
+ * room no longer has; `other` is calls made with a key no agent holds. */
+export type RoomSpend =
+  | { measured: false; days: number }
+  | {
+      measured: true;
+      days: number;
+      total: SpendTotals;
+      other: SpendTotals;
+      agents: ({ agent: string; removed: boolean } & SpendTotals)[];
+    };
+
+export async function fetchAgentSpend(name: string, days: number): Promise<AgentSpend> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/spend?days=${days}`);
+  return parse<AgentSpend>(res);
+}
+
+export async function fetchRoomSpend(days: number): Promise<RoomSpend> {
+  const res = await fetch(`/api/admin/spend?days=${days}`);
+  return parse<RoomSpend>(res);
+}
+
+/** "$1.23", or "under $0.01" for an amount that would print as zero. */
+export function formatCost(cost: number): string {
+  if (cost > 0 && cost < 0.01) return "under $0.01";
+  return `$${cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** "950", "12.4K", "3.1M": a token or call count short enough for a cell. */
+export function formatCount(n: number): string {
+  return n.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 1 });
+}
+
 export async function fetchAdminAddons(): Promise<AdminAddon[]> {
   const res = await fetch("/api/admin/addons");
   const body = await parse<{ addons: AdminAddon[] }>(res);

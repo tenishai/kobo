@@ -171,6 +171,8 @@ import {
   fetchActivity,
   fetchAgentChecks,
   fetchAdminAddons,
+  fetchAgentSpend,
+  fetchRoomSpend,
   type AuditAgentsFilters,
   type AuditFilters,
   fetchAdminAudit,
@@ -884,6 +886,25 @@ export function adminAddonsQuery() {
   return queryOptions({
     queryKey: ["admin", "addons"] as const,
     queryFn: fetchAdminAddons,
+    staleTime: 60_000,
+  });
+}
+
+/** Model use (issue #556). Keys: ["agents", name, "spend", days] on the
+ * agent page, ["admin", "spend", days] on the panel's Usage page. The
+ * gateway meters as calls happen, so a minute is fresh enough. */
+export function agentSpendQuery(name: string, days: number) {
+  return queryOptions({
+    queryKey: ["agents", name, "spend", days] as const,
+    queryFn: () => fetchAgentSpend(name, days),
+    staleTime: 60_000,
+  });
+}
+
+export function roomSpendQuery(days: number) {
+  return queryOptions({
+    queryKey: ["admin", "spend", days] as const,
+    queryFn: () => fetchRoomSpend(days),
     staleTime: 60_000,
   });
 }

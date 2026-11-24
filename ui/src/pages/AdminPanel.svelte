@@ -10,11 +10,13 @@
   import OverviewPane from "../components/admin/OverviewPane.svelte";
   import PeoplePane from "../components/admin/PeoplePane.svelte";
   import ServicesPane from "../components/admin/ServicesPane.svelte";
+  import UsagePane from "../components/admin/UsagePane.svelte";
   import RolesPane from "../components/admin/RolesPane.svelte";
   import ReviewPane from "../components/admin/ReviewPane.svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import {
     Brain,
+    ChartBar,
     ClockCounterClockwise,
     Graph,
     Plugs,
@@ -30,6 +32,7 @@
     services: Stack,
     integrations: Plugs,
     models: Brain,
+    usage: ChartBar,
     connections: Graph,
     review: SealCheck,
     roles: UserGear,
@@ -50,6 +53,7 @@
     { id: "services", label: "Services" },
     { id: "integrations", label: "Integrations" },
     { id: "models", label: "Models" },
+    { id: "usage", label: "Usage" },
     { id: "connections", label: "Connections" },
     { id: "review", label: "Review" },
     { id: "roles", label: "Roles" },
@@ -158,6 +162,8 @@
       <IntegrationsPane {item} {accessOn} />
     {:else if pane === "models"}
       <ModelsPane />
+    {:else if pane === "usage"}
+      <UsagePane />
     {:else if pane === "connections"}
       {#if accessOn}
         <AgentConnectionsPane {item} />
