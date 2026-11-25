@@ -1,7 +1,7 @@
 """The room's audit log (issue #316): one table, one writer, one reader.
 
 Every mutating route and every background decision calls `record` with a
-sentence built server-side ("kgreiner created agent ward"), so the Audit
+sentence built server-side ("sam created agent ward"), so the Audit
 page reads like a log and not like a list of panel edits. The rules here:
 
 - **The actor comes from the request** when there is one: the signed-in
@@ -170,7 +170,7 @@ def agent_actor(name: str) -> str:
 
 def who(request: Request | None) -> str:
     """The actor's short name for a sentence: the email's local part
-    ("kgreiner created agent ward"), or `the room`."""
+    ("sam created agent ward"), or `the room`."""
     actor, kind = actor_from(request)
     return actor.split("@", 1)[0] if kind == ACTOR_PERSON else "the room"
 

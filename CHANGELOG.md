@@ -6,6 +6,11 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- The deploy workflow an old install generated in this repository (`gojira-ci.yaml`). Nothing
+  ran it, and it was the one workflow that read its runner from a variable.
+
 ## [0.3.86] - 2026-11-25
 
 ### Added
