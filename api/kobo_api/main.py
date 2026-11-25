@@ -2156,7 +2156,7 @@ def _conversation_has_participant(row: dict, agent: str) -> bool:
 
 def _caller_display(caller: str) -> str:
     """Strip a caller's namespace prefix ("agent:iris" -> "iris",
-    "operator:kgreiner@example.com" -> "kgreiner@example.com") for terminal
+    "operator:sam@example.com" -> "sam@example.com") for terminal
     display -- a raw caller with no prefix at all passes through unchanged.
     Same convention `ColleagueConversations.svelte`'s own (now retired)
     `callerLabel` used: the prefix is what `_conversation_has_participant`

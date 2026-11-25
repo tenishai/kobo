@@ -4262,7 +4262,7 @@ STORE_NOW = datetime(2026, 9, 16, tzinfo=UTC)
 
 def _cand(text, **over):
     base = {"content": text, "kind": "fact", "source": "Slack thread", "evidence": "",
-            "said_by": "kgreiner", "replaces": None, "shape": "v2"}
+            "said_by": "sam", "replaces": None, "shape": "v2"}
     return {**base, **over}
 
 

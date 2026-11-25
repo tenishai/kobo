@@ -18,7 +18,7 @@ const LEARNINGS = {
       kind: "fact",
       source: "Slack thread, Sep 1",
       evidence: "gate is manual now",
-      said_by: "kgreiner",
+      said_by: "sam",
       status: "pending",
       decided_by: null,
       created_at: "2026-09-01T05:00:00",
@@ -126,7 +126,7 @@ describe("LearningsPanel", () => {
     });
 
     expect(await screen.findByText("the canary gate is manual")).not.toBeNull();
-    expect(screen.getByText("kgreiner · Slack thread, Sep 1")).not.toBeNull();
+    expect(screen.getByText("sam · Slack thread, Sep 1")).not.toBeNull();
     // Legacy row (said_by: null) falls back to just its source.
     expect(screen.getByText("the deploy window is nine to five")).not.toBeNull();
     expect(screen.getByText("Slack thread, Sep 1")).not.toBeNull();

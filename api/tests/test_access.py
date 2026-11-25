@@ -4460,7 +4460,7 @@ CONVERSATIONS_FIXTURE = [
         "task_id": "t-2",
         "target_agent": "clio",
         "target_generation": 1,
-        "caller_agent": "operator:kgreiner@example.com",
+        "caller_agent": "operator:sam@example.com",
         "state": "completed",
         "cabal_escalated_from": None,
         "created_at": "2026-08-19T11:00:00Z",
@@ -4546,7 +4546,7 @@ _THREAD_ROW = {
     "task_id": "t-thread",
     "target_agent": "clio",
     "target_generation": 1,
-    "caller_agent": "operator:kgreiner@example.com",
+    "caller_agent": "operator:sam@example.com",
     "state": "completed",
     "cabal_escalated_from": None,
     "created_at": "2026-08-19T13:00:00Z",
@@ -4694,7 +4694,7 @@ def test_list_all_true_excludes_a_thread_tagged_conversation(session_factory__ap
         conversations_result=CONVERSATIONS_FIXTURE + [_THREAD_ROW],
         conversation_results={
             "t-thread": _thread_tagged_detail(
-                "t-thread", target_agent="clio", caller_agent="operator:kgreiner@example.com"
+                "t-thread", target_agent="clio", caller_agent="operator:sam@example.com"
             )
         },
     )
