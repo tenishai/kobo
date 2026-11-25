@@ -136,6 +136,7 @@ describe("AdminPanel", () => {
     terraform: 'resource "google_project_iam_member" "kobo_access" {}',
     vertex_default_location: "global",
     checked: true,
+    agents: { on: false, account: "access@example.iam.gserviceaccount.com", group: "", gcloud: "" },
   };
 
   beforeEach(() => {

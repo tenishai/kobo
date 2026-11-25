@@ -4778,7 +4778,7 @@ def create_app(
         try:
             return JSONResponse(admin_integrations_flow.gcp_setup(
                 app.state.clients, integration_id=safe_id, packs=wanted, actor=_bab_actor(request),
-                mode=mode, target=safe_target))
+                mode=mode, target=safe_target, config=request.app.state.config))
         except admin_integrations_flow.ConnectRefused as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
 

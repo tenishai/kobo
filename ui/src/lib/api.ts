@@ -1532,6 +1532,10 @@ export type AdminGcpSetup = {
   vertex_default_location: string;
   /** The room can ask the permission service to read the project before saving it. */
   checked: boolean;
+  /** The room's own step, once whatever is connected: the group every agent's account
+   * joins and the grant it needs on `account`, so Google Cloud's log names each agent.
+   * `on`: the room has named the permission service's account; `group`: "" when unset. */
+  agents: { on: boolean; account: string; group: string; gcloud: string };
 };
 
 export type GcpSetupRequest = {

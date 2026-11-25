@@ -152,6 +152,25 @@
       </p>
     </section>
 
+    {#if s.agents.on}
+      <section class="block">
+        <h3 class="step__title">For the room, once: Google Cloud's logs name each agent</h3>
+        {#if s.agents.group}
+          <p class="step__text">
+            Each new agent's account joins <code>{s.agents.group}</code>. Grant that group once on the room's identity, and
+            Google Cloud's own logs record which agent a call was for. Not needed again for the next project or organization.
+          </p>
+        {:else}
+          <p class="hint fail">
+            This room has no agents group yet, so Google Cloud's logs do not name its agents. Make a Google group, let the
+            room's own account add members to it, name it as <code>agents_group</code> in the room's settings, then grant it:
+          </p>
+        {/if}
+        {@render code("agents", s.agents.gcloud, "Copy command")}
+        <p class="hint">Until the grant is in place an agent's access works the same; the logs name only the room.</p>
+      </section>
+    {/if}
+
     {#if mode === "parent"}
       <label class="field">
         <span>Organization or folder</span>

@@ -267,6 +267,16 @@ def gcloud_snippet(email: str, target: str, roles: list[str], mode: str = GCP_PR
     return "".join(f"{head} \\\n  --member={member} --role={role} --condition=None\n" for role in roles)
 
 
+def gcp_agents_group_snippet(account: str, group: str) -> str:
+    """The one grant that puts each agent in Google Cloud's own log (bab issue 93): the
+    room's agents group may ask for tokens as the permission service's account, so a
+    lease goes through the agent's account and back. Once per room, not per project."""
+    return (
+        f"gcloud iam service-accounts add-iam-policy-binding {account or '<identity email>'} \\\n"
+        f"  --member=group:{group or '<agents group>'} --role=roles/iam.serviceAccountTokenCreator\n"
+    )
+
+
 def gcp_terraform_snippet(email: str, target: str, roles: list[str], mode: str = GCP_PROJECT_MODE) -> str:
     """`google_<kind>_iam_member` per role, from one local list, so the owner's
     pipeline reviews the roles once and binds them to the one member."""
