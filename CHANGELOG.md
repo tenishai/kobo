@@ -6,6 +6,8 @@ All notable changes to kobo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.86] - 2026-11-25
+
 ### Added
 
 - **The Connect Google Cloud page carries the room's one-time step for agents named in Google Cloud's logs.** Where the room names the identity its permission service runs as, the page shows the agents group every new agent's account joins and the one grant that group needs on that identity (Token Creator), as a command to copy. A room with no agents group set is told so, with what to make and where to name it, so a new room's set-up does not miss it.
