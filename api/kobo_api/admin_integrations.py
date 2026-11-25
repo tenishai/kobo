@@ -1533,14 +1533,16 @@ def vertex_models_url(project: str, location: str) -> str:
 
 
 def gcp_setup(clients: Clients | None, *, integration_id: str, packs: list[str] | None, actor: str = "operator@room",
-              mode: str = cloud_access.GCP_PROJECT_MODE, target: str = "") -> dict[str, Any]:
+              mode: str = cloud_access.GCP_PROJECT_MODE, target: str = "", config: Config | None = None) -> dict[str, Any]:
     """Everything the Connect Google Cloud page shows (kobo#390): the identity to grant
     (the permission service's service account, as it reports itself), the packs, and
     the roles bound three ways: `gcloud` commands, Terraform, and the plain list. `mode`
     is `parent` (an organization, or a folder, whose readable projects connect under it;
     the default scope since kobo#405) or `project` (one project); `target` is the id
     typed so far, so the snippets read whole. The models pack rides either scope: on an
-    organization the one grant covers the Vertex AI project too."""
+    organization the one grant covers the Vertex AI project too. `agents` is the room's
+    own step, done once whatever is connected: the agents group and the grant it needs
+    on the permission service's account, so Google Cloud's log names each agent."""
     bab = _bab(clients)
     mode = cloud_access.GCP_PARENT_MODE if mode == cloud_access.GCP_PARENT_MODE else cloud_access.GCP_PROJECT_MODE
     identity: dict[str, str] | None = None
@@ -1556,9 +1558,17 @@ def gcp_setup(clients: Clients | None, *, integration_id: str, packs: list[str] 
     chosen = cloud_access.gcp_chosen_packs(packs)
     roles = cloud_access.gcp_roles(chosen)
     email = (identity or {}).get("email", "")
+    account = (config.bab_service_account if config else "") or email
+    group = config.agents_group if config else ""
     return {
         "version": cloud_access.version(),
         "mode": mode,
+        "agents": {
+            "on": bool(config and config.bab_service_account),
+            "account": account,
+            "group": group,
+            "gcloud": cloud_access.gcp_agents_group_snippet(account, group),
+        },
         "principal": "access",
         "identity": identity,
         "identity_note": identity_note,

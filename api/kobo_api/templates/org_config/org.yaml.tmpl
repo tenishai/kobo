@@ -44,8 +44,10 @@ bab_url: __KOBO_BAB_URL__
 # service asks for leases through, so Google Cloud's log records the agent.
 # Empty = every agent runs as its Google account.
 bab_service_account: __KOBO_BAB_SERVICE_ACCOUNT__
-# A Google group those agents' accounts join, so a connection's admin grants
-# Token Creator to the group once. Empty = they join nothing.
+# A Google group those agents' accounts join. The room's account must be able
+# to add members to it, and the group is granted Token Creator once on the
+# account above (Admin > Integrations > Google Cloud shows the command).
+# Empty = they join nothing, and Google Cloud's log does not name them.
 agents_group: __KOBO_AGENTS_GROUP__
 # gcp_project's number. Empty = the room asks Google Cloud for it.
 gcp_project_number: __KOBO_GCP_PROJECT_NUMBER__

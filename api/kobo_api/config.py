@@ -612,10 +612,12 @@ class Config(BaseModel):
     # identity Token Creator on each such agent's account. Empty: every agent
     # runs as its Google account, as before.
     bab_service_account: str = ""
-    # A Google group every such agent's account joins, so the admin of a
-    # connection's service account grants Token Creator once, to the group,
-    # not once per agent. Org-settable; empty joins nothing. Only an account
-    # nothing runs as is ever added.
+    # A Google group every such agent's account joins, so Token Creator is
+    # granted once, to the group, not once per agent: on the permission
+    # service's own account (what puts the agent in the log for a connection
+    # with no account of its own) and on any account a connection names. The
+    # Connect Google Cloud page shows the grant. Org-settable; empty joins
+    # nothing. Only an account nothing runs as is ever added.
     agents_group: str = ""
     # `gcp_project`'s number, which a Kubernetes identity's own name in IAM
     # carries. Org-settable; empty asks Google Cloud for it when first needed.

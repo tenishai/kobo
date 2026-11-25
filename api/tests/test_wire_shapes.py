@@ -2862,6 +2862,17 @@ def test_the_connect_google_cloud_page_renders_the_identity_and_the_pack_three_w
     assert page["gcloud"].count("add-iam-policy-binding") == len(page["roles"])
     assert 'resource "google_project_iam_member" "kobo_access"' in page["terraform"] and 'project = "example-prod-1234"' in page["terraform"]
     assert all(f'"{r}",' in page["terraform"] for r in page["roles"])
+    # The room's own step: off until the room names the permission service's account,
+    # then the grant names the agents group, or a placeholder where none is set.
+    assert page["agents"]["on"] is False and page["agents"]["account"] == "access@example.iam.gserviceaccount.com"
+    client.app.state.config = client.app.state.config.model_copy(update={"bab_service_account": "access@example.iam.gserviceaccount.com"})
+    ungrouped = client.get("/api/admin/integrations/gcp/setup?mode=project", headers=headers).json()["agents"]
+    assert ungrouped["on"] is True and ungrouped["group"] == "" and "--member=group:<agents group> " in ungrouped["gcloud"]
+    client.app.state.config = client.app.state.config.model_copy(update={"agents_group": "agents@example.com"})
+    grouped = client.get("/api/admin/integrations/gcp/setup?mode=project", headers=headers).json()["agents"]
+    assert grouped["group"] == "agents@example.com" and grouped["gcloud"] == (
+        "gcloud iam service-accounts add-iam-policy-binding access@example.iam.gserviceaccount.com \\\n"
+        "  --member=group:agents@example.com --role=roles/iam.serviceAccountTokenCreator\n")
     # A folder: the folder resource; the models pack when asked, as on a project.
     folder = client.get("/api/admin/integrations/gcp/setup?mode=parent&target=folders/123&packs=models", headers=headers).json()
     assert folder["chosen"] == ["inventory", "models"] and folder["roles"][-1] == "roles/aiplatform.user"
