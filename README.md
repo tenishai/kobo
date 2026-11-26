@@ -98,20 +98,15 @@ the set onto gojira in the right order.
 
 ```mermaid
 flowchart LR
-  subgraph k1["kobo: create"]
-    direction TB
-    create["Create"] --> repo["repo<br/>(bundle + thin Dockerfile)"] --> onboard["gojira onboarding"] --> pr["setup PR auto-merged"]
-  end
-  subgraph g["gojira: build and run"]
-    direction TB
-    ci["GitHub Actions<br/>(keyless)"] --> image --> apply["kubectl apply"] --> pod["pod: seed memories"] --> hello
-  end
-  subgraph k2["kobo: make it a colleague"]
-    direction TB
-    reg["directory registration"] --> pass["colleague pass"] --> sync["pair sync"] --> done["the agent is a colleague"]
-  end
-  k1 --> g --> k2
+  a["Create<br/>you describe the job<br/>and click once"] --> b["Compose<br/>kobo writes the<br/>agent's repository"] --> c["Deploy<br/>gojira builds it<br/>and runs it"] --> d["Hello<br/>the agent joins<br/>its colleagues"]
 ```
+
+1. **kobo** creates the agent's repository (its bundle and a thin Dockerfile), onboards it
+   to gojira and merges the setup pull request.
+2. **gojira** builds the image in GitHub Actions with no stored keys and applies it to the
+   cluster; the pod seeds its memories and says hello.
+3. **kobo** registers the agent in the directory, gives it a colleague pass and syncs its
+   pairs, so it can talk to the other agents.
 
 The API (FastAPI, `api/`) composes the bundle, drives the deploy and holds the access
 policy; the UI (Svelte 5, `ui/`) is the room. Every agent runs on one shared runtime image
