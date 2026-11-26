@@ -98,7 +98,7 @@ the set onto gojira in the right order.
 
 ```mermaid
 flowchart LR
-  a["Create<br/>you describe the job<br/>and click once"] --> b["Compose<br/>kobo writes the<br/>agent's repository"] --> c["Deploy<br/>gojira builds it<br/>and runs it"] --> d["Hello<br/>the agent joins<br/>its colleagues"]
+  compose["1. kobo composes<br/>it writes the<br/>agent's repository"] --> deploy["2. gojira deploys<br/>it builds the agent<br/>and runs it"] --> join["3. kobo introduces<br/>the agent joins<br/>its colleagues"]
 ```
 
 1. **kobo** creates the agent's repository (its bundle and a thin Dockerfile), onboards it
