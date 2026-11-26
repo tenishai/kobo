@@ -9,6 +9,15 @@ Kobo is a room where a person on any team builds an AI agent, deploys it with on
 
 ![The room: one card per agent, with its group, model, owner and state](docs/img/room.png)
 
+## Two ways to run it
+
+- **Try it on a laptop.** The [Quickstart](#quickstart) runs the room alone, with no
+  cluster. It is enough to look around, but it cannot create a real agent.
+- **Run the platform.** Real agents need the suite on a cluster. Install
+  [gojira](https://github.com/tenishai/gojira) on a GKE cluster, then run
+  [stack](https://github.com/tenishai/stack): one file and one command bring up the room and
+  the parts it talks to in dependency order, kobo last.
+
 ## Overview
 
 Kobo is a web UI and an API. A person describes a job, picks a name, a persona, skills and
@@ -31,20 +40,6 @@ The room is opinionated:
   when the directory cannot be reached.
 - **No infrastructure words.** Creating an agent shows a plain progress checklist and
   nothing about the machinery under it.
-
-Kobo is the room in the tenish family of open-source platform and agent projects, and the
-one that ties the others together. It needs [daedalus](https://github.com/tenishai/daedalus)
-(the agent bundle and runtime) and [gojira](https://github.com/tenishai/gojira) (deploys
-each agent to Kubernetes). The rest are optional and stay off until configured:
-[cabal](https://github.com/tenishai/cabal) is the switchboard agents talk through,
-[liminal](https://github.com/tenishai/liminal) is the gateway agents reach tools through,
-[bab](https://github.com/tenishai/bab) decides what an agent may do,
-[sero](https://github.com/tenishai/sero) keeps secrets, and
-[noto](https://github.com/tenishai/noto) observes. Kobo imports none of them; it talks to
-each over the network or git.
-
-To run the whole suite on a cluster, start at [stack](https://github.com/tenishai/stack): one file and one command bring the
-parts up in dependency order, kobo last.
 
 ## Quickstart
 
@@ -79,6 +74,25 @@ deploys to, plus a GitHub login (`gh auth login`) for the repositories the room 
 Copy `api/config.example.yaml` to `api/config.local.yaml`, fill in `gojira_url` and the
 cluster, and restart; the file's comments describe its keys. To stand up gojira, the room
 and the parts between them in one go, use [stack](https://github.com/tenishai/stack).
+
+## Where it fits
+
+Kobo is the room in the tenish family of open-source platform and agent projects, and the
+one that ties the others together. It imports none of them; it talks to each over the
+network or git.
+
+| Part | What it does for the room | Needed |
+|---|---|---|
+| [gojira](https://github.com/tenishai/gojira) | deploys each agent to Kubernetes | yes |
+| [daedalus](https://github.com/tenishai/daedalus) | the agent bundle and runtime | yes |
+| [cabal](https://github.com/tenishai/cabal) | the switchboard agents talk through | optional |
+| [liminal](https://github.com/tenishai/liminal) | the gateway agents reach tools through | optional |
+| [bab](https://github.com/tenishai/bab) | decides what an agent may do | optional |
+| [sero](https://github.com/tenishai/sero) | keeps secrets | optional |
+| [noto](https://github.com/tenishai/noto) | observes | optional |
+
+Optional parts stay off until configured. [stack](https://github.com/tenishai/stack) installs
+the set onto gojira in the right order.
 
 ## How it works
 
