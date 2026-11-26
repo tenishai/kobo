@@ -43,6 +43,9 @@ each agent to Kubernetes). The rest are optional and stay off until configured:
 [noto](https://github.com/tenishai/noto) observes. Kobo imports none of them; it talks to
 each over the network or git.
 
+To run the whole suite on a cluster, start at [stack](https://github.com/tenishai/stack): one file and one command bring the
+parts up in dependency order, kobo last.
+
 ## Quickstart
 
 Run the room on your laptop. You need [uv](https://docs.astral.sh/uv/) and Node 22 (uv
@@ -74,7 +77,8 @@ cd api && make lab          # the fake-backed room on :8100, in place of uvicorn
 Creating a real agent needs somewhere to put it: a gojira and a Kubernetes cluster it
 deploys to, plus a GitHub login (`gh auth login`) for the repositories the room writes.
 Copy `api/config.example.yaml` to `api/config.local.yaml`, fill in `gojira_url` and the
-cluster, and restart; the file's comments describe its keys.
+cluster, and restart; the file's comments describe its keys. To stand up gojira, the room
+and the parts between them in one go, use [stack](https://github.com/tenishai/stack).
 
 ## How it works
 
