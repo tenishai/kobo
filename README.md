@@ -96,14 +96,21 @@ the set onto gojira in the right order.
 
 ## How it works
 
-```
-kobo:    Create ──▶ repo (bundle + thin Dockerfile) ──▶ gojira onboarding ──▶ setup PR auto-merged
-                                                                                     │
-                                                                                     ▼
-gojira:  GitHub Actions (keyless) ──▶ image ──▶ kubectl apply ──▶ pod: seed memories ──▶ hello
-                                                                                     │
-                                                                                     ▼
-kobo:    directory registration ──▶ colleague pass ──▶ pair sync ──▶ the agent is a colleague
+```mermaid
+flowchart LR
+  subgraph k1["kobo: create"]
+    direction TB
+    create["Create"] --> repo["repo<br/>(bundle + thin Dockerfile)"] --> onboard["gojira onboarding"] --> pr["setup PR auto-merged"]
+  end
+  subgraph g["gojira: build and run"]
+    direction TB
+    ci["GitHub Actions<br/>(keyless)"] --> image --> apply["kubectl apply"] --> pod["pod: seed memories"] --> hello
+  end
+  subgraph k2["kobo: make it a colleague"]
+    direction TB
+    reg["directory registration"] --> pass["colleague pass"] --> sync["pair sync"] --> done["the agent is a colleague"]
+  end
+  k1 --> g --> k2
 ```
 
 The API (FastAPI, `api/`) composes the bundle, drives the deploy and holds the access
